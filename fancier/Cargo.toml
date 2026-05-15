@@ -1,0 +1,56 @@
+[package]
+name = "fancier"
+version = "0.1.0"
+authors = ["justin <code@jes.contact>"]
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-bulk-memory"]
+
+[dependencies]
+capsules.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen.workspace = true
+uuid.workspace = true
+time = { workspace = true, features = ["macros"] }
+
+web-sys = { version = "0.3", features = [
+  "EventTarget",
+  "Headers",
+  "HtmlDocument",
+  "Location",
+  "Request",
+  "RequestInit",
+  "RequestMode",
+  "Response",
+  "Window",
+  "RequestCredentials",
+] }
+dioxus = { version = "0.7", features = ["router"] }
+dioxus-free-icons = { version = "0.10", features = [
+  "font-awesome-brands",
+  "lucide",
+] }
+dioxus-i18n = { version = "0.5" }
+strum = "0.28"
+ory-kratos-client-wasm = { version = "0.2" }
+unic-langid = { version = "0.9" }
+wasm-theme = { version = "0.1" }
+const_format = "0.2"
+wasm-bindgen = { version = "0.2" }
+wasm-bindgen-futures = { version = "0.4" }
+
+[build-dependencies]
+dotenvy = "0.15"
+
+[package.metadata.cargo-machete]
+ignored = ["dotenvy"]
+
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]

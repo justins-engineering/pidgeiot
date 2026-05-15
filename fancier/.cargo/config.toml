@@ -1,0 +1,12 @@
+[build]
+target = "wasm32-unknown-unknown"
+rustflags = ["-Cllvm-args=--inline-threshold=300", "--cfg=uuid_unstable"]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false

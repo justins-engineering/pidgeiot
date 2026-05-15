@@ -1,0 +1,23 @@
+[application]
+name = "fancier"
+asset_dir = "public"
+
+[bundle]
+copyright = "Justin's Engineering Services, LLC"
+identifier = "com.justinsengineering"
+publisher = "Justin's Engineering Services, LLC"
+icon = [
+  "assets/images/icon-dark.ico",
+  "assets/images/icon-dark.svg",
+  "assets/images/icon-light.ico",
+  "assets/images/icon-light.svg",
+]
+
+[web]
+pre_compress = false
+
+[web.app]
+title = "PidgeIoT"
+
+[web.watcher]
+index_on_404 = true

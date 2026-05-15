@@ -1,0 +1,27 @@
+[package]
+name = "dovecote"
+version = "0.1.0"
+authors = ["justin <code@jes.contact>"]
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+capsules.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+worker = { version = "0.8", features = ["tokio-postgres"] }
+futures = "0.3"
+tokio-postgres = { version = "0.7", features = [
+  "js",
+  "with-uuid-1",
+  "with-time-0_3",
+], default-features = false }
+ory-kratos-client-wasm = { git = "https://github.com/justins-engineering/kratos-client-rust.git", default-features = false, features = [
+  "worker",
+] }

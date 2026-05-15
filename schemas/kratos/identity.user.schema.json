@@ -1,0 +1,72 @@
+{
+  "$id": "https://pidgeiot.com/identity.user.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "User",
+  "type": "object",
+  "properties": {
+    "traits": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "title": "E-Mail",
+          "minLength": 3,
+          "ory.sh/kratos": {
+            "credentials": {
+              "password": {
+                "identifier": true
+              },
+              "webauthn": {
+                "identifier": true
+              },
+              "totp": {
+                "account_name": true
+              },
+              "code": {
+                "identifier": true,
+                "via": "email"
+              },
+              "passkey": {
+                "display_name": true
+              }
+            },
+            "verification": {
+              "via": "email"
+            },
+            "recovery": {
+              "via": "email"
+            }
+          }
+        },
+        "phone": {
+          "type": "string",
+          "format": "tel",
+          "title": "Phone Number",
+          "maxLength": 20
+        },
+        "name": {
+          "type": "object",
+          "properties": {
+            "first": {
+              "title": "First Name",
+              "type": "string"
+            },
+            "last": {
+              "title": "Last Name",
+              "type": "string"
+            }
+          }
+        },
+        "subscribed": {
+          "type": "boolean",
+          "title": "Subscribe to email updates"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

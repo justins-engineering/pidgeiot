@@ -1,0 +1,70 @@
+services:
+  postgresd:
+    image: postgres:18-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=kratos
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=kratos
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - intranet
+
+  kratos-migrate:
+    depends_on:
+      - postgresd
+    image: oryd/kratos:v25.4
+    environment:
+      - DSN=postgres://kratos:secret@postgresd:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
+    volumes:
+      - type: bind
+        source: ./schemas/kratos
+        target: /opt/kratos
+    command: -c /opt/kratos/kratos.yml migrate sql -e --yes
+    restart: on-failure
+    networks:
+      - intranet
+
+  kratos:
+    depends_on:
+      - kratos-migrate
+    image: oryd/kratos:v25.4
+    ports:
+      - '4433:4433' # public
+      - '4434:4434' # admin
+    restart: unless-stopped
+    environment:
+      - DSN=postgres://kratos:secret@postgresd:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
+      - LOG_LEVEL=info
+    command: serve -c /opt/kratos/kratos.yml --dev --watch-courier --sqa-opt-out
+    volumes:
+      - type: bind
+        source: ./schemas/kratos
+        target: /opt/kratos/
+    networks:
+      - intranet
+
+  kratos-admin-ui:
+    depends_on:
+      - kratos
+    image: dhiagharsallaoui/kratos-admin-ui:latest
+    ports:
+      - '3000:3000'
+    environment:
+      - KRATOS_PUBLIC_URL=http://kratos:4433
+      - KRATOS_ADMIN_URL=http://kratos:4434
+    networks:
+      - intranet
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    ports:
+      - '4436:4436'
+      - '4437:4437'
+    networks:
+      - intranet
+
+networks:
+  intranet:

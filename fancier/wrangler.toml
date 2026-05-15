@@ -1,0 +1,15 @@
+name = "fancier"
+compatibility_date = "2026-05-15"
+send_metrics = false
+
+[[routes]]
+pattern = "pidgeiot.com"
+custom_domain = true
+
+[assets]
+directory = "./target/dx/fancier/release/web/public"
+not_found_handling = "single-page-application"
+
+[build]
+command = "bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m && dx build --web --ssg --force-sequential --release --debug-symbols=false"
+watch_dir = ["./src"]

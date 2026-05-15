@@ -1,0 +1,28 @@
+{
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "modificationsIfAvailable",
+  "cmake.configureOnOpen": false,
+  "editor.insertSpaces": true,
+  "editor.tabSize": 2,
+  "clangd.arguments": [
+    "--completion-style=detailed",
+    "--header-insertion=never",
+    "--malloc-trim"
+  ],
+  "clangd.fallbackFlags": [
+    "--include-directory=${workspaceFolder}/include"
+  ],
+  "rust-analyzer.check.command": "clippy",
+  "tailwindCSS.experimental.classRegex": [
+    "class: \"(.*)\""
+  ],
+  "tailwindCSS.includeLanguages": {
+    "rust": "html"
+  },
+  "files.associations": {
+    "*.css": "tailwindcss"
+  },
+  "editor.quickSuggestions": {
+    "strings": "on"
+  }
+}

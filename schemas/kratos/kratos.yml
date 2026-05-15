@@ -1,0 +1,138 @@
+version: v25.4.0
+
+dsn: postgres://kratos:secret@127.0.0.1:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
+
+session:
+  lifespan: 4h
+
+serve:
+  public:
+    base_url: http://127.0.0.1:4433/
+    cors:
+      enabled: true
+      allowed_origins:
+        - http://127.0.0.1:4433
+        - http://127.0.0.1:4455
+        - http://127.0.0.1
+        - http://localhost
+      allowed_methods:
+        - POST
+        - GET
+        - PUT
+        - PATCH
+        - DELETE
+      allowed_headers:
+        - Authorization
+        - Cookie
+        - Content-Type
+      exposed_headers:
+        - Content-Type
+        - Set-Cookie
+      allow_credentials: true
+  admin:
+    base_url: http://127.0.0.1:4434/
+
+selfservice:
+  default_browser_return_url: http://127.0.0.1:4455/
+  allowed_return_urls:
+    - http://127.0.0.1
+    - http://localhost:19006/Callback
+    - exp://localhost:8081/--/Callback
+
+  methods:
+    password:
+      enabled: true
+    totp:
+      config:
+        issuer: Kratos
+      enabled: true
+    lookup_secret:
+      enabled: true
+    link:
+      enabled: true
+    code:
+      enabled: true
+
+  flows:
+    error:
+      ui_url: http://127.0.0.1:4455/error
+
+    settings:
+      ui_url: http://127.0.0.1:4455/settings
+      privileged_session_max_age: 15m
+      required_aal: highest_available
+
+    recovery:
+      enabled: true
+      ui_url: http://127.0.0.1:4455/recovery
+      use: code
+
+    verification:
+      enabled: true
+      ui_url: http://127.0.0.1:4455/verification
+      use: code
+      after:
+        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+
+    logout:
+      after:
+        default_browser_return_url: http://127.0.0.1:4455/session/local?state=false
+
+    login:
+      ui_url: http://127.0.0.1:4455/login
+      lifespan: 10m
+      after:
+        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+
+    registration:
+      lifespan: 10m
+      ui_url: http://127.0.0.1:4455/registration
+      after:
+        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+        password:
+          hooks:
+            - hook: session
+            - hook: show_verification_ui
+
+log:
+  level: debug
+  format: text
+  leak_sensitive_values: true
+
+secrets:
+  default:
+    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
+  cookie:
+    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
+  cipher:
+    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
+
+ciphers:
+  algorithm: xchacha20-poly1305
+
+hashers:
+  algorithm: argon2
+  argon2:
+    memory: 384MB
+    iterations: 3
+    parallelism: 16
+    salt_length: 16
+    key_length: 32
+    expected_duration: 500ms
+    expected_deviation: 500ms
+    dedicated_memory: 1GB
+
+identity:
+  default_schema_id: user
+  schemas:
+    - id: user
+      url: file:///opt/kratos/identity.user.schema.json
+
+courier:
+  smtp:
+    connection_uri: smtps://test:test@mailslurper:1025/?skip_ssl_verify=true
+
+feature_flags:
+  use_continue_with_transitions: true
+
+sqa-opt-out: true
