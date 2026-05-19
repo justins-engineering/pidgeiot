@@ -25,3 +25,4 @@ tokio-postgres = { version = "0.7", features = [
 ory-kratos-client-wasm = { git = "https://github.com/justins-engineering/kratos-client-rust.git", default-features = false, features = [
   "worker",
 ] }
+once_cell = "1.19"

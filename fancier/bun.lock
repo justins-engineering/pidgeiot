@@ -8,9 +8,9 @@
         "tailwindcss": "^4.3.0",
       },
       "devDependencies": {
-        "@mermaid-js/mermaid-cli": "^11.14.0",
+        "@mermaid-js/mermaid-cli": "^11.15.0",
         "@tailwindcss/cli": "^4.3.0",
-        "wrangler": "^4.90.1",
+        "wrangler": "^4.92.0",
       },
     },
   },

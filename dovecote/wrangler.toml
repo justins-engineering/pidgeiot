@@ -1,12 +1,16 @@
-name = "dovecot"
-compatibility_date = "2026-05-15"
+name = "dovecote"
+compatibility_date = "2026-05-18"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
+[vars]
+KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
+ROOT_URL = "https://pidgeiot.com"
+
 [[routes]]
-pattern = "api.pidgeiot.net"
+pattern = "api.pidgeiot.com"
 custom_domain = true
-zone_name = "pidgeiot.net"
+zone_name = "pidgeiot.com"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release"

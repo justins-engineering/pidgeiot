@@ -3,8 +3,9 @@ use crate::helpers::{
 };
 use capsules::CreateFlockPayload;
 use futures::future::join_all;
+use once_cell::sync::Lazy;
 use uuid::Uuid;
-use worker::{Context, Env, Request, Response, Router, console_error, console_log, event};
+use worker::{Context, Env, Method, Request, Response, Router, console_error, console_log, event};
 
 mod helpers;
 mod objects;
@@ -17,6 +18,21 @@ mod objects;
 //     }
 //   };
 // }
+
+static CORS: Lazy<worker::Cors> = Lazy::new(|| {
+  worker::Cors::new()
+    .with_origins(vec!["https://pidgeiot.com"])
+    .with_methods(vec![
+      Method::Get,
+      Method::Post,
+      Method::Put,
+      Method::Delete,
+      Method::Options,
+    ])
+    .with_allowed_headers(vec!["Content-Type", "Accept", "Authorization"])
+    .with_exposed_headers(vec!["Location"])
+    .with_credentials(true)
+});
 
 /// Validates the Kratos cookie and returns the User ID as a String.
 pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
@@ -62,6 +78,9 @@ pub async fn get_db_client(env: &Env) -> worker::Result<tokio_postgres::Client> 
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
   Router::new()
+    .options_async("/*any", |_req, _ctx| async move {
+      Response::empty()?.with_cors(&CORS)
+    })
     .get_async("/flocks", |req, ctx: worker::RouteContext<()>| async move {
       // 1. Authoritative Identity Check
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
@@ -86,7 +105,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       // 5. Scatter-Gather the Live Edge State
       for flock in &mut user_flocks {
-        let flock_uuid = Uuid::parse_str(&flock.id).unwrap();
+        let flock_uuid: Uuid = Uuid::parse_str(&flock.id).unwrap();
 
         // Query Yugabyte for the pigeon IDs in this specific flock
         let pigeon_rows = client
@@ -146,7 +165,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       }
 
       // 6. Return the strongly-typed JSON array
-      Response::from_json(&user_flocks)
+      Response::from_json(&user_flocks)?.with_cors(&CORS)
     })
     .post_async("/flocks", |mut req, ctx| async move {
       // 1. Authoritative Identity Check
@@ -173,11 +192,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // 4. Create the flock in the Control Plane
       match create_user_flock(&client, &user_id, &payload.name).await {
         // 5. Return the newly created, fully populated Flock object to Dioxus!
-        Ok(flock) => Response::from_json(&flock),
+        Ok(flock) => Response::from_json(&flock)?.with_cors(&CORS),
         Err(e) => Err(e),
       }
     })
-    .or_else_any_method_async("/", |mut req, _ctx| async move {
+    .or_else_any_method_async("/*any", |mut req, _ctx| async move {
       match req.text().await {
         Ok(b) => console_log!("{b}"),
         Err(e) => console_error!("{e}"),
