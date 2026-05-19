@@ -1140,7 +1140,7 @@ dependencies = [
  "capsules",
  "futures",
  "once_cell",
- "ory-kratos-client-wasm 0.2.3 (git+https://github.com/justins-engineering/kratos-client-rust.git)",
+ "ory-kratos-client-wasm",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -1233,7 +1233,7 @@ dependencies = [
  "dioxus-free-icons",
  "dioxus-i18n",
  "dotenvy",
- "ory-kratos-client-wasm 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ory-kratos-client-wasm",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -2373,20 +2373,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "ory-kratos-client-wasm"
-version = "0.2.3"
-source = "git+https://github.com/justins-engineering/kratos-client-rust.git#dc4aac0f52d5732546489e69c33464c228083f60"
-dependencies = [
- "gloo-utils 0.3.0",
- "serde",
- "serde_json",
- "serde_repr",
- "serde_with",
- "url",
- "wasm-bindgen",
  "worker",
 ]
 

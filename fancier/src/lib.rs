@@ -17,8 +17,6 @@ mod components;
 mod config;
 mod partials;
 mod views;
-// mod encoding;
-// mod websocket;
 
 #[derive(Clone, Copy, Debug)]
 struct Session {
@@ -137,12 +135,8 @@ pub fn App() -> Element {
   });
 
   use_resource(move || async move {
-    // 1. Reactively wait for sign-in
     if (session.state)() {
-      // 2. Fetch the data
       if let Some(flocks_data) = api::flocks::list().await {
-        // 3. Update the signal!
-        // (This is perfectly safe because Signal<T> is Copy and thread-safe)
         local_session.flocks.set(flocks_data);
       }
     }

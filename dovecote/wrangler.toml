@@ -1,33 +1,44 @@
 name = "dovecote"
-compatibility_date = "2026-05-18"
+compatibility_date = "2026-05-19"
 send_metrics = false
 main = "build/worker/shim.mjs"
-
-[vars]
-KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
-ROOT_URL = "https://pidgeiot.com"
 
 [[routes]]
 pattern = "api.pidgeiot.com"
 custom_domain = true
 zone_name = "pidgeiot.com"
 
-[build]
-command = "cargo install -q worker-build && worker-build --release"
-watch_dir = ["./src"]
-
 [observability.logs]
 enabled = true
 
+[vars]
+KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
+ROOT_URL = "https://pidgeiot.com"
+
+[[hyperdrive]]
+binding = "YugabyteDB"
+id = "f2c59dfa75114889815fd453ac0db62a"
+
 [durable_objects]
-# the `class_name` uses the Rust struct identifier name
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
 
-[[hyperdrive]]
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+watch_dir = ["./src"]
+
+[env.dev.vars]
+KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
+ROOT_URL = "http://127.0.0.1:4433"
+
+[env.dev.durable_objects]
+# the `class_name` uses the Rust struct identifier name
+bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+
+[[env.dev.hyperdrive]]
 binding = "YugabyteDB"
-id = "f2c59dfa75114889815fd453ac0db62a"
+id = ""
 localConnectionString = "postgres://kratos:secret@127.0.0.1:5432/dovecote?sslmode=disable"
