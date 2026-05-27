@@ -1,5 +1,5 @@
 name = "dovecote"
-compatibility_date = "2026-05-19"
+compatibility_date = "2026-05-27"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
@@ -10,6 +10,8 @@ zone_name = "pidgeiot.com"
 
 [observability.logs]
 enabled = true
+invocation_logs = true
+head_sampling_rate = 0
 
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"

@@ -1,23 +1,16 @@
 use crate::helpers::{
-  authenticate_browser, create_user_flock, get_hyperdrive_conn, get_user_flocks,
+  authenticate_browser, create_user_flock, get_db_client, get_hyperdrive_conn, get_user_flocks,
+  proxy_to_pigeon_do, sync_pigeon_to_db,
 };
-use capsules::CreateFlockPayload;
+use capsules::{FlockCreateRequest, Pigeon};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
-use uuid::Uuid;
-use worker::{Context, Env, Method, Request, Response, Router, console_error, console_log, event};
+use worker::{
+  Context, Env, Method, Request, RequestInit, Response, Router, console_error, console_log, event,
+};
 
 mod helpers;
 mod objects;
-
-// macro_rules! unwrap_or_return_response {
-//   ($expr:expr) => {
-//     match $expr {
-//       Ok(val) => val,
-//       Err(err_resp) => return err_resp,
-//     }
-//   };
-// }
 
 static CORS: Lazy<worker::Cors> = Lazy::new(|| {
   worker::Cors::new()
@@ -48,33 +41,6 @@ pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
   Ok(identity.id)
 }
 
-/// Establishes a Hyperdrive connection, spawns the background driver,
-/// and hands back a ready-to-use Client.
-pub async fn get_db_client(env: &Env) -> worker::Result<tokio_postgres::Client> {
-  let (client, connection) = crate::get_hyperdrive_conn(env).await?;
-
-  // Abstract the Wasm background task away from the route handlers!
-  worker::wasm_bindgen_futures::spawn_local(async move {
-    if let Err(e) = connection.await {
-      console_error!("Postgres connection error: {}", e);
-    }
-  });
-
-  Ok(client)
-}
-
-// fn get_flock_id(ctx: &worker::RouteContext<()>) -> Result<i64, worker::Result<Response>> {
-//   let Some(id_str) = ctx.param("flock_id") else {
-//     return Err(Response::error("Missing flock_id", 400));
-//   };
-
-//   let Ok(flock_id) = id_str.parse() else {
-//     return Err(Response::error("Bad flock_id", 400));
-//   };
-
-//   Ok(flock_id)
-// }
-
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
   Router::new()
@@ -93,78 +59,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       // 3. Query the Control Plane using our strict helper
-      let mut user_flocks = match get_user_flocks(&client, &user_id).await {
+      let user_flocks = match get_user_flocks(&client, &user_id).await {
         Ok(flocks) => flocks,
         Err(e) => return Err(e),
       };
 
-      // 4. Connect to the PIGEONS Durable Object Namespace
-      let Ok(pigeon_namespace) = ctx.durable_object("PIGEONS") else {
-        return Response::error("Failed to bind to PIGEONS namespace", 500);
-      };
-
-      // 5. Scatter-Gather the Live Edge State
-      for flock in &mut user_flocks {
-        let flock_uuid: Uuid = Uuid::parse_str(&flock.id).unwrap();
-
-        // Query Yugabyte for the pigeon IDs in this specific flock
-        let pigeon_rows = client
-          .query_typed(
-            "SELECT id FROM pigeons WHERE flock_id = $1",
-            &[(&flock_uuid, tokio_postgres::types::Type::UUID)],
-          )
-          .await
-          .map_err(|e| worker::Error::RustError(e.to_string()))?;
-
-        // We assign the total row count to our strict model's pigeon_count
-        flock.pigeon_count = pigeon_rows.len() as i64;
-
-        let mut fetch_tasks: Vec<
-          std::pin::Pin<Box<dyn std::future::Future<Output = Option<worker::Response>>>>,
-        > = Vec::new();
-
-        for row in pigeon_rows {
-          let namespace_clone = pigeon_namespace.clone();
-          let pigeon_id: Uuid = row.get("id");
-          let pigeon_id_str = pigeon_id.to_string();
-
-          fetch_tasks.push(Box::pin(async move {
-            let Ok(stub) = namespace_clone
-              .id_from_string(&pigeon_id_str)
-              .and_then(|id| id.get_stub())
-            else {
-              return None;
-            };
-
-            // Ask the DO for its live memory state
-            stub
-              .fetch_with_str(&format!("http://internal/pigeons/{}/live", pigeon_id_str))
-              .await
-              .ok()
-          }));
-        }
-
-        // Execute all fetches concurrently
-        let responses = join_all(fetch_tasks).await;
-
-        let mut active_pigeons = 0;
-
-        for mut resp in responses.into_iter().flatten() {
-          if let Ok(state) = resp.json::<serde_json::Value>().await {
-            // Example: Count how many are actively connected to WebSockets
-            if state["status"] == "active" {
-              active_pigeons += 1;
-            }
-          }
-        }
-
-        // In this implementation, I am overwriting pigeon_count with active_pigeons.
-        // If your frontend Dioxus model needs BOTH total_count and active_count,
-        // you must update `src/models/flock.rs` to include a new `active_pigeons: i64` field!
-        flock.pigeon_count = active_pigeons;
-      }
-
-      // 6. Return the strongly-typed JSON array
+      // 4. Return the strongly-typed JSON array
       Response::from_json(&user_flocks)?.with_cors(&CORS)
     })
     .post_async("/flocks", |mut req, ctx| async move {
@@ -179,8 +79,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       // 3. Parse the incoming JSON body
-      // We expect the frontend to just send `{"name": "My New Flock"}`
-      let Ok(payload) = req.json::<CreateFlockPayload>().await else {
+      let Ok(payload) = req.json::<FlockCreateRequest>().await else {
         return Response::error("Invalid JSON payload", 400);
       };
 
@@ -196,6 +95,128 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Err(e) => Err(e),
       }
     })
+    .post_async("/pigeons/batch", |mut req, ctx| async move {
+      // 1. Authoritative Identity Check
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      // 2. Get Pigeon IDs
+      let Ok(pigeon_ids) = req.json::<Vec<String>>().await else {
+        return Response::error("Pigeon IDs cannot be empty or invalid", 400);
+      };
+
+      let mut fetch_tasks = Vec::new();
+
+      let Ok(pigeon_namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      for id in pigeon_ids {
+        let namespace_clone = pigeon_namespace.clone();
+        let u_id = user_id.clone();
+
+        fetch_tasks.push(async move {
+          let Ok(stub) = namespace_clone
+            .id_from_string(&id)
+            .and_then(|do_id| do_id.get_stub())
+          else {
+            return Response::error("Bad Request", 500);
+          };
+
+          let do_req = RequestInit::default();
+
+          let Ok(_headers) = do_req.headers.set("X-User-Id", &u_id) else {
+            return Response::error("Failed to set 'X-User-Id'", 500);
+          };
+
+          let Ok(do_req) = Request::new_with_init("https://internal/pigeon/get", &do_req) else {
+            return Response::error("Bad Request", 500);
+          };
+
+          stub.fetch_with_request(do_req).await
+        });
+      }
+
+      // Execute all fetches concurrently
+      let responses = join_all(fetch_tasks).await;
+
+      let mut pigeons: Vec<Pigeon> = Vec::new();
+
+      for mut resp in responses.into_iter().flatten() {
+        if let Ok(pigeon) = resp.json::<Pigeon>().await {
+          pigeons.push(pigeon);
+        }
+      }
+
+      Response::from_json(&pigeons)?.with_cors(&CORS)
+    })
+    .post_async("/flock/pigeons", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let pigeon_id = namespace.unique_id().map_err(|e| {
+        console_error!("Failed to create unique DO ID: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+
+      let mut do_response = proxy_to_pigeon_do(req, &user_id, &pigeon_id, "/create").await?;
+
+      let pigeon = do_response.json::<Pigeon>().await.map_err(|e| {
+        console_error!("Failed to parse DO response: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+
+      let Ok(client) = get_db_client(&ctx.env).await else {
+        return Response::error("DB Error", 500);
+      };
+
+      if let Err(e) = sync_pigeon_to_db(&client, &pigeon).await {
+        console_error!("Failed to sync pigeon {pigeon_id} to external DB: {e}",);
+        // Don't fail the request — the pigeon exists in the DO, sync can be retried
+      }
+
+      Response::from_json(&pigeon)?.with_cors(&CORS)
+    })
+    .get_async(
+      "/flocks/:flock_id/pigeons/:pigeon_id",
+      |req, ctx: worker::RouteContext<()>| async move {
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401);
+        };
+
+        let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+          return Response::error("Failed to bind to PIGEONS namespace", 500);
+        };
+
+        let Some(pigeon_id) = ctx.param("pigeon_id") else {
+          return Response::error("Pigeon ID cannot be empty or invalid", 400);
+        };
+
+        let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+          return Response::error("Bad Request", 500);
+        };
+
+        proxy_to_pigeon_do(req, &user_id, &stub, "/get").await
+      },
+    )
+    .put_async(
+      "/pigeons/:pigeon_id",
+      |req, ctx: worker::RouteContext<()>| async move { todo!() },
+    )
+    .get_async(
+      "/pigeons/:pigeon_id/shadow",
+      |req, ctx| async move { todo!() },
+    )
+    .post_async(
+      "/pigeons/:pigeon_id/shadow",
+      |req, ctx| async move { todo!() },
+    )
     .or_else_any_method_async("/*any", |mut req, _ctx| async move {
       match req.text().await {
         Ok(b) => console_log!("{b}"),

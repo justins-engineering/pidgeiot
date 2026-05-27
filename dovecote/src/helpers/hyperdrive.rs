@@ -33,3 +33,17 @@ pub async fn get_hyperdrive_conn(
 
   Ok((client, connection))
 }
+
+/// Establishes a Hyperdrive connection, spawns the background driver, and hands back a ready-to-use Client.
+pub async fn get_db_client(env: &Env) -> worker::Result<tokio_postgres::Client> {
+  let (client, connection) = crate::get_hyperdrive_conn(env).await?;
+
+  // Abstract the Wasm background task away from the route handlers
+  worker::wasm_bindgen_futures::spawn_local(async move {
+    if let Err(e) = connection.await {
+      console_error!("Postgres connection error: {}", e);
+    }
+  });
+
+  Ok(client)
+}
