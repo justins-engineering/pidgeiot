@@ -1,6 +1,6 @@
 use capsules::{
-  Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
+  Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonCreateResponse,
+  PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
@@ -183,6 +183,11 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     return Response::error("Request missing 'X-User-Id'", 400);
   };
 
+  let user_uuid = uuid::Uuid::parse_str(&user_id).map_err(|e| {
+    console_error!("Invalid X-User-Id format: {e}");
+    worker::Error::RustError("Bad Request: Invalid X-User-Id format".into())
+  })?;
+
   let row = match req.json::<PigeonCreateRequest>().await {
     Ok(data) => data,
     Err(e) => {
@@ -227,23 +232,42 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     return Response::error("Internal Server Error", 500);
   }
 
-  // Third write: insert default shadow entry
-  if let Err(e) = pigeons.sql.exec(
-    "INSERT INTO pigeon_shadow (id) VALUES (?);",
+  // Third write: insert default shadow entry and return it
+  let shadow = match pigeons.sql.exec(
+    "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING status, updated_at, config;",
     vec![do_id.into()],
   ) {
-    console_error!("Pigeon shadow create execution error: {e}");
-    return Response::error("Internal Server Error", 500);
-  }
+    Ok(cursor) => match cursor.one::<PigeonShadow>() {
+      Ok(s) => s,
+      Err(e) => {
+        console_error!("PigeonShadow deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeon shadow create execution error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  // Construct response from known values — no extra queries needed
+  let response = PigeonCreateResponse {
+    pigeon,
+    acl: PigeonAcl {
+      entity_id: user_uuid,
+      role: "owner".to_string(),
+    },
+    shadow,
+  };
 
   let mut location = String::with_capacity(72);
   location.push_str("/pigeons/");
-  location.push_str(&pigeon.id.to_string());
+  location.push_str(&response.pigeon.id);
 
   ResponseBuilder::new()
     .with_status(201)
     .with_header("Location", &location)?
-    .from_json(&pigeon)
+    .from_json(&response)
 }
 
 async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {

@@ -77,7 +77,7 @@ impl Default for FlockUpdateRequest {
   }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Pigeon {
   pub id: String,
   pub flock_id: Uuid,
@@ -131,6 +131,13 @@ impl Default for PigeonCreateRequest {
       connector: String::with_capacity(8),
     }
   }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PigeonCreateResponse {
+  pub pigeon: Pigeon,
+  pub acl: PigeonAcl,
+  pub shadow: PigeonShadow,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]

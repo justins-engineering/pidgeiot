@@ -2,7 +2,7 @@ use crate::helpers::{
   authenticate_browser, create_user_flock, get_db_client, get_hyperdrive_conn, get_user_flocks,
   proxy_to_pigeon_do, sync_pigeon_to_db,
 };
-use capsules::{FlockCreateRequest, Pigeon};
+use capsules::{FlockCreateRequest, Pigeon, PigeonCreateResponse};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use worker::{
@@ -165,23 +165,34 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         worker::Error::RustError("Internal Server Error".into())
       })?;
 
-      let mut do_response = proxy_to_pigeon_do(req, &user_id, &pigeon_id, "/create").await?;
+      let mut do_response: Response =
+        proxy_to_pigeon_do(req, &user_id, &pigeon_id, "/create").await?;
 
-      let pigeon = do_response.json::<Pigeon>().await.map_err(|e| {
-        console_error!("Failed to parse DO response: {e}");
-        worker::Error::RustError("Internal Server Error".into())
-      })?;
+      if do_response.status_code() >= 400 {
+        return Ok(do_response);
+      }
+
+      let pcr = do_response
+        .json::<PigeonCreateResponse>()
+        .await
+        .map_err(|e| {
+          console_error!("Failed to parse DO response: {e}");
+          worker::Error::RustError("Internal Server Error".into())
+        })?;
 
       let Ok(client) = get_db_client(&ctx.env).await else {
         return Response::error("DB Error", 500);
       };
 
-      if let Err(e) = sync_pigeon_to_db(&client, &pigeon).await {
-        console_error!("Failed to sync pigeon {pigeon_id} to external DB: {e}",);
+      if let Err(e) = sync_pigeon_to_db(client, &pcr).await {
+        console_error!(
+          "Failed to sync pigeon {} to external DB: {e}",
+          pcr.pigeon.id
+        );
         // Don't fail the request — the pigeon exists in the DO, sync can be retried
       }
 
-      Response::from_json(&pigeon)?.with_cors(&CORS)
+      Response::from_json(&pcr)?.with_cors(&CORS)
     })
     .get_async(
       "/flocks/:flock_id/pigeons/:pigeon_id",
