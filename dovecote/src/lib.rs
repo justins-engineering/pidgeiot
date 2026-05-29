@@ -1,8 +1,9 @@
 use crate::helpers::{
-  authenticate_browser, create_user_flock, get_db_client, get_hyperdrive_conn, get_user_flocks,
-  proxy_to_pigeon_do, sync_pigeon_to_db,
+  authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
+  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
+  update_shadow_pg_db, upsert_acl_pg_db,
 };
-use capsules::{FlockCreateRequest, Pigeon, PigeonCreateResponse};
+use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use worker::{
@@ -55,6 +56,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       // 2. Establish the Hyperdrive DB Connection
       let Ok(client) = get_db_client(&ctx.env).await else {
+        console_error!("Failed to establish Hyperdrive connection");
         return Response::error("DB Error", 500);
       };
 
@@ -172,19 +174,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         return Ok(do_response);
       }
 
-      let pcr = do_response
-        .json::<PigeonCreateResponse>()
-        .await
-        .map_err(|e| {
-          console_error!("Failed to parse DO response: {e}");
-          worker::Error::RustError("Internal Server Error".into())
-        })?;
+      let pcr = do_response.json::<PigeonDetail>().await.map_err(|e| {
+        console_error!("Failed to parse DO response: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
 
       let Ok(client) = get_db_client(&ctx.env).await else {
         return Response::error("DB Error", 500);
       };
 
-      if let Err(e) = sync_pigeon_to_db(client, &pcr).await {
+      if let Err(e) = insert_pigeon_pg_db(client, &pcr).await {
         console_error!(
           "Failed to sync pigeon {} to external DB: {e}",
           pcr.pigeon.id
@@ -195,7 +194,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       Response::from_json(&pcr)?.with_cors(&CORS)
     })
     .get_async(
-      "/flocks/:flock_id/pigeons/:pigeon_id",
+      "/pigeons/:pigeon_id",
       |req, ctx: worker::RouteContext<()>| async move {
         let Ok(user_id) = require_auth(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401);
@@ -216,18 +215,188 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         proxy_to_pigeon_do(req, &user_id, &stub, "/get").await
       },
     )
-    .put_async(
+    .put_async("/pigeons/:pigeon_id", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      let mut do_response = proxy_to_pigeon_do(req, &user_id, &stub, "/update").await?;
+
+      if do_response.status_code() >= 400 {
+        return Ok(do_response);
+      }
+
+      let pigeon = do_response.json::<Pigeon>().await.map_err(|e| {
+        console_error!("Failed to parse DO response: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+
+      if let Ok(client) = get_db_client(&ctx.env).await
+        && let Err(e) = update_pigeon_pg_db(client, &pigeon).await
+      {
+        console_error!("Failed to sync pigeon {} to external DB: {e}", pigeon.id);
+      }
+
+      Response::from_json(&pigeon)?.with_cors(&CORS)
+    })
+    .delete_async(
       "/pigeons/:pigeon_id",
-      |req, ctx: worker::RouteContext<()>| async move { todo!() },
+      |req, ctx: worker::RouteContext<()>| async move {
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401);
+        };
+
+        let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+          return Response::error("Failed to bind to PIGEONS namespace", 500);
+        };
+
+        let Some(pigeon_id) = ctx.param("pigeon_id") else {
+          return Response::error("Pigeon ID cannot be empty or invalid", 400);
+        };
+
+        let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+          return Response::error("Bad Request", 500);
+        };
+
+        let do_response = proxy_to_pigeon_do(req, &user_id, &stub, "/delete").await?;
+
+        if do_response.status_code() >= 400 {
+          return Ok(do_response);
+        }
+
+        if let Ok(client) = get_db_client(&ctx.env).await
+          && let Err(e) = delete_pigeon_pg_db(client, pigeon_id).await
+        {
+          console_error!("Failed to sync pigeon {} to external DB: {e}", pigeon_id);
+        }
+
+        Response::empty()?.with_cors(&CORS)
+      },
     )
-    .get_async(
-      "/pigeons/:pigeon_id/shadow",
-      |req, ctx| async move { todo!() },
-    )
-    .post_async(
-      "/pigeons/:pigeon_id/shadow",
-      |req, ctx| async move { todo!() },
-    )
+    // Shadow routes
+    .get_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      proxy_to_pigeon_do(req, &user_id, &stub, "/shadow/get").await
+    })
+    .post_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      let mut do_response = proxy_to_pigeon_do(req, &user_id, &stub, "/shadow/update").await?;
+
+      if do_response.status_code() >= 400 {
+        return Ok(do_response);
+      }
+
+      let shadow = do_response.json::<PigeonShadow>().await.map_err(|e| {
+        console_error!("Failed to parse DO shadow response: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+
+      if let Ok(client) = get_db_client(&ctx.env).await
+        && let Err(e) = update_shadow_pg_db(client, pigeon_id, &shadow).await
+      {
+        console_error!("Failed to sync shadow for pigeon {pigeon_id} to external DB: {e}");
+      }
+
+      Response::from_json(&shadow)?.with_cors(&CORS)
+    })
+    // ACL routes
+    .get_async("/pigeons/:pigeon_id/acl", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      proxy_to_pigeon_do(req, &user_id, &stub, "/acl/list").await
+    })
+    .post_async("/pigeons/:pigeon_id/acl", |req, ctx| async move {
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      let mut do_response = proxy_to_pigeon_do(req, &user_id, &stub, "/acl/update").await?;
+
+      if do_response.status_code() >= 400 {
+        return Ok(do_response);
+      }
+
+      let acl = do_response.json::<PigeonAcl>().await.map_err(|e| {
+        console_error!("Failed to parse DO ACL response: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+
+      if let Ok(client) = get_db_client(&ctx.env).await
+        && let Err(e) = upsert_acl_pg_db(client, pigeon_id, &acl).await
+      {
+        console_error!("Failed to sync ACL for pigeon {pigeon_id} to external DB: {e}");
+      }
+
+      Response::from_json(&acl)?.with_cors(&CORS)
+    })
     .or_else_any_method_async("/*any", |mut req, _ctx| async move {
       match req.text().await {
         Ok(b) => console_log!("{b}"),

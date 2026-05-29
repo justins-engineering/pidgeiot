@@ -16,9 +16,9 @@ serde.workspace = true
 serde_json.workspace = true
 serde-wasm-bindgen.workspace = true
 uuid.workspace = true
-ory-kratos-client-wasm = { workspace = true, features = ["wasm"] }
 time = { workspace = true, features = ["macros"] }
 
+ory-kratos-client-wasm = { version = "0.2" }
 web-sys = { version = "0.3", features = [
   "EventTarget",
   "Headers",

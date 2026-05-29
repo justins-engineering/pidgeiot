@@ -1,5 +1,5 @@
 use crate::{Route, api};
-use capsules::{CreateFlockPayload, Flock};
+use capsules::{Flock, FlockCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdX;
@@ -13,8 +13,9 @@ pub fn Flocks() -> Element {
         header { class: "flex flex-col md:flex-row items-center justify-between gap-4 mb-10 grow",
           // Title
           h1 { class: "text-xl font-bold",
-            "Flocks ({use_context::<crate::LocalSession>().flocks.read().iter().count()})"
+            "Flocks ({use_context::<crate::LocalSession>().flocks.read().len()})"
           }
+
 
           // Search Bar
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
@@ -46,41 +47,14 @@ pub fn Flocks() -> Element {
         // Flocks Grid
         div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16",
           for (flock_id , flock) in use_context::<crate::LocalSession>().flocks.read().iter() {
-            if !flock_id.is_empty() {
-              Link {
-                to: Route::Pigeons {
-                    flock_id: flock_id.clone(),
-                },
-                FlockCard { flock: flock.clone() }
-              }
+            Link {
+              to: Route::Pigeons {
+                  flock_id: *flock_id,
+              },
+              FlockCard { flock: flock.clone() }
             }
           }
         }
-            // Bottom Info Section
-      // div { class: "grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl mx-auto mt-12",
-      //   div { class: "space-y-3",
-      //     h3 { class: "text-lg font-bold", "" }
-      //     p { class: "text-base-content/70 text-sm leading-relaxed",
-      //       ""
-      //     }
-      //     a {
-      //       href: "#",
-      //       class: "text-primary text-sm font-medium hover:underline",
-      //       ""
-      //     }
-      //   }
-      //   div { class: "space-y-3",
-      //     h3 { class: "text-lg font-bold", "" }
-      //     p { class: "text-base-content/70 text-sm leading-relaxed",
-      //       ""
-      //     }
-      //     a {
-      //       href: "#",
-      //       class: "text-primary text-sm font-medium hover:underline",
-      //       ""
-      //     }
-      //   }
-      // }
       }
       CreateFlockModal {}
     }
@@ -105,7 +79,7 @@ fn FlockCard(flock: Flock) -> Element {
         // Card Main Content
         div { class: "flex grow items-center mt-3 gap-8",
           h3 { class: "text-center text-lg font-semibold leading-tight",
-            span { class: "m-1 badge badge-lg badge-accent", "{flock.pigeon_count}" }
+            span { class: "m-1 badge badge-lg badge-accent", "{flock.pigeon_ids.len()}" }
             "Pigeons"
           }
 
@@ -113,40 +87,34 @@ fn FlockCard(flock: Flock) -> Element {
             div { class: "flex flex-col space-y-2 text-sm",
               div {
                 span { class: "font-bold", "Plan: " }
-                span { class: "text-base-content/70",
-                  "{flock.service_plan.to_owned().unwrap_or_default()}"
-                }
+                span { class: "text-base-content/70", "{flock.service_plan.to_owned()}" }
               }
               div {
                 span { class: "font-bold", "Updated: " }
                 span { class: "text-base-content/70",
 
-                  if let Some(date) = flock.updated_at {
-                    {
-                        date.format(
-                                time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]"),
-                            )
-                            .unwrap_or_default()
-                    }
-                  } else {
-                    "Unknown Date"
+                  {
+                      flock
+                          .updated_at
+                          .format(
+                              time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]"),
+                          )
+                          .unwrap_or_default()
                   }
-                
                 }
               }
               div {
                 span { class: "font-bold", "Created: " }
                 span { class: "text-base-content/70",
-                  if let Some(date) = flock.created_at {
-                    {
-                        date.format(
-                                time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]"),
-                            )
-                            .unwrap_or_default()
-                    }
-                  } else {
-                    "Unknown Date"
+                  {
+                      flock
+                          .created_at
+                          .format(
+                              time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]"),
+                          )
+                          .unwrap_or_default()
                   }
+
                 }
               }
             }
@@ -171,14 +139,16 @@ fn CreateFlockModal() -> Element {
         form {
           onsubmit: move |evt: FormEvent| async move {
               evt.prevent_default();
-              let mut flock = CreateFlockPayload::default();
+              let mut flock = FlockCreateRequest::default();
               for (key, val) in evt.values() {
                   if let FormValue::Text(val) = val && key == "name" {
                       flock.name = val;
                   }
               }
-              api::flocks::create(&flock).await;
-              document::eval(r#"document.getElementById("create_flock_modal").close();"#);
+              if api::flocks::create(&flock).await.is_some() {
+                  document::eval(r#"document.getElementById("create_flock_modal").close();"#);
+              }
+            // If None, modal stays open — user can retry
           },
           fieldset { class: "fieldset mt-5",
             legend { class: "fieldset-legend", "Name" }

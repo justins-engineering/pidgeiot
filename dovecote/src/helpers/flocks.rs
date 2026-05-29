@@ -10,9 +10,12 @@ pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<F
   let rows = client
     .query_typed(
       "SELECT
-         id, user_id, name, service_plan, created_at, updated_at,
-         (SELECT COUNT(*) FROM pigeons WHERE flock_id = flocks.id) as pigeon_count
-       FROM flocks WHERE user_id = $1",
+        flocks.id, flocks.user_id, flocks.name, flocks.service_plan, flocks.created_at, flocks.updated_at,
+        COALESCE(array_agg(pigeons.id) FILTER (WHERE pigeons.id IS NOT NULL), '{}') AS pigeon_ids
+        FROM flocks
+        LEFT JOIN pigeons ON pigeons.flock_id = flocks.id
+        WHERE flocks.user_id = $1
+        GROUP BY flocks.id",
       &[(&parsed_uuid, Type::UUID)],
     )
     .await
@@ -22,20 +25,19 @@ pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<F
 
   for row in rows {
     let id: Uuid = row.get("id");
-    let u_id: Uuid = row.get("user_id");
+    let user_id: Uuid = row.get("user_id");
     let name: String = row.get("name");
     let service_plan: String = row.get("service_plan");
-    // Subqueries returning COUNT() in Postgres always return an i64
-    let pigeon_count: i64 = row.get("pigeon_count");
+    let pigeon_ids: Vec<String> = row.get("pigeon_ids");
     let updated_at: time::OffsetDateTime = row.get("updated_at");
     let created_at: time::OffsetDateTime = row.get("created_at");
 
     flocks.push(Flock {
       id,
-      user_id: u_id,
+      user_id,
       name,
       service_plan,
-      pigeon_count,
+      pigeon_ids,
       updated_at,
       created_at,
     });
@@ -64,7 +66,7 @@ pub async fn create_user_flock(
     .map_err(|e| Error::RustError(format!("Failed to insert flock: {e}")))?;
 
   let id: Uuid = row.get("id");
-  let u_id: Uuid = row.get("user_id");
+  let user_id: Uuid = row.get("user_id");
   let name: String = row.get("name");
   let service_plan: String = row.get("service_plan");
   let updated_at: time::OffsetDateTime = row.get("updated_at");
@@ -72,10 +74,10 @@ pub async fn create_user_flock(
 
   Ok(Flock {
     id,
-    user_id: u_id,
+    user_id,
     name,
     service_plan,
-    pigeon_count: 0,
+    pigeon_ids: Vec::new(),
     updated_at,
     created_at,
   })

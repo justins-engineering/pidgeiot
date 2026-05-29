@@ -1,6 +1,7 @@
 use capsules::{
-  Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonCreateResponse,
-  PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
+  Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonRow,
+  PigeonShadow, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
@@ -14,6 +15,11 @@ pub struct Pigeons {
   state: State,
   #[allow(unused)]
   env: Env,
+}
+
+#[derive(serde::Deserialize)]
+struct ExistsResult {
+  exists_flag: i64,
 }
 
 impl DurableObject for Pigeons {
@@ -94,13 +100,14 @@ impl DurableObject for Pigeons {
 
     match path.as_str() {
       "/pigeon/get" => get(self, req).await,
+      "/pigeon/detail" => get_detail(self, req).await,
       "/pigeon/create" => create(self, req).await,
       "/pigeon/update" => update(self, req).await,
       "/pigeon/acl/get" => get_acl(self, req).await,
+      "/pigeon/acl/list" => list_acl(self, req).await,
       "/pigeon/acl/update" => update_acl(self, req).await,
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
-
       _ => Response::error("Not Found", 404),
     }
   }
@@ -111,17 +118,17 @@ fn is_authorized(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response
     return Err(Response::error("Request missing 'X-User-Id'", 400));
   };
 
-  let exists_flag = pigeons
+  let result = pigeons
     .sql
     .exec(
-      "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1)",
+      "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1) AS exists_flag",
       vec![requesting_user.into()],
     )
     .map_err(Err)?
-    .one::<i64>()
+    .one::<ExistsResult>()
     .map_err(Err)?;
 
-  if exists_flag != 0 {
+  if result.exists_flag != 0 {
     Ok(())
   } else {
     Err(Response::error(
@@ -136,25 +143,24 @@ fn is_owner(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, wor
     return Err(Response::error("Request missing 'X-User-Id'", 400));
   };
 
-  let is_owner = pigeons
-    .sql
-    .exec(
-      "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1 AND role = 'owner');",
-      vec![requesting_user.into()],
-    )
-    .map_err(Err)?
-    .one::<i64>()
-    .map_err(Err)?
-    != 0;
+  let result = pigeons
+  .sql
+  .exec(
+    "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1 AND role = 'owner') AS exists_flag",
+    vec![requesting_user.into()],
+  )
+  .map_err(Err)?
+  .one::<ExistsResult>()
+  .map_err(Err)?;
 
-  if !is_owner {
-    return Err(Response::error(
+  if result.exists_flag != 0 {
+    Ok(())
+  } else {
+    Err(Response::error(
       "Forbidden: Only owners can modify ACL",
       403,
-    ));
+    ))
   }
-
-  Ok(())
 }
 
 async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
@@ -164,8 +170,8 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<Pigeon>() {
-      Ok(pigeon) => Response::from_json(&pigeon),
+    Ok(cursor) => match cursor.one::<PigeonRow>() {
+      Ok(p) => Response::from_json(&Pigeon::from(p)),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         Response::error("Internal Server Error", 500)
@@ -176,6 +182,71 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
       Response::error("Internal Server Error", 500)
     }
   }
+}
+
+async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized(pigeons, &req));
+
+  let pigeon = match pigeons.sql.exec(
+    "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+    None,
+  ) {
+    Ok(cursor) => match cursor.one::<PigeonRow>() {
+      Ok(p) => Pigeon::from(p),
+      Err(e) => {
+        console_error!("Pigeon deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeons READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  let shadow = match pigeons.sql.exec(
+    "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
+    None,
+  ) {
+    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+      Ok(s) => PigeonShadow::from(s),
+      Err(e) => {
+        console_error!("PigeonShadow deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("PigeonShadow READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  let Ok(Some(requesting_user)) = req.headers().get("X-User-Id") else {
+    return Response::error("Request missing 'X-User-Id'", 400);
+  };
+
+  let acl = match pigeons.sql.exec(
+    "SELECT entity_id, role FROM pigeon_acl WHERE entity_id = ?;",
+    vec![requesting_user.into()],
+  ) {
+    Ok(cursor) => match cursor.one::<PigeonAcl>() {
+      Ok(a) => a,
+      Err(e) => {
+        console_error!("PigeonAcl deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("PigeonAcl READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  Response::from_json(&PigeonDetail {
+    pigeon,
+    shadow,
+    acl,
+  })
 }
 
 async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
@@ -210,8 +281,8 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       row.connector.into(),
     ],
   ) {
-    Ok(cursor) => match cursor.one::<Pigeon>() {
-      Ok(p) => p,
+    Ok(cursor) => match cursor.one::<PigeonRow>() {
+      Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         return Response::error("Internal Server Error", 500);
@@ -237,8 +308,8 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING status, updated_at, config;",
     vec![do_id.into()],
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadow>() {
-      Ok(s) => s,
+    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+      Ok(s) => PigeonShadow::from(s),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
         return Response::error("Internal Server Error", 500);
@@ -251,7 +322,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   };
 
   // Construct response from known values — no extra queries needed
-  let response = PigeonCreateResponse {
+  let response = PigeonDetail {
     pigeon,
     acl: PigeonAcl {
       entity_id: user_uuid,
@@ -298,7 +369,25 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       pigeons.state.id().to_string().into(),
     ],
   ) {
-    Ok(_) => Response::ok("Pigeon Updated"),
+    Ok(_) => {
+      // Read back the updated row to return
+      match pigeons.sql.exec(
+        "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+        None,
+      ) {
+        Ok(cursor) => match cursor.one::<PigeonRow>() {
+          Ok(p) => Response::from_json(&Pigeon::from(p)),
+          Err(e) => {
+            console_error!("Pigeon deserialization error: {e}");
+            Response::error("Internal Server Error", 500)
+          }
+        },
+        Err(e) => {
+          console_error!("Pigeons READ error: {e}");
+          Response::error("Internal Server Error", 500)
+        }
+      }
+    }
     Err(e) => {
       console_error!("Pigeon UPDATE execution error: {e}");
       Response::error("Internal Server Error", 500)
@@ -355,6 +444,27 @@ async fn update_acl(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   }
 }
 
+async fn list_acl(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  match pigeons
+    .sql
+    .exec("SELECT entity_id, role FROM pigeon_acl;", None)
+  {
+    Ok(cursor) => match cursor.to_array::<PigeonAcl>() {
+      Ok(acls) => Response::from_json(&acls),
+      Err(e) => {
+        console_error!("PigeonAcl LIST error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("PigeonAcl LIST error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
 async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
@@ -362,8 +472,8 @@ async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadow>() {
-      Ok(shadow) => Response::from_json(&shadow),
+    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+      Ok(s) => Response::from_json(&PigeonShadow::from(s)),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
         Response::error("Internal Server Error", 500)
@@ -396,7 +506,25 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     "UPDATE pigeon_shadow SET status = ?, config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
     vec![shadow.status.into(), config_str.into()],
   ) {
-    Ok(_) => Response::ok("Shadow Updated"),
+    Ok(_) => {
+      // Read back the updated shadow
+      match pigeons.sql.exec(
+        "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
+        None,
+      ) {
+        Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+          Ok(s) => Response::from_json(&PigeonShadow::from(s)),
+          Err(e) => {
+            console_error!("PigeonShadow deserialization error: {e}");
+            Response::error("Internal Server Error", 500)
+          }
+        },
+        Err(e) => {
+          console_error!("PigeonShadow READ error: {e}");
+          Response::error("Internal Server Error", 500)
+        }
+      }
+    }
     Err(e) => {
       console_error!("Shadow UPDATE execution error: {e}");
       Response::error("Internal Server Error", 500)

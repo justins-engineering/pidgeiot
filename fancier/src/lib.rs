@@ -6,6 +6,7 @@ use dioxus_i18n::prelude::*;
 use ory_kratos_client_wasm::apis::configuration::Configuration;
 use std::collections::HashMap;
 use unic_langid::langid;
+use uuid::Uuid;
 use views::{
   AboutUs, AccountRecovery, Architecture, Dashboard, Flocks, Index, LoginFlow, PageNotFound,
   PigeonView, Pigeons, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, Settings,
@@ -50,9 +51,9 @@ enum Route {
     #[route("/flocks")]
     Flocks {},
     #[route("/flocks/:flock_id/pigeons")]
-    Pigeons { flock_id: String },
+    Pigeons { flock_id: Uuid },
     #[route("/flocks/:flock_id/pigeons/:pigeon_id")]
-    PigeonView { flock_id: String, pigeon_id: String },
+    PigeonView { flock_id: Uuid, pigeon_id: String },
     #[route("/session")]
     SessionInfo {},
     #[route("/my-settings")]
@@ -107,7 +108,7 @@ fn AuthGuard() -> Element {
 
 #[derive(Clone, Copy, Debug)]
 struct LocalSession {
-  flocks: Signal<HashMap<String, Flock>>,
+  flocks: Signal<HashMap<Uuid, Flock>>,
   pigeons: Signal<HashMap<String, Pigeon>>,
 }
 
@@ -129,16 +130,14 @@ pub fn App() -> Element {
   let set_state = use_resource(move || async move { session_cookie_valid().await });
   (set_state)();
 
-  let mut local_session = use_context_provider(|| LocalSession {
+  let _local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),
     pigeons: Signal::new(HashMap::new()),
   });
 
   use_resource(move || async move {
     if (session.state)() {
-      if let Some(flocks_data) = api::flocks::list().await {
-        local_session.flocks.set(flocks_data);
-      }
+      api::flocks::list().await;
     }
   });
 

@@ -1,17 +1,24 @@
 use crate::{Route, api};
-use capsules::Pigeon;
+use capsules::PigeonCreateRequest;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdX;
 
 #[component]
-pub fn Pigeons(flock_id: String) -> Element {
-  // Note: This API call should ideally be updated to fetch pigeons specific to `flock_id`
-  let id = flock_id.clone();
+pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
+  let binding = use_context::<crate::LocalSession>();
+
   use_resource(move || {
-    let id = id.to_owned();
+    let flocks = binding.flocks;
     async move {
-      api::pigeons::list(id).await;
+      let ids_to_fetch = {
+        let guard = flocks.read();
+        guard.get(&flock_id).map(|flock| flock.pigeon_ids.clone())
+      };
+
+      if let Some(pigeon_ids) = ids_to_fetch {
+        api::pigeons::list(&pigeon_ids).await;
+      };
     }
   });
 
@@ -60,44 +67,24 @@ pub fn Pigeons(flock_id: String) -> Element {
                 th { "Name" }
                 th { "Serial" }
                 th { "Connector" }
-                th { "Location" }
-                th { "Last Connected" }
                 th { class: "text-right", "Action" }
               }
             }
             tbody {
               for (id , pigeon) in use_context::<crate::LocalSession>().pigeons.read().iter() {
                 tr { class: "hover",
-                  td { class: "font-semibold text-primary", "{pigeon.name}" }
+                  td { class: "font-semibold text-primary",
+                    "{pigeon.name.as_deref().unwrap_or(\"--\")}"
+                  }
                   // Fixed: Using .as_deref() prevents moving the String out of the Option
                   td { class: "font-mono text-sm text-base-content/70",
                     "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
                   }
-                  td { class: "text-sm",
-                    "{pigeon.connector.as_deref().unwrap_or(\"--\")}"
-                  }
-                  td { class: "text-sm text-base-content/70",
-                    "{pigeon.location.as_deref().unwrap_or(\"--\")}"
-                  }
-                  td { class: "text-sm text-base-content/70",
-                    {
-                        pigeon
-                            .last_connected
-                            .and_then(|dt| {
-                                dt.format(
-                                        time::macros::format_description!(
-                                            "[month repr:short] [day padding:none], [year]"
-                                        ),
-                                    )
-                                    .ok()
-                            })
-                            .unwrap_or_else(|| "Never".to_string())
-                    }
-                  }
+                  td { class: "text-sm", "{pigeon.connector}" }
                   td { class: "text-right",
                     Link {
                       to: Route::PigeonView {
-                          flock_id: flock_id.clone(),
+                          flock_id,
                           pigeon_id: id.clone(),
                       },
                       class: "btn btn-ghost btn-xs text-base-content/50",
@@ -110,13 +97,13 @@ pub fn Pigeons(flock_id: String) -> Element {
           }
         }
       }
-      CreatePigeonModal { flock_id: flock_id.clone() }
+      CreatePigeonModal { flock_id }
     }
   }
 }
 
 #[component]
-fn CreatePigeonModal(flock_id: String) -> Element {
+fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
   rsx! {
     dialog { class: "modal", id: "create_pigeon_modal",
       div { class: "modal-box relative max-w-xs md:max-w-sm",
@@ -132,31 +119,30 @@ fn CreatePigeonModal(flock_id: String) -> Element {
               let id = flock_id.to_owned();
               async move {
                   evt.prevent_default();
-                  let mut pigeon = Pigeon::default();
+                  let mut pcr: PigeonCreateRequest = PigeonCreateRequest {
+                      flock_id: id,
+                      ..Default::default()
+                  };
 
                   for (key, val) in evt.values() {
                       if let FormValue::Text(val) = val {
                           match key.as_str() {
-                              "name" => pigeon.name = val,
+                              "name" => pcr.name = Some(val),
 
                               // Note: Ensure your backend attaches the new Pigeon to `flock_id`
                               "serial" => {
-                                  pigeon.serial = if !val.is_empty() {
-                                      Some(val)
-                                  } else {
-                                      None
-                                  };
+                                  pcr.serial = if !val.is_empty() { Some(val) } else { None };
                               }
-                              "connector" => pigeon.connector = Some(val),
+                              "connector" => pcr.connector = val,
                               _ => {}
                           }
                       }
                   }
-                  info!("{pigeon:?}");
-                  api::pigeons::create(id, &pigeon).await;
-                  let _ = document::eval(
-                      r#"document.getElementById("create_pigeon_modal").close();"#,
-                  );
+                  if api::pigeons::create(&pcr).await.is_some() {
+                      document::eval(
+                          r#"document.getElementById("create_pigeon_modal").close();"#,
+                      );
+                  }
               }
           },
 

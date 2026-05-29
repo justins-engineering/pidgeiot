@@ -1,4 +1,4 @@
-use capsules::PigeonCreateResponse;
+use capsules::{Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
 
@@ -36,10 +36,7 @@ pub async fn proxy_to_pigeon_do(
   stub.fetch_with_request(do_req).await
 }
 
-pub async fn sync_pigeon_to_db(
-  mut client: Client,
-  pcr: &PigeonCreateResponse,
-) -> worker::Result<()> {
+pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
   let tx = client.transaction().await.map_err(|e| {
     console_error!("Postgres transaction error: {e}");
     worker::Error::RustError("Internal Server Error".into())
@@ -117,6 +114,106 @@ pub async fn sync_pigeon_to_db(
     console_error!("Postgres commit error: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
+
+  Ok(())
+}
+
+pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Result<()> {
+  client
+    .execute_typed(
+      "UPDATE pigeons SET
+         flock_id = $2,
+         serial = $3,
+         name = $4,
+         tags = $5,
+         connector = $6,
+         updated_at = $7
+       WHERE id = $1;",
+      &[
+        (&pigeon.id, Type::TEXT),
+        (&pigeon.flock_id, Type::UUID),
+        (&pigeon.serial, Type::TEXT),
+        (&pigeon.name, Type::TEXT),
+        (&pigeon.tags, Type::TEXT),
+        (&pigeon.connector, Type::TEXT),
+        (&pigeon.updated_at, Type::TIMESTAMPTZ),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeon update sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
+}
+
+pub async fn update_shadow_pg_db(
+  client: Client,
+  pigeon_id: &str,
+  shadow: &PigeonShadow,
+) -> worker::Result<()> {
+  client
+    .execute_typed(
+      "UPDATE pigeon_shadow SET
+         status = $2,
+         config = $3::jsonb,
+         updated_at = $4
+       WHERE id = $1;",
+      &[
+        (&pigeon_id, Type::TEXT),
+        (&shadow.status, Type::TEXT),
+        (&shadow.config.to_string(), Type::TEXT),
+        (&shadow.updated_at, Type::INT8),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeon_shadow update sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
+}
+
+pub async fn upsert_acl_pg_db(
+  client: Client,
+  pigeon_id: &str,
+  acl: &PigeonAcl,
+) -> worker::Result<()> {
+  client
+    .execute_typed(
+      "INSERT INTO pigeon_acl (id, entity_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id, entity_id) DO UPDATE SET
+         role = EXCLUDED.role;",
+      &[
+        (&pigeon_id, Type::TEXT),
+        (&acl.entity_id, Type::UUID),
+        (&acl.role, Type::TEXT),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeon_acl upsert sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
+}
+
+pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Result<()> {
+  // CASCADE on the PG tables handles pigeon_acl and pigeon_shadow
+  client
+    .execute_typed(
+      "DELETE FROM pigeons WHERE id = $1;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeon delete sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
 
   Ok(())
 }

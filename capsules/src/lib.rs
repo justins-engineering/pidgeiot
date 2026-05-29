@@ -12,14 +12,22 @@ macro_rules! unwrap_or_return_response {
   };
 }
 
-pub fn deserialize_unix_to_datetime<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
+// pub fn deserialize_unix_to_datetime<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
+// where
+//   D: serde::Deserializer<'de>,
+// {
+//   let raw_seconds = i64::deserialize(deserializer)?;
+
+//   OffsetDateTime::from_unix_timestamp(raw_seconds)
+//     .map_err(|err| serde::de::Error::custom(format!("Invalid Unix timestamp: {err}")))
+// }
+
+pub fn deserialize_unix_float_to_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
   D: serde::Deserializer<'de>,
 {
-  let raw_seconds = i64::deserialize(deserializer)?;
-
-  OffsetDateTime::from_unix_timestamp(raw_seconds)
-    .map_err(|err| serde::de::Error::custom(format!("Invalid Unix timestamp: {err}")))
+  let raw = f64::deserialize(deserializer)?;
+  Ok(raw as i64)
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -28,7 +36,7 @@ pub struct Flock {
   pub user_id: Uuid,
   pub name: String,
   pub service_plan: String,
-  pub pigeon_count: i64,
+  pub pigeon_ids: Vec<String>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -42,7 +50,7 @@ impl Default for Flock {
       user_id: Uuid::default(),
       name: String::with_capacity(64),
       service_plan: "free".to_string(),
-      pigeon_count: i64::default(),
+      pigeon_ids: Vec::default(),
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -77,7 +85,40 @@ impl Default for FlockUpdateRequest {
   }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+// DB model — deserializes from SQLite's integer timestamps
+#[derive(Deserialize, Debug)]
+pub struct PigeonRow {
+  pub id: String,
+  pub flock_id: Uuid,
+  pub serial: Option<String>,
+  pub name: Option<String>,
+  pub tags: Option<String>,
+  pub connector: String,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub updated_at: i64,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub created_at: i64,
+}
+
+impl From<PigeonRow> for Pigeon {
+  fn from(row: PigeonRow) -> Self {
+    Self {
+      id: row.id,
+      flock_id: row.flock_id,
+      serial: row.serial,
+      name: row.name,
+      tags: row.tags,
+      connector: row.connector,
+      updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+      created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+    }
+  }
+}
+
+// API model — serializes/deserializes as RFC 3339
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Pigeon {
   pub id: String,
   pub flock_id: Uuid,
@@ -85,15 +126,9 @@ pub struct Pigeon {
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: String,
-  #[serde(
-    deserialize_with = "deserialize_unix_to_datetime",
-    serialize_with = "time::serde::rfc3339::serialize"
-  )]
+  #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
-  #[serde(
-    deserialize_with = "deserialize_unix_to_datetime",
-    serialize_with = "time::serde::rfc3339::serialize"
-  )]
+  #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
 }
 
@@ -134,7 +169,7 @@ impl Default for PigeonCreateRequest {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct PigeonCreateResponse {
+pub struct PigeonDetail {
   pub pigeon: Pigeon,
   pub acl: PigeonAcl,
   pub shadow: PigeonShadow,
@@ -187,6 +222,24 @@ impl JsonString {
 impl std::fmt::Display for JsonString {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "{}", self.0)
+  }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PigeonShadowRow {
+  pub status: String,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub updated_at: i64,
+  pub config: JsonString,
+}
+
+impl From<PigeonShadowRow> for PigeonShadow {
+  fn from(row: PigeonShadowRow) -> Self {
+    Self {
+      status: row.status,
+      updated_at: row.updated_at,
+      config: row.config,
+    }
   }
 }
 

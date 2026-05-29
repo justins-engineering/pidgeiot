@@ -1,8 +1,9 @@
 use dioxus::prelude::*;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 #[component]
-pub fn PigeonView(flock_id: String, pigeon_id: String) -> Element {
+pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   rsx! {
     div { class: "max-w-5xl mx-auto w-full",
       PigeonInfo { flock_id, pigeon_id }
@@ -11,7 +12,7 @@ pub fn PigeonView(flock_id: String, pigeon_id: String) -> Element {
 }
 
 #[component]
-fn PigeonInfo(flock_id: String, pigeon_id: String) -> Element {
+fn PigeonInfo(flock_id: Uuid, pigeon_id: String) -> Element {
   match use_context::<crate::LocalSession>()
     .pigeons
     .read()
@@ -25,12 +26,7 @@ fn PigeonInfo(flock_id: String, pigeon_id: String) -> Element {
           div { class: "flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
             div {
               h1 { class: "text-3xl font-bold flex items-center gap-3",
-                "{pigeon.name}"
-                if pigeon.last_connected.is_some() {
-                  span { class: "badge badge-success badge-sm", "Connected" }
-                } else {
-                  span { class: "badge badge-ghost badge-sm", "Offline" }
-                }
+                "{pigeon.name.as_deref().unwrap_or(\"--\")}"
               }
               p { class: "text-base-content/60 text-sm mt-1 font-mono",
                 "ID: {pigeon.id}"
@@ -55,7 +51,6 @@ fn PigeonInfo(flock_id: String, pigeon_id: String) -> Element {
               title: "Connector",
               value: pigeon.connector.clone(),
             }
-            StatCard { title: "Location", value: pigeon.location.clone() }
             StatCard { title: "Tags", value: pigeon.tags.clone() }
           }
 
@@ -65,10 +60,6 @@ fn PigeonInfo(flock_id: String, pigeon_id: String) -> Element {
               "System Activity"
             }
             div { class: "flex flex-col",
-              TimeRow {
-                label: "Last Connected",
-                timestamp: pigeon.last_connected,
-              }
               TimeRow {
                 label: "Last Updated",
                 timestamp: pigeon.updated_at,
@@ -104,20 +95,16 @@ fn StatCard(title: String, value: Option<String>) -> Element {
 }
 
 #[component]
-fn TimeRow(label: String, timestamp: Option<OffsetDateTime>) -> Element {
-  let display_time = match timestamp {
-    Some(dt) => {
-      // The format description is compiled statically for maximum performance
-      let format = time::macros::format_description!(
-        "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
-      );
+fn TimeRow(label: String, timestamp: OffsetDateTime) -> Element {
+  // The format description is compiled statically for maximum performance
+  let format = time::macros::format_description!(
+    "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
+  );
 
-      // Directly format the OffsetDateTime
-      dt.format(&format)
-        .unwrap_or_else(|_| "Invalid Format".to_string())
-    }
-    None => "--".to_string(),
-  };
+  // Directly format the OffsetDateTime
+  let display_time = timestamp
+    .format(&format)
+    .unwrap_or_else(|_| "Invalid Format".to_string());
 
   rsx! {
     div { class: "flex justify-between items-center py-3 border-b border-base-content/5 last:border-0",
