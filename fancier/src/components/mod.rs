@@ -25,3 +25,6 @@ pub use alert::Alert;
 mod session_cookie;
 pub use session_cookie::SetSessionCookie;
 pub use session_cookie::session_cookie_valid;
+
+mod json_view;
+pub use json_view::JsonViewer;

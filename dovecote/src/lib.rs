@@ -1,7 +1,7 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
-  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
-  update_shadow_pg_db, upsert_acl_pg_db,
+  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, require_device_auth,
+  update_pigeon_pg_db, update_shadow_pg_db, upsert_acl_pg_db,
 };
 use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use futures::future::join_all;
@@ -45,6 +45,25 @@ pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
   Router::new()
+    .get_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
+      let Some(pigeon_id) = ctx.param("pigeon_id") else {
+        return Response::error("Pigeon ID cannot be empty or invalid", 400);
+      };
+
+      let Ok(()) = require_device_auth(&req, &ctx.env, pigeon_id) else {
+        return Response::error("Unauthorized", 401);
+      };
+
+      let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500);
+      };
+
+      let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+        return Response::error("Bad Request", 500);
+      };
+
+      proxy_to_pigeon_do(req, "", &stub, "/shadow/get").await
+    })
     .options_async("/*any", |_req, _ctx| async move {
       Response::empty()?.with_cors(&CORS)
     })
@@ -213,6 +232,28 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         proxy_to_pigeon_do(req, &user_id, &stub, "/get").await
+      },
+    )
+    .get_async(
+      "/pigeons/:pigeon_id/detail",
+      |req, ctx: worker::RouteContext<()>| async move {
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401);
+        };
+
+        let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+          return Response::error("Failed to bind to PIGEONS namespace", 500);
+        };
+
+        let Some(pigeon_id) = ctx.param("pigeon_id") else {
+          return Response::error("Pigeon ID cannot be empty or invalid", 400);
+        };
+
+        let Ok(stub) = namespace.id_from_string(pigeon_id) else {
+          return Response::error("Bad Request", 500);
+        };
+
+        proxy_to_pigeon_do(req, &user_id, &stub, "/detail").await
       },
     )
     .put_async("/pigeons/:pigeon_id", |req, ctx| async move {

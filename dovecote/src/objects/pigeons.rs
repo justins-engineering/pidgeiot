@@ -1,12 +1,14 @@
 use capsules::{
-  Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonRow,
-  PigeonShadow, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
-  unwrap_or_return_response,
+  CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
+  PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowRow,
+  PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
   durable_object, wasm_bindgen,
 };
+
+use crate::objects::sign_device_token;
 
 #[durable_object]
 pub struct Pigeons {
@@ -65,10 +67,22 @@ impl DurableObject for Pigeons {
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_shadow (
           id TEXT PRIMARY KEY REFERENCES pigeons(id) ON DELETE CASCADE,
-          status TEXT DEFAULT 'provisioning',
-          config TEXT DEFAULT '{}',
+          target_version INTEGER DEFAULT 0,
+          current_version INTEGER DEFAULT 0,
+          target_config TEXT DEFAULT '{}',
+          current_config TEXT DEFAULT '{}',
           updated_at INTEGER DEFAULT (unixepoch())
         );
+
+        CREATE TRIGGER IF NOT EXISTS increment_pigeon_target_version
+        AFTER UPDATE OF target_config ON pigeon_shadow
+        FOR EACH ROW
+        WHEN NEW.target_config IS NOT OLD.target_config
+        BEGIN
+          UPDATE pigeon_shadow
+          SET target_version = OLD.target_version + 1
+          WHERE id = OLD.id;
+        END;
 
         CREATE TRIGGER IF NOT EXISTS set_shadow_updated_at
         AFTER UPDATE ON pigeon_shadow
@@ -205,7 +219,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   };
 
   let shadow = match pigeons.sql.exec(
-    "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
+    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
@@ -269,6 +283,20 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
+  let device_token = match sign_device_token(&do_id, &pigeons.env) {
+    Ok(t) => t,
+    Err(e) => {
+      console_error!("JWT signing error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  // Serialize connector to JSON string for SQLite TEXT column
+  let connector_json = serde_json::to_string(&row.connector).map_err(|e| {
+    console_error!("Connector serialization error: {e}");
+    worker::Error::RustError("Bad Request: Invalid connector config".into())
+  })?;
+
   // First write: insert pigeon
   let pigeon = match pigeons.sql.exec(
     "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector) VALUES (?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, updated_at, created_at;",
@@ -278,7 +306,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       row.serial.into(),
       row.name.into(),
       row.tags.into(),
-      row.connector.into(),
+      connector_json.into(),
     ],
   ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
@@ -305,7 +333,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   // Third write: insert default shadow entry and return it
   let shadow = match pigeons.sql.exec(
-    "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING status, updated_at, config;",
+    "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING target_version, current_version, target_config, current_config, updated_at;",
     vec![do_id.into()],
   ) {
     Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
@@ -321,9 +349,25 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Construct response from known values — no extra queries needed
+  // Build response with server-generated endpoint and token injected
+  let response_connector = match pigeon.connector {
+    Connector::Https(_) => Connector::Https(HttpsConfig {
+      endpoint: format!("https://api.dovecote.io/device/pigeons/{}", pigeon.id),
+      token: device_token,
+    }),
+    Connector::Coap(_) => Connector::Coap(CoapConfig {
+      endpoint: format!("coaps://api.dovecote.io/device/pigeons/{}", pigeon.id),
+      token: device_token.clone(),
+      dtls_psk_identity: Some(pigeon.id.clone()),
+      dtls_psk_secret: Some(device_token.clone()),
+    }),
+  };
+
   let response = PigeonDetail {
-    pigeon,
+    pigeon: Pigeon {
+      connector: response_connector,
+      ..pigeon
+    },
     acl: PigeonAcl {
       entity_id: user_uuid,
       role: "owner".to_string(),
@@ -352,6 +396,11 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
+  // Serialize connector to JSON string if present
+  let connector_json = row
+    .connector
+    .map(|c| serde_json::to_string(&c).unwrap_or_default());
+
   match pigeons.sql.exec(
     "UPDATE pigeons SET
       flock_id = COALESCE(?, flock_id),
@@ -365,7 +414,7 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       row.serial.into(),
       row.name.into(),
       row.tags.into(),
-      row.connector.into(),
+      connector_json.into(), // Now Option<String> — None becomes null, Some becomes JSON text
       pigeons.state.id().to_string().into(),
     ],
   ) {
@@ -469,7 +518,7 @@ async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
+    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
@@ -497,19 +546,18 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     }
   };
 
-  let config_str = serde_json::to_string(&shadow.config).map_err(|e| {
+  let config_str = serde_json::to_string(&shadow.target_config).map_err(|e| {
     console_error!("Shadow config serialization error: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
   match pigeons.sql.exec(
-    "UPDATE pigeon_shadow SET status = ?, config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
-    vec![shadow.status.into(), config_str.into()],
+    "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
+    vec![config_str.into()],
   ) {
     Ok(_) => {
-      // Read back the updated shadow
       match pigeons.sql.exec(
-        "SELECT status, updated_at, config FROM pigeon_shadow LIMIT 1;",
+        "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
         None,
       ) {
         Ok(cursor) => match cursor.one::<PigeonShadowRow>() {

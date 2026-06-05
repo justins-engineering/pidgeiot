@@ -42,6 +42,7 @@ CREATE TRIGGER trigger_flocks_immutable
   EXECUTE FUNCTION trigger_prevent_immutable_updates();
 
 -- PIGEONS Table (Data Plane Registry)
+-- connector is JSONB to store structured protocol config
 -- Timestamps are set by the DO (source of truth) — no defaults or triggers
 CREATE TABLE IF NOT EXISTS pigeons (
   id TEXT PRIMARY KEY,
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS pigeons (
   serial TEXT,
   name TEXT,
   tags TEXT,
-  connector TEXT NOT NULL,
+  connector JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -68,13 +69,15 @@ CREATE TABLE IF NOT EXISTS pigeon_acl (
 );
 
 -- PIGEON SHADOW Table
--- updated_at is INTEGER (unix epoch) for IoT/SOC compatibility
+-- updated_at is BIGINT (unix epoch) for IoT/SOC compatibility
 -- Values come from the DO (source of truth) — no triggers
 CREATE TABLE IF NOT EXISTS pigeon_shadow (
   id TEXT PRIMARY KEY REFERENCES pigeons(id) ON DELETE CASCADE,
-  status TEXT DEFAULT 'provisioning',
-  config JSONB DEFAULT '{}',
-  updated_at INTEGER NOT NULL
+  target_version INTEGER DEFAULT 0,
+  current_version INTEGER DEFAULT 0,
+  target_config JSONB DEFAULT '{}',
+  current_config JSONB DEFAULT '{}',
+  updated_at BIGINT NOT NULL
 );
 
 -- Indexes

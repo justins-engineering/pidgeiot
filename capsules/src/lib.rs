@@ -12,16 +12,6 @@ macro_rules! unwrap_or_return_response {
   };
 }
 
-// pub fn deserialize_unix_to_datetime<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
-// where
-//   D: serde::Deserializer<'de>,
-// {
-//   let raw_seconds = i64::deserialize(deserializer)?;
-
-//   OffsetDateTime::from_unix_timestamp(raw_seconds)
-//     .map_err(|err| serde::de::Error::custom(format!("Invalid Unix timestamp: {err}")))
-// }
-
 pub fn deserialize_unix_float_to_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
   D: serde::Deserializer<'de>,
@@ -93,7 +83,7 @@ pub struct PigeonRow {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: String,
+  pub connector: String, // raw JSON text from SQLite
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -102,13 +92,14 @@ pub struct PigeonRow {
 
 impl From<PigeonRow> for Pigeon {
   fn from(row: PigeonRow) -> Self {
+    let connector = serde_json::from_str(&row.connector).unwrap_or_default();
     Self {
       id: row.id,
       flock_id: row.flock_id,
       serial: row.serial,
       name: row.name,
       tags: row.tags,
-      connector: row.connector,
+      connector,
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -125,7 +116,7 @@ pub struct Pigeon {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: String,
+  pub connector: Connector,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -140,7 +131,7 @@ impl Default for Pigeon {
       serial: None,
       name: None,
       tags: None,
-      connector: "HTTPS".to_string(),
+      connector: Connector::default(),
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -153,7 +144,7 @@ pub struct PigeonCreateRequest {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: String,
+  pub connector: Connector,
 }
 
 impl Default for PigeonCreateRequest {
@@ -163,7 +154,7 @@ impl Default for PigeonCreateRequest {
       serial: None,
       name: None,
       tags: None,
-      connector: String::with_capacity(8),
+      connector: Connector::default(),
     }
   }
 }
@@ -181,10 +172,10 @@ pub struct PigeonUpdateRequest {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: Option<String>,
+  pub connector: Option<Connector>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct PigeonAcl {
   pub entity_id: Uuid,
   pub role: String,
@@ -205,7 +196,7 @@ pub struct PigeonAclUpdateRequest {
   pub role: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct JsonString(String);
 
 impl JsonString {
@@ -225,52 +216,97 @@ impl std::fmt::Display for JsonString {
   }
 }
 
+impl JsonString {
+  pub fn to_pretty(&self) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.0) {
+      serde_json::to_string_pretty(&value).unwrap_or_else(|_| self.0.clone())
+    } else {
+      self.0.clone()
+    }
+  }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct PigeonShadowRow {
-  pub status: String,
+  pub target_version: i32,
+  pub current_version: i32,
+  pub target_config: JsonString,
+  pub current_config: JsonString,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
-  pub config: JsonString,
 }
 
 impl From<PigeonShadowRow> for PigeonShadow {
   fn from(row: PigeonShadowRow) -> Self {
     Self {
-      status: row.status,
+      target_version: row.target_version,
+      current_version: row.current_version,
+      target_config: row.target_config,
+      current_config: row.current_config,
       updated_at: row.updated_at,
-      config: row.config,
     }
   }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PigeonShadow {
-  pub status: String,
+  pub target_version: i32,
+  pub current_version: i32,
+  pub target_config: JsonString,
+  pub current_config: JsonString,
   pub updated_at: i64,
-  pub config: JsonString,
 }
 
 impl Default for PigeonShadow {
   fn default() -> PigeonShadow {
     PigeonShadow {
-      status: "provisioning".to_string(),
+      target_version: i32::default(),
+      current_version: i32::default(),
+      target_config: JsonString("{}".to_string()),
+      current_config: JsonString("{}".to_string()),
       updated_at: i64::default(),
-      config: JsonString("{}".to_string()),
     }
   }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PigeonShadowUpdateRequest {
-  pub status: String,
-  pub config: serde_json::Value,
+  pub target_config: serde_json::Value,
 }
 
 impl Default for PigeonShadowUpdateRequest {
   fn default() -> PigeonShadowUpdateRequest {
     PigeonShadowUpdateRequest {
-      status: String::with_capacity(16),
-      config: serde_json::Value::default(),
+      target_config: serde_json::Value::default(),
     }
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct HttpsConfig {
+  pub endpoint: String,
+  pub token: String, // JWT — returned once, never stored again
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct CoapConfig {
+  pub endpoint: String,
+  pub token: String,
+  pub dtls_psk_identity: Option<String>,
+  pub dtls_psk_secret: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum Connector {
+  Https(HttpsConfig),
+  Coap(CoapConfig),
+}
+
+impl Default for Connector {
+  fn default() -> Self {
+    Connector::Https(HttpsConfig {
+      endpoint: String::new(),
+      token: String::new(),
+    })
   }
 }

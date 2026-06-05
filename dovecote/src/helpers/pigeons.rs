@@ -46,9 +46,12 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
   let shadow = &pcr.shadow;
   let acl = &pcr.acl;
 
+  let connector_json =
+    serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
+
   tx.execute_typed(
     "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, updated_at, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
      ON CONFLICT (id) DO UPDATE SET
        flock_id = EXCLUDED.flock_id,
        serial = EXCLUDED.serial,
@@ -62,7 +65,7 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
       (&pigeon.serial, Type::TEXT),
       (&pigeon.name, Type::TEXT),
       (&pigeon.tags, Type::TEXT),
-      (&pigeon.connector, Type::TEXT),
+      (&connector_json, Type::TEXT),
       (&pigeon.updated_at, Type::TIMESTAMPTZ),
       (&pigeon.created_at, Type::TIMESTAMPTZ),
     ],
@@ -91,16 +94,20 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
   })?;
 
   tx.execute_typed(
-    "INSERT INTO pigeon_shadow (id, status, config, updated_at)
-     VALUES ($1, $2, $3::jsonb, $4)
+    "INSERT INTO pigeon_shadow (id, target_version, current_version, target_config, current_config, updated_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
      ON CONFLICT (id) DO UPDATE SET
-       status = EXCLUDED.status,
-       config = EXCLUDED.config,
+       target_version = EXCLUDED.target_version,
+       current_version = EXCLUDED.current_version,
+       target_config = EXCLUDED.target_config,
+       current_config = EXCLUDED.current_config,
        updated_at = EXCLUDED.updated_at;",
     &[
       (&pigeon.id, Type::TEXT),
-      (&shadow.status, Type::TEXT),
-      (&shadow.config.to_string(), Type::TEXT), // bind as TEXT, cast in SQL
+      (&shadow.target_version, Type::INT4),
+      (&shadow.current_version, Type::INT4),
+      (&shadow.target_config.to_string(), Type::TEXT),
+      (&shadow.current_config.to_string(), Type::TEXT),
       (&shadow.updated_at, Type::INT8),
     ],
   )
@@ -119,6 +126,9 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
 }
 
 pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Result<()> {
+  let connector_json =
+    serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
+
   client
     .execute_typed(
       "UPDATE pigeons SET
@@ -126,7 +136,7 @@ pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Res
          serial = $3,
          name = $4,
          tags = $5,
-         connector = $6,
+         connector = $6::jsonb,
          updated_at = $7
        WHERE id = $1;",
       &[
@@ -135,7 +145,7 @@ pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Res
         (&pigeon.serial, Type::TEXT),
         (&pigeon.name, Type::TEXT),
         (&pigeon.tags, Type::TEXT),
-        (&pigeon.connector, Type::TEXT),
+        (&connector_json, Type::TEXT),
         (&pigeon.updated_at, Type::TIMESTAMPTZ),
       ],
     )
@@ -156,14 +166,18 @@ pub async fn update_shadow_pg_db(
   client
     .execute_typed(
       "UPDATE pigeon_shadow SET
-         status = $2,
-         config = $3::jsonb,
-         updated_at = $4
+         target_version = $2,
+         current_version = $3,
+         target_config = $4::jsonb,
+         current_config = $5::jsonb,
+         updated_at = $6
        WHERE id = $1;",
       &[
         (&pigeon_id, Type::TEXT),
-        (&shadow.status, Type::TEXT),
-        (&shadow.config.to_string(), Type::TEXT),
+        (&shadow.target_version, Type::INT4),
+        (&shadow.current_version, Type::INT4),
+        (&shadow.target_config.to_string(), Type::TEXT),
+        (&shadow.current_config.to_string(), Type::TEXT),
         (&shadow.updated_at, Type::INT8),
       ],
     )

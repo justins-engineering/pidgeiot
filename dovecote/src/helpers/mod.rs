@@ -4,6 +4,7 @@ pub use hyperdrive::get_hyperdrive_conn;
 
 mod auth;
 pub use auth::authenticate_browser;
+pub use auth::require_device_auth;
 
 mod flocks;
 pub use flocks::create_user_flock;

@@ -2,7 +2,7 @@ use crate::{Route, api};
 use capsules::PigeonCreateRequest;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::LdX;
+use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdX};
 
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
@@ -28,6 +28,16 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 
         // Header
         header { class: "flex flex-col md:flex-row items-center justify-between gap-4 mb-10 grow",
+          Link {
+            to: Route::Flocks {},
+            class: "btn btn-ghost btn-sm text-base-content/80",
+            Icon {
+              width: 20,
+              height: 20,
+              icon: LdArrowLeft,
+              title: "Flocks",
+            }
+          }
           h1 { class: "text-xl font-bold",
             "Pigeons ({use_context::<crate::LocalSession>().pigeons.read().len()})"
           }
@@ -128,8 +138,6 @@ fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
                       if let FormValue::Text(val) = val {
                           match key.as_str() {
                               "name" => pcr.name = Some(val),
-
-                              // Note: Ensure your backend attaches the new Pigeon to `flock_id`
                               "serial" => {
                                   pcr.serial = if !val.is_empty() { Some(val) } else { None };
                               }
