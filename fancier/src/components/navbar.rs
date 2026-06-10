@@ -9,7 +9,7 @@ use dioxus_free_icons::icons::ld_icons::{
 #[component]
 pub fn Navbar() -> Element {
   let mut is_menu_open: Signal<bool> = use_signal(|| false);
-  let is_logged_in = *use_context::<Session>().state.read();
+  let is_logged_in = use_context::<Session>().state.read().is_authenticated();
 
   rsx! {
     header { class: "w-full sticky top-0 z-50 backdrop-blur-md bg-base-200/90 border-b border-base-300 shadow-sm",

@@ -1,3 +1,4 @@
+use crate::objects::sign_device_token;
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
   PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowRow,
@@ -8,7 +9,24 @@ use worker::{
   durable_object, wasm_bindgen,
 };
 
-use crate::objects::sign_device_token;
+const HTTP_ENDPOINT: &str = "https://api.pidgeiot.com/device/pigeons/";
+const COAP_ENDPOINT: &str = "coaps://api.pidgeiot.com/device/pigeons/";
+
+#[inline]
+pub fn build_http_endpoint(do_id: &str) -> String {
+  let mut endpoint = String::with_capacity(HTTP_ENDPOINT.len() + 64);
+  endpoint.push_str(HTTP_ENDPOINT);
+  endpoint.push_str(do_id);
+  endpoint
+}
+
+#[inline]
+pub fn build_coap_endpoint(do_id: &str) -> String {
+  let mut endpoint = String::with_capacity(COAP_ENDPOINT.len() + 64);
+  endpoint.push_str(COAP_ENDPOINT);
+  endpoint.push_str(do_id);
+  endpoint
+}
 
 #[durable_object]
 pub struct Pigeons {
@@ -122,6 +140,7 @@ impl DurableObject for Pigeons {
       "/pigeon/acl/update" => update_acl(self, req).await,
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
+      "/pigeon/token/refresh" => refresh_token(self, req).await,
       _ => Response::error("Not Found", 404),
     }
   }
@@ -185,7 +204,25 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
-      Ok(p) => Response::from_json(&Pigeon::from(p)),
+      Ok(p) => {
+        let mut pigeon = Pigeon::from(p);
+
+        // Strip token for security — never return it except on create/refresh
+        pigeon.connector = match pigeon.connector {
+          Connector::Https(c) => Connector::Https(HttpsConfig {
+            endpoint: c.endpoint,
+            token: String::new(),
+          }),
+          Connector::Coap(c) => Connector::Coap(CoapConfig {
+            endpoint: c.endpoint,
+            token: String::new(),
+            dtls_psk_identity: c.dtls_psk_identity,
+            dtls_psk_secret: None,
+          }),
+        };
+
+        Response::from_json(&pigeon)
+      }
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         Response::error("Internal Server Error", 500)
@@ -201,7 +238,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
 async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
-  let pigeon = match pigeons.sql.exec(
+  let mut pigeon = match pigeons.sql.exec(
     "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
@@ -216,6 +253,20 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
       console_error!("Pigeons READ error: {e}");
       return Response::error("Internal Server Error", 500);
     }
+  };
+
+  // Strip token for security — never return it except on create/refresh
+  pigeon.connector = match pigeon.connector {
+    Connector::Https(c) => Connector::Https(HttpsConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+    }),
+    Connector::Coap(c) => Connector::Coap(CoapConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+      dtls_psk_identity: c.dtls_psk_identity,
+      dtls_psk_secret: None,
+    }),
   };
 
   let shadow = match pigeons.sql.exec(
@@ -283,6 +334,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
+  // Generate device token
   let device_token = match sign_device_token(&do_id, &pigeons.env) {
     Ok(t) => t,
     Err(e) => {
@@ -291,13 +343,33 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Serialize connector to JSON string for SQLite TEXT column
-  let connector_json = serde_json::to_string(&row.connector).map_err(|e| {
+  // Build the server-side connector with endpoint and token
+  let server_connector = match row.connector {
+    Connector::Https(_) => {
+      let endpoint = build_http_endpoint(&do_id);
+      Connector::Https(HttpsConfig {
+        endpoint,
+        token: device_token,
+      })
+    }
+    Connector::Coap(_) => {
+      let endpoint = build_coap_endpoint(&do_id);
+      Connector::Coap(CoapConfig {
+        endpoint,
+        token: device_token.clone(),
+        dtls_psk_identity: Some(do_id.clone()),
+        dtls_psk_secret: Some(device_token),
+      })
+    }
+  };
+
+  // Serialize the SERVER connector (with endpoint + token) for SQLite
+  let connector_json = serde_json::to_string(&server_connector).map_err(|e| {
     console_error!("Connector serialization error: {e}");
     worker::Error::RustError("Bad Request: Invalid connector config".into())
   })?;
 
-  // First write: insert pigeon
+  // Insert pigeon with the server-generated connector
   let pigeon = match pigeons.sql.exec(
     "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector) VALUES (?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, updated_at, created_at;",
     vec![
@@ -322,7 +394,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Second write: insert ACL entry for the creator (owner)
+  // Insert ACL
   if let Err(e) = pigeons.sql.exec(
     "INSERT INTO pigeon_acl (entity_id, role) VALUES (?, 'owner');",
     vec![user_id.into()],
@@ -331,7 +403,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     return Response::error("Internal Server Error", 500);
   }
 
-  // Third write: insert default shadow entry and return it
+  // Insert shadow
   let shadow = match pigeons.sql.exec(
     "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING target_version, current_version, target_config, current_config, updated_at;",
     vec![do_id.into()],
@@ -349,25 +421,9 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Build response with server-generated endpoint and token injected
-  let response_connector = match pigeon.connector {
-    Connector::Https(_) => Connector::Https(HttpsConfig {
-      endpoint: format!("https://api.dovecote.io/device/pigeons/{}", pigeon.id),
-      token: device_token,
-    }),
-    Connector::Coap(_) => Connector::Coap(CoapConfig {
-      endpoint: format!("coaps://api.dovecote.io/device/pigeons/{}", pigeon.id),
-      token: device_token.clone(),
-      dtls_psk_identity: Some(pigeon.id.clone()),
-      dtls_psk_secret: Some(device_token.clone()),
-    }),
-  };
-
+  // Return directly — pigeon from DB already has correct connector
   let response = PigeonDetail {
-    pigeon: Pigeon {
-      connector: response_connector,
-      ..pigeon
-    },
+    pigeon,
     acl: PigeonAcl {
       entity_id: user_uuid,
       role: "owner".to_string(),
@@ -383,6 +439,75 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     .with_status(201)
     .with_header("Location", &location)?
     .from_json(&response)
+}
+
+async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  let do_id = pigeons.state.id().to_string();
+
+  let device_token = match sign_device_token(&do_id, &pigeons.env) {
+    Ok(t) => t,
+    Err(e) => {
+      console_error!("JWT signing error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  // Read current pigeon to determine connector type
+  let mut pigeon = match pigeons.sql.exec(
+    "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+    None,
+  ) {
+    Ok(cursor) => match cursor.one::<PigeonRow>() {
+      Ok(p) => Pigeon::from(p),
+      Err(e) => {
+        console_error!("Pigeon deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeons READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  // Build new connector with refreshed token
+  pigeon.connector = match &pigeon.connector {
+    Connector::Https(_) => {
+      let endpoint = build_http_endpoint(&do_id);
+      Connector::Https(HttpsConfig {
+        endpoint,
+        token: device_token.clone(),
+      })
+    }
+    Connector::Coap(_) => {
+      let endpoint = build_coap_endpoint(&do_id);
+      Connector::Coap(CoapConfig {
+        endpoint,
+        token: device_token.clone(),
+        dtls_psk_identity: Some(do_id.clone()),
+        dtls_psk_secret: Some(device_token),
+      })
+    }
+  };
+
+  // Serialize and update
+  let connector_json = serde_json::to_string(&pigeon.connector).map_err(|e| {
+    console_error!("Connector serialization error: {e}");
+    worker::Error::RustError("Internal Server Error".into())
+  })?;
+
+  match pigeons.sql.exec(
+    "UPDATE pigeons SET connector = ? WHERE id = ?;",
+    vec![connector_json.into(), do_id.into()],
+  ) {
+    Ok(_) => Response::from_json(&pigeon),
+    Err(e) => {
+      console_error!("Pigeon token refresh error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
 }
 
 async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {

@@ -6,10 +6,10 @@ use dioxus_free_icons::icons::ld_icons::{LdBird, LdChevronRight};
 
 #[component]
 pub fn Footer() -> Element {
-  let is_logged_in = *use_context::<Session>().state.read();
+  let is_logged_in = use_context::<Session>().state.read().is_authenticated();
   rsx! {
     footer { class: "footer footer-horizontal bg-neutral border-t border-neutral-content/10 pt-2",
-      div { class: "mx-auto px-4 sm:px-6",
+      div { class: "w-full px-4 sm:px-6",
         if !is_logged_in {
           div { class: "flex flex-col lg:flex-row justify-between items-start gap-12",
             div { class: "lg:w-2/5",

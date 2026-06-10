@@ -30,89 +30,116 @@ macro_rules! get_cookies {
   };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AuthState {
+  Pending,
+  Authenticated,
+  Unauthenticated,
+}
+
+impl AuthState {
+  #[inline]
+  pub fn is_authenticated(&self) -> bool {
+    matches!(self, AuthState::Authenticated)
+  }
+}
+
 const COOKIE_STR_LEN: usize = SESSION_COOKIE_NAME.len()
   // u32::MAX.to_string().len()
   + 10
   + "2025-08-05T17:14:07.837312011Z".len()
   + "=; path=/; SameSite=Strict; max-age=; Secure".len();
 
+// Separate the pure WASM/DOM logic into synchronous helpers
+fn write_session_hint_cookie(expires_at: &str) {
+  let timestamp: Result<OffsetDateTime, time::error::Parse> =
+    OffsetDateTime::parse(expires_at, &Rfc3339);
+
+  if let Ok(dt) = timestamp {
+    let duration = (dt - OffsetDateTime::now_utc()).whole_seconds();
+    let max_age = if duration > 0 { duration } else { 0 };
+
+    let mut cookie_str = String::with_capacity(COOKIE_STR_LEN);
+    cookie_str.push_str(SESSION_COOKIE_NAME);
+    cookie_str.push('=');
+    cookie_str.push_str(expires_at);
+    cookie_str.push_str("; path=/; SameSite=Strict; max-age=");
+    cookie_str.push_str(&max_age.to_string());
+    cookie_str.push_str("; Secure");
+
+    let html_document = html_document!(window!());
+    if html_document.set_cookie(&cookie_str).is_err() {
+      error!("Failed to set session hint cookie");
+    }
+  } else {
+    error!("Failed to parse session expiry timestamp");
+  }
+}
+
 fn remove_session_cookie() {
   let html_document = html_document!(window!());
+  let cookie_str = format!(
+    "{}=0; path=/; SameSite=Strict; expires=Thu, 01 Jan 1970 00:00:00 UTC; Secure",
+    SESSION_COOKIE_NAME
+  );
 
-  let mut cookie_str = String::with_capacity(COOKIE_STR_LEN);
-  cookie_str.push_str(SESSION_COOKIE_NAME);
-  cookie_str.push_str("=0; path=/; SameSite=Strict; expires=Thu, 01 Jan 1970 00:00:00 UTC; Secure");
-
-  let new_cookie = html_document.set_cookie(&cookie_str);
-
-  match new_cookie {
-    Ok(_) => {}
-    Err(_) => {
-      error!("Failed to set cookie");
-    }
+  if html_document.set_cookie(&cookie_str).is_err() {
+    error!("Failed to remove session hint cookie");
   }
 }
 
 #[component]
 pub fn SetSessionCookie(state: bool) -> Element {
-  let html_document: web_sys::HtmlDocument = html_document!(window!());
+  let mut session = use_context::<Session>();
+  let nav = use_navigator();
 
-  let create_flow: Resource<Result<_, ory_kratos_client_wasm::apis::Error<_>>> = use_resource(
-    move || async move { to_session(&Configuration::create(), None, None, None).await },
-  );
+  use_future(move || async move {
+    if state {
+      // state = true: Kratos redirect after successful login or verification.
+      // We must now ask the Kratos backend to validate the secure HttpOnly cookie
+      // and give us the session metadata (like expiry).
+      let config = Configuration::create();
 
-  use_effect(move || use_context::<Session>().state.set(state));
-
-  if state {
-    if let Some(Ok(session)) = &*create_flow.read()
-      && let Some(expires_at) = &session.expires_at
-    {
-      let timestamp: Result<OffsetDateTime, time::error::Parse> =
-        OffsetDateTime::parse(expires_at, &Rfc3339);
-
-      match timestamp {
-        Ok(dt) => {
-          let duration = (dt - OffsetDateTime::now_utc()).whole_seconds();
-          let max_age = if duration > 0 { duration } else { 0 };
-
-          let mut cookie_str = String::with_capacity(COOKIE_STR_LEN);
-          cookie_str.push_str(SESSION_COOKIE_NAME);
-          cookie_str.push('=');
-          cookie_str.push_str(expires_at);
-          cookie_str.push_str("; path=/; SameSite=Strict; max-age=");
-          cookie_str.push_str(&max_age.to_string());
-          cookie_str.push_str("; Secure");
-
-          let new_cookie = html_document.set_cookie(&cookie_str);
-
-          match new_cookie {
-            Ok(_) => {
-              navigator().replace(Route::Dashboard {});
-            }
-            Err(_) => {
-              error!("Failed to set cookie");
-              navigator().replace(Route::Index {});
-            }
+      match to_session(&config, None, None, None).await {
+        Ok(kratos_session) => {
+          if let Some(expires_at) = kratos_session.expires_at {
+            write_session_hint_cookie(&expires_at);
+            session.state.set(AuthState::Authenticated);
+            nav.replace(Route::Dashboard {});
+          } else {
+            error!("Kratos returned a valid session, but missing expiry.");
+            session.state.set(AuthState::Unauthenticated);
+            nav.replace(Route::Index {});
           }
         }
         Err(err) => {
-          error!("{err:?}");
-          navigator().replace(Route::Index {});
+          // This handles edge cases where the redirect happened, but the
+          // HttpOnly cookie was dropped or invalid.
+          error!("Kratos session validation failed post-redirect: {err:?}");
+          session.state.set(AuthState::Unauthenticated);
+          nav.replace(Route::Index {});
         }
       }
-    };
-  } else {
-    remove_session_cookie();
-    navigator().replace(Route::Index {});
+    } else {
+      // state = false: Kratos redirect after logout.
+      // Tear down the UI hint and global state.
+      remove_session_cookie();
+      session.state.set(AuthState::Unauthenticated);
+      nav.replace(Route::Index {});
+    }
+  });
+
+  rsx! {
+    div { class: "flex items-center justify-center min-h-screen",
+      p { "Synchronizing secure session..." }
+    }
   }
-  rsx!()
 }
 
-pub async fn session_cookie_valid() {
+pub async fn session_cookie_valid() -> bool {
   let html_document = html_document!(window!());
   let cookie_string = get_cookies!(html_document);
   let cookies = cookie_string.split(';');
-  let mut valid = use_context::<crate::Session>().state;
 
   for cookie in cookies {
     if cookie.contains(SESSION_COOKIE_NAME) {
@@ -123,16 +150,17 @@ pub async fn session_cookie_valid() {
 
         match timestamp {
           Ok(dt) => {
+            // Return true immediately if we find a valid, unexpired cookie
             if OffsetDateTime::now_utc() < dt {
-              valid.set(true);
-              return;
+              return true;
             }
           }
-          Err(err) => error!("{err:?}"),
+          Err(err) => error!("Failed to parse cookie expiry: {err:?}"),
         }
       }
     }
   }
 
-  valid.set(false);
+  // Default to false if the loop finishes without returning true
+  false
 }

@@ -282,13 +282,13 @@ impl Default for PigeonShadowUpdateRequest {
   }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct HttpsConfig {
   pub endpoint: String,
   pub token: String, // JWT — returned once, never stored again
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct CoapConfig {
   pub endpoint: String,
   pub token: String,

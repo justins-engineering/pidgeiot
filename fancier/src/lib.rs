@@ -1,4 +1,4 @@
-use crate::components::{SetSessionCookie, session_cookie_valid};
+use crate::components::{AuthState, SetSessionCookie, session_cookie_valid};
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use capsules::{Flock, Pigeon};
 use dioxus::prelude::*;
@@ -19,9 +19,9 @@ mod config;
 mod partials;
 mod views;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct Session {
-  state: Signal<bool>,
+  state: Signal<AuthState>,
 }
 
 trait Create {
@@ -95,14 +95,24 @@ enum Route {
 
 #[component]
 fn AuthGuard() -> Element {
-  if !*use_context::<Session>().state.read() {
-    let nav = use_navigator();
-    nav.replace(Route::Unauthorized {});
-    return rsx! {};
-  }
+  let session = use_context::<Session>();
 
-  rsx! {
-    Outlet::<Route> {}
+  match (session.state)() {
+    AuthState::Authenticated => {
+      rsx! {
+        Outlet::<Route> {}
+      }
+    }
+    AuthState::Unauthenticated => {
+      let nav = use_navigator();
+      nav.replace(Route::Unauthorized {});
+      rsx! {}
+    }
+    AuthState::Pending => {
+      rsx! {
+        div { "Verifying session..." }
+      }
+    }
   }
 }
 
@@ -123,12 +133,21 @@ pub fn App() -> Element {
 
   use_effect(crate::components::set_lang);
 
-  let session = use_context_provider(|| Session {
-    state: Signal::new(false),
+  // 1. Initialize context with the Pending state
+  let mut session = use_context_provider(|| Session {
+    state: Signal::new(AuthState::Pending),
   });
 
-  let set_state = use_resource(move || async move { session_cookie_valid().await });
-  (set_state)();
+  // 2. Fire the async check. This future runs automatically on mount.
+  use_future(move || async move {
+    let is_valid = session_cookie_valid().await;
+
+    session.state.set(if is_valid {
+      AuthState::Authenticated
+    } else {
+      AuthState::Unauthenticated
+    });
+  });
 
   let _local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),
@@ -136,7 +155,7 @@ pub fn App() -> Element {
   });
 
   use_resource(move || async move {
-    if (session.state)() {
+    if (session.state)() == AuthState::Authenticated {
       api::flocks::list().await;
     }
   });

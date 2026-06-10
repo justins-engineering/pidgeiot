@@ -1,12 +1,14 @@
+use crate::components::ConnectorBadge;
 use crate::{Route, api};
-use capsules::PigeonCreateRequest;
+use capsules::{CoapConfig, Connector, HttpsConfig, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdX};
+use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
 
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   let binding = use_context::<crate::LocalSession>();
+  let mut new_token = use_signal(|| None::<String>);
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -15,7 +17,6 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         let guard = flocks.read();
         guard.get(&flock_id).map(|flock| flock.pigeon_ids.clone())
       };
-
       if let Some(pigeon_ids) = ids_to_fetch {
         api::pigeons::list(&pigeon_ids).await;
       };
@@ -41,8 +42,6 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           h1 { class: "text-xl font-bold",
             "Pigeons ({use_context::<crate::LocalSession>().pigeons.read().len()})"
           }
-
-          // Search Bar
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
             label { class: "input input-bordered flex items-center gap-2 bg-base-100 w-full",
               input {
@@ -58,8 +57,6 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               }
             }
           }
-
-          // Register Button
           button {
             class: "btn btn-outline btn-primary sm:px-6",
             onclick: move |_| {
@@ -86,11 +83,12 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                   td { class: "font-semibold text-primary",
                     "{pigeon.name.as_deref().unwrap_or(\"--\")}"
                   }
-                  // Fixed: Using .as_deref() prevents moving the String out of the Option
                   td { class: "font-mono text-sm text-base-content/70",
                     "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
                   }
-                  td { class: "text-sm", "{pigeon.connector}" }
+                  td { class: "text-sm",
+                    ConnectorBadge { connector: pigeon.connector.clone() }
+                  }
                   td { class: "text-right",
                     Link {
                       to: Route::PigeonView {
@@ -106,14 +104,70 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
             }
           }
         }
+
+        // One-time token reveal modal
+        if let Some(token) = new_token() {
+          TokenReveal { token, on_close: move |_| new_token.set(None) }
+        }
+
+        CreatePigeonModal {
+          flock_id,
+          on_created: move |token| new_token.set(Some(token)),
+        }
       }
-      CreatePigeonModal { flock_id }
     }
   }
 }
 
 #[component]
-fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
+fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
+  let mut copied = use_signal(|| false);
+
+  rsx! {
+    div { class: "modal modal-open",
+      div { class: "modal-box relative max-w-2xl",
+        h3 { class: "text-lg font-bold text-warning flex items-center gap-2",
+          "🔑 Device Token"
+        }
+        p { class: "py-4 text-sm text-base-content/80",
+          "This token is shown "
+          strong { "only once" }
+          ". Copy it now and store it securely on your device. It cannot be retrieved later."
+        }
+        div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
+          code { class: "font-mono text-xs break-all grow select-all", "{token}" }
+          button {
+            class: "btn btn-square btn-ghost btn-sm shrink-0",
+            onclick: move |_| {
+                #[cfg(feature = "web")]
+                if let Some(window) = web_sys::window() {
+                    let _ = window.navigator().clipboard().write_text(&token);
+                    copied.set(true);
+                }
+            },
+            if copied() {
+              span { class: "text-success text-xs", "Copied!" }
+            } else {
+              Icon { icon: LdCopy }
+            }
+          }
+        }
+        div { class: "modal-action",
+          button {
+            class: "btn btn-primary",
+            onclick: move |_| on_close.call(()),
+            "I've Saved the Token"
+          }
+        }
+      }
+    }
+  }
+}
+#[component]
+fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> Element {
+  let mut selected_connector = use_signal(|| "Https".to_string());
+  let mut local_session = use_context::<crate::LocalSession>();
+
   rsx! {
     dialog { class: "modal", id: "create_pigeon_modal",
       div { class: "modal-box relative max-w-xs md:max-w-sm",
@@ -129,7 +183,7 @@ fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
               let id = flock_id.to_owned();
               async move {
                   evt.prevent_default();
-                  let mut pcr: PigeonCreateRequest = PigeonCreateRequest {
+                  let mut pcr = PigeonCreateRequest {
                       flock_id: id,
                       ..Default::default()
                   };
@@ -141,12 +195,21 @@ fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
                               "serial" => {
                                   pcr.serial = if !val.is_empty() { Some(val) } else { None };
                               }
-                              "connector" => pcr.connector = val,
                               _ => {}
                           }
                       }
                   }
-                  if api::pigeons::create(&pcr).await.is_some() {
+
+                  pcr.connector = match selected_connector.read().as_str() {
+                      "Coap" => Connector::Coap(CoapConfig::default()),
+                      _ => Connector::Https(HttpsConfig::default()),
+                  };
+
+                  if let Some((pigeon_id, token)) = api::pigeons::create(&pcr).await {
+                      if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
+                          flock.pigeon_ids.push(pigeon_id);
+                      }
+                      on_created.call(token);
                       document::eval(
                           r#"document.getElementById("create_pigeon_modal").close();"#,
                       );
@@ -180,14 +243,20 @@ fn CreatePigeonModal(flock_id: uuid::Uuid) -> Element {
             }
             div {
               label { class: "fieldset-legend text-xs font-semibold mb-1",
-                "Connector"
+                "Protocol"
               }
-              input {
-                class: "input input-bordered w-full text-sm",
+              select {
+                class: "select select-bordered w-full text-sm",
                 name: "connector",
-                placeholder: "HTTPS, MQTT, etc.",
-                r#type: "text",
-                value: "HTTPS",
+                onchange: move |evt: Event<FormData>| {
+                    for (key, val) in evt.data().values() {
+                        if key == "connector" && let FormValue::Text(val) = val {
+                            selected_connector.set(val.clone());
+                        }
+                    }
+                },
+                option { value: "Https", selected: true, "HTTPS (REST API)" }
+                option { value: "Coap", "CoAP (IoT/MQTT)" }
               }
             }
           }

@@ -23,8 +23,12 @@ mod alert;
 pub use alert::Alert;
 
 mod session_cookie;
+pub use session_cookie::AuthState;
 pub use session_cookie::SetSessionCookie;
 pub use session_cookie::session_cookie_valid;
 
 mod json_view;
 pub use json_view::JsonViewer;
+
+mod connector_badge;
+pub use connector_badge::ConnectorBadge;

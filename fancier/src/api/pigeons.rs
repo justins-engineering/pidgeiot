@@ -1,5 +1,5 @@
 use crate::api::fetch_json;
-use capsules::{Pigeon, PigeonCreateRequest, PigeonDetail, PigeonUpdateRequest};
+use capsules::{Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonUpdateRequest};
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use wasm_bindgen_futures::JsFuture;
@@ -70,27 +70,27 @@ pub async fn update(pigeon_id: &str, pur: &PigeonUpdateRequest) -> Option<String
   Some(id)
 }
 
-pub async fn create(pcrec: &PigeonCreateRequest) -> Option<String> {
-  let body = serde_json::to_string(pcrec).ok()?;
+pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, String)> {
+  let body = serde_json::to_string(pigeon).ok()?;
   let body = serde_wasm_bindgen::to_value(&body).ok()?;
   let response = fetch_json("POST", "/flock/pigeons", Some(&body)).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
+
+  let detail = serde_wasm_bindgen::from_value::<PigeonDetail>(json).ok()?;
+  let id = detail.pigeon.id.clone();
+
+  // Cache the pigeon (token is stripped on subsequent GETs)
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
-  let pcres = serde_wasm_bindgen::from_value::<PigeonDetail>(json).ok()?;
-  let pigeon = pcres.pigeon;
-  let id = pigeon.id.clone();
-  pigeon_list.insert(id.clone(), pigeon);
+  pigeon_list.insert(id.clone(), detail.pigeon.clone());
   pigeon_list.write();
 
-  let mut flock_list = consume_context::<crate::LocalSession>().flocks;
-  {
-    let mut flocks = flock_list.write();
-    if let Some(flock) = flocks.get_mut(&pcrec.flock_id) {
-      flock.pigeon_ids.push(id.clone());
-    }
-  }
+  // Extract token from connector
+  let token = match &detail.pigeon.connector {
+    Connector::Https(c) => c.token.clone(),
+    Connector::Coap(c) => c.token.clone(),
+  };
 
-  Some(id)
+  Some((id, token))
 }
 
 pub async fn delete(pigeon_id: &str) -> Option<String> {
@@ -105,4 +105,27 @@ pub async fn delete(pigeon_id: &str) -> Option<String> {
     pigeons.remove(pigeon_id);
   }
   Some(pigeon_id.to_string())
+}
+
+pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
+  let mut path = String::with_capacity(80);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/token/refresh");
+
+  let response = fetch_json("POST", &path, None).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+
+  let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
+  let token = match &pigeon.connector {
+    Connector::Https(c) => c.token.clone(),
+    Connector::Coap(c) => c.token.clone(),
+  };
+
+  // Update cache with new connector data
+  let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
+  pigeon_list.insert(pigeon_id.to_string(), pigeon);
+  pigeon_list.write();
+
+  Some(token)
 }
