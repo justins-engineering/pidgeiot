@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "wrangler": "^4.99.0"
+    "wrangler": "^4.102.0"
   }
 }

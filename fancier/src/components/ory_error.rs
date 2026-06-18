@@ -1,232 +1,42 @@
 use crate::Route;
 use dioxus::prelude::*;
-use ory_kratos_client_wasm::apis::ResponseContent;
-use ory_kratos_client_wasm::apis::frontend_api::{
-  CreateBrowserLoginFlowError, CreateBrowserLogoutFlowError, CreateBrowserRecoveryFlowError,
-  CreateBrowserRegistrationFlowError, CreateBrowserSettingsFlowError,
-  CreateBrowserVerificationFlowError, GetRegistrationFlowError, ToSessionError,
-};
 use ory_kratos_client_wasm::models::error_generic::ErrorGeneric;
 
-fn error_content_rsx(err: ErrorGeneric) -> Element {
+// 1. Converted to proper Dioxus components to enable prop diffing and memoization
+#[component]
+pub fn ErrorContentRsx(err: ErrorGeneric) -> Element {
+  // The SDK guarantees message is a String, so we use it directly
+  let message = err.error.message;
+
+  // Reason is typically an Option<String> in the Kratos schema
+  let reason = err.error.reason.unwrap_or_default();
+
   rsx! {
     div { class: "text-center max-h-screen max-w-none",
-      h1 { class: "text-2xl my-8 capitalize", {err.error.message} }
-      p { class: "font-light m-8", {err.error.reason} }
+      h1 { class: "text-2xl my-8 capitalize", "{message}" }
+      if !reason.is_empty() {
+        p { class: "font-light m-8", "{reason}" }
+      }
       Link { to: Route::Index {}, class: "btn btn-primary my-8", "Go Home" }
     }
   }
 }
 
-fn error_content_js(err: serde_json::Value) -> Element {
+#[component]
+pub fn ErrorContentJs(err: serde_json::Value) -> Element {
+  // 3. Fallback to full JSON stringification if the value is an object/array
+  let error_text = err
+    .as_str()
+    .map(|s| s.to_string())
+    .unwrap_or_else(|| err.to_string());
+
   rsx! {
-    div { class: "text-center max-h-screen max-w-none",
-      p { class: "font-light m-8", {err.as_str()} }
+    div { class: "text-center max-h-screen max-w-none flex flex-col items-center",
+      // Added whitespace-pre-wrap so raw JSON formatting is actually readable
+      pre { class: "font-light m-8 text-left text-sm max-w-2xl whitespace-pre-wrap overflow-x-auto",
+        "{error_text}"
+      }
       Link { to: Route::Index {}, class: "btn btn-primary my-8", "Go Home" }
-    }
-  }
-}
-
-pub trait DisplayError {
-  fn view_response_content(self) -> Element;
-}
-
-impl DisplayError for ResponseContent<CreateBrowserRegistrationFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserRegistrationFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserRegistrationFlowError::UnknownValue(value) => rsx! {
-          {error_content_js(value)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<GetRegistrationFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        GetRegistrationFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        GetRegistrationFlowError::UnknownValue(value) => rsx! {
-          {error_content_js(value)}
-        },
-        GetRegistrationFlowError::Status403(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        GetRegistrationFlowError::Status404(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        GetRegistrationFlowError::Status410(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<CreateBrowserLoginFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserLoginFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserLoginFlowError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-        CreateBrowserLoginFlowError::Status400(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<CreateBrowserLogoutFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserLogoutFlowError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-        CreateBrowserLogoutFlowError::Status400(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserLogoutFlowError::Status401(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserLogoutFlowError::Status500(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<ToSessionError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        ToSessionError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        ToSessionError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-        ToSessionError::Status401(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        ToSessionError::Status403(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<CreateBrowserRecoveryFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserRecoveryFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserRecoveryFlowError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-        CreateBrowserRecoveryFlowError::Status400(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<CreateBrowserSettingsFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserSettingsFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserSettingsFlowError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-        CreateBrowserSettingsFlowError::Status400(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserSettingsFlowError::Status401(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserSettingsFlowError::Status403(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
-    }
-  }
-}
-
-impl DisplayError for ResponseContent<CreateBrowserVerificationFlowError> {
-  fn view_response_content(self) -> Element {
-    if let Some(ent) = self.entity {
-      match ent {
-        CreateBrowserVerificationFlowError::DefaultResponse(error_generic) => rsx! {
-          {error_content_rsx(error_generic)}
-        },
-        CreateBrowserVerificationFlowError::UnknownValue(value) => {
-          rsx! {
-            {error_content_js(value)}
-          }
-        }
-      }
-    } else {
-      rsx! {
-        p { {self.content.to_string()} }
-      }
     }
   }
 }

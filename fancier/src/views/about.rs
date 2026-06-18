@@ -168,7 +168,7 @@ pub fn AboutUs() -> Element {
         div { class: "flex flex-col sm:flex-row justify-center gap-6",
           Link {
             class: "btn btn-primary btn-lg px-10 rounded-full",
-            to: Route::SignUp {},
+            to: Route::RegisterFlow { flow: None },
             "View the Platform"
           }
           a {

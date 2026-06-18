@@ -1,5 +1,5 @@
 name = "dovecote"
-compatibility_date = "2026-06-10"
+compatibility_date = "2026-06-15"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
@@ -44,3 +44,7 @@ bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 binding = "YugabyteDB"
 id = ""
 localConnectionString = "postgres://kratos:secret@127.0.0.1:5432/dovecote?sslmode=disable"
+
+[[env.dev.routes]]
+pattern = "127.0.0.1"
+custom_domain = true

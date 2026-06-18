@@ -27,7 +27,7 @@ pub fn Home() -> Element {
       div { class: "flex flex-col sm:flex-row sm:space-x-6 space-y-4 sm:space-y-0 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-64",
         Link {
           class: "grow btn btn-xl btn-glow font-bold",
-          to: Route::SignUp {},
+          to: Route::RegisterFlow { flow: None },
           Icon {
             icon: LdRocket,
             class: "mr-2 animate-bounce-slow",

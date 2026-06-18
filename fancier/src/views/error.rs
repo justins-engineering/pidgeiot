@@ -26,7 +26,7 @@ pub fn Unauthorized() -> Element {
         "Your request was not successful because it lacks valid authentication credentials."
       }
       Link {
-        to: Route::SignIn {},
+        to: Route::LoginFlow { flow: None },
         class: "btn btn-lg btn-primary btn-wide",
         "Sign In"
       }

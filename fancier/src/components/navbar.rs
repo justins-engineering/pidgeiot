@@ -90,7 +90,9 @@ pub fn Navbar() -> Element {
                     }
                   }
                   li {
-                    Link { to: Route::Settings {}, "Settings" }
+                    Link { to: Route::SettingsFlow { flow: None },
+                      "Settings"
+                    }
                   }
                   div { class: "divider my-0" } // Visual separator for logout
                   li { class: "text-error hover:bg-error/10 rounded-lg",
@@ -101,7 +103,7 @@ pub fn Navbar() -> Element {
             } else {
               Link {
                 class: "btn btn-ghost btn-special font-semibold",
-                to: Route::SignIn {},
+                to: Route::LoginFlow { flow: None },
                 Icon {
                   icon: LdLogIn,
                   title: "Login",
@@ -111,7 +113,7 @@ pub fn Navbar() -> Element {
               }
               Link {
                 class: "btn btn-glow font-semibold",
-                to: Route::SignUp {},
+                to: Route::RegisterFlow { flow: None },
                 "Get Started"
               }
             }
@@ -177,7 +179,7 @@ pub fn Navbar() -> Element {
               }
               li {
                 Link {
-                  to: Route::Settings {},
+                  to: Route::SettingsFlow { flow: None },
                   onclick: move |_| is_menu_open.set(false),
                   Icon {
                     icon: LdSettings,
@@ -196,7 +198,7 @@ pub fn Navbar() -> Element {
             } else {
               li {
                 Link {
-                  to: Route::SignIn {},
+                  to: Route::LoginFlow { flow: None },
                   onclick: move |_| is_menu_open.set(false),
                   Icon {
                     icon: LdLogIn,
@@ -208,7 +210,7 @@ pub fn Navbar() -> Element {
               li {
                 Link {
                   class: "btn btn-glow font-semibold mt-4 text-center block",
-                  to: Route::SignUp {},
+                  to: Route::RegisterFlow { flow: None },
                   onclick: move |_| is_menu_open.set(false),
                   "Get Started"
                 }

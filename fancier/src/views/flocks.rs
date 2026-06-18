@@ -16,7 +16,6 @@ pub fn Flocks() -> Element {
             "Flocks ({use_context::<crate::LocalSession>().flocks.read().len()})"
           }
 
-
           // Search Bar
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
             label { class: "input input-bordered flex items-center gap-2 bg-base-100 w-full",
@@ -114,7 +113,6 @@ fn FlockCard(flock: Flock) -> Element {
                           )
                           .unwrap_or_default()
                   }
-
                 }
               }
             }

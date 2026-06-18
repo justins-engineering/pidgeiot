@@ -17,7 +17,7 @@ pub fn Cta() -> Element {
         div { class: "flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-6 mb-8",
           Link {
             class: "btn btn-xl btn-glow sm:w-1/2 grow font-bold",
-            to: Route::SignUp {},
+            to: Route::RegisterFlow { flow: None },
             Icon {
               icon: LdPlay,
               class: "mr-2 animate-pulse-slow",

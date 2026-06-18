@@ -1,5 +1,7 @@
-use crate::components::{AuthState, SetSessionCookie, session_cookie_valid};
+use crate::components::SetSessionCookie;
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
+use crate::helpers::session_cookie_valid;
+use crate::models::AuthState;
 use capsules::{Flock, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
@@ -8,14 +10,16 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, AccountRecovery, Architecture, Dashboard, Flocks, Index, LoginFlow, PageNotFound,
-  PigeonView, Pigeons, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, Settings,
-  SettingsFlow, SignIn, SignUp, Unauthorized, VerificationFlow, Verify, Wrapper,
+  AboutUs, Architecture, Dashboard, Flocks, Index, LoginFlow, PageNotFound, PigeonView, Pigeons,
+  RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, Unauthorized,
+  VerificationFlow, Wrapper,
 };
 
 pub mod api;
 mod components;
 mod config;
+mod helpers;
+mod models;
 mod partials;
 mod views;
 
@@ -56,10 +60,8 @@ enum Route {
     PigeonView { flock_id: Uuid, pigeon_id: String },
     #[route("/session")]
     SessionInfo {},
-    #[route("/my-settings")]
-    Settings {},
     #[route("/settings?:flow")]
-    SettingsFlow { flow: String },
+    SettingsFlow { flow: Option<String> },
   #[end_layout]
   #[route("/")]
   Index {},
@@ -67,22 +69,14 @@ enum Route {
   AboutUs {},
   #[route("/architecture")]
   Architecture {},
-  #[route("/sign-in")]
-  SignIn {},
   #[route("/login?:flow")]
-  LoginFlow { flow: String },
-  #[route("/sign-up")]
-  SignUp {},
+  LoginFlow { flow: Option<String> },
   #[route("/registration?:flow")]
-  RegisterFlow { flow: String },
-  #[route("/verify")]
-  Verify {},
+  RegisterFlow { flow: Option<String> },
   #[route("/verification?:flow")]
-  VerificationFlow { flow: String },
-  #[route("/account-recovery")]
-  AccountRecovery {},
+  VerificationFlow { flow: Option<String> },
   #[route("/recovery?:flow")]
-  RecoveryFlow { flow: String },
+  RecoveryFlow { flow: Option<String> },
   #[route("/session/local?:state")]
   SetSessionCookie { state: bool },
   #[route("/error?:id")]
@@ -131,7 +125,7 @@ pub fn App() -> Element {
     ))
   });
 
-  use_effect(crate::components::set_lang);
+  use_effect(crate::helpers::set_lang);
 
   // 1. Initialize context with the Pending state
   let mut session = use_context_provider(|| Session {
