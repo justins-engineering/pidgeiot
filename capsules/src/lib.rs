@@ -83,7 +83,9 @@ pub struct PigeonRow {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: String, // raw JSON text from SQLite
+  pub connector: String,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub token_expires_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -92,14 +94,15 @@ pub struct PigeonRow {
 
 impl From<PigeonRow> for Pigeon {
   fn from(row: PigeonRow) -> Self {
-    let connector = serde_json::from_str(&row.connector).unwrap_or_default();
     Self {
       id: row.id,
       flock_id: row.flock_id,
       serial: row.serial,
       name: row.name,
       tags: row.tags,
-      connector,
+      connector: serde_json::from_str(&row.connector).unwrap_or_default(),
+      token_expires_at: OffsetDateTime::from_unix_timestamp(row.token_expires_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -118,6 +121,8 @@ pub struct Pigeon {
   pub tags: Option<String>,
   pub connector: Connector,
   #[serde(with = "time::serde::rfc3339")]
+  pub token_expires_at: OffsetDateTime,
+  #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
@@ -132,31 +137,20 @@ impl Default for Pigeon {
       name: None,
       tags: None,
       connector: Connector::default(),
+      token_expires_at: OffsetDateTime::UNIX_EPOCH,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
   }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct PigeonCreateRequest {
   pub flock_id: Uuid,
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: Connector,
-}
-
-impl Default for PigeonCreateRequest {
-  fn default() -> PigeonCreateRequest {
-    PigeonCreateRequest {
-      flock_id: Uuid::default(),
-      serial: None,
-      name: None,
-      tags: None,
-      connector: Connector::default(),
-    }
-  }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -269,17 +263,9 @@ impl Default for PigeonShadow {
   }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PigeonShadowUpdateRequest {
   pub target_config: serde_json::Value,
-}
-
-impl Default for PigeonShadowUpdateRequest {
-  fn default() -> PigeonShadowUpdateRequest {
-    PigeonShadowUpdateRequest {
-      target_config: serde_json::Value::default(),
-    }
-  }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]

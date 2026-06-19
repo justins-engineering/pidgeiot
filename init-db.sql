@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS pigeons (
   name TEXT,
   tags TEXT,
   connector JSONB NOT NULL,
+  token_expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );

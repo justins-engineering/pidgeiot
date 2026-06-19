@@ -58,9 +58,11 @@ impl DurableObject for Pigeons {
           name TEXT,
           tags TEXT,
           connector TEXT NOT NULL,
+          token_expires_at INTEGER DEFAULT 0,
           updated_at INTEGER DEFAULT (unixepoch()),
           created_at INTEGER DEFAULT (unixepoch())
         );
+
 
         CREATE TRIGGER IF NOT EXISTS prevent_immutable_updates_on_pigeons
         BEFORE UPDATE OF id, created_at ON pigeons
@@ -200,7 +202,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
@@ -239,7 +241,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   let mut pigeon = match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
@@ -334,8 +336,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
-  // Generate device token
-  let device_token = match sign_device_token(&do_id, &pigeons.env) {
+  let (device_token, expires_at) = match sign_device_token(&do_id, &pigeons.env) {
     Ok(t) => t,
     Err(e) => {
       console_error!("JWT signing error: {e}");
@@ -343,44 +344,33 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Build the server-side connector with endpoint and token
   let server_connector = match row.connector {
-    Connector::Https(_) => {
-      let endpoint = build_http_endpoint(&do_id);
-      Connector::Https(HttpsConfig {
-        endpoint,
-        token: device_token,
-      })
-    }
-    Connector::Coap(_) => {
-      let endpoint = build_coap_endpoint(&do_id);
-      Connector::Coap(CoapConfig {
-        endpoint,
-        token: device_token.clone(),
-        dtls_psk_identity: Some(do_id.clone()),
-        dtls_psk_secret: Some(device_token),
-      })
-    }
+    Connector::Https(_) => Connector::Https(HttpsConfig {
+      endpoint: format!("https://api.pidgeiot.com/device/pigeons/{}", do_id),
+      token: device_token,
+    }),
+    Connector::Coap(_) => Connector::Coap(CoapConfig {
+      endpoint: format!("coaps://api.pidgeiot.com/device/pigeons/{}", do_id),
+      token: device_token.clone(),
+      dtls_psk_identity: Some(do_id.clone()),
+      dtls_psk_secret: Some(device_token),
+    }),
   };
 
-  // Serialize the SERVER connector (with endpoint + token) for SQLite
-  let connector_json = serde_json::to_string(&server_connector).map_err(|e| {
-    console_error!("Connector serialization error: {e}");
-    worker::Error::RustError("Bad Request: Invalid connector config".into())
-  })?;
+  let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
 
-  // Insert pigeon with the server-generated connector
   let pigeon = match pigeons.sql.exec(
-    "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector) VALUES (?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, updated_at, created_at;",
-    vec![
-      do_id.clone().into(),
-      row.flock_id.to_string().into(),
-      row.serial.into(),
-      row.name.into(),
-      row.tags.into(),
-      connector_json.into(),
-    ],
-  ) {
+  "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at;",
+  vec![
+    do_id.clone().into(),
+    row.flock_id.to_string().into(),
+    row.serial.into(),
+    row.name.into(),
+    row.tags.into(),
+    connector_json.into(),
+    expires_at.unix_timestamp().into(),
+  ],
+) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
@@ -446,7 +436,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
-  let device_token = match sign_device_token(&do_id, &pigeons.env) {
+  let (device_token, expires_at) = match sign_device_token(&do_id, &pigeons.env) {
     Ok(t) => t,
     Err(e) => {
       console_error!("JWT signing error: {e}");
@@ -456,7 +446,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
   // Read current pigeon to determine connector type
   let mut pigeon = match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
@@ -499,10 +489,27 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   })?;
 
   match pigeons.sql.exec(
-    "UPDATE pigeons SET connector = ? WHERE id = ?;",
-    vec![connector_json.into(), do_id.into()],
+    "UPDATE pigeons SET connector = ?, token_expires_at = ? WHERE id = ?;",
+    vec![connector_json.into(), expires_at.unix_timestamp().into(), do_id.into()],
   ) {
-    Ok(_) => Response::from_json(&pigeon),
+    Ok(_) => {
+      match pigeons.sql.exec(
+        "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+        None,
+      ) {
+        Ok(cursor) => match cursor.one::<PigeonRow>() {
+          Ok(p) => Response::from_json(&Pigeon::from(p)),
+          Err(e) => {
+            console_error!("Pigeon token refresh error: {e}");
+            Response::error("Internal Server Error", 500)
+          }
+        },
+        Err(e) => {
+          console_error!("Pigeon token refresh error: {e}");
+          Response::error("Internal Server Error", 500)
+        }
+      }
+    },
     Err(e) => {
       console_error!("Pigeon token refresh error: {e}");
       Response::error("Internal Server Error", 500)
@@ -546,7 +553,7 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     Ok(_) => {
       // Read back the updated row to return
       match pigeons.sql.exec(
-        "SELECT id, flock_id, serial, name, tags, connector, updated_at, created_at FROM pigeons LIMIT 1;",
+        "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
         None,
       ) {
         Ok(cursor) => match cursor.one::<PigeonRow>() {

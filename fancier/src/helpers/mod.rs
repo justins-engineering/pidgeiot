@@ -1,5 +1,4 @@
 mod ory_ui;
-pub use ory_ui::extract_expired_message;
 pub use ory_ui::extract_ui_messages;
 
 mod ory_error;

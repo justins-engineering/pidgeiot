@@ -47,6 +47,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   ConnectorInfo {
                     pigeon_id: pigeon_id.clone(),
                     connector: pd.pigeon.connector.clone(),
+                    token_expires_at: pd.pigeon.token_expires_at,
                   }
                 }
                 section { id: "shadowInfo",
@@ -245,7 +246,20 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
 }
 
 #[component]
-fn ConnectorInfo(pigeon_id: String, connector: Connector) -> Element {
+fn ConnectorInfo(
+  pigeon_id: String,
+  connector: Connector,
+  token_expires_at: time::OffsetDateTime,
+) -> Element {
+  let time_format = time::macros::format_description!(
+    "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
+  );
+  let now = time::OffsetDateTime::now_utc();
+
+  let expires_at = token_expires_at
+    .format(&time_format)
+    .unwrap_or_else(|_| "Invalid Format".to_string());
+
   let mut copied = use_signal(|| false);
   let mut refreshed_token = use_signal(|| None::<String>);
 
@@ -387,6 +401,17 @@ fn ConnectorInfo(pigeon_id: String, connector: Connector) -> Element {
                   }
                 }
               }
+            }
+            tr {
+              th { "Token Expiry" }
+              td {
+                div {
+                  class: "font-mono bg-base-200 rounded px-2 w-fit",
+                  class: if token_expires_at < now { "bg-error" } else { "bg-base-200" },
+                  "{expires_at}"
+                }
+              }
+              td {}
             }
           }
         }

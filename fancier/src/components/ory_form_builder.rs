@@ -404,10 +404,7 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
 // --- Main Builder Component ---
 
 #[component]
-pub fn FormBuilder(
-  ui: ory_kratos_client_wasm::models::UiContainer,
-  on_submit: EventHandler<Event<FormData>>,
-) -> Element {
+pub fn FormBuilder(ui: ory_kratos_client_wasm::models::UiContainer) -> Element {
   // 1. O(N) Stable Partition: Separate CSRF/Default nodes from Flow nodes
   let (default_nodes, flow_nodes): (Vec<_>, Vec<_>) = ui
     .nodes
@@ -439,13 +436,7 @@ pub fn FormBuilder(
       }
     } else {
       for (group_enum , group_nodes) in groups {
-        form {
-          action: ui.action.clone(),
-          method: ui.method.clone(),
-          onsubmit: move |ev| {
-              ev.prevent_default();
-              on_submit.call(ev);
-          },
+        form { action: ui.action.clone(), method: ui.method.clone(),
           div { class: "my-2",
             fieldset { class: "fieldset bg-base-100 border border-base-300 rounded-box p-4",
               legend { class: "fieldset-legend text-xl",
