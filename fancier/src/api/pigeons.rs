@@ -1,5 +1,8 @@
 use crate::api::fetch_json;
-use capsules::{Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonUpdateRequest};
+use capsules::{
+  Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest,
+  PigeonUpdateRequest,
+};
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use wasm_bindgen_futures::JsFuture;
@@ -108,7 +111,7 @@ pub async fn delete(pigeon_id: &str) -> Option<String> {
 }
 
 pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
-  let mut path = String::with_capacity(80);
+  let mut path = String::with_capacity(87);
   path.push_str("/pigeons/");
   path.push_str(pigeon_id);
   path.push_str("/token/refresh");
@@ -128,4 +131,21 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
   pigeon_list.write();
 
   Some(token)
+}
+
+pub async fn update_shadow(
+  pigeon_id: &str,
+  psur: &PigeonShadowUpdateRequest,
+) -> Option<PigeonShadow> {
+  let mut path = String::with_capacity(80);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/shadow");
+
+  let json_string = serde_json::to_string(psur).ok()?;
+  let body = serde_wasm_bindgen::to_value(&json_string).ok()?;
+  let response = fetch_json("PUT", &path, Some(&body)).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+
+  serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
 }

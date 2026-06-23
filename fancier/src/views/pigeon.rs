@@ -2,7 +2,7 @@ use crate::components::{ConnectorBadge, JsonViewer};
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonUpdateRequest,
+  PigeonShadowUpdateRequest, PigeonUpdateRequest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -51,17 +51,18 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   }
                 }
                 section { id: "shadowInfo",
-                  ShadowInfo { shadow: pd.shadow }
+                  ShadowInfo { shadow: pd.shadow.clone() }
                 }
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }
                 }
                 UpdatePigeonModal { flock_id, pigeon: pd.pigeon }
+                EditShadowModal { pigeon_id, pigeon_detail }
               }
             }
         }
         None => rsx! {
-          div { class: "alert alert-warning shadow-lg",
+          div { class: "loading loading-spinner text-primary m-10",
             span { "Pigeon not found or loading data..." }
           }
         },
@@ -439,7 +440,7 @@ fn ShadowInfo(shadow: PigeonShadow) -> Element {
         button {
           class: "btn btn-secondary",
           onclick: move |_| {
-              document::eval(r#"document.getElementById("update_pigeon_modal").showModal();"#);
+              document::eval(r#"document.getElementById('edit_shadow_modal').showModal()"#);
           },
           "Edit"
         }
@@ -491,6 +492,130 @@ fn AclInfo(acl: PigeonAcl) -> Element {
             }
           }
         }
+      }
+    }
+  }
+}
+
+#[component]
+pub fn EditShadowModal(
+  pigeon_id: String,
+  mut pigeon_detail: Signal<Option<PigeonDetail>>,
+) -> Element {
+  let mut json_input = use_signal(|| {
+    if let Some(detail) = pigeon_detail.read().as_ref() {
+      detail.shadow.target_config.to_pretty()
+    } else {
+      "{}".to_string()
+    }
+  });
+
+  let mut error_msg = use_signal(|| Option::<String>::None);
+
+  rsx! {
+    dialog { class: "modal", id: "edit_shadow_modal",
+      div { class: "modal-box relative max-w-2xl bg-base-100 shadow-xl p-6 border border-base-300 rounded-box",
+
+        form { class: "absolute right-4 top-4", method: "dialog",
+          button { class: "btn btn-sm btn-circle btn-ghost", "✕" }
+        }
+
+        div { class: "text-center text-xl font-medium mb-4 text-secondary",
+          "Configure Pigeon Shadow"
+        }
+
+        form {
+          onsubmit: move |evt: FormEvent| {
+              let pigeon_id = pigeon_id.clone();
+              let raw_str = json_input.read().clone();
+
+              async move {
+                  evt.prevent_default();
+
+                  match serde_json::from_str::<serde_json::Value>(&raw_str) {
+                      Ok(json_value) => {
+                          error_msg.set(None);
+
+                          let req = PigeonShadowUpdateRequest {
+                              target_config: json_value,
+                          };
+
+                          if let Some(new_shadow) = crate::api::pigeons::update_shadow(
+                                  &pigeon_id,
+                                  &req,
+                              )
+                              .await
+                          {
+                              if let Some(detail) = pigeon_detail.write().as_mut() {
+                                  detail.shadow = new_shadow;
+                              }
+                              document::eval(
+                                  r#"document.getElementById("edit_shadow_modal").close();"#,
+                              );
+                          }
+                      }
+                      Err(err) => {
+                          error_msg.set(Some(format!("Invalid JSON payload: {}", err)));
+                      }
+                  }
+              }
+          },
+
+          fieldset { class: "fieldset flex flex-col gap-4",
+            div { class: "w-full",
+              label { class: "fieldset-legend text-xs font-semibold mb-1 text-base-content/80",
+                "Target Configuration Script"
+              }
+
+              textarea {
+                class: format!(
+                    "textarea textarea-bordered font-mono h-72 w-full text-sm p-4 bg-base-200 focus:outline-none transition-colors {}",
+                    if error_msg.read().is_some() {
+                        "textarea-error"
+                    } else {
+                        "focus:border-primary/50"
+                    },
+                ),
+                name: "target_config",
+                value: "{json_input}",
+                placeholder: "{{\n  \"config\": true\n}}",
+                oninput: move |e| {
+                    json_input.set(e.value());
+
+                    if serde_json::from_str::<serde_json::Value>(&e.value()).is_ok() {
+                        error_msg.set(None);
+                    } else if e.value().is_empty() {
+                        error_msg.set(Some("Configuration cannot be empty.".to_string()));
+                    }
+                },
+              }
+
+              if let Some(err) = error_msg.read().as_ref() {
+                label { class: "label py-1",
+                  span { class: "label-text-alt text-error font-medium text-xs",
+                    "⚠️ {err}"
+                  }
+                }
+              }
+            }
+          }
+
+          div { class: "mt-6 flex items-center justify-end gap-3",
+            form { method: "dialog",
+              button { class: "btn btn-ghost btn-sm sm:btn-md", "Cancel" }
+            }
+            button {
+              class: "btn btn-primary shadow-md min-w-[120px]",
+              r#type: "submit",
+              disabled: error_msg.read().is_some(),
+              "Save Changes"
+            }
+          }
+        }
+      }
+
+      form { class: "modal-backdrop", method: "dialog",
+        button { "close" }
       }
     }
   }

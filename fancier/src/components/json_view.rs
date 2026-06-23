@@ -39,7 +39,7 @@ pub fn JsonViewer(json: capsules::JsonString, title: Option<String>) -> Element 
 
       // Main Code Window
       div { class: "mockup-code bg-transparent before:content-none p-0 my-2 w-full overflow-x-auto select-text scrollbar-thin text-sm font-mono",
-        pre { class: "px-5 py-2 text-base-content leading-relaxed",
+        pre { class: "px-5 py-2 text-base-content leading-relaxed before:mr-0!",
           code { "{pretty_json}" }
         }
       }

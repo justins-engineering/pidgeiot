@@ -300,7 +300,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
       proxy_to_pigeon_do(req, &user_id, &obj_id, "/shadow/get").await
     })
-    .post_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
+    .put_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
         return Response::error("Unauthorized", 401);
       };
