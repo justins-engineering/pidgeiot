@@ -1,4 +1,4 @@
-CREATE DATABASE dovecote OWNER kratos;
+CREATE DATABASE dovecote OWNER dovecote;
 
 \c dovecote;
 
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS pigeons (
   name TEXT,
   tags TEXT,
   connector JSONB NOT NULL,
-  token_expires_at TIMESTAMPTZ NOT NULL,
+  token_expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '1 year',
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );

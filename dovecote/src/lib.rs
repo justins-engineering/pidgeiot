@@ -246,7 +246,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return Response::error("Unauthorized", 401);
         };
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
-        proxy_to_pigeon_do(req, &user_id, &obj_id, "/detail").await
+        let do_response = proxy_to_pigeon_do(req, &user_id, &obj_id, "/detail").await?;
+        if do_response.status_code() >= 400 {
+          return Ok(do_response);
+        }
+
+        let detail = parse_do_response::<PigeonDetail>(do_response).await?;
+
+        Response::from_json(&detail)?.with_cors(&CORS)
       },
     )
     .put_async("/pigeons/:pigeon_id", |req, ctx| async move {
