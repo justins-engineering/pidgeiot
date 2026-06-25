@@ -49,15 +49,21 @@ pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
 macro_rules! get_pigeon_do {
   ($ctx:expr, $pigeon_id:ident, $namespace:ident, $obj_id:ident) => {
     let Some($pigeon_id) = $ctx.param("pigeon_id").cloned() else {
-      return Response::error("Pigeon ID cannot be empty or invalid", 400)?.with_cors(&CORS);
+      return Response::error("Pigeon ID cannot be empty or invalid", 400)
+        .unwrap()
+        .with_cors(&CORS);
     };
 
     let Ok($namespace) = $ctx.durable_object("PIGEONS") else {
-      return Response::error("Failed to bind to PIGEONS namespace", 500)?.with_cors(&CORS);
+      return Response::error("Failed to bind to PIGEONS namespace", 500)
+        .unwrap()
+        .with_cors(&CORS);
     };
 
     let Ok($obj_id) = $namespace.id_from_string(&$pigeon_id) else {
-      return Response::error("Bad Request", 500)?.with_cors(&CORS);
+      return Response::error("Malformed Pigeon ID string", 400)
+        .unwrap()
+        .with_cors(&CORS);
     };
   };
 }
@@ -84,7 +90,7 @@ async fn parse_do_response<T: serde::de::DeserializeOwned>(
 
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
-  Router::new()
+  let router = Router::new()
     .options_async("/*any", |_req, _ctx| async move {
       Response::empty()?.with_cors(&CORS)
     })
@@ -121,9 +127,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         return Response::error("Unauthorized", 401)?.with_cors(&CORS);
       }
 
-      proxy_to_pigeon_do(req, "", &obj_id, "/shadow/get")
-        .await?
-        .with_cors(&CORS)
+      proxy_to_pigeon_do(req, "", &obj_id, "/shadow/get").await
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
@@ -367,6 +371,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       }
       Response::error("Not Found", 404)?.with_cors(&CORS)
     })
-    .run(req, env)
-    .await
+    .run(req, env);
+
+  // Global Framework Escape Catchment Guard
+  match router.await {
+    Ok(response) => Ok(response),
+    Err(err) => {
+      console_error!("Gateway Isolation Panic Intercepted: {:?}", err);
+      Response::error("Internal Server Error", 500)?.with_cors(&CORS)
+    }
+  }
 }
