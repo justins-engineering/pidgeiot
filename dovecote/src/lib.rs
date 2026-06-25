@@ -114,10 +114,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         worker::Error::RustError("Internal Server Error".into())
       })?;
 
-      if let Ok(client) = get_db_client(&ctx.env).await
-        && let Err(e) = update_pigeon_pg_db(client, &pigeon).await
-      {
-        console_error!("Failed to sync pigeon {} to external DB: {e}", pigeon.id);
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+            console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&pigeon)?.with_cors(&CORS)
@@ -248,13 +251,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let pcr = parse_do_response::<PigeonDetail>(do_response).await?;
 
-      if let Ok(client) = get_db_client(&ctx.env).await
-        && let Err(e) = insert_pigeon_pg_db(client, &pcr).await
-      {
-        console_error!(
-          "Failed to sync pigeon {} to external DB: {e}",
-          pcr.pigeon.id
-        );
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = insert_pigeon_pg_db(client, &pcr).await {
+            console_error!("External DB Sync Error for pigeon {}: {e}", pcr.pigeon.id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&pcr)?.with_cors(&CORS)
@@ -302,10 +305,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let pigeon = parse_do_response::<Pigeon>(do_response).await?;
 
-      if let Ok(client) = get_db_client(&ctx.env).await
-        && let Err(e) = update_pigeon_pg_db(client, &pigeon).await
-      {
-        console_error!("Failed to sync pigeon {} to external DB: {e}", pigeon.id);
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+            console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&pigeon)?.with_cors(&CORS)
@@ -325,10 +331,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return do_response.with_cors(&CORS);
         }
 
-        if let Ok(client) = get_db_client(&ctx.env).await
-          && let Err(e) = delete_pigeon_pg_db(client, &pigeon_id).await
-        {
-          console_error!("Failed to sync pigeon {} to external DB: {e}", pigeon_id);
+        match get_db_client(&ctx.env).await {
+          Ok(client) => {
+            if let Err(e) = delete_pigeon_pg_db(client, &pigeon_id).await {
+              console_error!("External DB Sync Error for pigeon {}: {e}", pigeon_id);
+            }
+          }
+          Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
         }
 
         Response::empty()?.with_cors(&CORS)
@@ -361,10 +370,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
 
-      if let Ok(client) = get_db_client(&ctx.env).await
-        && let Err(e) = update_shadow_pg_db(client, &pigeon_id, &shadow).await
-      {
-        console_error!("Failed to sync shadow for pigeon {pigeon_id} to external DB: {e}");
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = update_shadow_pg_db(client, &pigeon_id, &shadow).await {
+            console_error!("External DB Sync Error for shadow {}: {e}", pigeon_id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&shadow)?.with_cors(&CORS)
@@ -396,10 +408,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let acl = parse_do_response::<PigeonAcl>(do_response).await?;
 
-      if let Ok(client) = get_db_client(&ctx.env).await
-        && let Err(e) = upsert_acl_pg_db(client, &pigeon_id, &acl).await
-      {
-        console_error!("Failed to sync ACL for pigeon {pigeon_id} to external DB: {e}");
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = upsert_acl_pg_db(client, &pigeon_id, &acl).await {
+            console_error!("External DB Sync Error for ACL {}: {e}", pigeon_id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&acl)?.with_cors(&CORS)
