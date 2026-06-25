@@ -73,7 +73,7 @@ macro_rules! get_db {
   ($env:expr, $client:ident) => {
     let Ok($client) = get_db_client(&$env).await else {
       console_error!("Failed to establish Hyperdrive connection");
-      return Response::error("DB Error", 500)?.with_cors(&CORS);
+      return Response::error("DB Error", 500).unwrap().with_cors(&CORS);
     };
   };
 }
@@ -96,7 +96,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async("/pigeons/:pigeon_id/token/refresh", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
@@ -124,14 +126,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
       if require_device_auth(&req, &ctx.env, &pigeon_id).is_err() {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       }
 
       proxy_to_pigeon_do(req, "", &obj_id, "/shadow/get").await
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       get_db!(ctx.env, client);
@@ -141,15 +147,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async("/flocks", |mut req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       let Ok(payload) = req.json::<FlockCreateRequest>().await else {
-        return Response::error("Invalid JSON payload", 400)?.with_cors(&CORS);
+        return Response::error("Invalid JSON payload", 400)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       if payload.name.trim().is_empty() {
-        return Response::error("Flock name cannot be empty", 400)?.with_cors(&CORS);
+        return Response::error("Flock name cannot be empty", 400)
+          .unwrap()
+          .with_cors(&CORS);
       }
 
       get_db!(ctx.env, client);
@@ -159,19 +171,27 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async("/pigeons/batch", |mut req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       let Ok(pigeon_ids) = req.json::<Vec<String>>().await else {
-        return Response::error("Pigeon IDs cannot be empty or invalid", 400)?.with_cors(&CORS);
+        return Response::error("Pigeon IDs cannot be empty or invalid", 400)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       if pigeon_ids.len() > 48 {
-        return Response::error("Batch size exceeds subrequest limits", 400)?.with_cors(&CORS);
+        return Response::error("Batch size exceeds subrequest limits", 400)
+          .unwrap()
+          .with_cors(&CORS);
       }
 
       let Ok(pigeon_namespace) = ctx.durable_object("PIGEONS") else {
-        return Response::error("Failed to bind to PIGEONS namespace", 500)?.with_cors(&CORS);
+        return Response::error("Failed to bind to PIGEONS namespace", 500)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       let fetch_tasks = pigeon_ids.into_iter().map(|id| {
@@ -205,11 +225,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async("/flock/pigeons", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       let Ok(namespace) = ctx.durable_object("PIGEONS") else {
-        return Response::error("Failed to bind to PIGEONS namespace", 500)?.with_cors(&CORS);
+        return Response::error("Failed to bind to PIGEONS namespace", 500)
+          .unwrap()
+          .with_cors(&CORS);
       };
 
       let obj_id = namespace.unique_id().map_err(|e| {
@@ -239,7 +263,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/pigeons/:pigeon_id",
       |req, ctx: RouteContext<()>| async move {
         let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-          return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&CORS);
         };
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
         proxy_to_pigeon_do(req, &user_id, &obj_id, "/get")
@@ -251,7 +277,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/pigeons/:pigeon_id/detail",
       |req, ctx: RouteContext<()>| async move {
         let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-          return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&CORS);
         };
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
         proxy_to_pigeon_do(req, &user_id, &obj_id, "/detail")
@@ -261,7 +289,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     )
     .put_async("/pigeons/:pigeon_id", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
@@ -284,7 +314,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/pigeons/:pigeon_id",
       |req, ctx: RouteContext<()>| async move {
         let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-          return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&CORS);
         };
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
@@ -305,7 +337,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // --- Shadow Routes ---
     .get_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
       proxy_to_pigeon_do(req, &user_id, &obj_id, "/shadow/get")
@@ -314,7 +348,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .put_async("/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
@@ -336,7 +372,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // --- ACL Routes ---
     .get_async("/pigeons/:pigeon_id/acl", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
       proxy_to_pigeon_do(req, &user_id, &obj_id, "/acl/list")
@@ -345,7 +383,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async("/pigeons/:pigeon_id/acl", |req, ctx| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
-        return Response::error("Unauthorized", 401)?.with_cors(&CORS);
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&CORS);
       };
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
@@ -369,7 +409,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Ok(b) => console_log!("{b}"),
         Err(e) => console_error!("{e}"),
       }
-      Response::error("Not Found", 404)?.with_cors(&CORS)
+      Response::error("Not Found", 404).unwrap().with_cors(&CORS)
     })
     .run(req, env);
 
@@ -378,7 +418,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     Ok(response) => Ok(response),
     Err(err) => {
       console_error!("Gateway Isolation Panic Intercepted: {:?}", err);
-      Response::error("Internal Server Error", 500)?.with_cors(&CORS)
+      Response::error("Internal Server Error", 500)
+        .unwrap()
+        .with_cors(&CORS)
     }
   }
 }
