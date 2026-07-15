@@ -322,7 +322,7 @@ fn ConnectorInfo(
                 }
                 Connector::Coap(config) => {
                     let endpoint = config.endpoint.clone();
-                    let dtls_psk_identity = config.dtls_psk_identity.clone();
+                    let tls_psk_identity = config.tls_psk_identity.clone();
                     rsx! {
                       tr {
                         th { "Protocol" }
@@ -348,9 +348,9 @@ fn ConnectorInfo(
                           }
                         }
                       }
-                      if let Some(identity) = dtls_psk_identity {
+                      if let Some(identity) = tls_psk_identity {
                         tr {
-                          th { "DTLS Identity" }
+                          th { "TLS Identity" }
                           td {
                             div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{identity}" }
                           }
