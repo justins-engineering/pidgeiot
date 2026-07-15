@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let id = pigeon_id.clone();
   let mut pigeon_detail: Signal<Option<PigeonDetail>> = use_signal(|| None);
+  let mut show_delete_modal = use_signal(|| false);
 
   use_resource(move || {
     let id = id.to_owned();
@@ -37,7 +38,14 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   }
                 }
                 h1 { class: "text-4xl font-bold ", "{pd.pigeon.name.as_deref().unwrap_or(\"--\")}" }
-                button { class: "btn btn-outline btn-primary sm:px-6", "Upload Firmware" }
+                div { class: "flex flex-row items-center gap-2",
+                  button { class: "btn btn-outline btn-primary sm:px-6", "Upload Firmware" }
+                  button {
+                    class: "btn btn-outline btn-error sm:px-6",
+                    onclick: move |_| show_delete_modal.set(true),
+                    "Delete"
+                  }
+                }
               }
               div { class: "w-full flex flex-col items-center justify-between gap-4 my-2 md:my-4",
                 section { id: "pigeonInfo",
@@ -56,8 +64,16 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }
                 }
-                UpdatePigeonModal { flock_id, pigeon: pd.pigeon }
-                EditShadowModal { pigeon_id, pigeon_detail }
+                UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
+                EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
+                if show_delete_modal() {
+                  DeletePigeonModal {
+                    flock_id,
+                    pigeon_id: pigeon_id.clone(),
+                    confirm_value: pd.pigeon.name.clone().unwrap_or_else(|| pd.pigeon.id.clone()),
+                    on_close: move |_| show_delete_modal.set(false),
+                  }
+                }
               }
             }
         }
@@ -616,6 +632,79 @@ pub fn EditShadowModal(
 
       form { class: "modal-backdrop", method: "dialog",
         button { "close" }
+      }
+    }
+  }
+}
+
+/// GitHub-style destructive confirmation: the delete button stays disabled
+/// until the user types the pigeon's own name (or, if it has none, its id)
+/// back exactly. Rendered conditionally by the caller rather than toggled
+/// via a native `<dialog>`, so each open remounts this component and the
+/// typed confirmation always starts blank — a stale, already-matching
+/// value can't linger across an open/cancel/reopen cycle.
+#[component]
+fn DeletePigeonModal(
+  flock_id: Uuid,
+  pigeon_id: String,
+  confirm_value: String,
+  on_close: EventHandler<()>,
+) -> Element {
+  let nav = use_navigator();
+  let mut local_session = use_context::<crate::LocalSession>();
+  let mut input_value = use_signal(String::new);
+  let is_confirmed = input_value() == confirm_value;
+
+  rsx! {
+    div { class: "modal modal-open",
+      div { class: "modal-box relative max-w-sm",
+        button {
+          class: "btn btn-sm btn-circle btn-ghost absolute inset-e-2 top-2",
+          r#type: "button",
+          onclick: move |_| on_close.call(()),
+          Icon { icon: LdX, title: "close" }
+        }
+        h3 { class: "text-lg font-bold text-error", "Delete Pigeon" }
+        p { class: "py-4 text-sm text-base-content/80",
+          "This permanently deletes the pigeon and revokes its device credentials. "
+          strong { "This cannot be undone." }
+        }
+        label { class: "fieldset-legend text-xs font-semibold mb-1 block",
+          "Type "
+          span { class: "font-mono bg-base-200 rounded px-1", "{confirm_value}" }
+          " to confirm"
+        }
+        input {
+          class: "input input-bordered w-full text-sm font-mono",
+          r#type: "text",
+          autocomplete: "off",
+          autofocus: true,
+          value: "{input_value}",
+          oninput: move |e| input_value.set(e.value()),
+        }
+        div { class: "modal-action",
+          button {
+            class: "btn btn-ghost",
+            onclick: move |_| on_close.call(()),
+            "Cancel"
+          }
+          button {
+            class: "btn btn-error",
+            disabled: !is_confirmed,
+            onclick: move |_| {
+                let pigeon_id = pigeon_id.clone();
+                async move {
+                    if api::pigeons::delete(&pigeon_id).await.is_some() {
+                        if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
+                            flock.pigeon_ids.retain(|id| id != &pigeon_id);
+                        }
+                        nav.replace(Route::Pigeons { flock_id });
+                    }
+                }
+            },
+            "Delete Pigeon"
+          }
+        }
       }
     }
   }
