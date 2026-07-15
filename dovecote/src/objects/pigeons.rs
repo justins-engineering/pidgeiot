@@ -42,6 +42,19 @@ struct ExistsResult {
   exists_flag: i64,
 }
 
+/// `SqlCursor::one()` throws an uncaught JS exception (crashing the DO)
+/// on zero rows instead of returning a catchable `Result::Err` —
+/// `to_array()` never throws, so route "no rows" through the same
+/// catchable-error path callers already use for real query/deserialization
+/// failures. This matters once `delete()` can legitimately leave this DO's
+/// tables empty while the DO itself is still addressable.
+fn one_row<T: serde::de::DeserializeOwned>(cursor: &worker::SqlCursor) -> Result<T> {
+  match cursor.to_array::<T>()?.into_iter().next() {
+    Some(row) => Ok(row),
+    None => Err(worker::Error::RustError("Pigeon not found".into())),
+  }
+}
+
 impl DurableObject for Pigeons {
   fn new(state: State, env: Env) -> Pigeons {
     let sql = state.storage().sql();
@@ -145,6 +158,7 @@ impl DurableObject for Pigeons {
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
+      "/pigeon/delete" => delete(self, req).await,
       _ => Response::error("Not Found", 404),
     }
   }
@@ -207,7 +221,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonRow>() {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
       Ok(p) => {
         let mut pigeon = Pigeon::from(p);
 
@@ -246,7 +260,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonRow>() {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
@@ -277,7 +291,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
       Ok(s) => PigeonShadow::from(s),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
@@ -298,7 +312,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT entity_id, role FROM pigeon_acl WHERE entity_id = ?;",
     vec![requesting_user.into()],
   ) {
-    Ok(cursor) => match cursor.one::<PigeonAcl>() {
+    Ok(cursor) => match one_row::<PigeonAcl>(&cursor) {
       Ok(a) => a,
       Err(e) => {
         console_error!("PigeonAcl deserialization error: {e}");
@@ -374,7 +388,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     public_key.into(),
   ],
 ) {
-    Ok(cursor) => match cursor.one::<PigeonRow>() {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
@@ -401,7 +415,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING target_version, current_version, target_config, current_config, updated_at;",
     vec![do_id.into()],
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
       Ok(s) => PigeonShadow::from(s),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
@@ -452,7 +466,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonRow>() {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
@@ -508,7 +522,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
         "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
         None,
       ) {
-        Ok(cursor) => match cursor.one::<PigeonRow>() {
+        Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
           Ok(p) => Response::from_json(&Pigeon::from(p)),
           Err(e) => {
             console_error!("Pigeon token refresh error: {e}");
@@ -523,6 +537,32 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     },
     Err(e) => {
       console_error!("Pigeon token refresh error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Deletes this pigeon. Durable Objects have no explicit "delete yourself"
+/// API — an object becomes eligible for eviction once its storage is
+/// empty — so this wipes every row this DO owns instead. `pigeon_shadow`
+/// cascades via its foreign key; `pigeon_acl` has none (it's a flat table
+/// scoped to this DO's single pigeon, not keyed by pigeon id), so it's
+/// cleared explicitly.
+async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_acl;", None) {
+    console_error!("Pigeon ACL delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  match pigeons.sql.exec(
+    "DELETE FROM pigeons WHERE id = ?;",
+    vec![pigeons.state.id().to_string().into()],
+  ) {
+    Ok(_) => Response::ok("Pigeon Deleted"),
+    Err(e) => {
+      console_error!("Pigeon delete execution error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
@@ -567,7 +607,7 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
         None,
       ) {
-        Ok(cursor) => match cursor.one::<PigeonRow>() {
+        Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
           Ok(p) => Response::from_json(&Pigeon::from(p)),
           Err(e) => {
             console_error!("Pigeon deserialization error: {e}");
@@ -598,7 +638,7 @@ async fn get_acl(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT entity_id, role FROM pigeon_acl WHERE entity_id = ?;",
     vec![requesting_user.into()],
   ) {
-    Ok(cursor) => match cursor.one::<PigeonAcl>() {
+    Ok(cursor) => match one_row::<PigeonAcl>(&cursor) {
       Ok(acl) => Response::from_json(&acl),
       Err(e) => {
         console_error!("PigeonAcl deserialization error: {e}");
@@ -664,7 +704,7 @@ async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
       Ok(s) => Response::from_json(&PigeonShadow::from(s)),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
@@ -701,7 +741,7 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
     .sql
     .exec("SELECT device_public_key FROM pigeons LIMIT 1;", None)
   {
-    Ok(cursor) => match cursor.one::<DevicePublicKeyRow>() {
+    Ok(cursor) => match one_row::<DevicePublicKeyRow>(&cursor) {
       Ok(row) => row.device_public_key,
       Err(e) => {
         console_error!("Pigeon public key deserialization error: {e}");
@@ -722,7 +762,7 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
     None,
   ) {
-    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
       Ok(s) => Response::from_json(&PigeonShadow::from(s)),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
@@ -761,7 +801,7 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
         "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
         None,
       ) {
-        Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+        Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
           Ok(s) => Response::from_json(&PigeonShadow::from(s)),
           Err(e) => {
             console_error!("PigeonShadow deserialization error: {e}");
