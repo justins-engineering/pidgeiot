@@ -268,6 +268,16 @@ pub struct PigeonShadowUpdateRequest {
   pub target_config: serde_json::Value,
 }
 
+// Device-facing report-back: the device echoes the `target_version` it just
+// applied (read from an earlier shadow GET) alongside the resulting
+// `current_config`, so the two stay associated even if `target_config`
+// changes again before the device catches up.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct PigeonShadowReportRequest {
+  pub current_config: serde_json::Value,
+  pub current_version: i32,
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct HttpsConfig {
   pub endpoint: String,
