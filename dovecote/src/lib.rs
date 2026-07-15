@@ -1,7 +1,7 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
-  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, require_device_auth,
-  update_pigeon_pg_db, update_shadow_pg_db, upsert_acl_pg_db,
+  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
+  update_shadow_pg_db, upsert_acl_pg_db,
 };
 use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use futures::future::join_all;
@@ -128,13 +128,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     .get_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id);
 
-      if require_device_auth(&req, &ctx.env, &pigeon_id).is_err() {
-        return Response::error("Unauthorized", 401)
-          .unwrap()
-          .with_cors(&CORS);
-      }
-
-      proxy_to_pigeon_do(req, "", &obj_id, "/shadow/get").await
+      // No X-User-Id / Kratos session here — the DO verifies the device's
+      // own Authorization header (forwarded by proxy_to_pigeon_do) against
+      // this pigeon's stored public key.
+      proxy_to_pigeon_do(req, "", &obj_id, "/device/shadow")
+        .await?
+        .with_cors(&CORS)
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {

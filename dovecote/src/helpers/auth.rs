@@ -1,7 +1,4 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use jwt_simple::prelude::*;
 use ory_kratos_client_wasm::apis::{configuration::Configuration, frontend_api::to_session};
-use std::collections::HashSet;
 use worker::{Env, Request, console_debug};
 
 pub async fn authenticate_browser(
@@ -41,39 +38,4 @@ pub async fn authenticate_browser(
       Err("Unauthorized".into())
     }
   }
-}
-
-fn load_public_key(env: &Env) -> worker::Result<Ed25519PublicKey> {
-  let der_b64 = env.secret("DEVICE_PUBLIC_KEY")?.to_string();
-  let der = STANDARD
-    .decode(der_b64)
-    .map_err(|e| worker::Error::RustError(format!("Base64 decode error: {e}")))?;
-
-  // Parse SubjectPublicKeyInfo DER
-  Ed25519PublicKey::from_der(&der)
-    .map_err(|e| worker::Error::RustError(format!("Public key parse error: {e}")))
-}
-
-pub fn require_device_auth(req: &Request, env: &Env, pigeon_id: &str) -> worker::Result<()> {
-  let auth_header = req.headers().get("Authorization")?;
-
-  let auth_header = auth_header
-    .ok_or_else(|| worker::Error::RustError("Unauthorized: Missing Authorization header".into()))?;
-
-  let token = auth_header
-    .strip_prefix("Bearer ")
-    .ok_or_else(|| worker::Error::RustError("Unauthorized: Missing Bearer token".into()))?;
-
-  let pubkey = load_public_key(env)?;
-
-  let options = VerificationOptions {
-    allowed_audiences: Some(HashSet::from([pigeon_id.to_string()])),
-    ..Default::default()
-  };
-
-  pubkey
-    .verify_token::<NoCustomClaims>(token, Some(options))
-    .map_err(|e| worker::Error::RustError(format!("Unauthorized: Invalid token ({e})")))?;
-
-  Ok(())
 }

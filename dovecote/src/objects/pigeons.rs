@@ -1,4 +1,4 @@
-use crate::objects::sign_device_token;
+use crate::objects::{mint_device_credential, verify_device_token};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
   PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowRow,
@@ -59,6 +59,7 @@ impl DurableObject for Pigeons {
           tags TEXT,
           connector TEXT NOT NULL,
           token_expires_at INTEGER DEFAULT 0,
+          device_public_key TEXT NOT NULL DEFAULT '',
           updated_at INTEGER DEFAULT (unixepoch()),
           created_at INTEGER DEFAULT (unixepoch())
         );
@@ -141,6 +142,7 @@ impl DurableObject for Pigeons {
       "/pigeon/acl/list" => list_acl(self, req).await,
       "/pigeon/acl/update" => update_acl(self, req).await,
       "/pigeon/shadow/get" => get_shadow(self, req).await,
+      "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       _ => Response::error("Not Found", 404),
@@ -336,10 +338,10 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
-  let (device_token, expires_at) = match sign_device_token(&do_id, &pigeons.env) {
+  let (public_key, device_token, expires_at) = match mint_device_credential() {
     Ok(t) => t,
     Err(e) => {
-      console_error!("JWT signing error: {e}");
+      console_error!("Device credential mint error: {e}");
       return Response::error("Internal Server Error", 500);
     }
   };
@@ -360,7 +362,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
 
   let pigeon = match pigeons.sql.exec(
-  "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at;",
+  "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at, device_public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at;",
   vec![
     do_id.clone().into(),
     row.flock_id.to_string().into(),
@@ -369,6 +371,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     row.tags.into(),
     connector_json.into(),
     expires_at.unix_timestamp().into(),
+    public_key.into(),
   ],
 ) {
     Ok(cursor) => match cursor.one::<PigeonRow>() {
@@ -436,10 +439,10 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
   let do_id = pigeons.state.id().to_string();
 
-  let (device_token, expires_at) = match sign_device_token(&do_id, &pigeons.env) {
+  let (public_key, device_token, expires_at) = match mint_device_credential() {
     Ok(t) => t,
     Err(e) => {
-      console_error!("JWT signing error: {e}");
+      console_error!("Device credential mint error: {e}");
       return Response::error("Internal Server Error", 500);
     }
   };
@@ -488,9 +491,17 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
+  // Overwriting device_public_key here is what revokes the previous token:
+  // once the old key is gone, its signature can never verify again,
+  // regardless of the token's own embedded expiry.
   match pigeons.sql.exec(
-    "UPDATE pigeons SET connector = ?, token_expires_at = ? WHERE id = ?;",
-    vec![connector_json.into(), expires_at.unix_timestamp().into(), do_id.into()],
+    "UPDATE pigeons SET connector = ?, token_expires_at = ?, device_public_key = ? WHERE id = ?;",
+    vec![
+      connector_json.into(),
+      expires_at.unix_timestamp().into(),
+      public_key.into(),
+      do_id.into(),
+    ],
   ) {
     Ok(_) => {
       match pigeons.sql.exec(
@@ -648,6 +659,64 @@ async fn list_acl(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
 async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
+
+  match pigeons.sql.exec(
+    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
+    None,
+  ) {
+    Ok(cursor) => match cursor.one::<PigeonShadowRow>() {
+      Ok(s) => Response::from_json(&PigeonShadow::from(s)),
+      Err(e) => {
+        console_error!("PigeonShadow deserialization error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("PigeonShadow READ error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+#[derive(serde::Deserialize)]
+struct DevicePublicKeyRow {
+  device_public_key: String,
+}
+
+/// Device-facing shadow read. Unlike `get_shadow`, this is not gated by
+/// `is_authorized`/`X-User-Id` — a device has no Kratos user identity.
+/// Instead it verifies the presented bearer token against this pigeon's
+/// own stored public key, which only this DO (the source of truth for the
+/// pigeon's current credential) holds.
+async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  let Ok(Some(auth_header)) = req.headers().get("Authorization") else {
+    return Response::error("Unauthorized: Missing Authorization header", 401);
+  };
+
+  let Some(token) = auth_header.strip_prefix("Bearer ") else {
+    return Response::error("Unauthorized: Missing Bearer token", 401);
+  };
+
+  let public_key = match pigeons
+    .sql
+    .exec("SELECT device_public_key FROM pigeons LIMIT 1;", None)
+  {
+    Ok(cursor) => match cursor.one::<DevicePublicKeyRow>() {
+      Ok(row) => row.device_public_key,
+      Err(e) => {
+        console_error!("Pigeon public key deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeon public key READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  if !verify_device_token(token, &public_key) {
+    return Response::error("Unauthorized: Invalid token", 401);
+  }
 
   match pigeons.sql.exec(
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",

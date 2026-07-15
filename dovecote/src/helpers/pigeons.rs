@@ -20,6 +20,17 @@ pub async fn proxy_to_pigeon_do(
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
+  // Device-facing routes carry no Kratos session — their Authorization
+  // header is the credential the DO itself verifies (see
+  // objects::verify_device_token). Forwarding it unconditionally is
+  // harmless for user-authenticated DO routes, which never inspect it.
+  if let Ok(Some(auth_header)) = req.headers().get("Authorization") {
+    init.headers.set("Authorization", &auth_header).map_err(|e| {
+      console_error!("Failed to set Authorization: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+  }
+
   // Forward the request body if present
   if req.method() != worker::Method::Get
     && let Ok(body) = req.text().await
