@@ -1,5 +1,5 @@
 name = "fancier"
-compatibility_date = "2026-07-09"
+compatibility_date = "2026-07-15"
 send_metrics = false
 
 [observability]

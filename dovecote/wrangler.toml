@@ -1,5 +1,5 @@
 name = "dovecote"
-compatibility_date = "2026-07-09"
+compatibility_date = "2026-07-15"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
@@ -34,7 +34,7 @@ watch_dir = ["./src"]
 
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
-ROOT_URL = "http://127.0.0.1:4433"
+ROOT_URL = "http://127.0.0.1:4455"
 
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name

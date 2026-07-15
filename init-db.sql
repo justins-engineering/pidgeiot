@@ -1,3 +1,5 @@
+CREATE ROLE dovecote WITH LOGIN PASSWORD 'secret';
+
 CREATE DATABASE dovecote OWNER dovecote;
 
 \c dovecote;
