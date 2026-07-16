@@ -125,6 +125,9 @@ fn FlockCard(flock: Flock) -> Element {
 
 #[component]
 fn CreateFlockModal() -> Element {
+  let mut is_saving = use_signal(|| false);
+  let mut submit_error = use_signal(|| Option::<String>::None);
+
   rsx! {
     dialog { class: "modal", id: "create_flock_modal",
       div { class: "modal-box relative max-w-xs md:max-w-sm",
@@ -143,10 +146,15 @@ fn CreateFlockModal() -> Element {
                       flock.name = val;
                   }
               }
+              is_saving.set(true);
+              submit_error.set(None);
               if api::flocks::create(&flock).await.is_some() {
+                  is_saving.set(false);
                   document::eval(r#"document.getElementById("create_flock_modal").close();"#);
+              } else {
+                  is_saving.set(false);
+                  submit_error.set(Some("Failed to create flock. Please try again.".to_string()));
               }
-            // If None, modal stays open — user can retry
           },
           fieldset { class: "fieldset mt-5",
             legend { class: "fieldset-legend", "Name" }
@@ -160,8 +168,20 @@ fn CreateFlockModal() -> Element {
               }
             }
           }
+          if let Some(err) = submit_error.read().as_ref() {
+            p { class: "text-error text-xs mt-2", "⚠️ {err}" }
+          }
           div { class: "mt-5 flex items-center justify-end gap-3",
-            button { class: "btn btn-primary", r#type: "submit", "Create" }
+            button {
+              class: "btn btn-primary",
+              r#type: "submit",
+              disabled: is_saving(),
+              if is_saving() {
+                span { class: "loading loading-spinner loading-sm" }
+              } else {
+                "Create"
+              }
+            }
           }
         }
       }

@@ -279,6 +279,8 @@ fn ConnectorInfo(
 
   let mut copied = use_signal(|| false);
   let mut refreshed_token = use_signal(|| None::<String>);
+  let mut is_refreshing = use_signal(|| false);
+  let mut refresh_error = use_signal(|| Option::<String>::None);
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
@@ -406,15 +408,35 @@ fn ConnectorInfo(
                 } else {
                   button {
                     class: "btn btn-warning btn-sm",
+                    disabled: is_refreshing(),
                     onclick: move |_| {
                         let id = pigeon_id.clone();
                         async move {
-                            if let Some(token) = api::pigeons::refresh_token(&id).await {
-                                refreshed_token.set(Some(token));
+                            is_refreshing.set(true);
+                            refresh_error.set(None);
+                            match api::pigeons::refresh_token(&id).await {
+                                Some(token) => {
+                                    is_refreshing.set(false);
+                                    refreshed_token.set(Some(token));
+                                }
+                                None => {
+                                    is_refreshing.set(false);
+                                    refresh_error
+                                        .set(
+                                            Some(
+                                                "Failed to refresh token. Please try again."
+                                                    .to_string(),
+                                            ),
+                                        );
+                                }
                             }
                         }
                     },
-                    "Refresh Token"
+                    if is_refreshing() {
+                      span { class: "loading loading-spinner loading-xs" }
+                    } else {
+                      "Refresh Token"
+                    }
                   }
                 }
               }
@@ -432,6 +454,10 @@ fn ConnectorInfo(
             }
           }
         }
+      }
+
+      if let Some(err) = refresh_error.read().as_ref() {
+        p { class: "text-error text-xs", "⚠️ {err}" }
       }
 
       if let Some(_token) = refreshed_token() {
@@ -527,6 +553,8 @@ pub fn EditShadowModal(
   });
 
   let mut error_msg = use_signal(|| Option::<String>::None);
+  let mut submit_error = use_signal(|| Option::<String>::None);
+  let mut is_saving = use_signal(|| false);
 
   rsx! {
     dialog { class: "modal", id: "edit_shadow_modal",
@@ -551,23 +579,29 @@ pub fn EditShadowModal(
                   match serde_json::from_str::<serde_json::Value>(&raw_str) {
                       Ok(json_value) => {
                           error_msg.set(None);
+                          submit_error.set(None);
+                          is_saving.set(true);
 
                           let req = PigeonShadowUpdateRequest {
                               target_config: json_value,
                           };
 
-                          if let Some(new_shadow) = crate::api::pigeons::update_shadow(
-                                  &pigeon_id,
-                                  &req,
-                              )
-                              .await
-                          {
-                              if let Some(detail) = pigeon_detail.write().as_mut() {
-                                  detail.shadow = new_shadow;
+                          match crate::api::pigeons::update_shadow(&pigeon_id, &req).await {
+                              Some(new_shadow) => {
+                                  if let Some(detail) = pigeon_detail.write().as_mut() {
+                                      detail.shadow = new_shadow;
+                                  }
+                                  is_saving.set(false);
+                                  document::eval(
+                                      r#"document.getElementById("edit_shadow_modal").close();"#,
+                                  );
                               }
-                              document::eval(
-                                  r#"document.getElementById("edit_shadow_modal").close();"#,
-                              );
+                              None => {
+                                  is_saving.set(false);
+                                  submit_error.set(
+                                      Some("Failed to save shadow. Please try again.".to_string()),
+                                  );
+                              }
                           }
                       }
                       Err(err) => {
@@ -613,6 +647,13 @@ pub fn EditShadowModal(
                   }
                 }
               }
+              if let Some(err) = submit_error.read().as_ref() {
+                label { class: "label py-1",
+                  span { class: "label-text-alt text-error font-medium text-xs",
+                    "⚠️ {err}"
+                  }
+                }
+              }
             }
           }
 
@@ -623,8 +664,12 @@ pub fn EditShadowModal(
             button {
               class: "btn btn-primary shadow-md min-w-[120px]",
               r#type: "submit",
-              disabled: error_msg.read().is_some(),
-              "Save Changes"
+              disabled: error_msg.read().is_some() || is_saving(),
+              if is_saving() {
+                span { class: "loading loading-spinner loading-sm" }
+              } else {
+                "Save Changes"
+              }
             }
           }
         }
@@ -653,18 +698,30 @@ fn DeletePigeonModal(
   let nav = use_navigator();
   let mut local_session = use_context::<crate::LocalSession>();
   let mut input_value = use_signal(String::new);
+  let mut is_deleting = use_signal(|| false);
+  let mut error_msg = use_signal(|| Option::<String>::None);
   let is_confirmed = input_value() == confirm_value;
 
   rsx! {
-    div { class: "modal modal-open",
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "delete_pigeon_title",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape && !is_deleting() {
+              on_close.call(());
+          }
+      },
       div { class: "modal-box relative max-w-sm",
         button {
           class: "btn btn-sm btn-circle btn-ghost absolute inset-e-2 top-2",
           r#type: "button",
+          disabled: is_deleting(),
           onclick: move |_| on_close.call(()),
           Icon { icon: LdX, title: "close" }
         }
-        h3 { class: "text-lg font-bold text-error", "Delete Pigeon" }
+        h3 { class: "text-lg font-bold text-error", id: "delete_pigeon_title", "Delete Pigeon" }
         p { class: "py-4 text-sm text-base-content/80",
           "This permanently deletes the pigeon and revokes its device credentials. "
           strong { "This cannot be undone." }
@@ -678,31 +735,52 @@ fn DeletePigeonModal(
           class: "input input-bordered w-full text-sm font-mono",
           r#type: "text",
           autocomplete: "off",
-          autofocus: true,
+          disabled: is_deleting(),
           value: "{input_value}",
           oninput: move |e| input_value.set(e.value()),
+          onmounted: move |e| async move {
+              let _ = e.set_focus(true).await;
+          },
+        }
+        if let Some(err) = error_msg.read().as_ref() {
+          p { class: "text-error text-xs mt-2", "⚠️ {err}" }
         }
         div { class: "modal-action",
           button {
             class: "btn btn-ghost",
+            disabled: is_deleting(),
             onclick: move |_| on_close.call(()),
             "Cancel"
           }
           button {
             class: "btn btn-error",
-            disabled: !is_confirmed,
+            disabled: !is_confirmed || is_deleting(),
             onclick: move |_| {
                 let pigeon_id = pigeon_id.clone();
                 async move {
+                    is_deleting.set(true);
+                    error_msg.set(None);
                     if api::pigeons::delete(&pigeon_id).await.is_some() {
                         if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
                             flock.pigeon_ids.retain(|id| id != &pigeon_id);
                         }
                         nav.replace(Route::Pigeons { flock_id });
+                    } else {
+                        is_deleting.set(false);
+                        error_msg
+                            .set(
+                                Some(
+                                    "Failed to delete pigeon. Please try again.".to_string(),
+                                ),
+                            );
                     }
                 }
             },
-            "Delete Pigeon"
+            if is_deleting() {
+              span { class: "loading loading-spinner loading-sm" }
+            } else {
+              "Delete Pigeon"
+            }
           }
         }
       }
@@ -716,6 +794,8 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
     Connector::Coap(_) => "Coap".to_string(),
     Connector::Https(_) => "Https".to_string(),
   });
+  let mut is_saving = use_signal(|| false);
+  let mut submit_error = use_signal(|| Option::<String>::None);
 
   rsx! {
     dialog { class: "modal", id: "update_pigeon_modal",
@@ -760,9 +840,17 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                       _ => Some(Connector::Https(HttpsConfig::default())),
                   };
 
+                  is_saving.set(true);
+                  submit_error.set(None);
                   if api::pigeons::update(&pigeon_id, &pur).await.is_some() {
+                      is_saving.set(false);
                       document::eval(
                           r#"document.getElementById("update_pigeon_modal").close();"#,
+                      );
+                  } else {
+                      is_saving.set(false);
+                      submit_error.set(
+                          Some("Failed to update pigeon. Please try again.".to_string()),
                       );
                   }
               }
@@ -832,8 +920,20 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
               }
             }
           }
+          if let Some(err) = submit_error.read().as_ref() {
+            p { class: "text-error text-xs mt-2", "⚠️ {err}" }
+          }
           div { class: "mt-6 flex items-center justify-end",
-            button { class: "btn btn-primary w-full", r#type: "submit", "Update Pigeon" }
+            button {
+              class: "btn btn-primary w-full",
+              r#type: "submit",
+              disabled: is_saving(),
+              if is_saving() {
+                span { class: "loading loading-spinner loading-sm" }
+              } else {
+                "Update Pigeon"
+              }
+            }
           }
         }
       }

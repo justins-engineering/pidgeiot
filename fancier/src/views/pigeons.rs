@@ -4,6 +4,7 @@ use capsules::{CoapConfig, Connector, HttpsConfig, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
+use wasm_bindgen_futures::JsFuture;
 
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
@@ -122,11 +123,27 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 #[component]
 fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
   let mut copied = use_signal(|| false);
+  let mut copy_failed = use_signal(|| false);
 
   rsx! {
-    div { class: "modal modal-open",
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "token_reveal_title",
+      tabindex: "-1",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape {
+              on_close.call(());
+          }
+      },
+      onmounted: move |e| async move {
+          let _ = e.set_focus(true).await;
+      },
       div { class: "modal-box relative max-w-2xl",
-        h3 { class: "text-lg font-bold text-warning flex items-center gap-2",
+        h3 {
+          class: "text-lg font-bold text-warning flex items-center gap-2",
+          id: "token_reveal_title",
           "🔑 Device Token"
         }
         p { class: "py-4 text-sm text-base-content/80",
@@ -139,14 +156,21 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
           button {
             class: "btn btn-square btn-ghost btn-sm shrink-0",
             onclick: move |_| {
-                #[cfg(feature = "web")]
-                if let Some(window) = web_sys::window() {
-                    let _ = window.navigator().clipboard().write_text(&token);
-                    copied.set(true);
+                let token = token.clone();
+                async move {
+                    #[cfg(feature = "web")]
+                    if let Some(window) = web_sys::window() {
+                        let result = JsFuture::from(window.navigator().clipboard().write_text(&token))
+                            .await;
+                        copied.set(result.is_ok());
+                        copy_failed.set(result.is_err());
+                    }
                 }
             },
             if copied() {
               span { class: "text-success text-xs", "Copied!" }
+            } else if copy_failed() {
+              span { class: "text-error text-xs", "Copy failed — select and copy manually" }
             } else {
               Icon { icon: LdCopy }
             }
@@ -167,6 +191,8 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
 fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> Element {
   let mut selected_connector = use_signal(|| "Https".to_string());
   let mut local_session = use_context::<crate::LocalSession>();
+  let mut is_saving = use_signal(|| false);
+  let mut submit_error = use_signal(|| Option::<String>::None);
 
   rsx! {
     dialog { class: "modal", id: "create_pigeon_modal",
@@ -205,13 +231,21 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> 
                       _ => Connector::Https(HttpsConfig::default()),
                   };
 
+                  is_saving.set(true);
+                  submit_error.set(None);
                   if let Some((pigeon_id, token)) = api::pigeons::create(&pcr).await {
+                      is_saving.set(false);
                       if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
                           flock.pigeon_ids.push(pigeon_id);
                       }
                       on_created.call(token);
                       document::eval(
                           r#"document.getElementById("create_pigeon_modal").close();"#,
+                      );
+                  } else {
+                      is_saving.set(false);
+                      submit_error.set(
+                          Some("Failed to register pigeon. Please try again.".to_string()),
                       );
                   }
               }
@@ -260,8 +294,20 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> 
               }
             }
           }
+          if let Some(err) = submit_error.read().as_ref() {
+            p { class: "text-error text-xs mt-2", "⚠️ {err}" }
+          }
           div { class: "mt-6 flex items-center justify-end",
-            button { class: "btn btn-primary w-full", r#type: "submit", "Register Device" }
+            button {
+              class: "btn btn-primary w-full",
+              r#type: "submit",
+              disabled: is_saving(),
+              if is_saving() {
+                span { class: "loading loading-spinner loading-sm" }
+              } else {
+                "Register Device"
+              }
+            }
           }
         }
       }
