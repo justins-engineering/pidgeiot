@@ -1190,6 +1190,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "getrandom 0.2.17",
+ "js-sys",
  "ory-kratos-client-wasm 0.2.3 (git+https://github.com/justins-engineering/kratos-client-rust.git)",
  "serde",
  "serde-wasm-bindgen",
@@ -1197,6 +1198,9 @@ dependencies = [
  "time",
  "tokio-postgres",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "worker",
 ]
 

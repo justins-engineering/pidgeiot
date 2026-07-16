@@ -5,6 +5,11 @@ pub use hyperdrive::get_hyperdrive_conn;
 mod auth;
 pub use auth::authenticate_browser;
 
+mod access;
+// Not yet called from main() — staging rollout is paused. See access.rs.
+#[allow(unused_imports)]
+pub use access::verify_cf_access;
+
 mod flocks;
 pub use flocks::create_user_flock;
 pub use flocks::get_user_flocks;
