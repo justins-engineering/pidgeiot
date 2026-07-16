@@ -248,6 +248,9 @@ pub struct PigeonShadow {
   pub current_version: i32,
   pub target_config: JsonString,
   pub current_config: JsonString,
+  // Intentionally i64 unix seconds, not OffsetDateTime like other public API
+  // variants in this crate: this field is parsed by device-side Zephyr firmware,
+  // and a minimal wire size is a priority. Do not convert.
   pub updated_at: i64,
 }
 
