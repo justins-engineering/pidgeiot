@@ -66,5 +66,16 @@ services:
     networks:
       - intranet
 
+  greptimedb:
+    image: greptime/greptimedb:latest
+    ports:
+      - '4000:4000' # HTTP
+      - '4001:4001' # gRPC
+      - '4002:4002' # MySQL wire
+      - '4003:4003' # Postgres wire
+    command: standalone start --http-addr 0.0.0.0:4000 --rpc-bind-addr 0.0.0.0:4001 --mysql-addr 0.0.0.0:4002 --postgres-addr 0.0.0.0:4003
+    networks:
+      - intranet
+
 networks:
   intranet:
