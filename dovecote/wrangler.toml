@@ -32,6 +32,32 @@ new_sqlite_classes = ["Pigeons"]
 command = "cargo install -q worker-build && worker-build --release"
 watch_dir = ["./src"]
 
+# Staging: a SEPARATE script named `dovecote-staging` (wrangler's default
+# `<name>-<env>` naming — no `name` override, so this can never target the
+# production `dovecote` script). Exists because version-preview URLs are not
+# generated for Workers that implement a Durable Object
+# (https://developers.cloudflare.com/workers/configuration/previews/), so the
+# preview-alias staging model used by fancier is impossible here.
+# `routes = []` overrides the inherited api.pidgeiot.com custom domain;
+# staging is reachable only at dovecote-staging.<subdomain>.workers.dev.
+# Note: fresh DO namespace (staging pigeons/tokens are disjoint from prod),
+# but the Hyperdrive binding — and thus the Postgres mirror — is shared with
+# production, so staging-created entities appear in the prod mirror tables.
+[env.staging]
+workers_dev = true
+routes = []
+
+[env.staging.vars]
+KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
+ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
+
+[env.staging.durable_objects]
+bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+
+[[env.staging.hyperdrive]]
+binding = "YugabyteDB"
+id = "f2c59dfa75114889815fd453ac0db62a"
+
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
