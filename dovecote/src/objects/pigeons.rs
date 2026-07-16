@@ -10,7 +10,7 @@ use worker::{
 };
 
 const HTTP_ENDPOINT: &str = "https://api.pidgeiot.com/device/pigeons/";
-const COAP_ENDPOINT: &str = "coaps://api.pidgeiot.com/device/pigeons/";
+const COAP_ENDPOINT: &str = "coaps+tcp://api.pidgeiot.com/device/pigeons/";
 
 #[inline]
 pub fn build_http_endpoint(do_id: &str) -> String {
@@ -234,8 +234,8 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
           Connector::Coap(c) => Connector::Coap(CoapConfig {
             endpoint: c.endpoint,
             token: String::new(),
-            dtls_psk_identity: c.dtls_psk_identity,
-            dtls_psk_secret: None,
+            tls_psk_identity: c.tls_psk_identity,
+            tls_psk_secret: None,
           }),
         };
 
@@ -282,8 +282,8 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     Connector::Coap(c) => Connector::Coap(CoapConfig {
       endpoint: c.endpoint,
       token: String::new(),
-      dtls_psk_identity: c.dtls_psk_identity,
-      dtls_psk_secret: None,
+      tls_psk_identity: c.tls_psk_identity,
+      tls_psk_secret: None,
     }),
   };
 
@@ -362,14 +362,14 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let server_connector = match row.connector {
     Connector::Https(_) => Connector::Https(HttpsConfig {
-      endpoint: format!("https://api.pidgeiot.com/device/pigeons/{}", do_id),
+      endpoint: build_http_endpoint(&do_id),
       token: device_token,
     }),
     Connector::Coap(_) => Connector::Coap(CoapConfig {
-      endpoint: format!("coaps://api.pidgeiot.com/device/pigeons/{}", do_id),
+      endpoint: build_coap_endpoint(&do_id),
       token: device_token.clone(),
-      dtls_psk_identity: Some(do_id.clone()),
-      dtls_psk_secret: Some(device_token),
+      tls_psk_identity: Some(do_id.clone()),
+      tls_psk_secret: Some(device_token),
     }),
   };
 
@@ -493,8 +493,8 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       Connector::Coap(CoapConfig {
         endpoint,
         token: device_token.clone(),
-        dtls_psk_identity: Some(do_id.clone()),
-        dtls_psk_secret: Some(device_token),
+        tls_psk_identity: Some(do_id.clone()),
+        tls_psk_secret: Some(device_token),
       })
     }
   };

@@ -271,18 +271,35 @@ pub struct PigeonShadowUpdateRequest {
   pub target_config: serde_json::Value,
 }
 
+// Device-facing report-back: the device echoes the `target_version` it just
+// applied (read from an earlier shadow GET) alongside the resulting
+// `current_config`, so the two stay associated even if `target_config`
+// changes again before the device catches up.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct PigeonShadowReportRequest {
+  pub current_config: serde_json::Value,
+  pub current_version: i32,
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct HttpsConfig {
   pub endpoint: String,
-  pub token: String, // JWT — returned once, never stored again
+  // Base64url-encoded Ed25519-signed binary bearer token (version | expires_at | signature),
+  // not a JWT. Persisted as part of the DO's/Postgres's `connector` column, but stripped from
+  // every API response except create/token-refresh (see dovecote's get/get_detail).
+  pub token: String,
 }
 
+// CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://), not CoAP-over-DTLS/UDP — matches the sibling
+// ~/pigeon Zephyr device library, which has no on-device UDP support. tls_psk_secret currently
+// mirrors `token` (both come from the same mint_device_credential() call), letting one refresh
+// rotate both the bearer credential and the TLS-PSK secret together.
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct CoapConfig {
   pub endpoint: String,
   pub token: String,
-  pub dtls_psk_identity: Option<String>,
-  pub dtls_psk_secret: Option<String>,
+  pub tls_psk_identity: Option<String>,
+  pub tls_psk_secret: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
