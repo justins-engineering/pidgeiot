@@ -6,8 +6,6 @@ mod auth;
 pub use auth::authenticate_browser;
 
 mod access;
-// Not yet called from main() — staging rollout is paused. See access.rs.
-#[allow(unused_imports)]
 pub use access::verify_cf_access;
 
 mod flocks;

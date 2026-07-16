@@ -1,9 +1,3 @@
-// Staging's Cloudflare Access gate is designed but not yet wired into
-// `main()` (staging rollout is paused pending a worker-naming decision —
-// see git history). Silence the resulting dead-code warnings rather than
-// leaving them as noise; drop this once `verify_cf_access` is called.
-#![allow(dead_code)]
-
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use js_sys::{Array, Object, Reflect};
 use serde::Deserialize;

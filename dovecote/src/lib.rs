@@ -1,7 +1,7 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
   get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
-  update_shadow_pg_db, upsert_acl_pg_db,
+  update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access,
 };
 use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use futures::future::join_all;
@@ -122,6 +122,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
   // instead (see `build_cors`), since a single `Cors` can't be shared
   // by-reference across multiple `async move` closures.
   let fallback_cors = build_cors(&env, &req);
+
+  // Only enforced when CF_ACCESS_AUD/CF_ACCESS_CERTS_URL are configured
+  // (staging's uploaded-version vars) — dev and production don't set
+  // these, so verify_cf_access is a no-op there and this block never
+  // runs. Rejects before the router sees the request at all.
+  if let Err(reason) = verify_cf_access(&req, &env).await {
+    console_error!("Cloudflare Access rejected request: {reason}");
+    return Response::error("Forbidden", 403)
+      .unwrap()
+      .with_cors(&fallback_cors);
+  }
 
   let router = Router::new()
     .options_async("/*any", |req, ctx: RouteContext<()>| async move {
