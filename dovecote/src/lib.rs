@@ -171,6 +171,41 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .await?
         .with_cors(&cors)
     })
+    .post_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // Same device-auth model as the GET route above — no X-User-Id here.
+      let do_response = proxy_to_pigeon_do(req, "", &obj_id, "/device/shadow/report").await?;
+      if do_response.status_code() >= 400 {
+        return do_response.with_cors(&cors);
+      }
+
+      let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
+
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) = update_shadow_pg_db(client, &pigeon_id, &shadow).await {
+            console_error!("External DB Sync Error for shadow {}: {e}", pigeon_id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
+      }
+
+      Response::from_json(&shadow)?.with_cors(&cors)
+    })
+    .post_async(
+      "/device/pigeons/:pigeon_id/telemetry",
+      |req, ctx| async move {
+        let cors = build_cors(&ctx.env, &req);
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // Same device-auth model as the shadow device routes above.
+        proxy_to_pigeon_do(req, "", &obj_id, "/device/telemetry")
+          .await?
+          .with_cors(&cors)
+      },
+    )
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {

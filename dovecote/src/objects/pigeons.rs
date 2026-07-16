@@ -1,8 +1,8 @@
 use crate::objects::{mint_device_credential, verify_device_token};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
-  PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowRow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
+  PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
+  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
@@ -139,6 +139,21 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_acl table");
 
+    // Latest-value-per-key store (mirrors AWS IoT's reported-state
+    // simplicity, not a time-series log) -- a device's telemetry report
+    // overwrites, it doesn't append. A history/range-query table is a
+    // deliberately deferred follow-up, not implemented here.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_telemetry (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL,
+          reported_at INTEGER DEFAULT (unixepoch())
+        );",
+        None,
+      )
+      .expect("created pigeon_telemetry table");
+
     Pigeons { sql, state, env }
   }
 
@@ -156,6 +171,8 @@ impl DurableObject for Pigeons {
       "/pigeon/acl/update" => update_acl(self, req).await,
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
+      "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
+      "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
@@ -723,18 +740,25 @@ struct DevicePublicKeyRow {
   device_public_key: String,
 }
 
-/// Device-facing shadow read. Unlike `get_shadow`, this is not gated by
-/// `is_authorized`/`X-User-Id` — a device has no Kratos user identity.
-/// Instead it verifies the presented bearer token against this pigeon's
-/// own stored public key, which only this DO (the source of truth for the
-/// pigeon's current credential) holds.
-async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+/// Device auth for the `/pigeon/device/*` routes. Mirrors `is_authorized`/
+/// `is_owner`'s early-return convention (`unwrap_or_return_response!`) but
+/// checks no `X-User-Id`/ACL — a device has no Kratos user identity.
+/// Instead it verifies the request's bearer token against this pigeon's own
+/// stored `device_public_key`, which only this DO (the source of truth for
+/// the pigeon's current credential) holds.
+fn is_authorized_device(
+  pigeons: &Pigeons,
+  req: &Request,
+) -> std::result::Result<(), Result<Response>> {
   let Ok(Some(auth_header)) = req.headers().get("Authorization") else {
-    return Response::error("Unauthorized: Missing Authorization header", 401);
+    return Err(Response::error(
+      "Unauthorized: Missing Authorization header",
+      401,
+    ));
   };
 
   let Some(token) = auth_header.strip_prefix("Bearer ") else {
-    return Response::error("Unauthorized: Missing Bearer token", 401);
+    return Err(Response::error("Unauthorized: Missing Bearer token", 401));
   };
 
   let public_key = match pigeons
@@ -745,18 +769,26 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
       Ok(row) => row.device_public_key,
       Err(e) => {
         console_error!("Pigeon public key deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return Err(Response::error("Internal Server Error", 500));
       }
     },
     Err(e) => {
       console_error!("Pigeon public key READ error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return Err(Response::error("Internal Server Error", 500));
     }
   };
 
   if !verify_device_token(token, &public_key) {
-    return Response::error("Unauthorized: Invalid token", 401);
+    return Err(Response::error("Unauthorized: Invalid token", 401));
   }
+
+  Ok(())
+}
+
+/// Device-facing shadow read. Unlike `get_shadow`, this is not gated by
+/// `is_authorized`/`X-User-Id` — see `is_authorized_device`.
+async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
   match pigeons.sql.exec(
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
@@ -774,6 +806,97 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
       Response::error("Internal Server Error", 500)
     }
   }
+}
+
+/// Device-facing shadow report-back. Same device-auth model as
+/// `get_shadow_device` (bearer token verified against this pigeon's own
+/// `device_public_key`, no `X-User-Id`/ACL) — lets the device confirm it
+/// applied `target_config` by writing its own `current_config` plus the
+/// `target_version` it just applied (echoed back from an earlier GET, into
+/// `current_version`) — the SQL layer never re-derives this from
+/// `target_version` itself, since the device might still be catching up to
+/// a newer target by the time this lands.
+async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  let report = match req.json::<PigeonShadowReportRequest>().await {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Shadow REPORT json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  let config_str = serde_json::to_string(&report.current_config).map_err(|e| {
+    console_error!("Shadow config serialization error: {e}");
+    worker::Error::RustError("Internal Server Error".into())
+  })?;
+
+  match pigeons.sql.exec(
+    "UPDATE pigeon_shadow SET current_config = ?, current_version = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
+    vec![config_str.into(), report.current_version.into()],
+  ) {
+    Ok(_) => match pigeons.sql.exec(
+      "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
+      None,
+    ) {
+      Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
+        Ok(s) => Response::from_json(&PigeonShadow::from(s)),
+        Err(e) => {
+          console_error!("PigeonShadow deserialization error: {e}");
+          Response::error("Internal Server Error", 500)
+        }
+      },
+      Err(e) => {
+        console_error!("PigeonShadow READ error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("Shadow REPORT execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Device-facing telemetry ingestion. Same device-auth model as
+/// `get_shadow_device`/`report_shadow_device` (bearer token verified against
+/// this pigeon's own `device_public_key`, no `X-User-Id`/ACL). Body is a
+/// flat JSON object of string key/value pairs (matches pigeon's
+/// pigeon_set_shadow_param/pigeon_shadow_flush wire shape); each key
+/// overwrites its own row in `pigeon_telemetry` -- this is a
+/// latest-value-per-key store, not a time-series log (see the table's
+/// creation comment in `DurableObject::new`).
+async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  let metrics = match req
+    .json::<std::collections::HashMap<String, String>>()
+    .await
+  {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Telemetry json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  if metrics.is_empty() {
+    return Response::error("Bad Request: Empty telemetry report", 400);
+  }
+
+  for (key, value) in &metrics {
+    if let Err(e) = pigeons.sql.exec(
+      "INSERT INTO pigeon_telemetry (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, reported_at = unixepoch();",
+      vec![key.clone().into(), value.clone().into()],
+    ) {
+      console_error!("Telemetry UPSERT error for key '{key}': {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  }
+
+  Response::from_json(&metrics)
 }
 
 async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
