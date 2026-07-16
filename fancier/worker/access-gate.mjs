@@ -1,20 +1,20 @@
 // Cloudflare Access gate for the fancier staging deployment.
 //
-// PAUSED (2026-07-16): staging setup is on hold pending a naming decision
-// (reusing "fancier" as the [env.staging] worker name would silently
-// overwrite the live production Worker serving pidgeiot.com — see the team
-// thread). This file is intentionally NOT referenced by wrangler.toml right
-// now, so it has no effect on any build or deploy; it's parked here, already
-// verified end-to-end (local mock JWKS + wrangler dev), ready to wire in via
-// `[env.staging] main = "worker/access-gate.mjs"` once that's resolved.
+// Staging here means a Workers *version preview* of the same "fancier"
+// script that serves production (see wrangler.staging.toml), not a separate
+// script or environment — so this file is written to be safe to wire in
+// permanently: it only enforces anything when CF_ACCESS_AUD and
+// CF_ACCESS_CERTS_URL are both present as vars. Production's committed vars
+// never set them, and they're deliberately never committed anywhere either
+// (supplied per-upload via `wrangler versions upload --var`) — so a plain
+// `wrangler deploy`, or even an accidental future promotion of a preview
+// version to production, can't brick production traffic: without those vars
+// this handler is just `return env.ASSETS.fetch(request)`. Mirrors the same
+// var-gated pattern as dovecote/src/helpers/access.rs.
 //
-// Intended wiring: wrangler.toml's [env.staging] would point `main` at this
-// file instead of serving [assets] directly, so every staging request passes
-// through here first. It validates the `Cf-Access-Jwt-Assertion` header that
-// Cloudflare Access attaches to authenticated requests, then either hands off
-// to the ASSETS binding (the Dioxus release build) or 403s. Production stays
-// assets-only — this file would never be wired into the top-level (default)
-// environment.
+// It validates the `Cf-Access-Jwt-Assertion` header that Cloudflare Access
+// attaches to authenticated requests, then either hands off to the ASSETS
+// binding (the Dioxus release build) or 403s.
 //
 // The signing keys are never hardcoded: Cloudflare rotates them, so they're
 // fetched from env.CF_ACCESS_CERTS_URL and cached in memory per-isolate for
@@ -125,6 +125,13 @@ async function verifyAccessJwt(token, env) {
 
 export default {
   async fetch(request, env) {
+    // Not deployed with staging's Access config — pass straight through.
+    // See the file header: this is what keeps production (and an
+    // accidental promotion) safe even with this handler wired in as `main`.
+    if (!env.CF_ACCESS_AUD || !env.CF_ACCESS_CERTS_URL) {
+      return env.ASSETS.fetch(request);
+    }
+
     const assertion = request.headers.get("Cf-Access-Jwt-Assertion");
     if (!assertion) {
       return new Response("Forbidden", { status: 403 });

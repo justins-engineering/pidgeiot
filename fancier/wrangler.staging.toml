@@ -1,0 +1,43 @@
+# Config for uploading a Workers *version preview* of the "fancier" script
+# (see worker/access-gate.mjs's header for why "staging" is a preview of the
+# same script rather than a separate one). Deliberately kept out of the main
+# wrangler.toml: production's regular `wrangler deploy` should never gain a
+# `main` script or run_worker_first — those add a Worker invocation on every
+# static asset request, which the plain [assets]-only production config
+# doesn't pay today. This file exists purely so `wrangler versions upload
+# -c wrangler.staging.toml` can attach a gated version to the same script.
+#
+# `name` intentionally matches production's — script identity in Cloudflare
+# is the name+account, not which config file defined it, so this uploads a
+# version of the SAME "fancier" script and gets a preview URL, never a
+# separate script. Never run `wrangler deploy -c wrangler.staging.toml`
+# (that would promote to live traffic) — only `versions upload`.
+#
+# CF_ACCESS_AUD / CF_ACCESS_CERTS_URL are NOT set here — supply them at
+# upload time via `--var`, e.g.:
+#   CLOUDFLARE_API_TOKEN=... bunx wrangler versions upload \
+#     -c wrangler.staging.toml \
+#     --var CF_ACCESS_AUD:<aud> \
+#     --var CF_ACCESS_CERTS_URL:https://justinsengineering.cloudflareaccess.com/cdn-cgi/access/certs
+# Without them, access-gate.mjs passes every request straight through to
+# ASSETS (see its header) — so an upload without --var is just as safe as
+# production, just without the gate active.
+
+name = "fancier"
+compatibility_date = "2026-07-15"
+send_metrics = false
+main = "worker/access-gate.mjs"
+
+[assets]
+directory = "../target/dx/fancier/release/web/public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Without this, Workers+Assets serves any request matching a static file
+# directly from ASSETS, never invoking `main` at all — confirmed by testing
+# locally: every request 200'd, even with no Cf-Access-Jwt-Assertion header,
+# because access-gate.mjs never ran.
+run_worker_first = true
+
+[build]
+command = "bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m && FANCIER_ENV=staging dx build --web --release --debug-symbols=false"
+watch_dir = ["./src", "./worker"]
