@@ -43,13 +43,13 @@ config:
       fill: color-mix(in oklch, #FC7C1E, transparent 85%) !important;
       stroke: #FC7C1E !important;
     }
-    .verizon path, .verizon rect {
-      fill: color-mix(in oklch, #D52B1E, transparent 85%) !important;
-      stroke: #D52B1E !important;
-    }
-    .k0s path, .k0s rect {
+    .selfhosted path, .selfhosted rect {
       fill: color-mix(in oklch, #1aaaff, transparent 85%) !important;
       stroke: #1aaaff !important;
+    }
+    .byo path, .byo rect {
+      fill: color-mix(in oklch, #D52B1E, transparent 85%) !important;
+      stroke: #D52B1E !important;
     }
     .endpoint path, .endpoint rect {
       fill: color-mix(in oklch, var(--color-primary), transparent 85%) !important;
@@ -65,52 +65,37 @@ flowchart TB
   classDef subTitle font-size:18px,font-weight: 500;
 
   subgraph Endpoints ["Endpoints"]
-    User(["User (UI/WASM)"]):::endpoint
+    User(["User (WASM Dashboard)"]):::endpoint
     IoT(["IoT Device(s)"]):::endpoint
   end
 
-  subgraph CellNet ["Carrier Network"]
-    VZW(["VZW ThingSpace (NIDD)"]):::verizon
-  end
-
   subgraph Cloudflare ["Cloudflare Edge Compute"]
-    IAP["IAP Worker\n(Auth Cache & Proxy)"]:::cloudflare
-    Router["Edge Router Worker\n(Internal POST RPC)"]:::cloudflare
-    B64["Base64 Decoder\n(Webhook Handler)"]:::cloudflare
-
-    DO_Pigeon["Pigeon DO (Partitioned 1:1)\n(Stateful Telemetry Buffer)"]:::cloudflare
-    Queue["Cloudflare Queue\n(Async Telemetry Flush)"]:::cloudflare
-    KV[("KV Cache\n(Kratos Sessions & Keto Permissions)")]:::cloudflare
+    Fancier["fancier Worker\n(Static WASM Dashboard Assets)"]:::cloudflare
+    Router["dovecote Edge Router\n(HTTPS / CoAP-over-TLS Ingestion)"]:::cloudflare
+    DO_Pigeon["Pigeon Durable Object\n(1:1 per device, SQLite, source of truth)"]:::cloudflare
+    Queue["Cloudflare Queue\n(Telemetry buffer)"]:::cloudflare
+    Hyperdrive[("Hyperdrive")]:::cloudflare
   end
 
-  subgraph Proxmox ["Proxmox VE Cluster (Hybrid Deployment)"]
-    subgraph K0s ["Kubernetes (K0s) - Stateless Control Plane"]
-      Kratos["Ory Kratos"]:::k0s
-      Keto["Ory Keto"]:::k0s
-      G_Meta["GreptimeDB\n(Frontend/Meta)"]:::k0s
-    end
-
-    subgraph LXC ["LXC Containers - Stateful Data Plane (NVMe Mounted)"]
-      YB[("YugabyteDB\n(Relational Metadata)")]:::storage
-      G_Data[("GreptimeDB\n(DataNodes)")]:::storage
-    end
+  subgraph SelfHosted ["Self-Hosted (docker-compose)"]
+    Kratos["Ory Kratos\n(Dashboard sessions)"]:::selfhosted
+    Postgres[("Postgres\n(Cross-device mirror + Kratos)")]:::storage
   end
 
-  class Endpoints,CellNet,Cloudflare,Proxmox,K0s,LXC subTitle;
+  subgraph BYO ["Bring Your Own (rolling out)"]
+    Greptime[("GreptimeDB-compatible endpoint\n(per device, optional)")]:::byo
+  end
+
+  class Endpoints,Cloudflare,SelfHosted,BYO subTitle;
 
   %% Routing
-  User <--> IAP
-  IoT <-- "HTTPS, CoAP, Etc." --> Router
-  IoT <-- "NIDD" --> CellNet
-  CellNet <-- "Webhook" --> B64
-  B64 --> Router
-  IAP -- "1. Validate Edge Cache" --> KV
-  IAP -- "2. Authorize Request" --> Router
-  Router -- "3. RPC via POST" --> DO_Pigeon
-  DO_Pigeon -- "Batches & Enqueues" --> Queue
-  Queue -- "Bulk Write" --> G_Meta
-  G_Meta -- "Distributed Write" --> G_Data
-  IAP -- "Cache Miss / Webhook Sync" --> Kratos
-  Keto --> YB
-  Kratos --> YB
-  Router -- "Atomic Schema Updates" --> YB
+  User <--> Fancier
+  User -- "Kratos session cookie" --> Kratos
+  IoT -- "Ed25519-signed 69-byte token" --> Router
+  Router -- "proxy_to_pigeon_do" --> DO_Pigeon
+  Router -- "X-User-Id" --> Kratos
+  DO_Pigeon -- "best-effort sync" --> Hyperdrive
+  Hyperdrive --> Postgres
+  DO_Pigeon -- "enqueue telemetry" --> Queue
+  Queue -- "consumer write" --> Postgres
+  DO_Pigeon -. "optional, per device" .-> Greptime
