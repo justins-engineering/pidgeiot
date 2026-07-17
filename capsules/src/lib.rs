@@ -86,6 +86,9 @@ pub struct PigeonRow {
   pub connector: String,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub token_expires_at: i64,
+  // JSON text like `connector`, NULL/absent when no user-defined endpoint is
+  // configured — most pigeons never set this.
+  pub telemetry_endpoint: Option<String>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -103,6 +106,9 @@ impl From<PigeonRow> for Pigeon {
       connector: serde_json::from_str(&row.connector).unwrap_or_default(),
       token_expires_at: OffsetDateTime::from_unix_timestamp(row.token_expires_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+      telemetry_endpoint: row
+        .telemetry_endpoint
+        .and_then(|s| serde_json::from_str(&s).ok()),
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -122,6 +128,8 @@ pub struct Pigeon {
   pub connector: Connector,
   #[serde(with = "time::serde::rfc3339")]
   pub token_expires_at: OffsetDateTime,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub telemetry_endpoint: Option<TelemetryEndpoint>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -138,10 +146,36 @@ impl Default for Pigeon {
       tags: None,
       connector: Connector::default(),
       token_expires_at: OffsetDateTime::UNIX_EPOCH,
+      telemetry_endpoint: None,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
   }
+}
+
+/// User-definable forwarding target for a pigeon's telemetry (task #18):
+/// when set, the queue consumer forwards each report to `url` as an
+/// InfluxDB line protocol v2 HTTP write (GreptimeDB-compatible) instead of
+/// our own `pigeon_telemetry_history` Postgres mirror — the DO's
+/// latest-value-per-key `pigeon_telemetry` upsert always happens either
+/// way. Stored as JSON text in the same column pattern as `connector`
+/// (no separate `*Row` variant needed — it carries no DB-native timestamp
+/// fields to convert). `auth_token` is stripped on GET the same as
+/// `connector`'s `token`/`tls_psk_secret` — it's only ever accepted on the
+/// dashboard PUT that sets it.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
+pub struct TelemetryEndpoint {
+  pub url: String,
+  pub db: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub auth_token: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct PigeonTelemetryEndpointUpdateRequest {
+  // `None` clears the endpoint (reverts to our own PG history); `Some`
+  // sets/replaces it.
+  pub telemetry_endpoint: Option<TelemetryEndpoint>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -316,3 +350,63 @@ impl Default for Connector {
     })
   }
 }
+
+// --- Telemetry (task #18) ---
+
+// DB model for the DO's `pigeon_telemetry` latest-value-per-key table
+// (SQLite integer timestamp, like PigeonRow/PigeonShadowRow above).
+#[derive(Deserialize, Debug)]
+pub struct TelemetryLatestRow {
+  pub key: String,
+  pub value: String,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub reported_at: i64,
+}
+
+impl From<TelemetryLatestRow> for TelemetryLatest {
+  fn from(row: TelemetryLatestRow) -> Self {
+    Self {
+      key: row.key,
+      value: row.value,
+      reported_at: OffsetDateTime::from_unix_timestamp(row.reported_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+    }
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TelemetryLatest {
+  pub key: String,
+  pub value: String,
+  #[serde(with = "time::serde::rfc3339")]
+  pub reported_at: OffsetDateTime,
+}
+
+// Postgres already hands back a native `OffsetDateTime` (unlike the DO's
+// SQLite bindings), so `pigeon_telemetry_history` rows populate this
+// directly — no `*Row` variant needed, same as `Flock`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TelemetryHistoryPoint {
+  pub pigeon_id: String,
+  pub key: String,
+  pub value: String,
+  pub value_num: Option<f64>,
+  #[serde(with = "time::serde::rfc3339")]
+  pub reported_at: OffsetDateTime,
+}
+
+// Query params shared by both history read routes (GET
+// /pigeons/:id/telemetry/history, GET /flocks/:id/telemetry/history).
+// All optional: no `key` returns every key, no range returns everything
+// within the implicit LIMIT the route applies.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TelemetryHistoryQuery {
+  pub key: Option<String>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub since: Option<OffsetDateTime>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub until: Option<OffsetDateTime>,
+}
+
+// Device logs (task #18) — see `PigeonLogChunkRow`/`PigeonLogChunk` above
+// (dovecote-2's shape landed first; not duplicating it here).
