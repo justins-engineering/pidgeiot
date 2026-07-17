@@ -25,10 +25,13 @@ pub async fn proxy_to_pigeon_do(
   // objects::verify_device_token). Forwarding it unconditionally is
   // harmless for user-authenticated DO routes, which never inspect it.
   if let Ok(Some(auth_header)) = req.headers().get("Authorization") {
-    init.headers.set("Authorization", &auth_header).map_err(|e| {
-      console_error!("Failed to set Authorization: {e}");
-      worker::Error::RustError("Internal Server Error".into())
-    })?;
+    init
+      .headers
+      .set("Authorization", &auth_header)
+      .map_err(|e| {
+        console_error!("Failed to set Authorization: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
   }
 
   // Forward the request body if present
@@ -36,6 +39,41 @@ pub async fn proxy_to_pigeon_do(
     && let Ok(body) = req.text().await
   {
     init.body = Some(body.into());
+  }
+
+  let do_req = Request::new_with_init(&format!("https://internal/pigeon{do_path}"), &init)
+    .map_err(|e| {
+      console_error!("Failed to create DO request: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  stub.fetch_with_request(do_req).await
+}
+
+/// Lightweight counterpart to `proxy_to_pigeon_do`, used only by the
+/// telemetry queue producer path (`POST /device/pigeons/:id/telemetry` in
+/// `lib.rs`, when a telemetry queue is bound for this environment) to check
+/// a device's bearer token against its owning DO *before* enqueueing
+/// anything. Forwards just the `Authorization` header (no body, no
+/// `X-User-Id`) to `do_path` and returns the DO's raw response so the
+/// caller can inspect its status code.
+pub async fn verify_device_via_do(
+  auth_header: Option<String>,
+  stub: &worker::ObjectId<'_>,
+  do_path: &str,
+) -> worker::Result<Response> {
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let mut init = RequestInit::default();
+  init.with_method(worker::Method::Post);
+  if let Some(auth) = auth_header {
+    init.headers.set("Authorization", &auth).map_err(|e| {
+      console_error!("Failed to set Authorization: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
   }
 
   let do_req = Request::new_with_init(&format!("https://internal/pigeon{do_path}"), &init)

@@ -19,3 +19,4 @@ pub use pigeons::proxy_to_pigeon_do;
 pub use pigeons::update_pigeon_pg_db;
 pub use pigeons::update_shadow_pg_db;
 pub use pigeons::upsert_acl_pg_db;
+pub use pigeons::verify_device_via_do;

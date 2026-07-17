@@ -1,12 +1,13 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
   get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
-  update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access,
+  update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access, verify_device_via_do,
 };
+use crate::queue::TelemetryMessage;
 use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
 use futures::future::join_all;
 use worker::{
-  Context, Env, Method, Request, RequestInit, Response, RouteContext, Router, console_error,
+  Context, Date, Env, Method, Request, RequestInit, Response, RouteContext, Router, console_error,
   console_log, event,
 };
 
@@ -208,14 +209,64 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .post_async(
       "/device/pigeons/:pigeon_id/telemetry",
-      |req, ctx| async move {
+      |mut req, ctx| async move {
         let cors = build_cors(&ctx.env, &req);
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
-        // Same device-auth model as the shadow device routes above.
-        proxy_to_pigeon_do(req, "", &obj_id, "/device/telemetry")
-          .await?
-          .with_cors(&cors)
+        // Telemetry queue (task #14) — staging-only for now (see
+        // [env.staging.queues] in wrangler.toml). Environments with no
+        // TELEMETRY_QUEUE binding (dev, prod today) fall through to the
+        // original synchronous direct-DO-write path unchanged.
+        let Ok(telemetry_queue) = ctx.env.queue("TELEMETRY_QUEUE") else {
+          // Same device-auth model as the shadow device routes above.
+          return proxy_to_pigeon_do(req, "", &obj_id, "/device/telemetry")
+            .await?
+            .with_cors(&cors);
+        };
+
+        // The queue has no authentication of its own, so the device's
+        // bearer token must be verified against the DO *before* anything
+        // is enqueued — an unauthenticated/forged report must never reach
+        // the queue. This costs one extra DO round trip (verify) on top of
+        // the eventual consumer write, versus one combined round trip in
+        // the non-queue path above.
+        let auth_header = req.headers().get("Authorization").ok().flatten();
+
+        let Ok(metrics) = req
+          .json::<std::collections::HashMap<String, String>>()
+          .await
+        else {
+          return Response::error("Bad Request: Invalid JSON", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if metrics.is_empty() {
+          return Response::error("Bad Request: Empty telemetry report", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let verify_resp =
+          verify_device_via_do(auth_header, &obj_id, "/device/telemetry/verify").await?;
+        if verify_resp.status_code() >= 400 {
+          return verify_resp.with_cors(&cors);
+        }
+
+        let message = TelemetryMessage {
+          pigeon_id: pigeon_id.clone(),
+          metrics,
+          reported_at_ms: Date::now().as_millis(),
+        };
+
+        if telemetry_queue.send(message).await.is_err() {
+          console_error!("Failed to enqueue telemetry for pigeon {pigeon_id}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        Response::ok("{}")?.with_status(202).with_cors(&cors)
       },
     )
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {

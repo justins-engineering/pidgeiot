@@ -58,6 +58,21 @@ bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
 
+# Telemetry queue (task #14, staging-only for now — promoting this to
+# production is a separate decision, not made here). Device auth still
+# happens synchronously at ingestion (POST /device/pigeons/:id/telemetry
+# verifies the bearer token against the DO before enqueueing anything —
+# see verify_device_via_do/verify_telemetry_device); the consumer only
+# ever writes messages that already passed that check. Environments
+# without this binding (dev, prod today) fall back to the original
+# synchronous direct-DO-write path — see the route in src/lib.rs.
+[[env.staging.queues.producers]]
+queue = "pidgeiot-telemetry"
+binding = "TELEMETRY_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "pidgeiot-telemetry"
+
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
