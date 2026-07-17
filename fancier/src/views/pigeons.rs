@@ -1,4 +1,4 @@
-use crate::components::ConnectorBadge;
+use crate::components::{ConnectorBadge, FlockGraphs};
 use crate::{Route, api};
 use capsules::{CoapConfig, Connector, HttpsConfig, PigeonCreateRequest};
 use dioxus::prelude::*;
@@ -104,6 +104,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               }
             }
           }
+        }
+
+        section { id: "flockTelemetryGraphs", class: "mt-10",
+          FlockGraphs { flock_id }
         }
 
         // One-time token reveal modal
