@@ -54,9 +54,18 @@ CREATE TABLE IF NOT EXISTS pigeons (
   tags TEXT,
   connector JSONB NOT NULL,
   token_expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '1 year',
+  -- User-definable GreptimeDB/InfluxDB forwarding target (task #18) —
+  -- NULL when unset (the common case). Mirrors the DO's own
+  -- `pigeons.telemetry_endpoint` column; see capsules::TelemetryEndpoint.
+  telemetry_endpoint JSONB,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
+
+-- Idempotent for pre-existing databases that created `pigeons` before this
+-- column existed — mirrors dovecote's own `ALTER TABLE ... ADD COLUMN`
+-- fallback for the DO's SQLite schema (see objects/pigeons.rs).
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons
@@ -83,8 +92,26 @@ CREATE TABLE IF NOT EXISTS pigeon_shadow (
   updated_at BIGINT NOT NULL
 );
 
+-- PIGEON TELEMETRY HISTORY Table (task #18)
+-- Written by the queue consumer alongside the DO's own latest-value-per-key
+-- upsert (`pigeon_telemetry` in the DO's SQLite) -- this is the append-only
+-- time-series counterpart, queried by GET /pigeons/:id/telemetry/history and
+-- GET /flocks/:id/telemetry/history. Only written when the pigeon has no
+-- user-defined telemetry_endpoint configured; when one is set, the consumer
+-- forwards to it instead (see dovecote's queue.rs).
+CREATE TABLE IF NOT EXISTS pigeon_telemetry_history (
+  id BIGSERIAL PRIMARY KEY,
+  pigeon_id TEXT NOT NULL REFERENCES pigeons(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  value_num DOUBLE PRECISION,
+  reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_pigeons_flock_id ON pigeons(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_id ON pigeon_acl(id);
+CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported ON pigeon_telemetry_history(pigeon_id, reported_at);
+CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_key ON pigeon_telemetry_history(key);

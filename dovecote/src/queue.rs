@@ -3,6 +3,8 @@ use worker::{
   console_error, console_log, event,
 };
 
+use crate::helpers::write_telemetry_history;
+
 /// Message enqueued by the `POST /device/pigeons/:id/telemetry` gateway
 /// route (`lib.rs`) once it has verified the device's bearer token against
 /// the owning DO -- see `verify_device_via_do` (`helpers/pigeons.rs`) and
@@ -52,13 +54,17 @@ pub async fn queue_consumer(
   };
 
   for message in message_batch.messages()? {
-    dispatch_to_do(&namespace, &message).await;
+    dispatch_to_do(&namespace, &env, &message).await;
   }
 
   Ok(())
 }
 
-async fn dispatch_to_do(namespace: &worker::ObjectNamespace, message: &Message<TelemetryMessage>) {
+async fn dispatch_to_do(
+  namespace: &worker::ObjectNamespace,
+  env: &Env,
+  message: &Message<TelemetryMessage>,
+) {
   let body = message.body();
 
   let Ok(obj_id) = namespace.id_from_string(&body.pigeon_id) else {
@@ -110,6 +116,29 @@ async fn dispatch_to_do(namespace: &worker::ObjectNamespace, message: &Message<T
     Ok(resp) if resp.status_code() < 400 => {
       console_log!("Telemetry consumer: wrote metrics for '{}'", body.pigeon_id);
       message.ack();
+
+      // Best-effort PG history write (task #18, part 1) -- re-parses the
+      // same metrics_json already sent to the DO above rather than reading
+      // it back from the DO's response, so this has no dependency on that
+      // response's shape. Mirrors this codebase's established best-effort
+      // PG sync convention: log and move on, never fail/retry the queue
+      // message over a history-write failure once the DO write (the
+      // source of truth) has already succeeded.
+      match serde_json::from_str::<std::collections::HashMap<String, String>>(&body.metrics_json)
+      {
+        Ok(metrics) => {
+          if let Err(e) = write_telemetry_history(env, &body.pigeon_id, &metrics).await {
+            console_error!(
+              "Telemetry consumer: history write failed for '{}': {e}",
+              body.pigeon_id
+            );
+          }
+        }
+        Err(e) => console_error!(
+          "Telemetry consumer: failed to re-parse metrics_json for history write ('{}'): {e}",
+          body.pigeon_id
+        ),
+      }
     }
     Ok(resp) => {
       console_error!(

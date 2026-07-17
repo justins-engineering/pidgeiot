@@ -1,6 +1,8 @@
-use capsules::{Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
+use capsules::{Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
+
+use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 
 pub async fn proxy_to_pigeon_do(
   mut req: Request,
@@ -233,6 +235,37 @@ pub async fn update_shadow_pg_db(
     .await
     .map_err(|e| {
       console_error!("Postgres pigeon_shadow update sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
+}
+
+/// Best-effort PG sync for the dedicated `PUT
+/// /pigeons/:pigeon_id/telemetry-endpoint` route (task #18, part 2) --
+/// mirrors `update_shadow_pg_db`'s shape (single-column update, called
+/// after the DO's own write already succeeded). Calls
+/// `ensure_pigeons_telemetry_endpoint_column` first since staging and
+/// production share one Hyperdrive-backed Postgres with no separate
+/// migration runner (see `helpers/telemetry.rs`).
+pub async fn update_telemetry_endpoint_pg_db(
+  client: Client,
+  pigeon_id: &str,
+  telemetry_endpoint: Option<&TelemetryEndpoint>,
+) -> worker::Result<()> {
+  ensure_pigeons_telemetry_endpoint_column(&client).await?;
+
+  let endpoint_json = telemetry_endpoint
+    .map(|e| serde_json::to_string(e).unwrap_or_default());
+
+  client
+    .execute_typed(
+      "UPDATE pigeons SET telemetry_endpoint = $2::jsonb WHERE id = $1;",
+      &[(&pigeon_id, Type::TEXT), (&endpoint_json, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres telemetry_endpoint update sync error: {e}");
       worker::Error::RustError("Internal Server Error".into())
     })?;
 

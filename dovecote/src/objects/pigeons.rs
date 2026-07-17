@@ -2,12 +2,18 @@ use crate::objects::{mint_device_credential, verify_device_token};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
   PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
-  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, unwrap_or_return_response,
+  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
+  TelemetryLatest, TelemetryLatestRow, unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
   durable_object, wasm_bindgen,
 };
+
+/// Selected pigeon column list shared by every `pigeons` read/RETURNING
+/// statement -- keeps `telemetry_endpoint` (and any future column) from
+/// silently going missing from one of the several near-identical queries.
+const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, updated_at, created_at";
 
 const HTTP_ENDPOINT: &str = "https://api.pidgeiot.com/device/pigeons/";
 const COAP_ENDPOINT: &str = "coaps+tcp://api.pidgeiot.com/device/pigeons/";
@@ -73,6 +79,7 @@ impl DurableObject for Pigeons {
           connector TEXT NOT NULL,
           token_expires_at INTEGER DEFAULT 0,
           device_public_key TEXT NOT NULL DEFAULT '',
+          telemetry_endpoint TEXT DEFAULT NULL,
           updated_at INTEGER DEFAULT (unixepoch()),
           created_at INTEGER DEFAULT (unixepoch())
         );
@@ -96,6 +103,18 @@ impl DurableObject for Pigeons {
         None,
       )
       .expect("created pigeons table");
+
+    // Column migration for DOs created before `telemetry_endpoint` existed
+    // (task #18) -- `CREATE TABLE IF NOT EXISTS` above is a no-op against
+    // an already-existing `pigeons` table, and SQLite has no `ADD COLUMN
+    // IF NOT EXISTS`. Errors here (column already present, e.g. every DO
+    // created after this change) are expected and ignored on purpose --
+    // unlike every other statement in this constructor, this one is
+    // allowed to fail.
+    let _ = sql.exec(
+      "ALTER TABLE pigeons ADD COLUMN telemetry_endpoint TEXT DEFAULT NULL;",
+      None,
+    );
 
     sql
       .exec(
@@ -141,8 +160,10 @@ impl DurableObject for Pigeons {
 
     // Latest-value-per-key store (mirrors AWS IoT's reported-state
     // simplicity, not a time-series log) -- a device's telemetry report
-    // overwrites, it doesn't append. A history/range-query table is a
-    // deliberately deferred follow-up, not implemented here.
+    // overwrites, it doesn't append. History/range queries are served from
+    // Postgres's `pigeon_telemetry_history` instead (task #18, written by
+    // the queue consumer) -- this DO-local table intentionally stays
+    // latest-value-only.
     sql
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_telemetry (
@@ -175,6 +196,9 @@ impl DurableObject for Pigeons {
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/verify" => verify_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/write" => write_telemetry_device(self, req).await,
+      "/pigeon/telemetry/get" => get_telemetry_latest(self, req).await,
+      "/pigeon/telemetry-endpoint/update" => update_telemetry_endpoint(self, req).await,
+      "/pigeon/authz/check" => check_authorized(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
@@ -233,31 +257,42 @@ fn is_owner(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, wor
   }
 }
 
+/// Strips every secret from a `Pigeon` before it leaves the DO via a GET
+/// route -- the connector token/PSK (existing behavior) and now the
+/// telemetry endpoint's `auth_token` (task #18), same rule: never returned
+/// except immediately after the request that sets it (`create`/
+/// `token/refresh` for the connector, the telemetry-endpoint update route
+/// for `auth_token`).
+fn strip_secrets(pigeon: &mut Pigeon) {
+  pigeon.connector = match pigeon.connector.clone() {
+    Connector::Https(c) => Connector::Https(HttpsConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+    }),
+    Connector::Coap(c) => Connector::Coap(CoapConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity,
+      tls_psk_secret: None,
+    }),
+  };
+
+  if let Some(endpoint) = pigeon.telemetry_endpoint.as_mut() {
+    endpoint.auth_token = None;
+  }
+}
+
 async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
       Ok(p) => {
         let mut pigeon = Pigeon::from(p);
-
-        // Strip token for security — never return it except on create/refresh
-        pigeon.connector = match pigeon.connector {
-          Connector::Https(c) => Connector::Https(HttpsConfig {
-            endpoint: c.endpoint,
-            token: String::new(),
-          }),
-          Connector::Coap(c) => Connector::Coap(CoapConfig {
-            endpoint: c.endpoint,
-            token: String::new(),
-            tls_psk_identity: c.tls_psk_identity,
-            tls_psk_secret: None,
-          }),
-        };
-
+        strip_secrets(&mut pigeon);
         Response::from_json(&pigeon)
       }
       Err(e) => {
@@ -276,7 +311,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   let mut pigeon = match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -292,19 +327,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  // Strip token for security — never return it except on create/refresh
-  pigeon.connector = match pigeon.connector {
-    Connector::Https(c) => Connector::Https(HttpsConfig {
-      endpoint: c.endpoint,
-      token: String::new(),
-    }),
-    Connector::Coap(c) => Connector::Coap(CoapConfig {
-      endpoint: c.endpoint,
-      token: String::new(),
-      tls_psk_identity: c.tls_psk_identity,
-      tls_psk_secret: None,
-    }),
-  };
+  strip_secrets(&mut pigeon);
 
   let shadow = match pigeons.sql.exec(
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
@@ -395,7 +418,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
 
   let pigeon = match pigeons.sql.exec(
-  "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at, device_public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at;",
+  &format!("INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at, device_public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING {PIGEON_COLUMNS};"),
   vec![
     do_id.clone().into(),
     row.flock_id.to_string().into(),
@@ -482,7 +505,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
   // Read current pigeon to determine connector type
   let mut pigeon = match pigeons.sql.exec(
-    "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -538,7 +561,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   ) {
     Ok(_) => {
       match pigeons.sql.exec(
-        "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+        &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -623,7 +646,7 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     Ok(_) => {
       // Read back the updated row to return
       match pigeons.sql.exec(
-        "SELECT id, flock_id, serial, name, tags, connector, token_expires_at, updated_at, created_at FROM pigeons LIMIT 1;",
+        &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -937,6 +960,34 @@ async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Resp
 /// enqueue time -- Durable Objects have no public internet-facing address,
 /// so there is no path for an unauthenticated caller to reach this route
 /// directly.
+/// Response body for `write_telemetry_device`: besides confirming what got
+/// written, it hands the queue consumer (`src/queue.rs`) this pigeon's
+/// `telemetry_endpoint` (task #18) so it can decide, without a second DO
+/// round trip, whether to forward the report externally (line protocol to
+/// a user-configured endpoint) or write it into our own
+/// `pigeon_telemetry_history` Postgres mirror.
+#[derive(serde::Serialize)]
+struct TelemetryWriteResult {
+  metrics: std::collections::HashMap<String, String>,
+  telemetry_endpoint: Option<TelemetryEndpoint>,
+}
+
+#[derive(serde::Deserialize)]
+struct TelemetryEndpointRow {
+  telemetry_endpoint: Option<String>,
+}
+
+fn read_telemetry_endpoint(pigeons: &Pigeons) -> Option<TelemetryEndpoint> {
+  let cursor = pigeons
+    .sql
+    .exec("SELECT telemetry_endpoint FROM pigeons LIMIT 1;", None)
+    .ok()?;
+  let row = one_row::<TelemetryEndpointRow>(&cursor).ok()?;
+  row
+    .telemetry_endpoint
+    .and_then(|s| serde_json::from_str(&s).ok())
+}
+
 async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let metrics = match req
     .json::<std::collections::HashMap<String, String>>()
@@ -957,7 +1008,94 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     return Response::error("Internal Server Error", 500);
   }
 
-  Response::from_json(&metrics)
+  Response::from_json(&TelemetryWriteResult {
+    metrics,
+    telemetry_endpoint: read_telemetry_endpoint(pigeons),
+  })
+}
+
+/// Bare ACL probe for gateway routes whose data lives outside this DO
+/// (telemetry history is in Postgres) but whose authorization still lives
+/// in this pigeon's local `pigeon_acl` table.
+async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized(pigeons, &req));
+  Response::ok("authorized")
+}
+
+/// ACL-gated latest-value read for the dashboard (`GET
+/// /pigeons/:id/telemetry` in `lib.rs`) -- every key currently in the DO's
+/// `pigeon_telemetry` table, unlike the history routes which read
+/// `pigeon_telemetry_history` from Postgres.
+async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized(pigeons, &req));
+
+  match pigeons
+    .sql
+    .exec("SELECT key, value, reported_at FROM pigeon_telemetry;", None)
+  {
+    Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
+      Ok(rows) => {
+        let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
+        Response::from_json(&latest)
+      }
+      Err(e) => {
+        console_error!("Telemetry latest LIST error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("Telemetry latest READ error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Dashboard-facing setter for the per-pigeon telemetry forwarding target
+/// (task #18). Same authorization level as the generic pigeon `update`
+/// route (`is_authorized`, not `is_owner` -- any ACL entry, not just the
+/// owner, may configure this). A `None` body clears the endpoint, reverting
+/// to our own Postgres history; unlike `update`'s `PigeonUpdateRequest`
+/// fields this is a direct `SET`, not `COALESCE`, so `None` truly means
+/// NULL rather than "leave unchanged" -- there is no "leave unchanged"
+/// notion for this dedicated single-field route.
+async fn update_telemetry_endpoint(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized(pigeons, &req));
+
+  let body = match req
+    .json::<capsules::PigeonTelemetryEndpointUpdateRequest>()
+    .await
+  {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Telemetry endpoint UPDATE json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  let endpoint_json = match &body.telemetry_endpoint {
+    Some(endpoint) => match serde_json::to_string(endpoint) {
+      Ok(s) => Some(s),
+      Err(e) => {
+        console_error!("Telemetry endpoint serialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    None => None,
+  };
+
+  match pigeons.sql.exec(
+    "UPDATE pigeons SET telemetry_endpoint = ? WHERE id = ?;",
+    vec![
+      endpoint_json.into(),
+      pigeons.state.id().to_string().into(),
+    ],
+  ) {
+    Ok(_) => Response::from_json(&body.telemetry_endpoint),
+    Err(e) => {
+      console_error!("Telemetry endpoint UPDATE execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
 }
 
 async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
