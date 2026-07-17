@@ -453,3 +453,68 @@ pub struct PigeonLogChunk {
   #[serde(with = "time::serde::rfc3339")]
   pub received_at: OffsetDateTime,
 }
+
+// --- Firmware / FOTA (task #23) ---
+
+/// Size cap enforced by dovecote's `POST /flocks/:flock_id/firmware` route
+/// -- this fleet's signed MCUboot application images run ~300KB-1MB
+/// (`~/pigeon-examples/build/dfu_application.zip`), so 2MB is generous
+/// headroom, not a tuned limit. Exported so any future device-side or
+/// dashboard-side caller can pre-check without duplicating the number.
+pub const MAX_FIRMWARE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Shape embedded at `target_config.firmware` in a pigeon's shadow (task
+/// #23) -- the shadow-driven update signal. Coordinated with the device
+/// client (`~/pigeon`/`~/pigeon-examples`) before being frozen: a nested
+/// object, not a flat key, since Zephyr's `json_obj_parse` supports nested
+/// objects via `JSON_OBJ_DESCR_OBJECT` and old firmware ignores unknown
+/// top-level keys entirely either way (verified: `json_obj_parse` skips
+/// them), so this is backward-compatible with devices that predate FOTA.
+/// `sha256` is lowercase hex (not base64) -- mbedTLS/PSA sha256 on the
+/// device side naturally produces raw bytes to hex-compare, and hex is more
+/// debuggable from the dashboard. This is also the exact response shape of
+/// the DO-internal `/pigeon/device/firmware/target` route (see
+/// `objects/pigeons.rs::get_firmware_target_device`), which the gateway's
+/// `GET /device/pigeons/:id/firmware` route (`lib.rs`) uses to resolve
+/// which R2 object to stream back -- the firmware bytes themselves never
+/// pass through the pigeon's Durable Object (SQLite is not acceptable for
+/// MB-sized blobs; see this workspace's root `CLAUDE.md`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct FirmwareTarget {
+  pub version: String,
+  pub size: i64,
+  pub sha256: String,
+}
+
+/// One uploaded firmware image, catalogued per-flock in Postgres (task
+/// #23). Firmware images are shared across every pigeon in a flock (same
+/// hardware fleet), unlike per-pigeon state (connector, telemetry_endpoint,
+/// etc.) which lives in that pigeon's own Durable Object -- flocks already
+/// have no DO of their own (see `Flock` above), so this catalog lives
+/// purely in Postgres, with no `*Row` variant needed since Postgres hands
+/// back a native `OffsetDateTime` directly (same as `Flock`). The actual
+/// binary lives in R2, content-addressed by `sha256` (key
+/// `firmware/<sha256>.bin`) -- re-uploading identical bytes to the same
+/// flock (even under a new `version` label) updates this row in place
+/// rather than duplicating the R2 object. A pigeon's *assigned* firmware is
+/// a separate, per-pigeon concern living in that pigeon's own shadow (see
+/// `FirmwareTarget` above), not here.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct FirmwareImage {
+  pub id: Uuid,
+  pub flock_id: Uuid,
+  pub version: String,
+  pub size: i64,
+  pub sha256: String,
+  #[serde(with = "time::serde::rfc3339")]
+  pub uploaded_at: OffsetDateTime,
+}
+
+/// Query params for `POST /flocks/:flock_id/firmware` -- `size`/`sha256`
+/// are deliberately absent: both are computed server-side from the
+/// uploaded bytes, never trusted from the client (see
+/// `helpers/firmware.rs::sha256_hex`).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct FirmwareUploadQuery {
+  pub version: String,
+}
