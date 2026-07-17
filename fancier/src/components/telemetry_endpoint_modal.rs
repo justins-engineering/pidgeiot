@@ -21,10 +21,11 @@ use dioxus_free_icons::icons::ld_icons::LdX;
 /// saving with the token field blank clears any existing token — the label
 /// below says so rather than implying it's preserved.
 ///
-/// NOTE: dovecote hasn't wired a route for this yet (task #18 in progress).
 /// `api::pigeons::update_telemetry_endpoint` targets `PUT
-/// /pigeons/:id/telemetry-endpoint`; until that lands server-side this
-/// fails soft (`None`) like any other `fetch_json` caller.
+/// /pigeons/:id/telemetry-endpoint` (task #18, landed in dovecote
+/// bc1373c). Until that build is deployed to an environment this
+/// dashboard build talks to, calls still fail soft (`None`) like any other
+/// `fetch_json` caller.
 #[component]
 pub fn TelemetryEndpointModal(
   pigeon_id: String,

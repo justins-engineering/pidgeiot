@@ -1,16 +1,20 @@
 // User-defined telemetry graphs (task #19). A GraphDef says which key(s) to
 // plot, over what time range; GraphCard fetches the data and renders it with
-// TelemetryChart. See PENDING #18 notes in api/telemetry.rs for the assumed
-// backend shapes — until those routes exist on staging, GraphCard falls back
-// to clearly-labeled deterministic mock data so the widget is still usable
-// to look at and review.
+// TelemetryChart. Backed by task #18's real capsules::TelemetryHistoryPoint
+// route shapes (api/telemetry.rs) — when a route call fails outright (route
+// missing, network error), GraphCard falls back to clearly-labeled
+// deterministic mock data so the widget is still usable to look at and
+// review; a real pigeon that's just quiet gets an honest empty state
+// instead (see `SeriesOutcome`).
 use crate::LocalSession;
-use crate::api::telemetry::{self, FlockTelemetryPoint, TelemetryPoint};
+use crate::api::telemetry;
 use crate::components::{ChartSeries, TelemetryChart};
 use crate::local_storage;
+use capsules::TelemetryHistoryPoint;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Persisted client-side only (localStorage v1, see local_storage.rs) —
@@ -80,8 +84,8 @@ enum DataSource {
   Flock(Uuid),
 }
 
-fn now_unix() -> i64 {
-  time::OffsetDateTime::now_utc().unix_timestamp()
+fn now() -> OffsetDateTime {
+  OffsetDateTime::now_utc()
 }
 
 fn storage_key(scope: &str, id: &str) -> String {
@@ -118,40 +122,60 @@ fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
     .collect()
 }
 
-async fn fetch_series(source: &DataSource, def: &GraphDef) -> (Vec<ChartSeries>, bool) {
-  let until = now_unix();
-  let since = until - def.range.seconds();
+/// `telemetry::get_history`/`get_flock_history` return `None` only when the
+/// fetch itself failed (route missing, network error, bad JSON — see
+/// `fetch_json` in api/helpers.rs, which collapses all of those to `None`);
+/// a real pigeon with no telemetry yet still comes back `Some(vec![])`. The
+/// two must not be conflated: `Empty` gets TelemetryChart's own honest
+/// empty-range message, `Preview` gets the mock-data disclaimer — showing
+/// fabricated curves on a real, just-quiet pigeon would be actively
+/// misleading.
+enum SeriesOutcome {
+  Live(Vec<ChartSeries>),
+  Empty,
+  Preview(Vec<ChartSeries>),
+}
+
+async fn fetch_series(source: &DataSource, def: &GraphDef) -> SeriesOutcome {
+  let until = now();
+  let since = until - time::Duration::seconds(def.range.seconds());
 
   match source {
     DataSource::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
-      Some(points) if !points.is_empty() => (series_from_pigeon_history(&def.keys, &points), false),
-      _ => (
+      Some(points) if !points.is_empty() => {
+        SeriesOutcome::Live(series_from_history(&def.keys, &points))
+      }
+      Some(_) => SeriesOutcome::Empty,
+      None => SeriesOutcome::Preview(
         def
           .keys
           .iter()
           .map(|k| ChartSeries {
             key: k.clone(),
-            points: mock_points(k, since, until),
+            points: mock_points(k, since.unix_timestamp(), until.unix_timestamp()),
           })
           .collect(),
-        true,
       ),
     },
     DataSource::Flock(flock_id) => {
       match telemetry::get_flock_history(flock_id, since, until).await {
         Some(points) if !points.is_empty() => {
-          (series_from_flock_history(&def.keys, &points), false)
+          SeriesOutcome::Live(series_from_flock_history(&def.keys, &points))
         }
-        _ => {
+        Some(_) => SeriesOutcome::Empty,
+        None => {
           let key = def.keys.first().cloned().unwrap_or_default();
-          (
+          SeriesOutcome::Preview(
             (0..3)
               .map(|i| ChartSeries {
                 key: format!("pigeon-{i}"),
-                points: mock_points(&format!("{key}{i}"), since, until),
+                points: mock_points(
+                  &format!("{key}{i}"),
+                  since.unix_timestamp(),
+                  until.unix_timestamp(),
+                ),
               })
               .collect(),
-            true,
           )
         }
       }
@@ -159,14 +183,18 @@ async fn fetch_series(source: &DataSource, def: &GraphDef) -> (Vec<ChartSeries>,
   }
 }
 
-fn series_from_pigeon_history(keys: &[String], points: &[TelemetryPoint]) -> Vec<ChartSeries> {
+/// Pigeon-scoped rendering: one series per requested key. `points` already
+/// carries `pigeon_id` (capsules' `TelemetryHistoryPoint` is shared with the
+/// flock-scoped route, see api/telemetry.rs), but every row here is the
+/// same pigeon so it's ignored — filtering by key alone is enough.
+fn series_from_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec<ChartSeries> {
   keys
     .iter()
     .map(|k| {
       let mut pts: Vec<(i64, f64)> = points
         .iter()
         .filter(|p| &p.key == k)
-        .filter_map(|p| p.value_num.map(|v| (p.reported_at, v)))
+        .filter_map(|p| p.value_num.map(|v| (p.reported_at.unix_timestamp(), v)))
         .collect();
       pts.sort_by_key(|p| p.0);
       ChartSeries {
@@ -177,7 +205,7 @@ fn series_from_pigeon_history(keys: &[String], points: &[TelemetryPoint]) -> Vec
     .collect()
 }
 
-fn series_from_flock_history(keys: &[String], points: &[FlockTelemetryPoint]) -> Vec<ChartSeries> {
+fn series_from_flock_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec<ChartSeries> {
   let Some(key) = keys.first() else {
     return Vec::new();
   };
@@ -187,7 +215,7 @@ fn series_from_flock_history(keys: &[String], points: &[FlockTelemetryPoint]) ->
       by_pigeon
         .entry(p.pigeon_id.clone())
         .or_default()
-        .push((p.reported_at, v));
+        .push((p.reported_at.unix_timestamp(), v));
     }
   }
   by_pigeon
@@ -309,12 +337,13 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
 
   // No flock-level "latest keys" route — derive a best-effort key list from
   // the flock's own history fetch at the default range instead of adding
-  // another guessed endpoint on top of the ones #18 already owes us.
+  // another endpoint on top of the ones task #18 already owns.
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
   use_resource(move || async move {
-    let until = now_unix();
-    match telemetry::get_flock_history(&flock_id, until - TimeRange::Last24h.seconds(), until).await {
+    let until = now();
+    let since = until - time::Duration::seconds(TimeRange::Last24h.seconds());
+    match telemetry::get_flock_history(&flock_id, since, until).await {
       Some(points) if !points.is_empty() => {
         let mut keys: Vec<String> = points.into_iter().map(|p| p.key).collect();
         keys.sort();
@@ -410,8 +439,7 @@ fn GraphCard(
   on_remove: EventHandler<String>,
   on_update: EventHandler<GraphDef>,
 ) -> Element {
-  let mut series_data = use_signal(Vec::<ChartSeries>::new);
-  let mut is_preview = use_signal(|| false);
+  let mut outcome: Signal<Option<SeriesOutcome>> = use_signal(|| None);
   let mut loading = use_signal(|| true);
 
   {
@@ -422,9 +450,7 @@ fn GraphCard(
       let source = source.clone();
       async move {
         loading.set(true);
-        let (data, preview) = fetch_series(&source, &def).await;
-        series_data.set(data);
-        is_preview.set(preview);
+        outcome.set(Some(fetch_series(&source, &def).await));
         loading.set(false);
       }
     });
@@ -467,16 +493,23 @@ fn GraphCard(
         }
       }
 
-      if is_preview() {
-        p { class: "text-[11px] text-warning/80",
-          "Preview data — live telemetry history isn't deployed to this environment yet (task #18)."
-        }
-      }
-
-      if loading() && series_data.read().is_empty() {
+      if loading() && outcome.read().is_none() {
         div { class: "loading loading-spinner loading-sm text-primary" }
       } else {
-        TelemetryChart { series: series_data() }
+        match outcome.read().as_ref() {
+          Some(SeriesOutcome::Preview(series)) => rsx! {
+            p { class: "text-[11px] text-warning/80",
+              "Preview data — showing example values until live telemetry history is available here."
+            }
+            TelemetryChart { series: series.clone() }
+          },
+          Some(SeriesOutcome::Live(series)) => rsx! {
+            TelemetryChart { series: series.clone() }
+          },
+          Some(SeriesOutcome::Empty) | None => rsx! {
+            TelemetryChart { series: Vec::new() }
+          },
+        }
       }
     }
   }

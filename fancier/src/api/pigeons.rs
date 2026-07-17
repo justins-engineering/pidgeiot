@@ -150,13 +150,18 @@ pub async fn update_shadow(
   serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
 }
 
-// NOTE (task #18/#19): dovecote hasn't wired this route yet — this targets
-// PUT /pigeons/:id/telemetry-endpoint, mirroring the other per-pigeon PUT
-// routes above (e.g. /shadow). Until the route lands server-side, callers
-// see this fail soft to `None` like any other `fetch_json` caller. Returns
-// the pigeon's post-update `telemetry_endpoint` (auth_token stripped, same
-// convention as `connector`'s token) — outer `Option` is request success,
-// inner `Option` is "is an endpoint configured now" (`None` after clearing).
+// PUT /pigeons/:id/telemetry-endpoint (task #18, landed in dovecote
+// bc1373c), mirroring the other per-pigeon PUT routes above (e.g.
+// /shadow). Unlike those, the route responds with the bare
+// `Option<TelemetryEndpoint>` it just wrote (`Response::from_json(&endpoint)`
+// in dovecote's lib.rs) rather than a full `Pigeon` — deserializing this as
+// `Pigeon` would fail on every required field and silently collapse every
+// call to `None`. Outer `Option` is request success; inner `Option` is "is
+// an endpoint configured now" (`None` after clearing). No full `Pigeon`
+// comes back, so there's nothing here to refresh `LocalSession` with —
+// callers update their own `telemetry_endpoint` field from the return
+// value instead (see `TelemetryEndpointModal`'s `on_saved` usage in
+// views/pigeon.rs).
 pub async fn update_telemetry_endpoint(
   pigeon_id: &str,
   petur: &PigeonTelemetryEndpointUpdateRequest,
@@ -170,11 +175,6 @@ pub async fn update_telemetry_endpoint(
   let body = serde_wasm_bindgen::to_value(&body).ok()?;
   let response = fetch_json("PUT", &path, Some(&body)).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
-  let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
 
-  let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
-  pigeon_list.insert(pigeon.id.clone(), pigeon.clone());
-  pigeon_list.write();
-
-  Some(pigeon.telemetry_endpoint)
+  serde_wasm_bindgen::from_value::<Option<TelemetryEndpoint>>(json).ok()
 }
