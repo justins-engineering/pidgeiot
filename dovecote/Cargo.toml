@@ -18,7 +18,7 @@ time.workspace = true
 ory-kratos-client-wasm = { git = "https://github.com/justins-engineering/kratos-client-rust.git", default-features = false, features = [
   "worker",
 ] }
-worker = { version = "0.8", features = ["tokio-postgres"] }
+worker = { version = "0.8", features = ["tokio-postgres", "queue"] }
 futures = "0.3"
 tokio-postgres = { version = "0.7", features = [
   "js",

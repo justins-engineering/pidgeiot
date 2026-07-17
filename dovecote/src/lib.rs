@@ -12,6 +12,7 @@ use worker::{
 
 mod helpers;
 mod objects;
+mod queue;
 
 /// `worker::Cors::apply_headers` joins every configured origin into the
 /// `Access-Control-Allow-Origin` header with commas (see
