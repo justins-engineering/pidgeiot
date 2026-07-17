@@ -24,6 +24,20 @@ id = "f2c59dfa75114889815fd453ac0db62a"
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
+# Production telemetry queue (promotion authorized 2026-07-17). Same
+# design as staging below: auth still happens synchronously at ingestion,
+# the consumer only writes messages that already passed the DO bearer-token
+# check. Each environment needs its own queue — Cloudflare allows exactly
+# one consumer worker per queue, so prod (`dovecote`) owns
+# `pidgeiot-telemetry` and staging (`dovecote-staging`) owns
+# `pidgeiot-telemetry-staging`, matching the script naming convention.
+[[queues.producers]]
+queue = "pidgeiot-telemetry"
+binding = "TELEMETRY_QUEUE"
+
+[[queues.consumers]]
+queue = "pidgeiot-telemetry"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
@@ -58,20 +72,21 @@ bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
 
-# Telemetry queue (task #14, staging-only for now — promoting this to
-# production is a separate decision, not made here). Device auth still
-# happens synchronously at ingestion (POST /device/pigeons/:id/telemetry
-# verifies the bearer token against the DO before enqueueing anything —
-# see verify_device_via_do/verify_telemetry_device); the consumer only
-# ever writes messages that already passed that check. Environments
-# without this binding (dev, prod today) fall back to the original
-# synchronous direct-DO-write path — see the route in src/lib.rs.
+# Staging telemetry queue (task #14; see the production block above for
+# the shared design rationale and why each environment has its own queue).
+# Device auth still happens synchronously at ingestion
+# (POST /device/pigeons/:id/telemetry verifies the bearer token against
+# the DO before enqueueing anything — see
+# verify_device_via_do/verify_telemetry_device); the consumer only ever
+# writes messages that already passed that check. Environments without
+# this binding (dev) fall back to the original synchronous
+# direct-DO-write path — see the route in src/lib.rs.
 [[env.staging.queues.producers]]
-queue = "pidgeiot-telemetry"
+queue = "pidgeiot-telemetry-staging"
 binding = "TELEMETRY_QUEUE"
 
 [[env.staging.queues.consumers]]
-queue = "pidgeiot-telemetry"
+queue = "pidgeiot-telemetry-staging"
 
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
