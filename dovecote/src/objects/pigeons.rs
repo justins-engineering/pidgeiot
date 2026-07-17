@@ -1,9 +1,11 @@
 use crate::objects::{mint_device_credential, verify_device_token};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
-  CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest,
-  PigeonCreateRequest, PigeonDetail, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
-  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
-  TelemetryLatest, TelemetryLatestRow, unwrap_or_return_response,
+  CoapConfig, Connector, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
+  PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonLogChunkRow,
+  PigeonRow, PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
+  PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest, TelemetryLatestRow,
+  unwrap_or_return_response,
 };
 use worker::{
   DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
@@ -175,6 +177,22 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_telemetry table");
 
+    // Bounded ring buffer of device dictionary-log chunks (task #18, part
+    // 3) -- opaque binary blobs stored as base64 text (see
+    // `report_logs_device`'s doc comment for why not a BLOB column). `id`
+    // is a plain autoincrement so pruning can cheaply keep "the newest N
+    // rows" without a separate ordering column.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_log_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          data TEXT NOT NULL,
+          received_at INTEGER DEFAULT (unixepoch())
+        );",
+        None,
+      )
+      .expect("created pigeon_log_chunks table");
+
     Pigeons { sql, state, env }
   }
 
@@ -199,6 +217,8 @@ impl DurableObject for Pigeons {
       "/pigeon/telemetry/get" => get_telemetry_latest(self, req).await,
       "/pigeon/telemetry-endpoint/update" => update_telemetry_endpoint(self, req).await,
       "/pigeon/authz/check" => check_authorized(self, req).await,
+      "/pigeon/device/logs" => report_logs_device(self, req).await,
+      "/pigeon/logs/get" => get_logs(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
@@ -966,10 +986,14 @@ async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Resp
 /// round trip, whether to forward the report externally (line protocol to
 /// a user-configured endpoint) or write it into our own
 /// `pigeon_telemetry_history` Postgres mirror.
-#[derive(serde::Serialize)]
-struct TelemetryWriteResult {
-  metrics: std::collections::HashMap<String, String>,
-  telemetry_endpoint: Option<TelemetryEndpoint>,
+/// `pub` (and its fields) so the queue consumer (`queue.rs`) can deserialize
+/// this same shape from the DO's write response and decide, without
+/// duplicating the type, whether to forward externally or write our own PG
+/// history (task #18, part 2).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TelemetryWriteResult {
+  pub metrics: std::collections::HashMap<String, String>,
+  pub telemetry_endpoint: Option<TelemetryEndpoint>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1093,6 +1117,95 @@ async fn update_telemetry_endpoint(pigeons: &Pigeons, mut req: Request) -> Resul
     Ok(_) => Response::from_json(&body.telemetry_endpoint),
     Err(e) => {
       console_error!("Telemetry endpoint UPDATE execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Bounded ring-buffer cap for `pigeon_log_chunks` (task #18, part 3) --
+/// each device log chunk is small (Zephyr dictionary-log records capped at
+/// `capsules::MAX_LOG_CHUNK_BYTES` on the way in), but an unbounded stream
+/// would grow this DO's SQLite storage without limit. After every insert,
+/// rows beyond this count (oldest first) are pruned.
+const MAX_STORED_LOG_CHUNKS: i64 = 200;
+
+/// Device-facing dictionary-log chunk ingestion (task #18, part 3). Same
+/// device-auth model as the other `/pigeon/device/*` routes (bearer token
+/// verified against this pigeon's own `device_public_key`, no
+/// `X-User-Id`/ACL). The body is the raw binary chunk, not JSON -- the
+/// gateway route (`lib.rs`) forwards it via `proxy_binary_to_pigeon_do`
+/// rather than `proxy_to_pigeon_do`, which reads the body as UTF-8 text and
+/// would corrupt arbitrary binary bytes. Stored as base64 text (matches
+/// this codebase's existing convention for binary data -- see
+/// `device_public_key`, device tokens -- rather than a SQLite BLOB column,
+/// since it's handed back to the dashboard as base64 anyway; see
+/// `get_logs`/`capsules::PigeonLogChunk`).
+async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  let bytes = match req.bytes().await {
+    Ok(b) => b,
+    Err(e) => {
+      console_error!("Log chunk body read error: {e}");
+      return Response::error("Bad Request: Failed to read body", 400);
+    }
+  };
+
+  if bytes.is_empty() {
+    return Response::error("Bad Request: Empty log chunk", 400);
+  }
+
+  if bytes.len() > MAX_LOG_CHUNK_BYTES {
+    return Response::error("Payload Too Large: Log chunk exceeds size cap", 413);
+  }
+
+  let data_b64 = STANDARD.encode(&bytes);
+
+  if let Err(e) = pigeons.sql.exec(
+    "INSERT INTO pigeon_log_chunks (data) VALUES (?);",
+    vec![data_b64.into()],
+  ) {
+    console_error!("Log chunk INSERT error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // Prune beyond the ring-buffer cap, oldest first. Non-fatal if this
+  // fails -- the chunk itself is already durably stored.
+  if let Err(e) = pigeons.sql.exec(
+    "DELETE FROM pigeon_log_chunks WHERE id NOT IN (
+       SELECT id FROM pigeon_log_chunks ORDER BY id DESC LIMIT ?
+     );",
+    vec![MAX_STORED_LOG_CHUNKS.into()],
+  ) {
+    console_error!("Log chunk prune error: {e}");
+  }
+
+  Response::ok("")
+}
+
+/// ACL-gated read for the dashboard (`GET /pigeons/:id/logs` in `lib.rs`) --
+/// every currently-stored chunk, oldest first, as base64 text for
+/// host-side decode (Zephyr's dictionary-log tooling decodes off the
+/// firmware's own ELF, which the backend has no access to).
+async fn get_logs(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized(pigeons, &req));
+
+  match pigeons.sql.exec(
+    "SELECT id, data, received_at FROM pigeon_log_chunks ORDER BY id ASC;",
+    None,
+  ) {
+    Ok(cursor) => match cursor.to_array::<PigeonLogChunkRow>() {
+      Ok(rows) => {
+        let chunks: Vec<PigeonLogChunk> = rows.into_iter().map(PigeonLogChunk::from).collect();
+        Response::from_json(&chunks)
+      }
+      Err(e) => {
+        console_error!("Log chunk LIST error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("Log chunk READ error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }

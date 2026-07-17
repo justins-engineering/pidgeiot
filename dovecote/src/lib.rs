@@ -1,7 +1,8 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
-  get_user_flocks, insert_pigeon_pg_db, proxy_to_pigeon_do, update_pigeon_pg_db,
-  update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access, verify_device_via_do,
+  get_user_flocks, insert_pigeon_pg_db, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  update_pigeon_pg_db, update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access,
+  verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
@@ -281,6 +282,31 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
       },
     )
+    .post_async("/device/pigeons/:pigeon_id/logs", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // Same device-auth model as the other /device/pigeons/:id/* routes —
+      // no X-User-Id here, the DO verifies the bearer token itself. Body is
+      // a raw binary dictionary-log chunk, not JSON — proxy_binary_to_pigeon_do
+      // forwards it byte-for-byte instead of through proxy_to_pigeon_do's
+      // text()-based forwarding, which would corrupt non-UTF-8 bytes.
+      proxy_binary_to_pigeon_do(req, &obj_id, "/device/logs")
+        .await?
+        .with_cors(&cors)
+    })
+    .get_async("/pigeons/:pigeon_id/logs", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+      proxy_to_pigeon_do(req, &user_id, &obj_id, "/logs/get")
+        .await?
+        .with_cors(&cors)
+    })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {

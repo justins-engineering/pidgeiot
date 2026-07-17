@@ -408,5 +408,48 @@ pub struct TelemetryHistoryQuery {
   pub until: Option<OffsetDateTime>,
 }
 
-// Device logs (task #18) — see `PigeonLogChunkRow`/`PigeonLogChunk` above
-// (dovecote-2's shape landed first; not duplicating it here).
+// --- Device logs (task #18) ---
+
+/// Size cap enforced by dovecote's `POST /device/pigeons/:id/logs` route
+/// (`objects/pigeons.rs::report_logs_device`) on a single log chunk body --
+/// Zephyr `CONFIG_LOG_DICTIONARY_SUPPORT` records are compact by design, so
+/// this is generous headroom, not a tuned limit. Exported so any future
+/// device-side or dashboard-side caller can pre-check without duplicating
+/// the number.
+pub const MAX_LOG_CHUNK_BYTES: usize = 16 * 1024;
+
+// DB model for the DO's `pigeon_log_chunks` bounded ring buffer (SQLite
+// integer timestamp, like the other `*Row` types in this file). `data` is
+// already base64 text in storage (see `objects/pigeons.rs`) -- same
+// convention as `device_public_key`/device tokens elsewhere in this
+// codebase -- so no bytes<->base64 conversion happens at this boundary.
+#[derive(Deserialize, Debug)]
+pub struct PigeonLogChunkRow {
+  pub id: i64,
+  pub data: String,
+  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
+  pub received_at: i64,
+}
+
+impl From<PigeonLogChunkRow> for PigeonLogChunk {
+  fn from(row: PigeonLogChunkRow) -> Self {
+    Self {
+      id: row.id,
+      data: row.data,
+      received_at: OffsetDateTime::from_unix_timestamp(row.received_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+    }
+  }
+}
+
+/// One stored device dictionary-log chunk, returned base64-encoded for
+/// host-side decode (`GET /pigeons/:id/logs`) -- the backend has no access
+/// to the firmware's own dictionary/ELF needed to decode these itself; see
+/// the sibling `~/pigeon` Zephyr library's `CLAUDE.md`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PigeonLogChunk {
+  pub id: i64,
+  pub data: String,
+  #[serde(with = "time::serde::rfc3339")]
+  pub received_at: OffsetDateTime,
+}

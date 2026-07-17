@@ -52,6 +52,53 @@ pub async fn proxy_to_pigeon_do(
   stub.fetch_with_request(do_req).await
 }
 
+/// Binary-safe counterpart to `proxy_to_pigeon_do`, used only by `POST
+/// /device/pigeons/:id/logs` (task #18, part 3). `proxy_to_pigeon_do`
+/// forwards the body via `req.text()`, which is fine for the JSON bodies
+/// every other route sends but silently mangles non-UTF-8 bytes -- device
+/// dictionary-log chunks are arbitrary binary. Otherwise identical
+/// (`Authorization` header forwarding, no `X-User-Id` -- this is a
+/// device-facing route, see `is_authorized_device` in `objects/pigeons.rs`).
+pub async fn proxy_binary_to_pigeon_do(
+  mut req: Request,
+  stub: &worker::ObjectId<'_>,
+  do_path: &str,
+) -> worker::Result<Response> {
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let mut init = RequestInit::default();
+  init.with_method(req.method().clone());
+
+  if let Ok(Some(auth_header)) = req.headers().get("Authorization") {
+    init
+      .headers
+      .set("Authorization", &auth_header)
+      .map_err(|e| {
+        console_error!("Failed to set Authorization: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+  }
+
+  if req.method() != worker::Method::Get {
+    let bytes = req.bytes().await.map_err(|e| {
+      console_error!("Failed to read binary request body: {e}");
+      worker::Error::RustError("Bad Request".into())
+    })?;
+    init.body = Some(js_sys::Uint8Array::from(bytes.as_slice()).into());
+  }
+
+  let do_req = Request::new_with_init(&format!("https://internal/pigeon{do_path}"), &init)
+    .map_err(|e| {
+      console_error!("Failed to create DO request: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  stub.fetch_with_request(do_req).await
+}
+
 /// Lightweight counterpart to `proxy_to_pigeon_do`, used only by the
 /// telemetry queue producer path (`POST /device/pigeons/:id/telemetry` in
 /// `lib.rs`, when a telemetry queue is bound for this environment) to check
