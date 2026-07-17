@@ -73,6 +73,48 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* Telemetry chart tokens (task #19). Chrome/grid/ink reuse the app's own
+   DaisyUI theme vars so they swap with the existing light/dark toggle for
+   free; the eight categorical series hexes are the validated dataviz-skill
+   default palette (see palette.md) — that specific ordering is the CVD-safety
+   mechanism (worst adjacent CVD ΔE 9.1 light / 8.4 dark), not a cosmetic
+   choice, so don't reorder it without re-running the palette validator. */
+:root {
+  --chart-surface: var(--color-base-100);
+  --chart-grid: color-mix(in oklch, var(--color-base-content), transparent 88%);
+  --chart-axis: color-mix(in oklch, var(--color-base-content), transparent 60%);
+  --chart-ink-primary: var(--color-base-content);
+  --chart-ink-secondary: color-mix(in oklch, var(--color-base-content), transparent 35%);
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #008300;
+  --chart-series-3: #e87ba4;
+  --chart-series-4: #eda100;
+  --chart-series-5: #1baf7a;
+  --chart-series-6: #eb6834;
+  --chart-series-7: #4a3aa7;
+  --chart-series-8: #e34948;
+}
+
+[data-theme=dark] {
+  --chart-series-1: #3987e5;
+  --chart-series-2: #008300;
+  --chart-series-3: #d55181;
+  --chart-series-4: #c98500;
+  --chart-series-5: #199e70;
+  --chart-series-6: #d95926;
+  --chart-series-7: #9085e9;
+  --chart-series-8: #e66767;
+}
+
+.chart-series-1 { color: var(--chart-series-1); }
+.chart-series-2 { color: var(--chart-series-2); }
+.chart-series-3 { color: var(--chart-series-3); }
+.chart-series-4 { color: var(--chart-series-4); }
+.chart-series-5 { color: var(--chart-series-5); }
+.chart-series-6 { color: var(--chart-series-6); }
+.chart-series-7 { color: var(--chart-series-7); }
+.chart-series-8 { color: var(--chart-series-8); }
+
 @theme {
   --color-accent-50: oklch(0.9795 0.0098 87.47);
   --color-accent-100: oklch(0.9511 0.0229 84.59);

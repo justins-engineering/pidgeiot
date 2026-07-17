@@ -26,3 +26,12 @@ pub use json_view::JsonViewer;
 
 mod connector_badge;
 pub use connector_badge::ConnectorBadge;
+
+mod telemetry_chart;
+pub use telemetry_chart::{ChartSeries, TelemetryChart};
+
+mod graph_widget;
+pub use graph_widget::{FlockGraphs, PigeonGraphs};
+
+mod telemetry_endpoint_modal;
+pub use telemetry_endpoint_modal::TelemetryEndpointModal;

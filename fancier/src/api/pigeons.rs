@@ -1,7 +1,7 @@
 use crate::api::fetch_json;
 use capsules::{
   Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest,
-  PigeonUpdateRequest,
+  PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -148,4 +148,33 @@ pub async fn update_shadow(
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
 
   serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
+}
+
+// NOTE (task #18/#19): dovecote hasn't wired this route yet — this targets
+// PUT /pigeons/:id/telemetry-endpoint, mirroring the other per-pigeon PUT
+// routes above (e.g. /shadow). Until the route lands server-side, callers
+// see this fail soft to `None` like any other `fetch_json` caller. Returns
+// the pigeon's post-update `telemetry_endpoint` (auth_token stripped, same
+// convention as `connector`'s token) — outer `Option` is request success,
+// inner `Option` is "is an endpoint configured now" (`None` after clearing).
+pub async fn update_telemetry_endpoint(
+  pigeon_id: &str,
+  petur: &PigeonTelemetryEndpointUpdateRequest,
+) -> Option<Option<TelemetryEndpoint>> {
+  let mut path = String::with_capacity(93);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/telemetry-endpoint");
+
+  let body = serde_json::to_string(petur).ok()?;
+  let body = serde_wasm_bindgen::to_value(&body).ok()?;
+  let response = fetch_json("PUT", &path, Some(&body)).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
+
+  let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
+  pigeon_list.insert(pigeon.id.clone(), pigeon.clone());
+  pigeon_list.write();
+
+  Some(pigeon.telemetry_endpoint)
 }

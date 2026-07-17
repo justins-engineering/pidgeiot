@@ -32,6 +32,7 @@ web-sys = { version = "0.3", features = [
   "RequestCredentials",
   "Navigator",
   "Clipboard",
+  "Storage",
 ] }
 dioxus = { version = "0.7", features = ["router"] }
 dioxus-free-icons = { version = "0.10", features = [

@@ -1,8 +1,8 @@
-use crate::components::{ConnectorBadge, JsonViewer};
+use crate::components::{ConnectorBadge, JsonViewer, TelemetryEndpointModal};
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -14,6 +14,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let id = pigeon_id.clone();
   let mut pigeon_detail: Signal<Option<PigeonDetail>> = use_signal(|| None);
   let mut show_delete_modal = use_signal(|| false);
+  let mut show_telemetry_endpoint_modal = use_signal(|| false);
 
   use_resource(move || {
     let id = id.to_owned();
@@ -58,6 +59,12 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     token_expires_at: pd.pigeon.token_expires_at,
                   }
                 }
+                section { id: "telemetryEndpointInfo",
+                  TelemetryEndpointInfo {
+                    telemetry_endpoint: pd.pigeon.telemetry_endpoint.clone(),
+                    show_modal: show_telemetry_endpoint_modal,
+                  }
+                }
                 section { id: "shadowInfo",
                   ShadowInfo { shadow: pd.shadow.clone() }
                 }
@@ -66,6 +73,19 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
                 EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
+                if show_telemetry_endpoint_modal() {
+                  TelemetryEndpointModal {
+                    pigeon_id: pigeon_id.clone(),
+                    current: pd.pigeon.telemetry_endpoint.clone(),
+                    on_close: move |_| show_telemetry_endpoint_modal.set(false),
+                    on_saved: move |endpoint: Option<TelemetryEndpoint>| {
+                        if let Some(detail) = pigeon_detail.write().as_mut() {
+                            detail.pigeon.telemetry_endpoint = endpoint;
+                        }
+                        show_telemetry_endpoint_modal.set(false);
+                    },
+                  }
+                }
                 if show_delete_modal() {
                   DeletePigeonModal {
                     flock_id,
@@ -468,6 +488,61 @@ fn ConnectorInfo(
             "I've Saved the Token"
           }
         }
+      }
+    }
+  }
+}
+
+#[component]
+fn TelemetryEndpointInfo(
+  telemetry_endpoint: Option<TelemetryEndpoint>,
+  mut show_modal: Signal<bool>,
+) -> Element {
+  rsx! {
+    div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+        h2 { class: "text-3xl font-bold", "Telemetry Endpoint" }
+        button {
+          class: "btn btn-secondary",
+          onclick: move |_| show_modal.set(true),
+          if telemetry_endpoint.is_some() {
+            "Edit"
+          } else {
+            "Configure"
+          }
+        }
+      }
+
+      match &telemetry_endpoint {
+        Some(endpoint) => rsx! {
+          div { class: "overflow-x-auto",
+            table { class: "table",
+              tbody {
+                tr {
+                  th { "URL" }
+                  td {
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                      "{endpoint.url}"
+                    }
+                  }
+                }
+                tr {
+                  th { "Database" }
+                  td {
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                      "{endpoint.db.as_deref().unwrap_or(\"--\")}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        None => rsx! {
+          p { class: "text-base-content/50 italic text-sm",
+            "Not configured — telemetry uses the default history store."
+          }
+        },
       }
     }
   }

@@ -1,0 +1,605 @@
+// User-defined telemetry graphs (task #19). A GraphDef says which key(s) to
+// plot, over what time range; GraphCard fetches the data and renders it with
+// TelemetryChart. See PENDING #18 notes in api/telemetry.rs for the assumed
+// backend shapes — until those routes exist on staging, GraphCard falls back
+// to clearly-labeled deterministic mock data so the widget is still usable
+// to look at and review.
+use crate::LocalSession;
+use crate::api::telemetry::{self, FlockTelemetryPoint, TelemetryPoint};
+use crate::components::{ChartSeries, TelemetryChart};
+use crate::local_storage;
+use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use uuid::Uuid;
+
+/// Persisted client-side only (localStorage v1, see local_storage.rs) —
+/// deliberately NOT a server round trip yet. Server-side persistence (so a
+/// user's graphs follow them across browsers) is a later upgrade once
+/// there's a natural place to hang per-user dashboard config on the
+/// Pigeon/Flock API; today capsules has nothing like it, and adding one is
+/// out of scope for this pass (capsules is owned by the dovecote agent this
+/// cycle).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GraphDef {
+  pub id: String,
+  pub title: String,
+  /// Pigeon scope: one series per key. Flock scope: exactly one key,
+  /// plotted as one series per pigeon in the flock (see `DataSource::Flock`
+  /// handling in `fetch_series`).
+  pub keys: Vec<String>,
+  pub range: TimeRange,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeRange {
+  Last1h,
+  Last6h,
+  Last24h,
+  Last7d,
+  Last30d,
+}
+
+impl TimeRange {
+  const ALL: [TimeRange; 5] = [
+    TimeRange::Last1h,
+    TimeRange::Last6h,
+    TimeRange::Last24h,
+    TimeRange::Last7d,
+    TimeRange::Last30d,
+  ];
+
+  fn seconds(self) -> i64 {
+    match self {
+      TimeRange::Last1h => 3_600,
+      TimeRange::Last6h => 6 * 3_600,
+      TimeRange::Last24h => 24 * 3_600,
+      TimeRange::Last7d => 7 * 24 * 3_600,
+      TimeRange::Last30d => 30 * 24 * 3_600,
+    }
+  }
+
+  fn label(self) -> &'static str {
+    match self {
+      TimeRange::Last1h => "Last hour",
+      TimeRange::Last6h => "Last 6 hours",
+      TimeRange::Last24h => "Last 24 hours",
+      TimeRange::Last7d => "Last 7 days",
+      TimeRange::Last30d => "Last 30 days",
+    }
+  }
+
+  fn from_label(label: &str) -> Option<TimeRange> {
+    TimeRange::ALL.into_iter().find(|r| r.label() == label)
+  }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum DataSource {
+  Pigeon(String),
+  Flock(Uuid),
+}
+
+fn now_unix() -> i64 {
+  time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+fn storage_key(scope: &str, id: &str) -> String {
+  format!("pidgeiot.graphs.v1.{scope}.{id}")
+}
+
+fn load_graphs(scope: &str, id: &str) -> Vec<GraphDef> {
+  local_storage::load(&storage_key(scope, id)).unwrap_or_default()
+}
+
+fn save_graphs(scope: &str, id: &str, graphs: &[GraphDef]) {
+  local_storage::save(&storage_key(scope, id), &graphs);
+}
+
+/// Deterministic per-key pseudo-random walk so the same key always renders
+/// the same preview shape across re-renders (no visible flicker) without
+/// pulling in a real RNG crate for what's explicitly placeholder data.
+fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
+  let seed = key
+    .bytes()
+    .fold(7u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+  let mut state = seed;
+  let steps = 24i64;
+  let step_secs = ((until - since).max(1)) / steps;
+  let mut value = 40.0 + (seed % 40) as f64;
+
+  (0..=steps)
+    .map(|i| {
+      state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+      let noise = ((state >> 33) % 1000) as f64 / 1000.0 - 0.5;
+      value += noise * 4.0;
+      (since + step_secs * i, value)
+    })
+    .collect()
+}
+
+async fn fetch_series(source: &DataSource, def: &GraphDef) -> (Vec<ChartSeries>, bool) {
+  let until = now_unix();
+  let since = until - def.range.seconds();
+
+  match source {
+    DataSource::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
+      Some(points) if !points.is_empty() => (series_from_pigeon_history(&def.keys, &points), false),
+      _ => (
+        def
+          .keys
+          .iter()
+          .map(|k| ChartSeries {
+            key: k.clone(),
+            points: mock_points(k, since, until),
+          })
+          .collect(),
+        true,
+      ),
+    },
+    DataSource::Flock(flock_id) => {
+      match telemetry::get_flock_history(flock_id, since, until).await {
+        Some(points) if !points.is_empty() => {
+          (series_from_flock_history(&def.keys, &points), false)
+        }
+        _ => {
+          let key = def.keys.first().cloned().unwrap_or_default();
+          (
+            (0..3)
+              .map(|i| ChartSeries {
+                key: format!("pigeon-{i}"),
+                points: mock_points(&format!("{key}{i}"), since, until),
+              })
+              .collect(),
+            true,
+          )
+        }
+      }
+    }
+  }
+}
+
+fn series_from_pigeon_history(keys: &[String], points: &[TelemetryPoint]) -> Vec<ChartSeries> {
+  keys
+    .iter()
+    .map(|k| {
+      let mut pts: Vec<(i64, f64)> = points
+        .iter()
+        .filter(|p| &p.key == k)
+        .filter_map(|p| p.value_num.map(|v| (p.reported_at, v)))
+        .collect();
+      pts.sort_by_key(|p| p.0);
+      ChartSeries {
+        key: k.clone(),
+        points: pts,
+      }
+    })
+    .collect()
+}
+
+fn series_from_flock_history(keys: &[String], points: &[FlockTelemetryPoint]) -> Vec<ChartSeries> {
+  let Some(key) = keys.first() else {
+    return Vec::new();
+  };
+  let mut by_pigeon: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+  for p in points.iter().filter(|p| &p.key == key) {
+    if let Some(v) = p.value_num {
+      by_pigeon
+        .entry(p.pigeon_id.clone())
+        .or_default()
+        .push((p.reported_at, v));
+    }
+  }
+  by_pigeon
+    .into_iter()
+    .map(|(pid, mut pts)| {
+      pts.sort_by_key(|p| p.0);
+      ChartSeries {
+        key: pid.chars().take(8).collect::<String>() + "…",
+        points: pts,
+      }
+    })
+    .collect()
+}
+
+#[component]
+pub fn PigeonGraphs(pigeon_id: String) -> Element {
+  let mut graphs = use_signal(|| load_graphs("pigeon", &pigeon_id));
+  let mut show_add = use_signal(|| false);
+  let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
+  let mut is_mock_keys = use_signal(|| false);
+
+  {
+    let pigeon_id = pigeon_id.clone();
+    use_resource(move || {
+      let pigeon_id = pigeon_id.clone();
+      async move {
+        match telemetry::get_latest(&pigeon_id).await {
+          Some(latest) if !latest.is_empty() => {
+            available_keys.set(latest.into_iter().map(|l| l.key).collect());
+            is_mock_keys.set(false);
+          }
+          _ => {
+            available_keys.set(vec![
+              "battery_mv".to_string(),
+              "uptime_s".to_string(),
+              "rssi_dbm".to_string(),
+            ]);
+            is_mock_keys.set(true);
+          }
+        }
+      }
+    });
+  }
+
+  rsx! {
+    div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+        h2 { class: "text-3xl font-bold", "Telemetry" }
+        button {
+          class: "btn btn-secondary",
+          onclick: move |_| show_add.set(true),
+          "Add Graph"
+        }
+      }
+
+      if is_mock_keys() {
+        p { class: "text-xs text-warning/80 md:px-4",
+          "No live telemetry reported for this pigeon yet — key picker is showing example keys."
+        }
+      }
+
+      if graphs.read().is_empty() {
+        p { class: "text-sm text-base-content/50 italic md:px-4",
+          "No graphs yet. Add one to start tracking telemetry over time."
+        }
+      }
+
+      div { class: "flex flex-col gap-6",
+        for graph in graphs.read().iter().cloned() {
+          GraphCard {
+            key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
+            def: graph.clone(),
+            source: DataSource::Pigeon(pigeon_id.clone()),
+            on_remove: {
+                let pigeon_id = pigeon_id.clone();
+                move |id: String| {
+                    graphs.write().retain(|g| g.id != id);
+                    save_graphs("pigeon", &pigeon_id, &graphs.read());
+                }
+            },
+            on_update: {
+                let pigeon_id = pigeon_id.clone();
+                move |updated: GraphDef| {
+                    if let Some(g) = graphs.write().iter_mut().find(|g| g.id == updated.id) {
+                        *g = updated;
+                    }
+                    save_graphs("pigeon", &pigeon_id, &graphs.read());
+                }
+            },
+          }
+        }
+      }
+
+      if show_add() {
+        AddGraphModal {
+          available_keys: available_keys(),
+          multi_select: true,
+          on_close: move |_| show_add.set(false),
+          on_save: {
+              let pigeon_id = pigeon_id.clone();
+              move |def: GraphDef| {
+                  graphs.write().push(def);
+                  save_graphs("pigeon", &pigeon_id, &graphs.read());
+                  show_add.set(false);
+              }
+          },
+        }
+      }
+    }
+  }
+}
+
+#[component]
+pub fn FlockGraphs(flock_id: Uuid) -> Element {
+  let scope_id = flock_id.to_string();
+  let mut graphs = use_signal(|| load_graphs("flock", &scope_id));
+  let mut show_add = use_signal(|| false);
+  let local_session = use_context::<LocalSession>();
+
+  // No flock-level "latest keys" route — derive a best-effort key list from
+  // the flock's own history fetch at the default range instead of adding
+  // another guessed endpoint on top of the ones #18 already owes us.
+  let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
+  let mut is_mock_keys = use_signal(|| false);
+  use_resource(move || async move {
+    let until = now_unix();
+    match telemetry::get_flock_history(&flock_id, until - TimeRange::Last24h.seconds(), until).await {
+      Some(points) if !points.is_empty() => {
+        let mut keys: Vec<String> = points.into_iter().map(|p| p.key).collect();
+        keys.sort();
+        keys.dedup();
+        available_keys.set(keys);
+        is_mock_keys.set(false);
+      }
+      _ => {
+        available_keys.set(vec![
+          "battery_mv".to_string(),
+          "uptime_s".to_string(),
+          "rssi_dbm".to_string(),
+        ]);
+        is_mock_keys.set(true);
+      }
+    }
+  });
+
+  let _ = &local_session; // reserved for once pigeon names are resolvable per-flock here too.
+
+  rsx! {
+    div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+        h2 { class: "text-3xl font-bold", "Flock Telemetry" }
+        button {
+          class: "btn btn-secondary",
+          onclick: move |_| show_add.set(true),
+          "Add Graph"
+        }
+      }
+
+      if is_mock_keys() {
+        p { class: "text-xs text-warning/80 md:px-4",
+          "No live telemetry reported for this flock yet — key picker is showing example keys."
+        }
+      }
+
+      if graphs.read().is_empty() {
+        p { class: "text-sm text-base-content/50 italic md:px-4",
+          "No graphs yet. Add one to compare a metric across the flock's pigeons."
+        }
+      }
+
+      div { class: "flex flex-col gap-6",
+        for graph in graphs.read().iter().cloned() {
+          GraphCard {
+            key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
+            def: graph.clone(),
+            source: DataSource::Flock(flock_id),
+            on_remove: {
+                let scope_id = scope_id.clone();
+                move |id: String| {
+                    graphs.write().retain(|g| g.id != id);
+                    save_graphs("flock", &scope_id, &graphs.read());
+                }
+            },
+            on_update: {
+                let scope_id = scope_id.clone();
+                move |updated: GraphDef| {
+                    if let Some(g) = graphs.write().iter_mut().find(|g| g.id == updated.id) {
+                        *g = updated;
+                    }
+                    save_graphs("flock", &scope_id, &graphs.read());
+                }
+            },
+          }
+        }
+      }
+
+      if show_add() {
+        AddGraphModal {
+          available_keys: available_keys(),
+          multi_select: false,
+          on_close: move |_| show_add.set(false),
+          on_save: {
+              let scope_id = scope_id.clone();
+              move |def: GraphDef| {
+                  graphs.write().push(def);
+                  save_graphs("flock", &scope_id, &graphs.read());
+                  show_add.set(false);
+              }
+          },
+        }
+      }
+    }
+  }
+}
+
+#[component]
+fn GraphCard(
+  def: GraphDef,
+  source: DataSource,
+  on_remove: EventHandler<String>,
+  on_update: EventHandler<GraphDef>,
+) -> Element {
+  let mut series_data = use_signal(Vec::<ChartSeries>::new);
+  let mut is_preview = use_signal(|| false);
+  let mut loading = use_signal(|| true);
+
+  {
+    let def = def.clone();
+    let source = source.clone();
+    use_resource(move || {
+      let def = def.clone();
+      let source = source.clone();
+      async move {
+        loading.set(true);
+        let (data, preview) = fetch_series(&source, &def).await;
+        series_data.set(data);
+        is_preview.set(preview);
+        loading.set(false);
+      }
+    });
+  }
+
+  rsx! {
+    div { class: "border border-base-content/10 rounded-box p-4 flex flex-col gap-3",
+      div { class: "flex items-center justify-between gap-2 flex-wrap",
+        div {
+          h3 { class: "font-semibold text-lg", "{def.title}" }
+          p { class: "text-xs text-base-content/50", "{def.keys.join(\", \")}" }
+        }
+        div { class: "flex items-center gap-2",
+          select {
+            class: "select select-bordered select-sm",
+            value: "{def.range.label()}",
+            onchange: {
+                let def = def.clone();
+                move |evt: Event<FormData>| {
+                    if let Some(range) = TimeRange::from_label(&evt.value()) {
+                        let mut updated = def.clone();
+                        updated.range = range;
+                        on_update.call(updated);
+                    }
+                }
+            },
+            for r in TimeRange::ALL {
+              option { value: "{r.label()}", selected: r == def.range, "{r.label()}" }
+            }
+          }
+          button {
+            class: "btn btn-ghost btn-sm text-error",
+            r#type: "button",
+            onclick: {
+                let id = def.id.clone();
+                move |_| on_remove.call(id.clone())
+            },
+            "Remove"
+          }
+        }
+      }
+
+      if is_preview() {
+        p { class: "text-[11px] text-warning/80",
+          "Preview data — live telemetry history isn't deployed to this environment yet (task #18)."
+        }
+      }
+
+      if loading() && series_data.read().is_empty() {
+        div { class: "loading loading-spinner loading-sm text-primary" }
+      } else {
+        TelemetryChart { series: series_data() }
+      }
+    }
+  }
+}
+
+#[component]
+fn AddGraphModal(
+  available_keys: Vec<String>,
+  multi_select: bool,
+  on_close: EventHandler<()>,
+  on_save: EventHandler<GraphDef>,
+) -> Element {
+  let mut title = use_signal(String::new);
+  let mut selected_keys: Signal<Vec<String>> = use_signal(Vec::new);
+  let mut range = use_signal(|| TimeRange::Last24h);
+  let can_save = !title.read().trim().is_empty() && !selected_keys.read().is_empty();
+
+  rsx! {
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape {
+              on_close.call(());
+          }
+      },
+      div { class: "modal-box relative max-w-md",
+        button {
+          class: "btn btn-sm btn-circle btn-ghost absolute inset-e-2 top-2",
+          r#type: "button",
+          onclick: move |_| on_close.call(()),
+          "✕"
+        }
+        h3 { class: "text-lg font-bold mb-4", "Add Graph" }
+
+        fieldset { class: "fieldset flex flex-col gap-4",
+          div {
+            label { class: "fieldset-legend text-xs font-semibold mb-1", "Title" }
+            input {
+              class: "input input-bordered w-full text-sm",
+              r#type: "text",
+              placeholder: "e.g., Battery over time",
+              value: "{title}",
+              oninput: move |e| title.set(e.value()),
+            }
+          }
+
+          div {
+            label { class: "fieldset-legend text-xs font-semibold mb-1",
+              if multi_select { "Keys (pick one or more)" } else { "Key (pick one)" }
+            }
+            div { class: "flex flex-col gap-1 max-h-40 overflow-y-auto",
+              if available_keys.is_empty() {
+                p { class: "text-xs text-base-content/50 italic", "No telemetry keys available yet." }
+              }
+              for k in available_keys.iter().cloned() {
+                label { class: "flex items-center gap-2 text-sm cursor-pointer",
+                  input {
+                    r#type: if multi_select { "checkbox" } else { "radio" },
+                    name: "graph-key",
+                    checked: selected_keys.read().contains(&k),
+                    onchange: {
+                        let k = k.clone();
+                        move |evt: Event<FormData>| {
+                            let checked = evt.checked();
+                            if multi_select {
+                                let mut keys = selected_keys.write();
+                                if checked {
+                                    if !keys.contains(&k) {
+                                        keys.push(k.clone());
+                                    }
+                                } else {
+                                    keys.retain(|existing| existing != &k);
+                                }
+                            } else {
+                                selected_keys.set(vec![k.clone()]);
+                            }
+                        }
+                    },
+                  }
+                  "{k}"
+                }
+              }
+            }
+          }
+
+          div {
+            label { class: "fieldset-legend text-xs font-semibold mb-1", "Time range" }
+            select {
+              class: "select select-bordered w-full text-sm",
+              value: "{range().label()}",
+              onchange: move |evt: Event<FormData>| {
+                  if let Some(r) = TimeRange::from_label(&evt.value()) {
+                      range.set(r);
+                  }
+              },
+              for r in TimeRange::ALL {
+                option { value: "{r.label()}", selected: r == range(), "{r.label()}" }
+              }
+            }
+          }
+        }
+
+        div { class: "modal-action",
+          button { class: "btn btn-ghost", onclick: move |_| on_close.call(()), "Cancel" }
+          button {
+            class: "btn btn-primary",
+            disabled: !can_save,
+            onclick: move |_| {
+                let def = GraphDef {
+                    // Workspace uuid only enables v7 (js feature covers wasm Date.now)
+                    id: uuid::Uuid::now_v7().to_string(),
+                    title: title.read().clone(),
+                    keys: selected_keys.read().clone(),
+                    range: range(),
+                };
+                on_save.call(def);
+            },
+            "Save"
+          }
+        }
+      }
+    }
+  }
+}

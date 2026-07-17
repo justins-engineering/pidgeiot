@@ -19,6 +19,7 @@ pub mod api;
 mod components;
 mod config;
 mod helpers;
+mod local_storage;
 mod models;
 mod partials;
 mod views;
