@@ -173,6 +173,8 @@ impl DurableObject for Pigeons {
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
+      "/pigeon/device/telemetry/verify" => verify_telemetry_device(self, req).await,
+      "/pigeon/device/telemetry/write" => write_telemetry_device(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
@@ -859,14 +861,37 @@ async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Res
   }
 }
 
+/// Shared upsert loop behind all three telemetry-write entry points below
+/// (`report_telemetry_device`, `write_telemetry_device`) -- each key
+/// overwrites its own row in `pigeon_telemetry`; this is a
+/// latest-value-per-key store, not a time-series log (see the table's
+/// creation comment in `DurableObject::new`).
+fn upsert_telemetry(
+  pigeons: &Pigeons,
+  metrics: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+  for (key, value) in metrics {
+    if let Err(e) = pigeons.sql.exec(
+      "INSERT INTO pigeon_telemetry (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, reported_at = unixepoch();",
+      vec![key.clone().into(), value.clone().into()],
+    ) {
+      console_error!("Telemetry UPSERT error for key '{key}': {e}");
+      return Err(e);
+    }
+  }
+  Ok(())
+}
+
 /// Device-facing telemetry ingestion. Same device-auth model as
 /// `get_shadow_device`/`report_shadow_device` (bearer token verified against
 /// this pigeon's own `device_public_key`, no `X-User-Id`/ACL). Body is a
 /// flat JSON object of string key/value pairs (matches pigeon's
-/// pigeon_set_shadow_param/pigeon_shadow_flush wire shape); each key
-/// overwrites its own row in `pigeon_telemetry` -- this is a
-/// latest-value-per-key store, not a time-series log (see the table's
-/// creation comment in `DurableObject::new`).
+/// pigeon_set_shadow_param/pigeon_shadow_flush wire shape). Used directly
+/// (auth + write in one call) in environments with no telemetry queue bound
+/// -- see the gateway route in `lib.rs`; where a queue *is* bound, that
+/// route calls `verify_telemetry_device` + enqueues instead, and the queue
+/// consumer (`src/queue.rs`) reaches `write_telemetry_device` below.
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -885,15 +910,51 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
-  for (key, value) in &metrics {
-    if let Err(e) = pigeons.sql.exec(
-      "INSERT INTO pigeon_telemetry (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, reported_at = unixepoch();",
-      vec![key.clone().into(), value.clone().into()],
-    ) {
-      console_error!("Telemetry UPSERT error for key '{key}': {e}");
-      return Response::error("Internal Server Error", 500);
+  if upsert_telemetry(pigeons, &metrics).is_err() {
+    return Response::error("Internal Server Error", 500);
+  }
+
+  Response::from_json(&metrics)
+}
+
+/// Auth-only counterpart to `report_telemetry_device`, used by the gateway
+/// route (`lib.rs`) when a telemetry queue is bound for this environment:
+/// verifies the device's bearer token against this pigeon's stored public
+/// key WITHOUT writing anything, so the gateway can confirm the report is
+/// genuine before it ever reaches the queue -- the queue itself has no
+/// authentication of its own. No response body; the caller only inspects
+/// the status code.
+async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  Response::ok("")
+}
+
+/// Trusted-internal write counterpart to `verify_telemetry_device`:
+/// performs the same upsert as `report_telemetry_device` but with NO auth
+/// check of its own. Safe only because it is reachable exclusively from
+/// this Worker's own queue consumer (`src/queue.rs`), which only ever
+/// dispatches messages that already passed `verify_telemetry_device` at
+/// enqueue time -- Durable Objects have no public internet-facing address,
+/// so there is no path for an unauthenticated caller to reach this route
+/// directly.
+async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  let metrics = match req
+    .json::<std::collections::HashMap<String, String>>()
+    .await
+  {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Telemetry json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
     }
+  };
+
+  if metrics.is_empty() {
+    return Response::error("Bad Request: Empty telemetry report", 400);
+  }
+
+  if upsert_telemetry(pigeons, &metrics).is_err() {
+    return Response::error("Internal Server Error", 500);
   }
 
   Response::from_json(&metrics)
