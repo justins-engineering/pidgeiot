@@ -96,6 +96,6 @@ flowchart TB
   Router -- "X-User-Id" --> Kratos
   DO_Pigeon -- "best-effort sync" --> Hyperdrive
   Hyperdrive --> Postgres
-  DO_Pigeon -- "enqueue telemetry" --> Queue
+  Router -- "enqueue telemetry" --> Queue
   Queue -- "consumer write" --> Postgres
-  DO_Pigeon -. "optional, per device" .-> Greptime
+  Queue -. "optional, per device" .-> Greptime
