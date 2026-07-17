@@ -1,11 +1,15 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
   get_user_flocks, insert_pigeon_pg_db, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  update_pigeon_pg_db, update_shadow_pg_db, upsert_acl_pg_db, verify_cf_access,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, update_pigeon_pg_db,
+  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, verify_cf_access,
   verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
-use capsules::{FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow};
+use capsules::{
+  FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint,
+  TelemetryHistoryQuery,
+};
 use futures::future::join_all;
 use worker::{
   Context, Date, Env, Method, Request, RequestInit, Response, RouteContext, Router, console_error,
@@ -602,6 +606,136 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       Response::from_json(&acl)?.with_cors(&cors)
     })
+    // --- Telemetry Routes (task #18) ---
+    .get_async("/pigeons/:pigeon_id/telemetry", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+      proxy_to_pigeon_do(req, &user_id, &obj_id, "/telemetry/get")
+        .await?
+        .with_cors(&cors)
+    })
+    .put_async(
+      "/pigeons/:pigeon_id/telemetry-endpoint",
+      |req, ctx| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        let do_response =
+          proxy_to_pigeon_do(req, &user_id, &obj_id, "/telemetry-endpoint/update").await?;
+        if do_response.status_code() >= 400 {
+          return do_response.with_cors(&cors);
+        }
+
+        let endpoint = parse_do_response::<Option<TelemetryEndpoint>>(do_response).await?;
+
+        match get_db_client(&ctx.env).await {
+          Ok(client) => {
+            if let Err(e) =
+              update_telemetry_endpoint_pg_db(client, &pigeon_id, endpoint.as_ref()).await
+            {
+              console_error!(
+                "External DB Sync Error for telemetry endpoint {}: {e}",
+                pigeon_id
+              );
+            }
+          }
+          Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
+        }
+
+        Response::from_json(&endpoint)?.with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/pigeons/:pigeon_id/telemetry/history",
+      |req, ctx| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Extracted before the ACL-probe proxy call below consumes `req`.
+        let Ok(query) = req.query::<TelemetryHistoryQuery>() else {
+          return Response::error("Bad Request: Invalid query parameters", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // Authorization lives in the DO's pigeon_acl table, but the data
+        // itself is in Postgres -- check the DO first via the ACL probe
+        // route before ever touching Postgres.
+        let authz_resp = proxy_to_pigeon_do(req, &user_id, &obj_id, "/authz/check").await?;
+        if authz_resp.status_code() >= 400 {
+          return authz_resp.with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let points = query_telemetry_history_for_pigeon(
+          &client,
+          &pigeon_id,
+          query.key.as_deref(),
+          query.since,
+          query.until,
+        )
+        .await?;
+
+        Response::from_json(&points)?.with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/flocks/:flock_id/telemetry/history",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(query) = req.query::<TelemetryHistoryQuery>() else {
+          return Response::error("Bad Request: Invalid query parameters", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Flocks have no per-entity ACL table (unlike pigeons) -- ownership
+        // is folded directly into the query's WHERE clause (see
+        // query_telemetry_history_for_flock's doc comment).
+        get_db!(ctx.env, client, &cors);
+
+        let points = query_telemetry_history_for_flock(
+          &client,
+          &flock_id,
+          &user_id,
+          query.key.as_deref(),
+          query.since,
+          query.until,
+        )
+        .await?;
+
+        Response::from_json(&points)?.with_cors(&cors)
+      },
+    )
     .or_else_any_method_async("/*any", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       match req.text().await {
