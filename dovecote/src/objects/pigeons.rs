@@ -728,9 +728,20 @@ async fn update_acl(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   match pigeons.sql.exec(
     "INSERT INTO pigeon_acl (entity_id, role) VALUES (?, ?)
      ON CONFLICT(entity_id) DO UPDATE SET role = excluded.role;",
-    vec![acl.entity_id.to_string().into(), acl.role.into()],
+    vec![acl.entity_id.to_string().into(), acl.role.clone().into()],
   ) {
-    Ok(_) => Response::ok("ACL Updated"),
+    // The gateway route (POST /pigeons/:id/acl, lib.rs) parses this
+    // response body as JSON `PigeonAcl` (matching every other DO write
+    // handler's success shape -- update_shadow, update_telemetry_endpoint,
+    // refresh_token, etc.) via parse_do_response::<PigeonAcl>(..).await?.
+    // A plain-text "ACL Updated" body here made that parse fail every
+    // time, which propagated through `?` into the top-level catch-all and
+    // always 500'd the caller even though this INSERT had already
+    // succeeded -- the write worked, only the HTTP response was wrong.
+    Ok(_) => Response::from_json(&PigeonAcl {
+      entity_id: acl.entity_id,
+      role: acl.role,
+    }),
     Err(e) => {
       console_error!("PigeonAcl UPDATE execution error: {e}");
       Response::error("Internal Server Error", 500)
