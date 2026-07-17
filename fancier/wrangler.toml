@@ -1,6 +1,14 @@
 name = "fancier"
 compatibility_date = "2026-07-15"
 send_metrics = false
+# Keep version-preview URLs enabled on prod deploys — staging for this
+# script IS a version preview (`versions upload -c wrangler.staging.toml
+# --preview-alias staging`, see that file). Without this, a plain
+# `wrangler deploy` resets the script's previews_enabled to false and the
+# staging alias dies with error 1042 (happened 2026-07-17; re-enabled
+# account-side by hand). workers_dev stays off: pidgeiot.com only.
+preview_urls = true
+workers_dev = false
 
 [observability]
 enabled = false
