@@ -1,9 +1,11 @@
+use capsules::TelemetryEndpoint;
 use worker::{
-  Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result,
+  Context, Env, Fetch, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result,
   console_error, console_log, event,
 };
 
 use crate::helpers::write_telemetry_history;
+use crate::objects::pigeons::TelemetryWriteResult;
 
 /// Message enqueued by the `POST /device/pigeons/:id/telemetry` gateway
 /// route (`lib.rs`) once it has verified the device's bearer token against
@@ -113,20 +115,38 @@ async fn dispatch_to_do(
   };
 
   match stub.fetch_with_request(do_req).await {
-    Ok(resp) if resp.status_code() < 400 => {
+    Ok(mut resp) if resp.status_code() < 400 => {
       console_log!("Telemetry consumer: wrote metrics for '{}'", body.pigeon_id);
       message.ack();
 
-      // Best-effort PG history write (task #18, part 1) -- re-parses the
-      // same metrics_json already sent to the DO above rather than reading
-      // it back from the DO's response, so this has no dependency on that
-      // response's shape. Mirrors this codebase's established best-effort
-      // PG sync convention: log and move on, never fail/retry the queue
-      // message over a history-write failure once the DO write (the
-      // source of truth) has already succeeded.
-      match serde_json::from_str::<std::collections::HashMap<String, String>>(&body.metrics_json)
-      {
-        Ok(metrics) => {
+      // The DO's write response (task #18, part 2) hands back this
+      // pigeon's telemetry_endpoint alongside the metrics it just wrote,
+      // so we can decide where this report goes without a second DO round
+      // trip: forward as line protocol if one is configured, otherwise
+      // fall back to our own best-effort PG history write (task #18, part
+      // 1) -- matches this codebase's established best-effort PG sync
+      // convention either way: log and move on, never fail/retry the
+      // queue message once the DO write (the source of truth) already
+      // succeeded.
+      match resp.json::<TelemetryWriteResult>().await {
+        Ok(TelemetryWriteResult {
+          metrics,
+          telemetry_endpoint: Some(endpoint),
+        }) => {
+          if let Err(e) =
+            forward_line_protocol(&endpoint, &body.pigeon_id, &metrics, body.reported_at_ms).await
+          {
+            console_error!(
+              "Telemetry consumer: line-protocol forward to '{}' failed for '{}': {e}",
+              endpoint.url,
+              body.pigeon_id
+            );
+          }
+        }
+        Ok(TelemetryWriteResult {
+          metrics,
+          telemetry_endpoint: None,
+        }) => {
           if let Err(e) = write_telemetry_history(env, &body.pigeon_id, &metrics).await {
             console_error!(
               "Telemetry consumer: history write failed for '{}': {e}",
@@ -134,10 +154,33 @@ async fn dispatch_to_do(
             );
           }
         }
-        Err(e) => console_error!(
-          "Telemetry consumer: failed to re-parse metrics_json for history write ('{}'): {e}",
-          body.pigeon_id
-        ),
+        Err(e) => {
+          // Fall back to the pre-task-#18 behavior: re-parse the queue
+          // message's own metrics_json (independent of the DO response
+          // shape) and write our own PG history, so a response-parsing
+          // mismatch doesn't silently drop telemetry that already landed
+          // in the DO.
+          console_error!(
+            "Telemetry consumer: failed to parse DO write result for '{}', falling back to PG history: {e}",
+            body.pigeon_id
+          );
+          match serde_json::from_str::<std::collections::HashMap<String, String>>(
+            &body.metrics_json,
+          ) {
+            Ok(metrics) => {
+              if let Err(e) = write_telemetry_history(env, &body.pigeon_id, &metrics).await {
+                console_error!(
+                  "Telemetry consumer: history write failed for '{}': {e}",
+                  body.pigeon_id
+                );
+              }
+            }
+            Err(e) => console_error!(
+              "Telemetry consumer: failed to re-parse metrics_json for history write ('{}'): {e}",
+              body.pigeon_id
+            ),
+          }
+        }
       }
     }
     Ok(resp) => {
@@ -156,4 +199,107 @@ async fn dispatch_to_do(
       message.retry();
     }
   }
+}
+
+/// Forwards one device telemetry report as an InfluxDB line protocol v2
+/// HTTP write (GreptimeDB-compatible) to a pigeon's user-configured
+/// `telemetry_endpoint` (task #18, part 2) -- taken INSTEAD of our own
+/// `pigeon_telemetry_history` Postgres mirror once one is set (see
+/// `capsules::TelemetryEndpoint`'s doc comment; the DO's own latest-value
+/// upsert always happens regardless). `endpoint.url` is the user's full
+/// write URL (e.g. `https://host:4000/v1/influxdb/write`) -- we only ever
+/// append `precision`/`db` query params, never assume a particular path,
+/// since GreptimeDB/InfluxDB deployments vary. One line, one point in
+/// time: every key in this report becomes a field on a single
+/// `pigeon_telemetry` measurement, tagged by `pigeon_id`, timestamped at
+/// the gateway's enqueue time (millisecond precision).
+async fn forward_line_protocol(
+  endpoint: &TelemetryEndpoint,
+  pigeon_id: &str,
+  metrics: &std::collections::HashMap<String, String>,
+  reported_at_ms: u64,
+) -> Result<()> {
+  let mut line = String::with_capacity(48 + metrics.len() * 24);
+  line.push_str("pigeon_telemetry,pigeon_id=");
+  line.push_str(&escape_key_or_tag(pigeon_id));
+  line.push(' ');
+
+  for (i, (key, value)) in metrics.iter().enumerate() {
+    if i > 0 {
+      line.push(',');
+    }
+    line.push_str(&escape_key_or_tag(key));
+    line.push('=');
+    match value.parse::<f64>() {
+      Ok(n) => line.push_str(&n.to_string()),
+      Err(_) => {
+        line.push('"');
+        line.push_str(&escape_field_string(value));
+        line.push('"');
+      }
+    }
+  }
+
+  line.push(' ');
+  line.push_str(&reported_at_ms.to_string());
+
+  let mut url = endpoint.url.clone();
+  url.push(if url.contains('?') { '&' } else { '?' });
+  url.push_str("precision=ms");
+  if let Some(db) = &endpoint.db {
+    url.push_str("&db=");
+    url.push_str(&url_encode_component(db));
+  }
+
+  let mut init = RequestInit::default();
+  init.with_method(Method::Post);
+  init.body = Some(line.into());
+  init.headers.set("Content-Type", "text/plain; charset=utf-8")?;
+  if let Some(token) = &endpoint.auth_token {
+    init.headers.set("Authorization", &format!("Token {token}"))?;
+  }
+
+  let req = Request::new_with_init(&url, &init)?;
+  let resp = Fetch::Request(req).send().await?;
+
+  if resp.status_code() >= 400 {
+    return Err(worker::Error::RustError(format!(
+      "line-protocol write to '{url}' returned {}",
+      resp.status_code()
+    )));
+  }
+
+  Ok(())
+}
+
+/// Line protocol escaping for measurement/tag/field keys and tag values:
+/// commas, spaces, and equals signs must be backslash-escaped outside of
+/// quoted string field values (order matters -- backslash itself first, so
+/// the later replacements' own backslashes aren't re-escaped).
+fn escape_key_or_tag(value: &str) -> String {
+  value
+    .replace('\\', "\\\\")
+    .replace(',', "\\,")
+    .replace(' ', "\\ ")
+    .replace('=', "\\=")
+}
+
+/// Line protocol escaping for a quoted string field value: backslashes and
+/// double quotes only (commas/spaces/equals need no escaping inside quotes).
+fn escape_field_string(value: &str) -> String {
+  value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Minimal percent-encoding for a URL query value (the user-supplied `db`
+/// name) -- avoids pulling in the `url` crate's query-encoding just for
+/// this one call site.
+fn url_encode_component(value: &str) -> String {
+  let mut out = String::with_capacity(value.len());
+  for b in value.bytes() {
+    match b {
+      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+      _ => out.push_str(&format!("%{b:02X}")),
+    }
+  }
+  out
 }
