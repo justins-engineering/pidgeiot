@@ -253,9 +253,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return verify_resp.with_cors(&cors);
         }
 
+        // Pre-serialize the metrics map here: a HashMap round-tripped
+        // through Queue::send arrives at the consumer as an empty object
+        // (serde-wasm-bindgen map -> JS Map -> JSON.stringify == "{}"),
+        // so the queue message carries a JSON string instead -- see
+        // TelemetryMessage in queue.rs.
+        let Ok(metrics_json) = serde_json::to_string(&metrics) else {
+          console_error!("Failed to serialize telemetry for pigeon {pigeon_id}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
         let message = TelemetryMessage {
           pigeon_id: pigeon_id.clone(),
-          metrics,
+          metrics_json,
           reported_at_ms: Date::now().as_millis(),
         };
 

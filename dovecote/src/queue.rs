@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use worker::{
   Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result,
   console_error, console_log, event,
@@ -13,10 +12,21 @@ use worker::{
 /// `pigeon_telemetry` rows still stamp `reported_at` at write time via
 /// SQLite's `unixepoch()` default, unchanged from the pre-queue
 /// direct-write path.
+///
+/// `metrics_json` carries the device's flat `{"key":"val"}` report as a
+/// pre-serialized JSON string, NOT a `HashMap`: `Queue::send` serializes
+/// through serde-wasm-bindgen, which turns a Rust map into a JS `Map`, and
+/// the queue's default JSON content type then `JSON.stringify`s that `Map`
+/// into `{}` -- silently emptying every report (observed live: the DO write
+/// 400'd "Empty telemetry report" on every consumed message). Strings
+/// survive every serializer identically. `#[serde(default)]` lets messages
+/// from before this fix decode as empty and be ack-dropped instead of
+/// wedging the whole batch.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct TelemetryMessage {
   pub pigeon_id: String,
-  pub metrics: HashMap<String, String>,
+  #[serde(default)]
+  pub metrics_json: String,
   pub reported_at_ms: u64,
 }
 
@@ -71,18 +81,20 @@ async fn dispatch_to_do(namespace: &worker::ObjectNamespace, message: &Message<T
     return;
   };
 
-  let Ok(payload) = serde_json::to_string(&body.metrics) else {
+  if body.metrics_json.is_empty() {
     console_error!(
-      "Telemetry consumer: failed to serialize metrics for '{}'",
+      "Telemetry consumer: empty/legacy message for '{}', dropping",
       body.pigeon_id
     );
+    // Pre-metrics_json messages (or an empty report that slipped through)
+    // will never become valid on retry -- ack to drop.
     message.ack();
     return;
-  };
+  }
 
   let mut init = RequestInit::default();
   init.with_method(Method::Post);
-  init.body = Some(payload.into());
+  init.body = Some(body.metrics_json.clone().into());
 
   let Ok(do_req) = Request::new_with_init("https://internal/pigeon/device/telemetry/write", &init)
   else {
