@@ -12,6 +12,7 @@ This project is structured as a Cargo Workspace containing three primary crates:
 - 🖥️ **`fancier` (Frontend):** A blazing-fast WebAssembly Single Page Application (SPA) built with [Dioxus](https://dioxuslabs.com/) and styled with TailwindCSS & DaisyUI. This is the human-facing dashboard.
 - 💊 **`capsules` (Shared Models):** The shared data structures, serialization logic, and RPC schemas ensuring the frontend and backend are always 100% in sync.
 
+📖 **API Reference:** the full `dovecote` HTTP surface (dashboard + device routes, auth models, request/response shapes) is documented in [`docs/api.md`](docs/api.md).
 
 ## 🚀 Development Guide
 

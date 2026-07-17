@@ -12,6 +12,8 @@ PidgeIoT is an edge-native IoT platform built in Rust, structured as a Cargo wor
 
 Auth/identity is handled by a self-hosted Ory Kratos instance (via `docker-compose.yml`) for dashboard users, plus per-pigeon Ed25519 keypairs and compact binary bearer tokens (not JWTs) for device auth — see `dovecote` below.
 
+Full HTTP API reference (every dashboard + device route, auth models, request/response shapes): `docs/api.md`.
+
 ## Development commands
 
 Three services run in parallel, each in its own terminal, from repo root unless noted:
