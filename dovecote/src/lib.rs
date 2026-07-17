@@ -266,7 +266,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        Response::ok("{}")?.with_status(202).with_cors(&cors)
+        Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
       },
     )
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
