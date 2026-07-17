@@ -1,4 +1,6 @@
-use crate::components::{ConnectorBadge, JsonViewer, PigeonGraphs, TelemetryEndpointModal};
+use crate::components::{
+  ConnectorBadge, JsonViewer, LogViewer, PigeonGraphs, TelemetryEndpointModal,
+};
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
@@ -70,6 +72,9 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 section { id: "shadowInfo",
                   ShadowInfo { shadow: pd.shadow.clone() }
+                }
+                section { id: "logViewer",
+                  LogViewer { pigeon_id: pigeon_id.clone() }
                 }
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }

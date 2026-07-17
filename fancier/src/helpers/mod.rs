@@ -17,3 +17,6 @@ pub use session_cookie::session_cookie_valid;
 pub use session_cookie::write_session_hint_cookie;
 
 pub mod browser;
+
+mod download;
+pub use download::{decode_base64, download_bytes};

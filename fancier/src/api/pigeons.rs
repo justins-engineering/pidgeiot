@@ -1,7 +1,8 @@
 use crate::api::fetch_json;
 use capsules::{
-  Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest,
-  PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
+  Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonShadow,
+  PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -148,6 +149,24 @@ pub async fn update_shadow(
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
 
   serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
+}
+
+// GET /pigeons/:id/logs (task #18 backend, task #25 dashboard UI) -- every
+// currently-stored device log chunk for this pigeon, oldest first, as
+// base64-encoded binary (docs/api.md's "Logs" section). This is the only
+// pigeon route this crate never mirrors into `LocalSession`: log chunks
+// aren't part of `Pigeon`/`PigeonDetail`, so there's no cached field for
+// them to update -- callers just hold the returned `Vec` in local component
+// state (see `LogViewer` in components/log_viewer.rs).
+pub async fn get_logs(pigeon_id: &str) -> Option<Vec<PigeonLogChunk>> {
+  let mut path = String::with_capacity(77);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/logs");
+
+  let response = fetch_json("GET", &path, None).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  serde_wasm_bindgen::from_value::<Vec<PigeonLogChunk>>(json).ok()
 }
 
 // PUT /pigeons/:id/telemetry-endpoint (task #18, landed in dovecote

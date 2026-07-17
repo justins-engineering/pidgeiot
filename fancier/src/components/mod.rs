@@ -35,3 +35,6 @@ pub use graph_widget::{FlockGraphs, PigeonGraphs};
 
 mod telemetry_endpoint_modal;
 pub use telemetry_endpoint_modal::TelemetryEndpointModal;
+
+mod log_viewer;
+pub use log_viewer::LogViewer;
