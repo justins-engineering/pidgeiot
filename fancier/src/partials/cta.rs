@@ -31,9 +31,9 @@ pub fn Cta() -> Element {
             Icon {
               icon: LdFileCode,
               class: "mr-2",
-              title: "Read the Documentation",
+              title: "Explore the Source",
             }
-            "Read the Docs"
+            "Explore the Code"
           }
         }
         div { class: "inline-flex items-center px-4 py-2 rounded-full bg-base-300/30 border border-primary/30",

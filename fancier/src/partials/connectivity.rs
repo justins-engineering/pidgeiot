@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdDollarSign, LdRadio, LdShieldHalf, LdZap};
+use dioxus_free_icons::icons::ld_icons::{LdKeyRound, LdRadio, LdShieldHalf};
 
 #[component]
 pub fn Connectivity() -> Element {
@@ -9,55 +9,52 @@ pub fn Connectivity() -> Element {
       div { class: "bg-linear-to-bl/srgb from-primary/40 via-secondary/40 to-accent/40 border border-primary rounded-3xl p-8 md:p-12 shadow-2xl scroll-reveal",
         div { class: "flex flex-col lg:flex-row items-center gap-12",
           div { class: "lg:w-2/3",
-            div { class: "flex flex-col items-center py-2 rounded-full bg-base-300 border border-secondary mb-6",
-              span { class: "text-primary font-bold mr-2 animate-pulse",
-                "COMING SOON"
-              }
-              p { class: "text-sm", "Exclusive partnership" }
-            }
             h2 { class: "text-3xl md:text-4xl font-bold mb-6",
-              "Wireless, the only US IoT carrier with easy access to Non-IP Data Delivery (NIDD)"
+              "Built for Constrained, Cellular Hardware"
             }
             p { class: "text-xl mb-8 leading-relaxed",
-              "Dirt cheap service and high efficiency! Connect your devices without the overhead of traditional IP stacks."
+              "Every byte costs money and battery on a cellular device. PidgeIoT is designed around small, auditable wire formats instead of heavyweight standards — maximum security with minimal data transfer."
             }
             div { class: "grid grid-cols-1 md:grid-cols-3 gap-5",
               div { class: "flex flex-row space-x-2 items-start p-4 rounded-xl bg-base-300/50 border border-primary/40 hover:border-primary transition-all duration-300",
                 Icon {
-                  icon: LdZap,
+                  icon: LdKeyRound,
                   class: "mt-1 h-8 w-1/2 stroke-primary",
-                  title: "Lightning Bolt icon",
+                  title: "Key icon",
                 }
                 div {
-                  h4 { class: "font-bold text-lg mb-2", "High Efficiency" }
+                  h4 { class: "font-bold text-lg mb-2", "69-Byte Tokens" }
                   p { class: "text-sm",
-                    "Reduced data overhead by up to 80% with NIDD technology."
+                    "A compact binary bearer token — version, expiry, signature — verified with one Ed25519 check at the edge. No JWT overhead."
                   }
                 }
               }
               div { class: "flex flex-row space-x-2 items-start p-4 rounded-xl bg-base-300/50 border border-secondary/40 hover:border-secondary transition-all duration-300",
                 Icon {
-                  icon: LdDollarSign,
+                  icon: LdShieldHalf,
                   class: "mt-1 h-8 w-1/2 text-secondary",
-                  title: "Dollar sign icon",
+                  title: "Shield icon",
                 }
                 div {
-                  h4 { class: "font-bold text-lg mb-2", "Cost Effective" }
+                  h4 { class: "font-bold text-lg mb-2", "CoAP-over-TLS/TCP" }
                   p { class: "text-sm",
-                    "Pay only for the data you use with our transparent pricing."
+                    "RFC 8323 CoAP for devices too constrained for a full HTTPS stack — still fully encrypted, no bare UDP."
                   }
                 }
               }
               div { class: "flex flex-row space-x-2 items-start p-4 rounded-xl bg-base-300/50 border border-primary/40 hover:border-primary transition-all duration-300",
                 Icon {
-                  icon: LdShieldHalf,
+                  icon: LdRadio,
                   class: "mt-1 h-8 w-1/2 stroke-primary",
-                  title: "Shield icon",
+                  title: "Radio icon",
                 }
                 div {
-                  h4 { class: "font-bold text-lg mb-2", "Enhanced Security" }
+                  div { class: "flex items-center gap-2 mb-2",
+                    h4 { class: "font-bold text-lg", "Dictionary Logging" }
+                    span { class: "badge badge-xs badge-primary", "Rolling out" }
+                  }
                   p { class: "text-sm",
-                    "NIDD provides inherent security benefits over traditional IP delivery."
+                    "Structured device logs from our Zephyr library, shipped as dictionary-compressed codes instead of raw strings."
                   }
                 }
               }
@@ -70,15 +67,15 @@ pub fn Connectivity() -> Element {
                   Icon {
                     icon: LdRadio,
                     class: "size-20 stroke-primary",
-                    title: "Wifi icon",
+                    title: "Radio icon",
                   }
                 }
               }
               div { class: "absolute -bottom-4 -right-4 w-16 h-16 rounded-full bg-secondary flex items-center justify-center shadow-lg animate-bounce-slow",
                 Icon {
-                  icon: LdDollarSign,
+                  icon: LdShieldHalf,
                   class: "size-7 stroke-secondary-content",
-                  title: "Dollar sign icon",
+                  title: "Shield icon",
                 }
               }
             }

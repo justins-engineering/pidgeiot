@@ -58,7 +58,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "Just a simple API" }
+              span { "HTTPS or CoAP-over-TLS (RFC 8323) — same ingestion API" }
             }
           }
         }
@@ -94,7 +94,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "Encryption required" }
+              span { "Per-device Ed25519 keypairs, not JWTs" }
             }
             li { class: "flex items-center",
               div { class: "size-6 rounded-full bg-secondary-content flex items-center justify-center mr-3",
@@ -104,7 +104,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "Credentials secured with Ory stack" }
+              span { "Self-hosted Ory Kratos for dashboard auth" }
             }
           }
         }
@@ -140,7 +140,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "Built on open source tools" }
+              span { "Built on Cloudflare Workers, Ory, and Zephyr" }
             }
             li { class: "flex items-center",
               div { class: "size-6 rounded-full bg-primary-content flex items-center justify-center mr-3",
@@ -150,7 +150,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "Comprehensive documentation" }
+              span { "Open development on GitHub" }
             }
           }
         }

@@ -39,8 +39,8 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h4 { class: "font-bold text-lg mb-1", "Fearless Concurrency" }
-                p { "Write concurrent code without data races." }
+                h4 { class: "font-bold text-lg mb-1", "69 Bytes on the Wire" }
+                p { "No JWT, no base64 bloat — a binary bearer token: version, expiry, signature." }
               }
             }
             div { class: "flex items-start",
@@ -52,8 +52,8 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h4 { class: "font-bold text-lg mb-1", "Compile-Time Safety" }
-                p { "Catch bugs before they reach production." }
+                h4 { class: "font-bold text-lg mb-1", "Refresh Revokes" }
+                p { "Minting a new device token overwrites the old public key — no revocation list needed." }
               }
             }
           }
@@ -69,39 +69,30 @@ pub fn CodeShowcase() -> Element {
           }
           div { class: "mockup-code",
             pre {
-              code { class: "text-secondary", "use pigeon_iot::DeviceManager;" }
+              code { class: "text-base-content/50", "// each pigeon owns one Ed25519 keypair;" }
+            }
+            pre {
+              code { class: "text-base-content/50", "// only the public key is ever persisted" }
             }
             br {}
             pre {
-              code { class: "text-accent-content dark:text-accent", "async fn " }
-              code { class: "text-primary", "connect_device " }
-              code { "(device_id: &str) -> Result<Device, Error> {{ " }
+              code { class: "text-accent-content dark:text-accent", "fn " }
+              code { class: "text-primary", "verify_device_token " }
+              code { "(pigeon: &Pigeon, token: &[u8; 69]) -> Result<(), AuthError> {{ " }
             }
             pre {
               "\n\t"
               code { class: "text-accent-content dark:text-accent", "let " }
-              code { "mut manager = DeviceManager::new()" }
+              code { "(header, sig) = token.split_at(5);" }
             }
             pre {
-              "\t\t"
-              code { ".with_security(SecurityLevel::Maximum)" }
-            }
-            pre {
-              "\t\t"
-              code { ".with_encryption(Encryption::AES256GCM)" }
-            }
-            pre {
-              "\t\t"
-              code { ".await?;" }
+              "\t"
+              code { "pigeon.device_public_key.verify(header, sig)?;" }
             }
             pre {
               "\n\t"
-              code { class: "text-accent-content dark:text-accent", "let " }
-              code { "device = manager.connect(device_id).await?;" }
-            }
-            pre {
-              "\n\t"
-              code { "Ok(device)" }
+              code { class: "text-accent-content dark:text-accent", "Ok" }
+              code { "(())" }
             }
             pre {
               code { "}}" }
