@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use worker::{
   Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result,
-  console_error, event,
+  console_error, console_log, event,
 };
 
 /// Message enqueued by the `POST /device/pigeons/:id/telemetry` gateway
@@ -95,7 +95,10 @@ async fn dispatch_to_do(namespace: &worker::ObjectNamespace, message: &Message<T
   };
 
   match stub.fetch_with_request(do_req).await {
-    Ok(resp) if resp.status_code() < 400 => message.ack(),
+    Ok(resp) if resp.status_code() < 400 => {
+      console_log!("Telemetry consumer: wrote metrics for '{}'", body.pigeon_id);
+      message.ack();
+    }
     Ok(resp) => {
       console_error!(
         "Telemetry consumer: DO write for '{}' returned {}",
