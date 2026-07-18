@@ -65,10 +65,10 @@ pub fn Footer() -> Element {
                   "Product"
                 }
                 ul { class: "menu menu-vertical sm:menu-lg p-0",
-                  li { class: "menu-disabled",
-                    a {
+                  li {
+                    Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
-                      href: "#",
+                      to: Route::FeaturesPage {},
                       Icon {
                         icon: LdChevronRight,
                         class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
@@ -77,10 +77,10 @@ pub fn Footer() -> Element {
                       "Features"
                     }
                   }
-                  li { class: "menu-disabled",
-                    a {
+                  li {
+                    Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
-                      href: "#",
+                      to: Route::PricingPage {},
                       Icon {
                         icon: LdChevronRight,
                         class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
@@ -89,10 +89,10 @@ pub fn Footer() -> Element {
                       "Pricing"
                     }
                   }
-                  li { class: "menu-disabled",
-                    a {
+                  li {
+                    Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
-                      href: "#",
+                      to: Route::DocumentationPage {},
                       Icon {
                         icon: LdChevronRight,
                         class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
@@ -101,10 +101,10 @@ pub fn Footer() -> Element {
                       "Documentation"
                     }
                   }
-                  li { class: "menu-disabled",
-                    a {
+                  li {
+                    Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
-                      href: "#",
+                      to: Route::ApiReferencePage {},
                       Icon {
                         icon: LdChevronRight,
                         class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
