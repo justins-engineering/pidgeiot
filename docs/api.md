@@ -120,6 +120,11 @@ models above; dev and production don't set these vars, so it's a no-op there.
   "delete yourself" API — see `objects/pigeons.rs`'s `delete` handler) — its tables are just
   emptied. A `GET` against a deleted pigeon therefore returns `403 Forbidden` (no ACL rows left
   to authorize against), not `404`.
+- `GET /device/pigeons/:pigeon_id/ws` is the one exception to "error responses are plain text
+  HTTP status codes": a rejected upgrade (bad `Upgrade` header, bad token) is still a normal HTTP
+  error response (`400`/`401`), but a problem discovered *after* the socket is open (oversize
+  frame, malformed frame, frame flood) has no HTTP status to report — it's a WebSocket close
+  code instead (`4001`-`4009`; see that route's own section for the full list).
 
 ## Rate & size limits
 
@@ -132,6 +137,8 @@ applies at the platform level). The limits that do exist are:
 | `POST /device/pigeons/:id/logs` — bytes per chunk | 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`) | `objects/pigeons.rs::report_logs_device`, `413` over the cap |
 | Stored log chunks per pigeon | 200 (oldest silently pruned, not an error) | `objects/pigeons.rs::MAX_STORED_LOG_CHUNKS` |
 | `GET .../telemetry/history` rows per query | 5000 (silently truncated, not an error) | `helpers/telemetry.rs` |
+| `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
+| `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 
 ---
 
@@ -691,6 +698,99 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
   -o chunk0.bin
 ```
 
+#### `GET /device/pigeons/:pigeon_id/ws`
+
+Upgrades to a persistent WebSocket — the real-time channel for non-cellular (WiFi/mains-powered)
+devices (task #32), replacing the poll (`GET .../shadow`) + report (`POST .../shadow`,
+`POST .../telemetry`) pattern above with one long-lived connection. Cellular/constrained devices
+can keep using the HTTP routes above unchanged; the two are independent, not a migration.
+
+**Handshake.** Standard WebSocket upgrade — a `GET` request carrying `Upgrade: websocket` (and
+the usual `Connection`/`Sec-WebSocket-*` handshake headers) — with the device's bearer token on
+`Authorization: Bearer <device_token>`, same as every other device route. The gateway rejects
+anything without `Upgrade: websocket` with a plain `400` before it ever reaches a Durable Object.
+The owning Durable Object then verifies the bearer token **before** accepting the socket
+(`is_authorized_device`, same check every other device route uses) — an invalid/expired/wrong-
+pigeon token gets a normal `401 Unauthorized` HTTP response instead of a `101 Switching
+Protocols` upgrade. A client library that only understands the standard `WebSocket` constructor
+(no custom headers, e.g. a browser) cannot open this connection; use a library/runtime that lets
+you set `Authorization` on the handshake request (Node's `ws` package with a `headers` option,
+Zephyr's own WebSocket client, etc).
+
+```sh
+# using websocat, or any WS client that can set a header on the handshake
+websocat -H 'Authorization: Bearer <device_token>' \
+  wss://api.pidgeiot.com/device/pigeons/<pigeon_id>/ws
+```
+
+**One socket per pigeon.** A new connection replaces any existing one for the same pigeon rather
+than coexisting with it — the old socket is closed (code `4009`, reason "replaced by new
+connection") as part of accepting the new one. Useful for a device that reconnects after a
+network blip before its old socket has timed out.
+
+**Server implementation note (not a wire-protocol detail, but relevant if you're touching this
+code):** accepted via the Durable Object *hibernation* WebSocket API
+(`State::accept_websocket_with_tags`, `worker` crate v0.8+), not the in-memory
+`WebSocket::accept()` — an idle connection can be evicted from the Durable Object's memory
+between messages without being torn down, keeping a fleet of mostly-idle long-lived connections
+cheap. This is transparent to the device; reconnection is never required just because nothing
+was sent for a while.
+
+**Frame protocol.** JSON text frames only — binary frames get the connection closed (code
+`4001`). Every frame is a JSON object with a `type` field:
+
+| Direction | `type` | Fields | Effect |
+|---|---|---|---|
+| device → server | `telemetry` | `metrics: {string: string}` | Same handling as `POST /device/pigeons/:id/telemetry`: an immediate latest-value upsert in the pigeon's own Durable Object, plus (environment-dependent — see below) a queued write for history/forwarding. |
+| device → server | `shadow_report` | `current_version: int`, `current_config: <JSON object>` | Same handling as `POST /device/pigeons/:id/shadow`: updates `pigeon_shadow.current_config`/`current_version` and best-effort syncs the result to Postgres. |
+| device → server | `ping` | — | Server replies with `{"type":"pong"}`. |
+| device → server | `pong` | — | Liveness acknowledgement only; no reply, no other effect. |
+| server → device | `shadow_update` | `shadow: <capsules::PigeonShadow, same shape as the GET .../shadow responses above>` | Pushed **immediately** whenever this pigeon's `target_config` changes via a dashboard `PUT /pigeons/:id/shadow` (including a firmware assignment, which reuses that same route) — this is the headline reason this endpoint exists: no more waiting for the device's next poll to learn about a new target. |
+| server → device | `pong` | — | Reply to a device-sent `ping`. |
+
+```json
+// device -> server
+{"type":"telemetry","metrics":{"temp":"21.5","status":"ok"}}
+{"type":"shadow_report","current_version":1,"current_config":{"telemetry_interval":60}}
+{"type":"ping"}
+```
+
+```json
+// server -> device, pushed the moment a dashboard PUT lands
+{"type":"shadow_update","shadow":{"target_version":2,"current_version":1,"target_config":"{\"telemetry_interval\":30}","current_config":"{\"telemetry_interval\":60}","updated_at":1784390937}}
+```
+
+Note `shadow.target_config`/`current_config` in a `shadow_update` push are `capsules::JsonString`
+— a JSON string containing JSON text, same asymmetry as the HTTP shadow routes' response bodies
+(see [Shadow](#shadow) above) — not nested objects.
+
+**Limits, enforced by the owning Durable Object:**
+
+| Limit | Value | Behavior over the limit |
+|---|---|---|
+| Max frame size | 16 KiB | Connection closed, code `4002`, reason "frame too large" |
+| Frame rate | 50 frames / rolling 10s window, per socket | Connection closed, code `4008`, reason "rate limit exceeded" |
+| Malformed frame (not valid JSON, or missing/unknown `type`) | — | Connection closed, code `4003`, reason "malformed frame"; logged server-side |
+
+None of these three are "recoverable" mid-connection — reconnect (a fresh `GET .../ws`) to
+resume after any of them.
+
+**`TELEMETRY_QUEUE` and the `telemetry` frame — same environment-dependent behavior as the HTTP
+route** (see [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry)
+above). Where a telemetry queue is bound (staging and production today), a `telemetry` frame's
+metrics are upserted into the Durable Object's latest-value table synchronously, then enqueued
+for the same consumer path the HTTP route uses (Postgres history write, or an external
+line-protocol forward if `telemetry_endpoint` is configured) — but since the frame already
+arrived on an authenticated connection, there's no separate verify-before-enqueue round trip the
+way the HTTP route needs (auth happened once, at socket accept). Where no queue is bound (dev),
+the Durable Object writes Postgres history directly instead, so telemetry sent over the socket
+doesn't silently skip history in that environment.
+
+**No response is sent for `telemetry`/`shadow_report` frames themselves** — there's no
+frame-level ack. Read back the result via the ordinary HTTP routes (`GET
+/pigeons/:pigeon_id/telemetry`, `GET /pigeons/:pigeon_id/shadow`) if you need confirmation, or
+rely on the `shadow_update` push for the shadow side.
+
 ---
 
 ## Type reference
@@ -710,3 +810,11 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 
 `*Row` variants (e.g. `PigeonRow`, `PigeonShadowRow`) are internal DB-deserialization shapes and
 never appear over the wire — only their non-`Row` counterparts do.
+
+**One exception:** the [WebSocket frame types](#get-devicepigeonspigeon_idws)
+(`WsInboundFrame`, `WsOutboundFrame`, and the `MAX_WS_FRAME_BYTES`/rate-limit constants) live in
+`dovecote/src/objects/ws.rs`, not `capsules`. Every other type in this document is shared with
+`fancier` (a Rust/Dioxus consumer), which is the whole reason `capsules` exists — but the only
+other consumer of the WS wire format is the `pigeon` device library, which is Zephyr/C, not Rust,
+so there's no second Rust crate to share these with. The wire shapes themselves (documented
+above) are still normative; only the Rust type definitions are dovecote-local.
