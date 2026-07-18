@@ -363,6 +363,74 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
   -d '{"target_config":{"telemetry_interval":60}}'
 ```
 
+**Firmware assignment (task #23) reuses this route** — there's no separate "assign firmware"
+endpoint. Merge a `firmware` key into `target_config` (see `capsules::FirmwareTarget`), using
+`version`/`size`/`sha256` from one of the flock's uploaded images (see
+[Firmware](#firmware) below):
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"target_config":{"firmware":{"version":"0.1.0+0","size":393802,"sha256":"<64-char lowercase hex>"}}}'
+```
+
+Old firmware that predates FOTA ignores the unknown `firmware` key entirely (Zephyr's
+`json_obj_parse` skips unknown keys), so this is backward-compatible with already-deployed
+devices. The device picks this up on its next shadow poll and pulls the image via
+[`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware) below.
+
+### Firmware
+
+Firmware images (signed MCUboot application binaries) are catalogued per-**flock**, not
+per-pigeon — they're shared across every pigeon in a flock's hardware fleet rather than
+duplicated per-pigeon. The binary itself lives in R2, content-addressed by `sha256`
+(`firmware/<sha256>.bin`); only metadata lives in Postgres. A pigeon's *assigned* firmware is a
+separate, per-pigeon concern set via its own shadow (see above), not here.
+
+#### `POST /flocks/:flock_id/firmware?version=<string>` — flock owner
+
+Uploads a firmware image. The request body **is** the image, sent as raw bytes (like
+`POST /device/pigeons/:pigeon_id/logs`, not wrapped in JSON). `size` and `sha256` are always
+computed server-side from the uploaded bytes — never trust a client-supplied hash.
+
+- `400` if `version` is missing/empty, or the body is empty.
+- `403` if the caller isn't the flock's owner.
+- `413 Payload Too Large` if the body exceeds ~2 MiB (`capsules::MAX_FIRMWARE_BYTES`).
+
+Re-uploading identical bytes to the same flock (even under a different `version` label) updates
+the existing catalog row in place rather than creating a duplicate — both the Postgres row and
+the R2 object are content-addressed by `(flock_id, sha256)`/`sha256` respectively.
+
+```sh
+curl -s -X POST 'https://api.pidgeiot.com/flocks/<flock_id>/firmware?version=0.1.0+0' \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  --data-binary @https_init.signed.bin
+```
+
+```json
+{
+  "id": "b3f1...",
+  "flock_id": "a1c2...",
+  "version": "0.1.0+0",
+  "size": 393802,
+  "sha256": "9f2a...",
+  "uploaded_at": "2026-07-17T15:21:08Z"
+}
+```
+
+(`capsules::FirmwareImage`.)
+
+#### `GET /flocks/:flock_id/firmware` — flock owner
+
+Lists every firmware image uploaded for this flock, newest first. Same per-item shape as the
+`POST` response above.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/firmware \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
 ### Telemetry
 
 Every telemetry value, on both the DO's latest-value table and the Postgres history table, is
@@ -589,6 +657,40 @@ curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/logs \
   --data-binary @log-chunk.bin
 ```
 
+#### `GET /device/pigeons/:pigeon_id/firmware`
+
+Downloads the firmware image currently assigned to **this pigeon's own shadow**
+(`target_config.firmware` — see [Shadow](#shadow) above). There's no version/sha256 path
+parameter; the route always serves whatever this pigeon is currently targeted at. Supports
+standard HTTP `Range` requests (`bytes=<start>-<end>`, `bytes=<start>-` for open-ended, or
+`bytes=-<suffix>`) — R2-backed, so ranged reads are efficient server-side; a single-range request
+only (no multi-range). This is required, not optional, for constrained devices: the nRF9160
+writes chunks straight to the MCUboot secondary flash slot rather than buffering the whole image
+in its ~256 KB of RAM.
+
+- `401` for a missing/invalid/expired bearer token.
+- `404` if this pigeon's shadow currently has no `firmware` key set, or the assigned image is
+  somehow missing from R2.
+- `200` (whole image) or `206 Partial Content` (a `Range` was honored).
+
+Response headers: `Content-Length`, `Accept-Ranges: bytes`, `Content-Range` (on a `206`), `ETag`,
+and `X-Firmware-Sha256`/`X-Firmware-Version`/`X-Firmware-Size` mirroring the assigned
+`FirmwareTarget`, so the device can verify total size + hash without re-parsing the shadow
+document.
+
+```sh
+# Whole image
+curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
+  -H 'Authorization: Bearer <device_token>' \
+  -o firmware.bin
+
+# One chunk, as the nRF9160 would request it
+curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
+  -H 'Authorization: Bearer <device_token>' \
+  -H 'Range: bytes=0-4095' \
+  -o chunk0.bin
+```
+
 ---
 
 ## Type reference
@@ -604,6 +706,7 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryQuery`,
   `TelemetryEndpoint`, `PigeonTelemetryEndpointUpdateRequest`
 - `PigeonLogChunk` / `PigeonLogChunkRow`, `MAX_LOG_CHUNK_BYTES`
+- `FirmwareImage`, `FirmwareTarget`, `FirmwareUploadQuery`, `MAX_FIRMWARE_BYTES`
 
 `*Row` variants (e.g. `PigeonRow`, `PigeonShadowRow`) are internal DB-deserialization shapes and
 never appear over the wire — only their non-`Row` counterparts do.

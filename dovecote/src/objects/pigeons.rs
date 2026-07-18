@@ -1,7 +1,7 @@
 use crate::objects::{mint_device_credential, verify_device_token};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
-  CoapConfig, Connector, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
+  CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
   PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonLogChunkRow,
   PigeonRow, PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
   PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest, TelemetryLatestRow,
@@ -211,6 +211,7 @@ impl DurableObject for Pigeons {
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
+      "/pigeon/device/firmware/target" => get_firmware_target_device(self, req).await,
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/verify" => verify_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/write" => write_telemetry_device(self, req).await,
@@ -911,6 +912,63 @@ async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Res
     Err(e) => {
       console_error!("Shadow REPORT execution error: {e}");
       Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+#[derive(serde::Deserialize)]
+struct TargetConfigRow {
+  target_config: String,
+}
+
+/// Firmware shadow-key lookup for the device-facing firmware download route
+/// (`GET /device/pigeons/:id/firmware` in `lib.rs`, task #23). Same
+/// device-auth model as `get_shadow_device`/`report_shadow_device` (bearer
+/// token verified against this pigeon's own `device_public_key`, no
+/// `X-User-Id`/ACL). Reads this pigeon's own `target_config` and extracts
+/// the `firmware` key (see `capsules::FirmwareTarget`'s doc comment for the
+/// coordinated shape) so the gateway can resolve which R2 object to stream
+/// back in one DO round trip instead of two — the firmware bytes
+/// themselves never pass through this DO (SQLite is not acceptable for
+/// MB-sized blobs; see this crate's `CLAUDE.md`). 404 if this pigeon's
+/// shadow currently has no `firmware` key set (nothing assigned yet).
+async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  let target_config = match pigeons
+    .sql
+    .exec("SELECT target_config FROM pigeon_shadow LIMIT 1;", None)
+  {
+    Ok(cursor) => match one_row::<TargetConfigRow>(&cursor) {
+      Ok(row) => row.target_config,
+      Err(e) => {
+        console_error!("Shadow target_config READ error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Shadow target_config READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  let parsed: serde_json::Value = match serde_json::from_str(&target_config) {
+    Ok(v) => v,
+    Err(e) => {
+      console_error!("target_config JSON parse error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  let Some(firmware_value) = parsed.get("firmware") else {
+    return Response::error("Not Found: No firmware assigned to this pigeon", 404);
+  };
+
+  match serde_json::from_value::<FirmwareTarget>(firmware_value.clone()) {
+    Ok(target) => Response::from_json(&target),
+    Err(e) => {
+      console_error!("Malformed firmware target in shadow: {e}");
+      Response::error("Bad Request: Malformed firmware target in shadow", 400)
     }
   }
 }

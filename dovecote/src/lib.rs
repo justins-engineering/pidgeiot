@@ -1,19 +1,20 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
-  get_user_flocks, insert_pigeon_pg_db, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, verify_cf_access,
+  get_user_flocks, insert_pigeon_pg_db, is_flock_owner, list_flock_firmware,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, sha256_hex, update_pigeon_pg_db, update_shadow_pg_db,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
   verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
-  FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint,
-  TelemetryHistoryQuery,
+  FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, TelemetryEndpoint, TelemetryHistoryQuery,
 };
 use futures::future::join_all;
 use worker::{
-  Context, Date, Env, Method, Request, RequestInit, Response, RouteContext, Router, console_error,
-  console_log, event,
+  Context, Date, Env, Headers, Method, Range, Request, RequestInit, Response, ResponseBuilder,
+  RouteContext, Router, console_error, console_log, event,
 };
 
 mod helpers;
@@ -120,6 +121,63 @@ async fn parse_do_response<T: serde::de::DeserializeOwned>(
     console_error!("Failed to parse DO response: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })
+}
+
+/// Parses a standard HTTP `Range` header (`bytes=<start>-<end>`,
+/// `bytes=<start>-` for open-ended, or `bytes=-<suffix>` for a trailing
+/// slice) into an R2 [`Range`] for `GET /device/pigeons/:id/firmware`
+/// (task #23) — the nRF9160 downloads a firmware image in small chunks
+/// straight to flash rather than buffering the whole ~300KB-1MB image in
+/// its ~256KB of RAM, so ranged reads aren't an optimization here, they're
+/// required. Only a single range is supported (a comma-separated multi-range
+/// request just uses the first one) — the device downloads sequentially,
+/// never in parallel/multi-range. Returns `None` on anything malformed,
+/// letting the caller fall back to serving the whole object.
+fn parse_range_header(header: &str) -> Option<Range> {
+  let spec = header.strip_prefix("bytes=")?;
+  let spec = spec.split(',').next()?.trim();
+  let (start, end) = spec.split_once('-')?;
+
+  if start.is_empty() {
+    let suffix: u64 = end.parse().ok()?;
+    return Some(Range::Suffix { suffix });
+  }
+
+  let offset: u64 = start.parse().ok()?;
+  if end.is_empty() {
+    return Some(Range::OffsetToEnd { offset });
+  }
+
+  let end: u64 = end.parse().ok()?;
+  if end < offset {
+    return None;
+  }
+  Some(Range::OffsetWithLength {
+    offset,
+    length: end - offset + 1,
+  })
+}
+
+/// Computes the inclusive `(start, end)` byte range actually being served
+/// for `Content-Range`/`Content-Length`, given the request's parsed `Range`
+/// (if any) and the firmware's total size (from the shadow-assigned
+/// `FirmwareTarget`, treated as the authoritative total rather than
+/// whatever R2's own `Object::size()`/`Object::range()` report for a
+/// ranged fetch, which is ambiguous in the `worker` crate's own docs).
+/// Clamps an out-of-bounds request down to the object's actual end rather
+/// than erroring — a device racing a shrinking/reassigned image is a rare
+/// edge case, not worth a hard 416 here.
+fn resolve_serve_range(range: &Range, total: u64) -> (u64, u64) {
+  let last = total.saturating_sub(1);
+  match *range {
+    Range::OffsetWithLength { offset, length } => (
+      offset.min(last),
+      (offset + length.saturating_sub(1)).min(last),
+    ),
+    Range::OffsetToEnd { offset } => (offset.min(last), last),
+    Range::Prefix { length } => (0, length.saturating_sub(1).min(last)),
+    Range::Suffix { suffix } => (total.saturating_sub(suffix), last),
+  }
 }
 
 #[event(fetch, respond_with_errors)]
@@ -283,7 +341,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
+        Response::ok("{}")
+          .unwrap()
+          .with_status(202)
+          .with_cors(&cors)
       },
     )
     .post_async("/device/pigeons/:pigeon_id/logs", |req, ctx| async move {
@@ -299,6 +360,119 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .await?
         .with_cors(&cors)
     })
+    .get_async(
+      "/device/pigeons/:pigeon_id/firmware",
+      |req, ctx| async move {
+        let cors = build_cors(&ctx.env, &req);
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // Extracted before proxy_to_pigeon_do consumes `req` below.
+        let range = req
+          .headers()
+          .get("Range")
+          .ok()
+          .flatten()
+          .and_then(|h| parse_range_header(&h));
+
+        // Same device-auth model as the other /device/pigeons/:id/* routes —
+        // no X-User-Id here. The DO verifies the bearer token itself and, on
+        // success, hands back this pigeon's currently-assigned firmware
+        // target (from its own shadow's target_config.firmware) in this one
+        // round trip, so a second DO call isn't needed just to resolve which
+        // R2 object to stream.
+        let do_response = proxy_to_pigeon_do(req, "", &obj_id, "/device/firmware/target").await?;
+        if do_response.status_code() >= 400 {
+          return do_response.with_cors(&cors);
+        }
+
+        let target = parse_do_response::<FirmwareTarget>(do_response).await?;
+
+        let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
+          console_error!("Failed to bind FIRMWARE_BUCKET");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let object_key = format!("firmware/{}.bin", target.sha256);
+        let mut get_builder = bucket.get(&object_key);
+        if let Some(r) = range.clone() {
+          get_builder = get_builder.range(r);
+        }
+
+        let Ok(Some(object)) = get_builder.execute().await else {
+          console_error!("Firmware object missing from R2: {object_key}");
+          return Response::error("Not Found: Firmware object missing from storage", 404)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(body) = object.body() else {
+          console_error!("R2 object body unexpectedly absent for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(response_body) = body.response_body() else {
+          console_error!("Failed to build streamed response body for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // target.size is the total from the pigeon's own shadow — treated as
+        // authoritative for Content-Range/Content-Length rather than R2's own
+        // Object::size()/Object::range() (ambiguous for a ranged fetch; see
+        // resolve_serve_range's doc comment).
+        let total = target.size.max(0) as u64;
+        let headers = Headers::new();
+        let mut ok = headers.set("Accept-Ranges", "bytes").is_ok();
+        ok &= headers
+          .set("Content-Type", "application/octet-stream")
+          .is_ok();
+        ok &= headers.set("ETag", &object.http_etag()).is_ok();
+        ok &= headers.set("X-Firmware-Sha256", &target.sha256).is_ok();
+        ok &= headers.set("X-Firmware-Version", &target.version).is_ok();
+        ok &= headers.set("X-Firmware-Size", &total.to_string()).is_ok();
+
+        let status = match range {
+          Some(r) => {
+            let (start, end) = resolve_serve_range(&r, total);
+            ok &= headers
+              .set("Content-Length", &(end + 1 - start).to_string())
+              .is_ok();
+            ok &= headers
+              .set("Content-Range", &format!("bytes {start}-{end}/{total}"))
+              .is_ok();
+            206
+          }
+          None => {
+            ok &= headers.set("Content-Length", &total.to_string()).is_ok();
+            200
+          }
+        };
+
+        if !ok {
+          console_error!("Failed to set one or more firmware response headers");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let Ok(builder) = ResponseBuilder::new()
+          .with_status(status)
+          .with_headers(headers)
+          .with_cors(&cors)
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Ok(builder.body(response_body))
+      },
+    )
     .get_async("/pigeons/:pigeon_id/logs", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(user_id) = require_auth(&req, &ctx.env).await else {
@@ -734,6 +908,148 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .await?;
 
         Response::from_json(&points)?.with_cors(&cors)
+      },
+    )
+    // --- Firmware Routes (task #23) ---
+    .post_async(
+      "/flocks/:flock_id/firmware",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(query) = req.query::<FirmwareUploadQuery>() else {
+          return Response::error("Bad Request: Missing 'version' query parameter", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if query.version.trim().is_empty() {
+          return Response::error("Bad Request: 'version' cannot be empty", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let Ok(bytes) = req.bytes().await else {
+          return Response::error("Bad Request: Failed to read body", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if bytes.is_empty() {
+          return Response::error("Bad Request: Empty firmware image", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        if bytes.len() > capsules::MAX_FIRMWARE_BYTES {
+          return Response::error("Payload Too Large: Firmware image exceeds size cap", 413)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_flock_owner(&client, &flock_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if !owner {
+          return Response::error("Forbidden: Only the flock owner can upload firmware", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let sha256 = sha256_hex(&bytes);
+
+        let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
+          console_error!("Failed to bind FIRMWARE_BUCKET");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Content-addressed: identical bytes always land at the same R2
+        // key regardless of flock or version label, so re-uploading the
+        // same binary is a cheap no-op write, not a duplicate.
+        if bucket
+          .put(format!("firmware/{sha256}.bin"), bytes.clone())
+          .execute()
+          .await
+          .is_err()
+        {
+          console_error!("R2 firmware upload failed for sha256 {sha256}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let Ok(image) = upsert_flock_firmware(
+          &client,
+          &flock_id,
+          &query.version,
+          bytes.len() as i64,
+          &sha256,
+        )
+        .await
+        else {
+          console_error!("Firmware catalog insert failed for flock {flock_id}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&image)?.with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/flocks/:flock_id/firmware",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_flock_owner(&client, &flock_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if !owner {
+          return Response::error("Forbidden: Only the flock owner can view firmware", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let Ok(images) = list_flock_firmware(&client, &flock_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&images)?.with_cors(&cors)
       },
     )
     .or_else_any_method_async("/*any", |mut req, ctx: RouteContext<()>| async move {

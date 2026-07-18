@@ -24,6 +24,18 @@ id = "f2c59dfa75114889815fd453ac0db62a"
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
+# Firmware image storage (task #23) — signed MCUboot application binaries,
+# ~300KB-1MB each, capped at capsules::MAX_FIRMWARE_BYTES (2MB) on upload.
+# DO SQLite cannot hold blobs this size (see this crate's CLAUDE.md), so
+# they live in R2 instead, content-addressed by sha256
+# (`firmware/<sha256>.bin`); only catalog metadata (version, size, sha256,
+# uploaded_at) lives in Postgres, per flock (see capsules::FirmwareImage).
+# Each environment gets its own bucket, matching the telemetry queues'
+# per-env pattern below.
+[[r2_buckets]]
+binding = "FIRMWARE_BUCKET"
+bucket_name = "pidgeiot-firmware"
+
 # Production telemetry queue (promotion authorized 2026-07-17). Same
 # design as staging below: auth still happens synchronously at ingestion,
 # the consumer only writes messages that already passed the DO bearer-token
@@ -68,6 +80,10 @@ ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
+[[env.staging.r2_buckets]]
+binding = "FIRMWARE_BUCKET"
+bucket_name = "pidgeiot-firmware-staging"
+
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
@@ -95,6 +111,14 @@ ROOT_URL = "http://127.0.0.1:4455"
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+
+# `wrangler dev` (local mode, the default) emulates R2 buckets locally via
+# Miniflare regardless of whether `bucket_name` matches a real remote
+# bucket, so this doesn't need its own `wrangler r2 bucket create` — named
+# distinctly from staging/production purely for clarity in logs.
+[[env.dev.r2_buckets]]
+binding = "FIRMWARE_BUCKET"
+bucket_name = "pidgeiot-firmware-dev"
 
 [[env.dev.hyperdrive]]
 binding = "YugabyteDB"

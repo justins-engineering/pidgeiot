@@ -28,3 +28,9 @@ pub use telemetry::ensure_pigeons_telemetry_endpoint_column;
 pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
+
+mod firmware;
+pub use firmware::is_flock_owner;
+pub use firmware::list_flock_firmware;
+pub use firmware::sha256_hex;
+pub use firmware::upsert_flock_firmware;

@@ -30,6 +30,7 @@ ed25519-dalek = { version = "2", default-features = false, features = [
 ] }
 getrandom = { version = "0.2", features = ["js"] }
 base64 = "0.22"
+sha2 = "0.10"
 
 # For Cloudflare Access JWT (RS256) verification via WebCrypto — `worker`
 # already depends on all four transitively at these same versions, but

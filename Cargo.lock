@@ -1195,6 +1195,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "sha2 0.10.9",
  "time",
  "tokio-postgres",
  "uuid",

@@ -108,8 +108,28 @@ CREATE TABLE IF NOT EXISTS pigeon_telemetry_history (
   reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- FLOCK FIRMWARE Table (task #23)
+-- Firmware images are shared across every pigeon in a flock (same hardware
+-- fleet) rather than duplicated per-pigeon, so this catalog lives here
+-- rather than in each pigeon's own DO (which also can't hold MB-sized
+-- blobs -- see dovecote's CLAUDE.md). The actual binary lives in R2,
+-- content-addressed by sha256 (key `firmware/<sha256>.bin`); this table is
+-- metadata + per-flock visibility only. A pigeon's *assigned* firmware is a
+-- separate, per-pigeon concern living in that pigeon's own shadow
+-- (pigeon_shadow.target_config.firmware), not here.
+CREATE TABLE IF NOT EXISTS flock_firmware (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  flock_id UUID NOT NULL REFERENCES flocks(id) ON DELETE CASCADE,
+  version TEXT NOT NULL,
+  size BIGINT NOT NULL,
+  sha256 TEXT NOT NULL,
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (flock_id, sha256)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
+CREATE INDEX IF NOT EXISTS idx_flock_firmware_flock_id ON flock_firmware(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeons_flock_id ON pigeons(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_id ON pigeon_acl(id);
