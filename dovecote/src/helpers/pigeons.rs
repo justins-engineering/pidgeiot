@@ -99,6 +99,56 @@ pub async fn proxy_binary_to_pigeon_do(
   stub.fetch_with_request(do_req).await
 }
 
+/// WebSocket-upgrade counterpart to `proxy_to_pigeon_do`, used only by
+/// `GET /device/pigeons/:id/ws` (task #32). GET, so no body to forward. No
+/// `X-User-Id` -- same device-auth model as the other `/device/pigeons/:id/*`
+/// routes; the DO verifies the bearer token itself, BEFORE accepting the
+/// socket (see `is_authorized_device`/`accept_websocket_device` in
+/// `objects/pigeons.rs`). The actual protocol upgrade is driven by the
+/// `Response` the DO returns (`Response::from_websocket`, carrying the
+/// `webSocket` field), not by which headers reach this internal
+/// `Stub::fetch_with_request` dispatch -- but the handshake headers are
+/// forwarded anyway, for parity with how a real HTTP proxy would forward
+/// them and in case a future consumer of this path (or the DO's own
+/// handler) ever wants to inspect them.
+pub async fn proxy_websocket_to_pigeon_do(
+  req: Request,
+  stub: &worker::ObjectId<'_>,
+  do_path: &str,
+) -> worker::Result<Response> {
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let mut init = RequestInit::default();
+  init.with_method(worker::Method::Get);
+
+  for header in [
+    "Authorization",
+    "Upgrade",
+    "Connection",
+    "Sec-WebSocket-Key",
+    "Sec-WebSocket-Version",
+    "Sec-WebSocket-Protocol",
+  ] {
+    if let Ok(Some(value)) = req.headers().get(header) {
+      init.headers.set(header, &value).map_err(|e| {
+        console_error!("Failed to forward header {header}: {e}");
+        worker::Error::RustError("Internal Server Error".into())
+      })?;
+    }
+  }
+
+  let do_req = Request::new_with_init(&format!("https://internal/pigeon{do_path}"), &init)
+    .map_err(|e| {
+      console_error!("Failed to create DO request: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  stub.fetch_with_request(do_req).await
+}
+
 /// Lightweight counterpart to `proxy_to_pigeon_do`, used only by the
 /// telemetry queue producer path (`POST /device/pigeons/:id/telemetry` in
 /// `lib.rs`, when a telemetry queue is bound for this environment) to check

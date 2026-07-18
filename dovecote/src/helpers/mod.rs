@@ -17,6 +17,7 @@ pub use pigeons::delete_pigeon_pg_db;
 pub use pigeons::insert_pigeon_pg_db;
 pub use pigeons::proxy_binary_to_pigeon_do;
 pub use pigeons::proxy_to_pigeon_do;
+pub use pigeons::proxy_websocket_to_pigeon_do;
 pub use pigeons::update_pigeon_pg_db;
 pub use pigeons::update_shadow_pg_db;
 pub use pigeons::update_telemetry_endpoint_pg_db;

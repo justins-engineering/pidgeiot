@@ -1,10 +1,10 @@
 use crate::helpers::{
   authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
   get_user_flocks, insert_pigeon_pg_db, is_flock_owner, list_flock_firmware,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, sha256_hex, update_pigeon_pg_db, update_shadow_pg_db,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
+  update_pigeon_pg_db, update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -269,6 +269,39 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       }
 
       Response::from_json(&shadow)?.with_cors(&cors)
+    })
+    // Real-time channel for non-cellular (WiFi/mains-powered) devices
+    // (task #32) -- a persistent, hibernation-backed WebSocket in place of
+    // the poll (GET .../shadow) + report (POST .../shadow,
+    // POST .../telemetry) pattern above. `GET`, matching the standard
+    // WebSocket-upgrade convention (the upgrade itself is a GET request
+    // with an `Upgrade: websocket` header, not a distinct HTTP method).
+    .get_async("/device/pigeons/:pigeon_id/ws", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let is_upgrade = req
+        .headers()
+        .get("Upgrade")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+      if !is_upgrade {
+        return Response::error("Bad Request: expected a WebSocket Upgrade request", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // Same device-auth model as the other /device/pigeons/:id/* routes —
+      // no X-User-Id here. The DO verifies the bearer token itself, BEFORE
+      // accepting the socket, against this pigeon's own device_public_key
+      // (see is_authorized_device/accept_websocket_device,
+      // objects/pigeons.rs) — a rejected token comes back as a normal 401
+      // response instead of a 101 upgrade.
+      proxy_websocket_to_pigeon_do(req, &obj_id, "/device/ws")
+        .await?
+        .with_cors(&cors)
     })
     .post_async(
       "/device/pigeons/:pigeon_id/telemetry",
