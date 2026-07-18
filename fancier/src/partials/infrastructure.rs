@@ -1,6 +1,10 @@
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdDatabase, LdDatabaseZap, LdSatelliteDish, LdServer};
+use dioxus_free_icons::icons::ld_icons::{
+  LdDatabase, LdDatabaseZap, LdHardDriveDownload, LdSatelliteDish, LdServer,
+};
+
+const INFRASTRUCTURE_SVG: &str = include_str!("../../assets/images/infrastructure-edge.svg");
 
 #[component]
 pub fn Infrastructure() -> Element {
@@ -10,10 +14,9 @@ pub fn Infrastructure() -> Element {
         div { class: "relative col-span-full",
           div { class: "bg-base-300/30 border border-base-300 rounded-3xl overflow-hidden shadow-2xl scroll-reveal",
             div { class: "relative h-64 md:h-80 lg:h-96",
-              img {
-                alt: "Server Infrastructure",
-                class: "w-full h-full object-cover",
-                src: "https://images.unsplash.com/photo-1762163516269-3c143e04175c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w4MDcxMzN8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjBkYXRhJTIwY2VudGVyJTIwdGVjaG5vbG9neSUyMGluZnJhc3RydWN0dXJlfGVufDB8MHx8fDE3NzE4OTEzMzl8MA&ixlib=rb-4.1.0&q=80&w=1080",
+              div {
+                class: "absolute inset-0",
+                dangerous_inner_html: "{INFRASTRUCTURE_SVG}",
               }
               div { class: "absolute inset-0 bg-linear-to-t from-base-300 via-base-200/50 to-transparent" }
               div { class: "absolute bottom-0 left-0 right-0 p-8",
@@ -82,6 +85,23 @@ pub fn Infrastructure() -> Element {
           }
           p { class: "leading-relaxed",
             "Point a device at your own GreptimeDB-compatible endpoint and its telemetry goes straight there instead of our default store — your data, your database."
+          }
+        }
+        div {
+          class: "card card-xl card-border space-y-8 justify-around bg-base-300 border border-base-content/30 rounded-2xl p-8 card-hover",
+          style: "animation-delay: 0.2s;",
+          div { class: "card-title space-x-4",
+            div { class: "p-2 rounded-2xl bg-primary flex items-center justify-center feature-icon shadow-lg",
+              Icon {
+                icon: LdHardDriveDownload,
+                class: "size-10 stroke-primary-content",
+                title: "Download icon",
+              }
+            }
+            h3 { class: "text-2xl font-bold", "Content-Addressed Firmware" }
+          }
+          p { class: "leading-relaxed",
+            "Firmware images live in R2, addressed by their own SHA-256 and catalogued per flock. Rolling out a version reuses the same shadow model as config — devices resume large downloads with Range requests instead of starting over."
           }
         }
       }

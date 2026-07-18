@@ -1,0 +1,91 @@
+<svg id="infra-mesh" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 320" preserveAspectRatio="xMidYMid slice" width="100%" height="100%" role="img" aria-labelledby="infra-mesh-title">
+  <title id="infra-mesh-title">Devices streaming data to a mesh of edge nodes</title>
+  <style>
+    #infra-mesh { color-scheme: light dark; }
+    #infra-mesh .im-bg-a { stop-color: var(--color-base-200); }
+    #infra-mesh .im-bg-b { stop-color: var(--color-base-300); }
+    #infra-mesh .im-grid { stroke: var(--color-base-content); opacity: .07; }
+    #infra-mesh .im-orbit { stroke: var(--color-primary); opacity: .35; fill: none; }
+    #infra-mesh .im-globe-fill { fill: var(--color-primary); opacity: .08; }
+    #infra-mesh .im-globe-stroke { stroke: var(--color-primary); opacity: .6; fill: none; }
+    #infra-mesh .im-pop { fill: var(--color-secondary); }
+    #infra-mesh .im-node-ring { fill: var(--color-base-100); stroke: var(--color-primary); opacity: .8; }
+    #infra-mesh .im-node-dot { fill: var(--color-primary); }
+    #infra-mesh .im-link { stroke: var(--color-secondary); opacity: .55; fill: none; stroke-width: 2; stroke-dasharray: 6 7; }
+    #infra-mesh .im-pigeon { fill: var(--color-accent); }
+    #infra-mesh .im-pigeon-trail { stroke: var(--color-accent); opacity: .6; fill: none; stroke-width: 2; stroke-dasharray: 5 6; }
+    #infra-mesh .im-packet { fill: var(--color-base-100); stroke: var(--color-secondary); }
+    @media (prefers-reduced-motion: no-preference) {
+      #infra-mesh .im-link, #infra-mesh .im-pigeon-trail { animation: im-flow 5s linear infinite; }
+      #infra-mesh .im-orbit { animation: im-spin 40s linear infinite; transform-origin: 600px 160px; }
+      #infra-mesh .im-drift { animation: im-drift 4s ease-in-out infinite; }
+    }
+    @keyframes im-flow { to { stroke-dashoffset: -130; } }
+    @keyframes im-spin { to { transform: rotate(360deg); } }
+    @keyframes im-drift { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  </style>
+
+  <defs>
+    <linearGradient id="im-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" class="im-bg-a" />
+      <stop offset="100%" class="im-bg-b" />
+    </linearGradient>
+    <pattern id="im-dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" class="im-grid" />
+    </pattern>
+  </defs>
+
+  <rect x="0" y="0" width="800" height="320" fill="url(#im-bg)" />
+  <rect x="0" y="0" width="800" height="320" fill="url(#im-dots)" />
+
+  <!-- edge network globe -->
+  <g>
+    <circle cx="600" cy="160" r="92" class="im-globe-fill" />
+    <circle cx="600" cy="160" r="92" class="im-globe-stroke" />
+    <g class="im-orbit">
+      <ellipse cx="600" cy="160" rx="92" ry="34" />
+      <ellipse cx="600" cy="160" rx="92" ry="34" transform="rotate(60 600 160)" />
+      <ellipse cx="600" cy="160" rx="92" ry="34" transform="rotate(120 600 160)" />
+    </g>
+    <!-- edge PoP markers around the mesh -->
+    <circle cx="600" cy="68" r="4.5" class="im-pop" />
+    <circle cx="676" cy="112" r="4.5" class="im-pop" />
+    <circle cx="676" cy="208" r="4.5" class="im-pop" />
+    <circle cx="600" cy="252" r="4.5" class="im-pop" />
+    <circle cx="524" cy="208" r="4.5" class="im-pop" />
+    <circle cx="524" cy="112" r="4.5" class="im-pop" />
+  </g>
+
+  <!-- devices reporting in from the edge -->
+  <g>
+    <path class="im-link" d="M110 60 C 290 30, 420 75, 524 112" />
+    <path class="im-link" d="M85 130 C 270 115, 420 145, 524 160" />
+    <path class="im-link" d="M140 205 C 300 212, 430 212, 524 208" />
+
+    <g class="im-drift">
+      <circle cx="110" cy="60" r="13" class="im-node-ring" stroke-width="2" />
+      <circle cx="110" cy="60" r="4" class="im-node-dot" />
+    </g>
+    <g class="im-drift" style="animation-delay:.7s">
+      <circle cx="85" cy="130" r="13" class="im-node-ring" stroke-width="2" />
+      <circle cx="85" cy="130" r="4" class="im-node-dot" />
+    </g>
+    <g class="im-drift" style="animation-delay:1.4s">
+      <circle cx="140" cy="205" r="13" class="im-node-ring" stroke-width="2" />
+      <circle cx="140" cy="205" r="4" class="im-node-dot" />
+    </g>
+
+    <!-- in-flight data packets -->
+    <circle cx="300" cy="40" r="3.5" class="im-packet" stroke-width="1.5" />
+    <circle cx="300" cy="211" r="3.5" class="im-packet" stroke-width="1.5" />
+  </g>
+
+  <!-- pigeon device, wingtip in flight toward the mesh -->
+  <g class="im-drift" style="animation-delay:.3s">
+    <path class="im-pigeon-trail" d="M215 175 C 300 195, 420 200, 524 190" />
+    <g transform="translate(170,150) rotate(-8)">
+      <path class="im-pigeon" d="M0 10 L34 0 L46 6 L34 8 L52 18 L34 12 L20 24 L24 12 L0 10 Z" />
+      <path class="im-pigeon" d="M14 9 L4 -8 L10 8 Z" opacity=".85" />
+    </g>
+  </g>
+</svg>
