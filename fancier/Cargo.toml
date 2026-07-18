@@ -57,6 +57,9 @@ const_format = "0.2"
 wasm-bindgen = { version = "0.2" }
 wasm-bindgen-futures = { version = "0.4" }
 futures-util = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false, features = [
+  "html",
+] }
 
 [build-dependencies]
 dotenvy = "0.15"

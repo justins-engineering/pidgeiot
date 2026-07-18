@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, Architecture, Dashboard, Flocks, Index, LoginFlow, PageNotFound, PigeonView, Pigeons,
-  RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, Unauthorized,
-  VerificationFlow, Wrapper,
+  AboutUs, ApiReferencePage, Architecture, Dashboard, DocumentationPage, FeaturesPage, Flocks,
+  Index, LoginFlow, PageNotFound, PigeonView, Pigeons, PricingPage, RecoveryFlow, RegisterFlow,
+  ServerError, SessionInfo, SettingsFlow, Unauthorized, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -70,6 +70,14 @@ enum Route {
   AboutUs {},
   #[route("/architecture")]
   Architecture {},
+  #[route("/features")]
+  FeaturesPage {},
+  #[route("/documentation")]
+  DocumentationPage {},
+  #[route("/pricing")]
+  PricingPage {},
+  #[route("/api-reference")]
+  ApiReferencePage {},
   #[route("/login?:flow")]
   LoginFlow { flow: Option<String> },
   #[route("/registration?:flow")]

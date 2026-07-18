@@ -44,3 +44,15 @@ pub use pigeons::Pigeons;
 
 mod pigeon;
 pub use pigeon::PigeonView;
+
+mod features;
+pub use features::FeaturesPage;
+
+mod documentation;
+pub use documentation::DocumentationPage;
+
+mod pricing;
+pub use pricing::PricingPage;
+
+mod api_reference;
+pub use api_reference::ApiReferencePage;
