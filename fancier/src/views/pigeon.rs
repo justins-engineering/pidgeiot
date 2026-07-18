@@ -657,10 +657,13 @@ mod shadow_upload_tests {
 
   #[test]
   fn accepts_a_json_object_and_pretty_prints_it() {
+    // serde_json's `Value::Object` is a `BTreeMap` in this workspace (no
+    // `preserve_order` feature), so output keys are always alphabetized
+    // regardless of the source file's key order.
     let result = parse_shadow_upload(r#"{"telemetry_interval":60,"logging":"info"}"#);
     assert_eq!(
       result,
-      Ok("{\n  \"telemetry_interval\": 60,\n  \"logging\": \"info\"\n}".to_string())
+      Ok("{\n  \"logging\": \"info\",\n  \"telemetry_interval\": 60\n}".to_string())
     );
   }
 
