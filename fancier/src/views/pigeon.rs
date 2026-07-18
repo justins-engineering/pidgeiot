@@ -1,5 +1,5 @@
 use crate::components::{
-  ConnectorBadge, JsonViewer, LogViewer, PigeonGraphs, TelemetryEndpointModal,
+  ConnectorBadge, FirmwareModal, JsonViewer, LogViewer, PigeonGraphs, TelemetryEndpointModal,
 };
 use crate::{Route, api};
 use capsules::{
@@ -17,6 +17,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let mut pigeon_detail: Signal<Option<PigeonDetail>> = use_signal(|| None);
   let mut show_delete_modal = use_signal(|| false);
   let mut show_telemetry_endpoint_modal = use_signal(|| false);
+  let mut show_firmware_modal = use_signal(|| false);
 
   use_resource(move || {
     let id = id.to_owned();
@@ -42,7 +43,11 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 h1 { class: "text-4xl font-bold ", "{pd.pigeon.name.as_deref().unwrap_or(\"--\")}" }
                 div { class: "flex flex-row items-center gap-2",
-                  button { class: "btn btn-outline btn-primary sm:px-6", "Upload Firmware" }
+                  button {
+                    class: "btn btn-outline btn-primary sm:px-6",
+                    onclick: move |_| show_firmware_modal.set(true),
+                    "Upload Firmware"
+                  }
                   button {
                     class: "btn btn-outline btn-error sm:px-6",
                     onclick: move |_| show_delete_modal.set(true),
@@ -81,6 +86,19 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
                 EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
+                if show_firmware_modal() {
+                  FirmwareModal {
+                    flock_id,
+                    pigeon_id: pigeon_id.clone(),
+                    shadow: pd.shadow.clone(),
+                    on_close: move |_| show_firmware_modal.set(false),
+                    on_assigned: move |new_shadow: PigeonShadow| {
+                        if let Some(detail) = pigeon_detail.write().as_mut() {
+                            detail.shadow = new_shadow;
+                        }
+                    },
+                  }
+                }
                 if show_telemetry_endpoint_modal() {
                   TelemetryEndpointModal {
                     pigeon_id: pigeon_id.clone(),

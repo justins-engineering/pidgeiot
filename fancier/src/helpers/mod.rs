@@ -20,3 +20,6 @@ pub mod browser;
 
 mod download;
 pub use download::{decode_base64, download_bytes};
+
+mod crypto;
+pub use crypto::sha256_hex;

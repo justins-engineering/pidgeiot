@@ -38,3 +38,6 @@ pub use telemetry_endpoint_modal::TelemetryEndpointModal;
 
 mod log_viewer;
 pub use log_viewer::LogViewer;
+
+mod firmware_modal;
+pub use firmware_modal::FirmwareModal;
