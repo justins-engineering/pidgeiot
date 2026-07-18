@@ -1,4 +1,8 @@
+use crate::objects::ws::{
+  MAX_WS_FRAME_BYTES, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
+};
 use crate::objects::{mint_device_credential, verify_device_token};
+use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
@@ -8,8 +12,9 @@ use capsules::{
   unwrap_or_return_response,
 };
 use worker::{
-  DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State, console_error,
-  durable_object, wasm_bindgen,
+  Date, DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State,
+  WebSocket, WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
+  wasm_bindgen,
 };
 
 /// Selected pigeon column list shared by every `pigeons` read/RETURNING
@@ -39,9 +44,7 @@ pub fn build_coap_endpoint(do_id: &str) -> String {
 #[durable_object]
 pub struct Pigeons {
   sql: SqlStorage,
-  #[allow(unused)]
   state: State,
-  #[allow(unused)]
   env: Env,
 }
 
@@ -211,6 +214,7 @@ impl DurableObject for Pigeons {
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
+      "/pigeon/device/ws" => accept_websocket_device(self, req).await,
       "/pigeon/device/firmware/target" => get_firmware_target_device(self, req).await,
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/verify" => verify_telemetry_device(self, req).await,
@@ -225,6 +229,105 @@ impl DurableObject for Pigeons {
       "/pigeon/delete" => delete(self, req).await,
       _ => Response::error("Not Found", 404),
     }
+  }
+
+  /// Dispatched by the runtime for every text/binary frame on a
+  /// hibernation-accepted socket (task #32) -- including ones that woke this
+  /// DO from eviction, transparently. Auth already happened once, at
+  /// `accept_websocket_device`, and isn't re-checked per frame; a device
+  /// controls its own connection, so anything landing here is trusted to
+  /// belong to this pigeon. Three ways a frame gets the connection closed
+  /// rather than processed: not text (this protocol is JSON-text-only, see
+  /// `docs/api.md`), over `MAX_WS_FRAME_BYTES`, or failing the sliding-window
+  /// flood check (`check_rate_limit`) -- all three are logged before
+  /// closing, matching this file's existing "log, then respond" convention.
+  async fn websocket_message(
+    &self,
+    ws: WebSocket,
+    message: WebSocketIncomingMessage,
+  ) -> Result<()> {
+    let WebSocketIncomingMessage::String(text) = message else {
+      console_error!("WS: binary frame from pigeon {}, closing", self.state.id());
+      let _ = ws.close(Some(4001), Some("binary frames not supported"));
+      return Ok(());
+    };
+
+    if text.len() > MAX_WS_FRAME_BYTES {
+      console_error!(
+        "WS: oversize frame ({} bytes) from pigeon {}, closing",
+        text.len(),
+        self.state.id()
+      );
+      let _ = ws.close(Some(4002), Some("frame too large"));
+      return Ok(());
+    }
+
+    if !check_rate_limit(&ws) {
+      console_error!("WS: frame flood from pigeon {}, closing", self.state.id());
+      let _ = ws.close(Some(4008), Some("rate limit exceeded"));
+      return Ok(());
+    }
+
+    let frame = match serde_json::from_str::<WsInboundFrame>(&text) {
+      Ok(f) => f,
+      Err(e) => {
+        console_error!("WS: malformed frame from pigeon {}: {e}", self.state.id());
+        let _ = ws.close(Some(4003), Some("malformed frame"));
+        return Ok(());
+      }
+    };
+
+    match frame {
+      WsInboundFrame::Telemetry { metrics } => handle_ws_telemetry(self, metrics).await,
+      WsInboundFrame::ShadowReport {
+        current_version,
+        current_config,
+      } => {
+        handle_ws_shadow_report(
+          self,
+          &PigeonShadowReportRequest {
+            current_version,
+            current_config,
+          },
+        )
+        .await
+      }
+      WsInboundFrame::Ping => {
+        if let Err(e) = ws.send(&WsOutboundFrame::Pong) {
+          console_error!("WS: pong send failed for pigeon {}: {e}", self.state.id());
+        }
+      }
+      WsInboundFrame::Pong => {}
+    }
+
+    Ok(())
+  }
+
+  /// The runtime calls this once a hibernatable socket actually closes
+  /// (client-initiated, our own `ws.close()` calls elsewhere in this file,
+  /// or a network drop) -- overriding the default (which panics via
+  /// `unimplemented!()`) is required, not optional, once any socket is ever
+  /// accepted here.
+  async fn websocket_close(
+    &self,
+    _ws: WebSocket,
+    code: usize,
+    reason: String,
+    was_clean: bool,
+  ) -> Result<()> {
+    console_log!(
+      "WS closed for pigeon {}: code={code} reason={reason} clean={was_clean}",
+      self.state.id()
+    );
+    Ok(())
+  }
+
+  /// Same rationale as `websocket_close` above -- must be overridden once
+  /// sockets are accepted, or a transport-level error panics the DO instead
+  /// of just logging.
+  async fn websocket_error(&self, _ws: WebSocket, error: worker::Error) -> Result<()> {
+    console_error!("WS error for pigeon {}: {error}", self.state.id());
+    Ok(())
   }
 }
 
@@ -884,34 +987,175 @@ async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Res
     }
   };
 
+  match write_shadow_report(pigeons, &report) {
+    Ok(shadow) => Response::from_json(&shadow),
+    Err(e) => {
+      console_error!("Shadow REPORT execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Shared SQL for a device confirming it applied `target_config` --
+/// factored out of `report_shadow_device` (the HTTP route,
+/// `POST /device/pigeons/:id/shadow`) so `handle_ws_shadow_report` (the
+/// WebSocket `shadow_report` frame, task #32) can reuse the exact same
+/// write instead of duplicating the query text. Only the SQL; callers are
+/// responsible for their own auth (already done once for the WS case, at
+/// socket accept) and for whatever Postgres sync/response shape they need
+/// around it.
+fn write_shadow_report(
+  pigeons: &Pigeons,
+  report: &PigeonShadowReportRequest,
+) -> Result<PigeonShadow> {
   let config_str = serde_json::to_string(&report.current_config).map_err(|e| {
     console_error!("Shadow config serialization error: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
-  match pigeons.sql.exec(
+  pigeons.sql.exec(
     "UPDATE pigeon_shadow SET current_config = ?, current_version = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
     vec![config_str.into(), report.current_version.into()],
-  ) {
-    Ok(_) => match pigeons.sql.exec(
-      "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
-      None,
-    ) {
-      Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
-        Ok(s) => Response::from_json(&PigeonShadow::from(s)),
-        Err(e) => {
-          console_error!("PigeonShadow deserialization error: {e}");
-          Response::error("Internal Server Error", 500)
-        }
-      },
-      Err(e) => {
-        console_error!("PigeonShadow READ error: {e}");
-        Response::error("Internal Server Error", 500)
-      }
-    },
+  )?;
+
+  let cursor = pigeons.sql.exec(
+    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
+    None,
+  )?;
+  one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
+}
+
+/// Device WebSocket upgrade (task #32) -- the real-time channel for
+/// non-cellular (WiFi/mains-powered) devices, replacing the HTTP shadow
+/// poll/telemetry-POST pattern with a persistent connection. Bearer auth
+/// happens exactly once, here, BEFORE the socket is ever accepted -- unlike
+/// the HTTP `/pigeon/device/*` routes there is no per-frame re-check
+/// afterward (see `DurableObject::websocket_message` above); a device holds
+/// the connection, not a fresh credential each time.
+///
+/// Accepted via the Durable Object *hibernation* API
+/// (`State::accept_websocket_with_tags`), not the in-memory
+/// `WebSocket::accept()` -- an idle connection (a device that only reports
+/// every few minutes) can be evicted from this DO's memory between messages
+/// without being torn down; the runtime transparently re-wakes this DO and
+/// re-dispatches to `websocket_message`/`websocket_close`/`websocket_error`
+/// on the next event for that socket. `WebSocket::accept()` would keep this
+/// DO pinned in memory (billed) for the entire connection lifetime instead.
+///
+/// Tagged `WS_DEVICE_TAG` (rather than left untagged) so a future second
+/// socket class -- the remote-shell relay, task #34 -- can coexist without
+/// either class's "close the old one"/broadcast logic touching the other's
+/// sockets; see the tag-scoped `get_websockets_with_tag` calls here and in
+/// `update_shadow`.
+async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  // One active device socket per pigeon: a new connection (e.g. a device
+  // reconnecting after a network blip, before its old socket has timed out)
+  // replaces the old one rather than coexisting with it.
+  for existing in pigeons.state.get_websockets_with_tag(WS_DEVICE_TAG) {
+    let _ = existing.close(Some(4009), Some("replaced by new connection"));
+  }
+
+  let pair = WebSocketPair::new()?;
+  pigeons
+    .state
+    .accept_websocket_with_tags(&pair.server, &[WS_DEVICE_TAG]);
+
+  Response::from_websocket(pair.client)
+}
+
+/// Backs the WebSocket `shadow_report` frame (task #32) -- the WS
+/// counterpart to `report_shadow_device` above, reusing `write_shadow_report`
+/// for the actual write. Unlike that HTTP route, there is no gateway route
+/// left in the loop to best-effort sync the result to Postgres afterward
+/// (frames go straight into this DO once the socket is established), so
+/// this does that sync itself, matching what the gateway route
+/// (`POST /device/pigeons/:id/shadow` in `lib.rs`) does via
+/// `update_shadow_pg_db`. Errors at any step are logged and otherwise
+/// swallowed -- there's no HTTP response to carry them back to the device,
+/// and a malformed/failed report shouldn't kill the connection.
+async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportRequest) {
+  let shadow = match write_shadow_report(pigeons, report) {
+    Ok(s) => s,
     Err(e) => {
-      console_error!("Shadow REPORT execution error: {e}");
-      Response::error("Internal Server Error", 500)
+      console_error!(
+        "WS shadow report: write failed for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      return;
+    }
+  };
+
+  let pigeon_id = pigeons.state.id().to_string();
+  match crate::helpers::get_db_client(&pigeons.env).await {
+    Ok(client) => {
+      if let Err(e) = crate::helpers::update_shadow_pg_db(client, &pigeon_id, &shadow).await {
+        console_error!("WS shadow report: PG sync failed for pigeon {pigeon_id}: {e}");
+      }
+    }
+    Err(e) => {
+      console_error!(
+        "WS shadow report: PG sync skipped for pigeon {pigeon_id}: Hyperdrive connection failed: {e}"
+      );
+    }
+  }
+}
+
+/// Backs the WebSocket `telemetry` frame (task #32) -- the WS counterpart to
+/// `report_telemetry_device`/the queue-producer path in `lib.rs`. Always
+/// does the DO's own latest-value upsert synchronously first (same as every
+/// other telemetry entry point), then either enqueues onto
+/// `TELEMETRY_QUEUE` for the same consumer path the HTTP route uses (PG
+/// history or line-protocol forward, decided by `telemetry_endpoint` --
+/// see `queue.rs`), or, in an environment with no queue bound (dev today),
+/// writes PG history directly so telemetry sent over the socket doesn't
+/// silently skip history the HTTP route would have recorded in that same
+/// environment. Unlike the HTTP route, no separate auth round trip is
+/// needed before enqueueing -- the bearer token was already verified once,
+/// at socket accept, and this frame could only have arrived on an already-
+/// authenticated connection.
+async fn handle_ws_telemetry(
+  pigeons: &Pigeons,
+  metrics: std::collections::HashMap<String, String>,
+) {
+  if metrics.is_empty() {
+    return;
+  }
+
+  if upsert_telemetry(pigeons, &metrics).is_err() {
+    return;
+  }
+
+  let pigeon_id = pigeons.state.id().to_string();
+
+  match pigeons.env.queue("TELEMETRY_QUEUE") {
+    Ok(queue) => {
+      let Ok(metrics_json) = serde_json::to_string(&metrics) else {
+        console_error!("WS telemetry: failed to serialize metrics for pigeon {pigeon_id}");
+        return;
+      };
+
+      let message = TelemetryMessage {
+        pigeon_id: pigeon_id.clone(),
+        metrics_json,
+        reported_at_ms: Date::now().as_millis(),
+      };
+
+      if queue.send(message).await.is_err() {
+        console_error!("WS telemetry: enqueue failed for pigeon {pigeon_id}");
+      }
+    }
+    Err(_) => {
+      // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
+      // HTTP route's own no-queue fallback (report_telemetry_device, which
+      // is auth+write in one call with no queue involved) by writing PG
+      // history directly here instead of silently dropping it.
+      if let Err(e) =
+        crate::helpers::write_telemetry_history(&pigeons.env, &pigeon_id, &metrics).await
+      {
+        console_error!("WS telemetry: PG history write failed for pigeon {pigeon_id}: {e}");
+      }
     }
   }
 }
@@ -1306,7 +1550,11 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
-          Ok(s) => Response::from_json(&PigeonShadow::from(s)),
+          Ok(s) => {
+            let shadow = PigeonShadow::from(s);
+            broadcast_shadow_update(pigeons, &shadow);
+            Response::from_json(&shadow)
+          }
           Err(e) => {
             console_error!("PigeonShadow deserialization error: {e}");
             Response::error("Internal Server Error", 500)
@@ -1321,6 +1569,28 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     Err(e) => {
       console_error!("Shadow UPDATE execution error: {e}");
       Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Pushes the new shadow to this pigeon's connected device WebSocket, if
+/// any (task #32) -- the headline latency win this endpoint exists for:
+/// without it, a device only learns about a new `target_config` on its next
+/// poll. Scoped to `WS_DEVICE_TAG` so a future remote-shell socket (task
+/// #34) never receives a frame meant for the device-telemetry protocol.
+/// Best-effort: a `send` failure (socket mid-close, buffer full, etc.) is
+/// logged and otherwise ignored, matching this codebase's established
+/// best-effort-sync convention -- the shadow write itself already succeeded
+/// and is the primary result of this request either way.
+fn broadcast_shadow_update(pigeons: &Pigeons, shadow: &PigeonShadow) {
+  for ws in pigeons.state.get_websockets_with_tag(WS_DEVICE_TAG) {
+    if let Err(e) = ws.send(&WsOutboundFrame::ShadowUpdate {
+      shadow: shadow.clone(),
+    }) {
+      console_error!(
+        "WS shadow push failed for pigeon {}: {e}",
+        pigeons.state.id()
+      );
     }
   }
 }
