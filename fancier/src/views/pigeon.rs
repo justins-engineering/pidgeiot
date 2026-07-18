@@ -622,6 +622,82 @@ fn AclInfo(acl: PigeonAcl) -> Element {
   }
 }
 
+/// Client-side-only sanity cap on an uploaded `target_config` JSON file
+/// (task #26) -- dovecote's `PUT /pigeons/:id/shadow` enforces no size limit
+/// of its own on `target_config`, so this exists purely to give a friendly
+/// error instead of stuffing something absurd into the textarea below.
+const MAX_SHADOW_UPLOAD_BYTES: u64 = 64 * 1024;
+
+/// Parses an uploaded `target_config` JSON file's text and, on success,
+/// returns it pretty-printed for the editor textarea below to preview (task
+/// #26 -- "reuse the existing editor ... so the user can eyeball or tweak
+/// what the file contained"). Only a JSON *object* is accepted -- arrays and
+/// bare scalars would round-trip through `serde_json::Value` fine, but
+/// `PigeonShadowUpdateRequest::target_config` is conceptually a config
+/// object (see the live textarea's own default of `"{}"`), and silently
+/// accepting e.g. `[1,2,3]` here would just surface as a confusing 400 from
+/// dovecote later instead of an immediate, specific error now. Pure and
+/// synchronous (no `web_sys`) so it's unit-testable without a wasm target.
+fn parse_shadow_upload(text: &str) -> Result<String, String> {
+  match serde_json::from_str::<serde_json::Value>(text) {
+    Ok(value @ serde_json::Value::Object(_)) => {
+      serde_json::to_string_pretty(&value).map_err(|err| format!("Invalid JSON: {err}"))
+    }
+    Ok(_) => Err(
+      "The file must contain a JSON object (e.g. {\"key\": \"value\"}), not an array or a bare value."
+        .to_string(),
+    ),
+    Err(err) => Err(format!("Invalid JSON: {err}")),
+  }
+}
+
+#[cfg(test)]
+mod shadow_upload_tests {
+  use super::parse_shadow_upload;
+
+  #[test]
+  fn accepts_a_json_object_and_pretty_prints_it() {
+    let result = parse_shadow_upload(r#"{"telemetry_interval":60,"logging":"info"}"#);
+    assert_eq!(
+      result,
+      Ok("{\n  \"telemetry_interval\": 60,\n  \"logging\": \"info\"\n}".to_string())
+    );
+  }
+
+  #[test]
+  fn accepts_an_empty_object() {
+    assert_eq!(parse_shadow_upload("{}"), Ok("{}".to_string()));
+  }
+
+  #[test]
+  fn rejects_a_json_array() {
+    let result = parse_shadow_upload("[1,2,3]");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("must contain a JSON object"));
+  }
+
+  #[test]
+  fn rejects_a_bare_scalar() {
+    let result = parse_shadow_upload("42");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("must contain a JSON object"));
+  }
+
+  #[test]
+  fn rejects_a_bare_string() {
+    let result = parse_shadow_upload("\"hello\"");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("must contain a JSON object"));
+  }
+
+  #[test]
+  fn rejects_malformed_json() {
+    let result = parse_shadow_upload("{not valid json");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().starts_with("Invalid JSON:"));
+  }
+}
+
 #[component]
 pub fn EditShadowModal(
   pigeon_id: String,
@@ -638,6 +714,8 @@ pub fn EditShadowModal(
   let mut error_msg = use_signal(|| Option::<String>::None);
   let mut submit_error = use_signal(|| Option::<String>::None);
   let mut is_saving = use_signal(|| false);
+  let mut file_error = use_signal(|| Option::<String>::None);
+  let mut loaded_file_name = use_signal(|| Option::<String>::None);
 
   rsx! {
     dialog { class: "modal", id: "edit_shadow_modal",
@@ -695,6 +773,64 @@ pub fn EditShadowModal(
           },
 
           fieldset { class: "fieldset flex flex-col gap-4",
+            div { class: "w-full",
+              label { class: "fieldset-legend text-xs font-semibold mb-1 text-base-content/80",
+                "Upload from a JSON file (optional)"
+              }
+              input {
+                r#type: "file",
+                accept: "application/json,.json",
+                class: "file-input file-input-bordered file-input-sm w-full",
+                onchange: move |evt: Event<FormData>| {
+                    async move {
+                        file_error.set(None);
+                        loaded_file_name.set(None);
+                        let Some(file) = evt.files().into_iter().next() else {
+                            return;
+                        };
+                        if file.size() > MAX_SHADOW_UPLOAD_BYTES {
+                            file_error
+                                .set(
+                                    Some(
+                                        format!(
+                                            "File is {} KB, which is over the {} KB limit.",
+                                            file.size() / 1024,
+                                            MAX_SHADOW_UPLOAD_BYTES / 1024,
+                                        ),
+                                    ),
+                                );
+                            return;
+                        }
+                        let text = match file.read_string().await {
+                            Ok(text) => text,
+                            Err(err) => {
+                                file_error.set(Some(format!("Failed to read file: {err}")));
+                                return;
+                            }
+                        };
+                        match parse_shadow_upload(&text) {
+                            Ok(pretty) => {
+                                json_input.set(pretty);
+                                error_msg.set(None);
+                                loaded_file_name.set(Some(file.name()));
+                            }
+                            Err(err) => file_error.set(Some(err)),
+                        }
+                    }
+                },
+              }
+              if let Some(name) = loaded_file_name.read().as_ref() {
+                p { class: "text-xs text-success mt-1",
+                  "Loaded \"{name}\" into the editor below — review (or tweak) before saving."
+                }
+              }
+              if let Some(err) = file_error.read().as_ref() {
+                p { class: "text-error text-xs mt-1", "⚠️ {err}" }
+              }
+              p { class: "text-xs text-base-content/50 mt-1",
+                "Keys your device firmware doesn't understand are ignored on-device."
+              }
+            }
             div { class: "w-full",
               label { class: "fieldset-legend text-xs font-semibold mb-1 text-base-content/80",
                 "Target Configuration Script"
