@@ -1,10 +1,12 @@
 use crate::components::{
-  ConnectorBadge, FirmwareModal, JsonViewer, LogViewer, PigeonGraphs, TelemetryEndpointModal,
+  ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer, LogViewer, PigeonGraphs,
+  TelemetryEndpointModal,
 };
+use crate::helpers::connection_state::{self, ConnectionState};
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
+  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -19,6 +21,14 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let mut show_telemetry_endpoint_modal = use_signal(|| false);
   let mut show_firmware_modal = use_signal(|| false);
 
+  // Connection-state indicator (task #31) -- "last seen" is the newest of
+  // three signals this page already fetches (or, for the log chunks,
+  // would fetch anyway via LogViewer): the latest telemetry report, the
+  // shadow's own updated_at, and the newest received device log chunk.
+  // No new backend routes, no extra device traffic.
+  let mut telemetry_latest: Signal<Option<Vec<TelemetryLatest>>> = use_signal(|| None);
+  let mut latest_log_received: Signal<Option<time::OffsetDateTime>> = use_signal(|| None);
+
   use_resource(move || {
     let id = id.to_owned();
     async move {
@@ -26,9 +36,36 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
     }
   });
 
+  {
+    let id = pigeon_id.clone();
+    use_resource(move || {
+      let id = id.clone();
+      async move {
+        telemetry_latest.set(api::telemetry::get_latest(&id).await);
+      }
+    });
+  }
+
   rsx! {
     match pigeon_detail() {
         Some(pd) => {
+            let shadow_seen = time::OffsetDateTime::from_unix_timestamp(pd.shadow.updated_at).ok();
+            let telemetry_seen = telemetry_latest().and_then(|latest| {
+                connection_state::latest_of(latest.iter().map(|t| Some(t.reported_at)))
+            });
+            let last_seen = connection_state::latest_of([
+                shadow_seen,
+                telemetry_seen,
+                latest_log_received(),
+            ]);
+            let interval_secs = connection_state::telemetry_interval_secs(
+                &pd.shadow.current_config,
+            );
+            let conn_state: ConnectionState = connection_state::classify(
+                last_seen,
+                interval_secs,
+                time::OffsetDateTime::now_utc(),
+            );
             rsx! {
               header { class: "w-full flex flex-row items-center justify-between",
                 Link {
@@ -41,7 +78,10 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     title: "Pigeons",
                   }
                 }
-                h1 { class: "text-4xl font-bold ", "{pd.pigeon.name.as_deref().unwrap_or(\"--\")}" }
+                div { class: "flex flex-row items-center gap-4",
+                  h1 { class: "text-4xl font-bold ", "{pd.pigeon.name.as_deref().unwrap_or(\"--\")}" }
+                  ConnectionBadge { state: conn_state, last_seen }
+                }
                 div { class: "flex flex-row items-center gap-2",
                   button {
                     class: "btn btn-outline btn-primary sm:px-6",
@@ -79,7 +119,10 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   ShadowInfo { shadow: pd.shadow.clone() }
                 }
                 section { id: "logViewer",
-                  LogViewer { pigeon_id: pigeon_id.clone() }
+                  LogViewer {
+                    pigeon_id: pigeon_id.clone(),
+                    on_latest_received: move |t| latest_log_received.set(t),
+                  }
                 }
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }

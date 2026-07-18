@@ -49,7 +49,15 @@ fn chunk_filename(pigeon_id: &str, chunk_id: i64) -> String {
 /// as-is for host-side decoding, never fake a text rendering of binary
 /// data.
 #[component]
-pub fn LogViewer(pigeon_id: String) -> Element {
+pub fn LogViewer(
+  pigeon_id: String,
+  /// Fired once the fetch settles, with the newest chunk's `received_at`
+  /// (or `None` on an empty/failed fetch) -- lets a caller derive "last
+  /// seen" (task #31) from the chunks LogViewer already fetched, instead
+  /// of re-fetching potentially 200 base64-encoded chunks a second time
+  /// just to read a timestamp.
+  on_latest_received: EventHandler<Option<time::OffsetDateTime>>,
+) -> Element {
   let time_format = time::macros::format_description!(
     "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
   );
@@ -75,9 +83,13 @@ pub fn LogViewer(pigeon_id: String) -> Element {
               }
             })
             .collect();
+          on_latest_received.call(decoded.iter().map(|c| c.received_at).max());
           state.set(LogsState::Loaded(decoded));
         }
-        None => state.set(LogsState::Failed),
+        None => {
+          on_latest_received.call(None);
+          state.set(LogsState::Failed);
+        }
       }
     }
   });

@@ -23,3 +23,5 @@ pub use download::{decode_base64, download_bytes};
 
 mod crypto;
 pub use crypto::sha256_hex;
+
+pub mod connection_state;

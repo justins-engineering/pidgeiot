@@ -1,10 +1,22 @@
-use crate::components::{ConnectorBadge, FlockGraphs};
+use crate::components::{ConnectionBadge, ConnectorBadge, FlockGraphs};
+use crate::helpers::connection_state;
 use crate::{Route, api};
 use capsules::{CoapConfig, Connector, HttpsConfig, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
+use std::collections::HashMap;
 use wasm_bindgen_futures::JsFuture;
+
+/// How far back the flock pigeon-list looks for a per-pigeon "last seen"
+/// (task #31) -- deliberately short and bounded to keep this the only
+/// fetch the list makes for the feature (no per-pigeon fan-out, no new
+/// routes: one `GET /flocks/:id/telemetry/history` call covers the whole
+/// table). A pigeon that hasn't reported within this window shows as
+/// offline/unknown even if it reported further back -- the list only
+/// needs to distinguish "seen recently" from "not," not produce an exact
+/// last-seen age the way the pigeon detail page does.
+const LIST_LOOKBACK_HOURS: i64 = 6;
 
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
@@ -13,6 +25,9 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // the reveal can navigate to the pigeon it belongs to.
   let mut new_token = use_signal(|| None::<(String, String)>);
   let nav = use_navigator();
+  let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> = use_signal(
+    HashMap::new,
+  );
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -24,6 +39,14 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
       if let Some(pigeon_ids) = ids_to_fetch {
         api::pigeons::list(&pigeon_ids).await;
       };
+    }
+  });
+
+  use_resource(move || async move {
+    let now = time::OffsetDateTime::now_utc();
+    let since = now - time::Duration::hours(LIST_LOOKBACK_HOURS);
+    if let Some(points) = api::telemetry::get_flock_history(&flock_id, since, now).await {
+      last_seen_by_pigeon.set(connection_state::latest_seen_by_pigeon(&points));
     }
   });
 
@@ -78,6 +101,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                 th { "Name" }
                 th { "Serial" }
                 th { "Connector" }
+                th { "Status" }
                 th { class: "text-right", "Action" }
               }
             }
@@ -92,6 +116,19 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                   }
                   td { class: "text-sm",
                     ConnectorBadge { connector: pigeon.connector.clone() }
+                  }
+                  td { class: "text-sm",
+                    {
+                        let last_seen = last_seen_by_pigeon.read().get(id).copied();
+                        let state = connection_state::classify(
+                            last_seen,
+                            None,
+                            time::OffsetDateTime::now_utc(),
+                        );
+                        rsx! {
+                          ConnectionBadge { state, last_seen }
+                        }
+                    }
                   }
                   td { class: "text-right",
                     Link {
