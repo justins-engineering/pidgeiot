@@ -9,7 +9,10 @@ use wasm_bindgen_futures::JsFuture;
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   let binding = use_context::<crate::LocalSession>();
-  let mut new_token = use_signal(|| None::<String>);
+  // (pigeon_id, token) — the id rides alongside the token so dismissing
+  // the reveal can navigate to the pigeon it belongs to.
+  let mut new_token = use_signal(|| None::<(String, String)>);
+  let nav = use_navigator();
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -110,14 +113,25 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           FlockGraphs { flock_id }
         }
 
-        // One-time token reveal modal
-        if let Some(token) = new_token() {
-          TokenReveal { token, on_close: move |_| new_token.set(None) }
+        // One-time token reveal modal. Dismissal — not creation success —
+        // is the flow-complete moment: navigating away must never preempt
+        // or unmount this modal while the token is still showing.
+        if let Some((pigeon_id, token)) = new_token() {
+          TokenReveal {
+            token,
+            on_close: move |_| {
+              new_token.set(None);
+              nav.replace(Route::PigeonView {
+                  flock_id,
+                  pigeon_id: pigeon_id.clone(),
+              });
+            },
+          }
         }
 
         CreatePigeonModal {
           flock_id,
-          on_created: move |token| new_token.set(Some(token)),
+          on_created: move |(pigeon_id, token)| new_token.set(Some((pigeon_id, token))),
         }
       }
     }
@@ -192,7 +206,7 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
   }
 }
 #[component]
-fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> Element {
+fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, String)>) -> Element {
   let mut selected_connector = use_signal(|| "Https".to_string());
   let mut local_session = use_context::<crate::LocalSession>();
   let mut is_saving = use_signal(|| false);
@@ -240,9 +254,9 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<String>) -> 
                   if let Some((pigeon_id, token)) = api::pigeons::create(&pcr).await {
                       is_saving.set(false);
                       if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
-                          flock.pigeon_ids.push(pigeon_id);
+                          flock.pigeon_ids.push(pigeon_id.clone());
                       }
-                      on_created.call(token);
+                      on_created.call((pigeon_id, token));
                       document::eval(
                           r#"document.getElementById("create_pigeon_modal").close();"#,
                       );
