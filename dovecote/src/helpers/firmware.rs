@@ -28,6 +28,24 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     .map_err(|e| {
       console_error!("flock_firmware table bootstrap error: {e}");
       Error::RustError("Internal Server Error".into())
+    })?;
+
+  // Idempotent for pre-existing databases that created `flock_firmware`
+  // before this column existed (task #20, phase 1) -- same
+  // no-separate-migration-runner rationale as `telemetry_endpoint`
+  // (`helpers/telemetry.rs::ensure_pigeons_telemetry_endpoint_column`).
+  // Nullable at the schema level so pre-existing rows don't need a
+  // backfill -- the upload route requires `board` for every NEW image
+  // (see `lib.rs`'s `POST /flocks/:flock_id/firmware`), but an old,
+  // already-uploaded image simply stays untagged (and, under the
+  // fail-closed board-compatibility check in `objects/pigeons.rs`,
+  // unassignable) until an operator tags it.
+  client
+    .batch_execute("ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;")
+    .await
+    .map_err(|e| {
+      console_error!("flock_firmware.board column bootstrap error: {e}");
+      Error::RustError("Internal Server Error".into())
     })
 }
 
@@ -73,6 +91,7 @@ pub async fn upsert_flock_firmware(
   version: &str,
   size: i64,
   sha256: &str,
+  board: &str,
 ) -> Result<FirmwareImage> {
   ensure_flock_firmware_table(client).await?;
 
@@ -81,17 +100,19 @@ pub async fn upsert_flock_firmware(
 
   let row = client
     .query_typed_one(
-      "INSERT INTO flock_firmware (flock_id, version, size, sha256)
-       VALUES ($1, $2, $3, $4)
+      "INSERT INTO flock_firmware (flock_id, version, size, sha256, board)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (flock_id, sha256) DO UPDATE SET
          version = EXCLUDED.version,
+         board = EXCLUDED.board,
          uploaded_at = now()
-       RETURNING id, flock_id, version, size, sha256, uploaded_at;",
+       RETURNING id, flock_id, version, size, sha256, board, uploaded_at;",
       &[
         (&flock_uuid, Type::UUID),
         (&version, Type::TEXT),
         (&size, Type::INT8),
         (&sha256, Type::TEXT),
+        (&board, Type::TEXT),
       ],
     )
     .await
@@ -106,6 +127,7 @@ pub async fn upsert_flock_firmware(
     version: row.get("version"),
     size: row.get("size"),
     sha256: row.get("sha256"),
+    board: row.get("board"),
     uploaded_at: row.get("uploaded_at"),
   })
 }
@@ -126,7 +148,7 @@ pub async fn list_flock_firmware(
 
   let rows = client
     .query_typed(
-      "SELECT id, flock_id, version, size, sha256, uploaded_at
+      "SELECT id, flock_id, version, size, sha256, board, uploaded_at
        FROM flock_firmware WHERE flock_id = $1 ORDER BY uploaded_at DESC;",
       &[(&flock_uuid, Type::UUID)],
     )
@@ -145,10 +167,45 @@ pub async fn list_flock_firmware(
         version: row.get("version"),
         size: row.get("size"),
         sha256: row.get("sha256"),
+        board: row.get("board"),
         uploaded_at: row.get("uploaded_at"),
       })
       .collect(),
   )
+}
+
+/// Board declared for one flock's catalog image, looked up by content hash
+/// -- the enforcement lookup behind `objects/pigeons.rs::
+/// check_firmware_board_compat` (task #20, phase 1's fail-closed
+/// board-compatibility check). Returns `Ok(None)` both when the column is
+/// genuinely unset (pre-migration/untagged image) and when no catalog row
+/// matches at all (e.g. a stale/foreign sha256 not in this flock's
+/// catalog) -- the caller's fail-closed rule treats both the same way
+/// (reject), so this function doesn't need to distinguish them; a caller
+/// that does need to tell the two apart should use `list_flock_firmware`
+/// instead.
+pub async fn get_firmware_board(
+  client: &Client,
+  flock_id_str: &str,
+  sha256: &str,
+) -> Result<Option<String>> {
+  ensure_flock_firmware_table(client).await?;
+
+  let flock_uuid = Uuid::parse_str(flock_id_str)
+    .map_err(|e| Error::RustError(format!("Invalid flock_id format: {e}")))?;
+
+  let rows = client
+    .query_typed(
+      "SELECT board FROM flock_firmware WHERE flock_id = $1 AND sha256 = $2;",
+      &[(&flock_uuid, Type::UUID), (&sha256, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Firmware board lookup error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.into_iter().next().and_then(|row| row.get("board")))
 }
 
 /// Hex-encoded (lowercase) SHA-256 of `bytes`, computed server-side — the

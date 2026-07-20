@@ -1009,14 +1009,27 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
+        // `board` (task #20, phase 1) is required, same as `version` --
+        // every new upload must declare the Zephyr `CONFIG_BOARD_TARGET`
+        // it was built for, so `objects/pigeons.rs::
+        // check_firmware_board_compat` has something to enforce against.
         let Ok(query) = req.query::<FirmwareUploadQuery>() else {
-          return Response::error("Bad Request: Missing 'version' query parameter", 400)
-            .unwrap()
-            .with_cors(&cors);
+          return Response::error(
+            "Bad Request: Missing 'version' or 'board' query parameter",
+            400,
+          )
+          .unwrap()
+          .with_cors(&cors);
         };
 
         if query.version.trim().is_empty() {
           return Response::error("Bad Request: 'version' cannot be empty", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        if query.board.trim().is_empty() {
+          return Response::error("Bad Request: 'board' cannot be empty", 400)
             .unwrap()
             .with_cors(&cors);
         }
@@ -1083,6 +1096,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           &query.version,
           bytes.len() as i64,
           &sha256,
+          &query.board,
         )
         .await
         else {

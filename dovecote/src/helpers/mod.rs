@@ -31,6 +31,7 @@ pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
 
 mod firmware;
+pub use firmware::get_firmware_board;
 pub use firmware::is_flock_owner;
 pub use firmware::list_flock_firmware;
 pub use firmware::sha256_hex;

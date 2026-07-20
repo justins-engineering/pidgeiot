@@ -24,7 +24,7 @@ use worker::{
 /// Selected pigeon column list shared by every `pigeons` read/RETURNING
 /// statement -- keeps `telemetry_endpoint` (and any future column) from
 /// silently going missing from one of the several near-identical queries.
-const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, updated_at, created_at";
+const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, updated_at, created_at";
 
 // Falls back to the production host if `DEVICE_API_HOST` isn't set for some
 // reason -- every environment ([vars]/[env.staging.vars]/[env.dev.vars] in
@@ -141,6 +141,7 @@ impl DurableObject for Pigeons {
           token_expires_at INTEGER DEFAULT 0,
           device_public_key TEXT NOT NULL DEFAULT '',
           telemetry_endpoint TEXT DEFAULT NULL,
+          board TEXT DEFAULT NULL,
           updated_at INTEGER DEFAULT (unixepoch()),
           created_at INTEGER DEFAULT (unixepoch())
         );
@@ -176,6 +177,15 @@ impl DurableObject for Pigeons {
       "ALTER TABLE pigeons ADD COLUMN telemetry_endpoint TEXT DEFAULT NULL;",
       None,
     );
+
+    // Same rationale as the `telemetry_endpoint` migration above -- DOs
+    // created before `board` existed (task #20, phase 1: firmware/board
+    // geometry compatibility) need this added after the fact. `board` is
+    // the pigeon's own Zephyr `CONFIG_BOARD_TARGET` string (e.g.
+    // "circuitdojo_feather/nrf9160/ns"), operator-set at provisioning time
+    // for now (device self-report is a later hardening phase) -- see
+    // `check_firmware_board_compat` for where this is actually enforced.
+    let _ = sql.exec("ALTER TABLE pigeons ADD COLUMN board TEXT DEFAULT NULL;", None);
 
     sql
       .exec(
@@ -635,7 +645,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
 
   let pigeon = match pigeons.sql.exec(
-  &format!("INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at, device_public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING {PIGEON_COLUMNS};"),
+  &format!("INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, token_expires_at, device_public_key, board) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING {PIGEON_COLUMNS};"),
   vec![
     do_id.clone().into(),
     row.flock_id.to_string().into(),
@@ -645,6 +655,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     connector_json.into(),
     expires_at.unix_timestamp().into(),
     public_key.into(),
+    row.board.into(),
   ],
 ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -849,7 +860,8 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       serial = COALESCE(?, serial),
       name = COALESCE(?, name),
       tags = COALESCE(?, tags),
-      connector = COALESCE(?, connector)
+      connector = COALESCE(?, connector),
+      board = COALESCE(?, board)
     WHERE id = ?;",
     vec![
       row.flock_id.map(|u| u.to_string()).into(),
@@ -857,6 +869,7 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       row.name.into(),
       row.tags.into(),
       connector_json.into(), // Now Option<String> — None becomes null, Some becomes JSON text
+      row.board.into(),
       pigeons.state.id().to_string().into(),
     ],
   ) {
@@ -1868,6 +1881,102 @@ async fn get_logs(pigeons: &Pigeons, req: Request) -> Result<Response> {
   }
 }
 
+#[derive(serde::Deserialize)]
+struct PigeonBoardFlockRow {
+  flock_id: String,
+  board: Option<String>,
+}
+
+/// Fail-closed board/geometry compatibility check (task #20, phase 1) --
+/// the actual server-side fix for the nRF9151 Secure Fault DoS: a firmware
+/// image built for one board's flash/partition geometry, assigned via
+/// shadow to a device with a different geometry, halts the device (TF-M
+/// fails safe, but only after the device has already tried to apply the
+/// image -- see the design doc). MCUboot's own image header carries no
+/// usable geometry fact for this fleet's swap-mode builds (`ih_load_addr`
+/// is unset in every current build), so the check is metadata declared by
+/// both sides -- this pigeon's own `board` column and the target image's
+/// `flock_firmware.board`, looked up by the `sha256` embedded in the
+/// incoming `target_config.firmware` -- compared here, before the shadow
+/// write is ever accepted. Catching a bad assignment before it can reach a
+/// device at all is strictly better than the device-side check planned for
+/// phase 2, which can only refuse an image the device has already started
+/// downloading.
+///
+/// **Fail-closed, not fail-open, per explicit user decision** -- the
+/// design doc's own draft leaned fail-open (allow when either side is
+/// unset, to avoid breaking pre-existing untagged pigeons/images on
+/// rollout day), but the user chose the stricter rule since this fleet has
+/// no real users yet to disrupt: `pigeon.board` unset, `image.board`
+/// unset, no matching `flock_firmware` row at all for this sha256 in this
+/// pigeon's flock, OR an explicit mismatch -- all four reject with `400`.
+/// Only an explicit, confirmed match allows the write through. Every
+/// pigeon/image that needs to keep working under this rule must be
+/// explicitly tagged (see this task's commit for which staging fixtures
+/// were re-tagged).
+async fn check_firmware_board_compat(
+  pigeons: &Pigeons,
+  firmware_value: &serde_json::Value,
+) -> Result<(), Result<Response, worker::Error>> {
+  let target = match serde_json::from_value::<FirmwareTarget>(firmware_value.clone()) {
+    Ok(t) => t,
+    Err(e) => {
+      console_error!("Shadow UPDATE: malformed firmware target: {e}");
+      return Err(Response::error("Bad Request: Malformed firmware target", 400));
+    }
+  };
+
+  let pigeon_row = match pigeons
+    .sql
+    .exec("SELECT flock_id, board FROM pigeons LIMIT 1;", None)
+  {
+    Ok(cursor) => match one_row::<PigeonBoardFlockRow>(&cursor) {
+      Ok(row) => row,
+      Err(e) => {
+        console_error!("Shadow UPDATE: pigeon board READ error: {e}");
+        return Err(Response::error("Internal Server Error", 500));
+      }
+    },
+    Err(e) => {
+      console_error!("Shadow UPDATE: pigeon board READ error: {e}");
+      return Err(Response::error("Internal Server Error", 500));
+    }
+  };
+
+  let client = match crate::helpers::get_db_client(&pigeons.env).await {
+    Ok(client) => client,
+    Err(e) => {
+      console_error!("Shadow UPDATE: board check skipped, Hyperdrive connection failed: {e}");
+      return Err(Response::error("Internal Server Error", 500));
+    }
+  };
+
+  let image_board =
+    match crate::helpers::get_firmware_board(&client, &pigeon_row.flock_id, &target.sha256).await
+    {
+      Ok(board) => board,
+      Err(e) => {
+        console_error!("Shadow UPDATE: firmware board lookup failed: {e}");
+        return Err(Response::error("Internal Server Error", 500));
+      }
+    };
+
+  match (&pigeon_row.board, &image_board) {
+    (Some(p), Some(i)) if p == i => Ok(()),
+    (p, i) => {
+      console_error!(
+        "Shadow UPDATE: REJECTED firmware assignment for pigeon {} -- pigeon board={p:?}, image board={i:?} (sha256={})",
+        pigeons.state.id(),
+        target.sha256
+      );
+      Err(Response::error(
+        "Bad Request: Firmware/pigeon board mismatch or unset (fail-closed) -- tag both the pigeon and the firmware image with a matching board before assigning",
+        400,
+      ))
+    }
+  }
+}
+
 async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
@@ -1878,6 +1987,14 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
       return Response::error("Bad Request: Invalid JSON", 400);
     }
   };
+
+  // Fail-closed board/geometry compatibility check (task #20, phase 1) --
+  // only runs when this PUT's target_config actually carries a `firmware`
+  // key; every other shadow write (telemetry_interval, log, reboot, ...)
+  // is unaffected.
+  if let Some(firmware_value) = shadow.target_config.get("firmware") {
+    unwrap_or_return_response!(check_firmware_board_compat(pigeons, firmware_value).await);
+  }
 
   let config_str = serde_json::to_string(&shadow.target_config).map_err(|e| {
     console_error!("Shadow config serialization error: {e}");

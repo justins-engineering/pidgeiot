@@ -89,6 +89,14 @@ pub struct PigeonRow {
   // JSON text like `connector`, NULL/absent when no user-defined endpoint is
   // configured — most pigeons never set this.
   pub telemetry_endpoint: Option<String>,
+  // This pigeon's own Zephyr `CONFIG_BOARD_TARGET` string (task #20, phase
+  // 1), e.g. "circuitdojo_feather/nrf9160/ns" -- operator-set at
+  // provisioning/update time for now (device self-report is a later
+  // hardening phase). `None` for every pigeon created before this field
+  // existed, and for any pigeon an operator hasn't tagged yet -- see
+  // `objects/pigeons.rs::check_firmware_board_compat` in `dovecote` for
+  // where this is actually enforced against a firmware image's own board.
+  pub board: Option<String>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -109,6 +117,7 @@ impl From<PigeonRow> for Pigeon {
       telemetry_endpoint: row
         .telemetry_endpoint
         .and_then(|s| serde_json::from_str(&s).ok()),
+      board: row.board,
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -130,6 +139,8 @@ pub struct Pigeon {
   pub token_expires_at: OffsetDateTime,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub board: Option<String>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -147,6 +158,7 @@ impl Default for Pigeon {
       connector: Connector::default(),
       token_expires_at: OffsetDateTime::UNIX_EPOCH,
       telemetry_endpoint: None,
+      board: None,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -185,6 +197,11 @@ pub struct PigeonCreateRequest {
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: Connector,
+  // Operator-declared board at provisioning time (task #20, phase 1) --
+  // optional, same "unset until an operator tags it" story as
+  // `Pigeon::board`.
+  #[serde(default)]
+  pub board: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -201,6 +218,13 @@ pub struct PigeonUpdateRequest {
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: Option<Connector>,
+  // Same `COALESCE`/partial-update semantics as every other field here --
+  // omitted keeps the current value, `Some` replaces it. No way to
+  // explicitly clear an already-set board via this route today, same
+  // limitation every other `Option<String>` field on this struct already
+  // has.
+  #[serde(default)]
+  pub board: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -506,6 +530,15 @@ pub struct FirmwareImage {
   pub version: String,
   pub size: i64,
   pub sha256: String,
+  // The Zephyr `CONFIG_BOARD_TARGET` string this image was built for (e.g.
+  // "circuitdojo_feather/nrf9160/ns") -- required on every NEW upload
+  // (task #20, phase 1: firmware/board geometry compatibility) via
+  // `FirmwareUploadQuery::board` below, but `Option` here since
+  // pre-existing catalog rows predate the column and stay untagged
+  // (`NULL`) until an operator retags them. Enforced against
+  // `Pigeon::board` before a shadow assignment is accepted -- see
+  // `objects/pigeons.rs::check_firmware_board_compat` in `dovecote`.
+  pub board: Option<String>,
   #[serde(with = "time::serde::rfc3339")]
   pub uploaded_at: OffsetDateTime,
 }
@@ -513,8 +546,12 @@ pub struct FirmwareImage {
 /// Query params for `POST /flocks/:flock_id/firmware` -- `size`/`sha256`
 /// are deliberately absent: both are computed server-side from the
 /// uploaded bytes, never trusted from the client (see
-/// `helpers/firmware.rs::sha256_hex`).
+/// `helpers/firmware.rs::sha256_hex`). `board` (task #20, phase 1) is
+/// required, unlike `FirmwareImage::board` above being `Option` -- every
+/// NEW upload must declare what it was built for; only pre-existing rows
+/// from before this field existed are allowed to stay untagged.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct FirmwareUploadQuery {
   pub version: String,
+  pub board: String,
 }

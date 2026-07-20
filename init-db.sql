@@ -58,14 +58,23 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- NULL when unset (the common case). Mirrors the DO's own
   -- `pigeons.telemetry_endpoint` column; see capsules::TelemetryEndpoint.
   telemetry_endpoint JSONB,
+  -- This pigeon's own Zephyr CONFIG_BOARD_TARGET string (task #20, phase
+  -- 1), e.g. "circuitdojo_feather/nrf9160/ns" -- NULL until an operator
+  -- tags it (at provisioning or via update). Mirrors the DO's own
+  -- `pigeons.board` column; see capsules::Pigeon::board. Enforced against
+  -- flock_firmware.board (below) by dovecote's
+  -- check_firmware_board_compat before a firmware shadow assignment is
+  -- accepted.
+  board TEXT,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
 
--- Idempotent for pre-existing databases that created `pigeons` before this
--- column existed — mirrors dovecote's own `ALTER TABLE ... ADD COLUMN`
+-- Idempotent for pre-existing databases that created `pigeons` before these
+-- columns existed — mirrors dovecote's own `ALTER TABLE ... ADD COLUMN`
 -- fallback for the DO's SQLite schema (see objects/pigeons.rs).
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons
@@ -123,9 +132,19 @@ CREATE TABLE IF NOT EXISTS flock_firmware (
   version TEXT NOT NULL,
   size BIGINT NOT NULL,
   sha256 TEXT NOT NULL,
+  -- The Zephyr CONFIG_BOARD_TARGET this image was built for (task #20,
+  -- phase 1) -- required at upload time going forward (see dovecote's
+  -- POST /flocks/:flock_id/firmware), NULL only for rows uploaded before
+  -- this column existed. Compared against pigeons.board before a shadow
+  -- firmware assignment is accepted; see capsules::FirmwareImage::board.
+  board TEXT,
   uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (flock_id, sha256)
 );
+
+-- Idempotent for pre-existing databases that created `flock_firmware`
+-- before this column existed.
+ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);

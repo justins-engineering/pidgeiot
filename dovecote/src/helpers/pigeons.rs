@@ -198,14 +198,15 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
     serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
 
   tx.execute_typed(
-    "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, updated_at, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+    "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, board, updated_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
      ON CONFLICT (id) DO UPDATE SET
        flock_id = EXCLUDED.flock_id,
        serial = EXCLUDED.serial,
        name = EXCLUDED.name,
        tags = EXCLUDED.tags,
        connector = EXCLUDED.connector,
+       board = EXCLUDED.board,
        updated_at = EXCLUDED.updated_at;",
     &[
       (&pigeon.id, Type::TEXT),
@@ -214,6 +215,7 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
       (&pigeon.name, Type::TEXT),
       (&pigeon.tags, Type::TEXT),
       (&connector_json, Type::TEXT),
+      (&pigeon.board, Type::TEXT),
       (&pigeon.updated_at, Type::TIMESTAMPTZ),
       (&pigeon.created_at, Type::TIMESTAMPTZ),
     ],
@@ -285,7 +287,8 @@ pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Res
          name = $4,
          tags = $5,
          connector = $6::jsonb,
-         updated_at = $7
+         board = $7,
+         updated_at = $8
        WHERE id = $1;",
       &[
         (&pigeon.id, Type::TEXT),
@@ -294,6 +297,7 @@ pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Res
         (&pigeon.name, Type::TEXT),
         (&pigeon.tags, Type::TEXT),
         (&connector_json, Type::TEXT),
+        (&pigeon.board, Type::TEXT),
         (&pigeon.updated_at, Type::TIMESTAMPTZ),
       ],
     )
