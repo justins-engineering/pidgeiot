@@ -16,6 +16,7 @@ head_sampling_rate = 0
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
+DEVICE_API_HOST = "api.pidgeiot.com"
 
 [[hyperdrive]]
 binding = "YugabyteDB"
@@ -76,6 +77,7 @@ routes = []
 [env.staging.vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
+DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
 
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
@@ -107,6 +109,7 @@ queue = "pidgeiot-telemetry-staging"
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
+DEVICE_API_HOST = "127.0.0.1:8787"
 
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name

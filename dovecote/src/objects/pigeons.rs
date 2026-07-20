@@ -22,21 +22,44 @@ use worker::{
 /// silently going missing from one of the several near-identical queries.
 const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, updated_at, created_at";
 
-const HTTP_ENDPOINT: &str = "https://api.pidgeiot.com/device/pigeons/";
-const COAP_ENDPOINT: &str = "coaps+tcp://api.pidgeiot.com/device/pigeons/";
+// Falls back to the production host if `DEVICE_API_HOST` isn't set for some
+// reason -- every environment ([vars]/[env.staging.vars]/[env.dev.vars] in
+// wrangler.toml) sets it explicitly today, but a missing binding should
+// degrade to prod's own host rather than emit a garbage endpoint.
+const DEFAULT_DEVICE_API_HOST: &str = "api.pidgeiot.com";
+const DEVICE_PIGEONS_PATH: &str = "/device/pigeons/";
+
+/// The host a minted device endpoint should point at -- deliberately NOT
+/// `ROOT_URL` (that's the frontend's own origin, e.g. pidgeiot.com, not the
+/// device-facing API host, and the two differ per environment: prod shares
+/// a domain across both, staging and dev do not). Read fresh per call
+/// instead of cached, since Durable Objects can outlive a single Worker
+/// invocation and `env` is cheap to read.
+fn device_api_host(env: &Env) -> String {
+  env
+    .var("DEVICE_API_HOST")
+    .map(|v| v.to_string())
+    .unwrap_or_else(|_| DEFAULT_DEVICE_API_HOST.to_string())
+}
 
 #[inline]
-pub fn build_http_endpoint(do_id: &str) -> String {
-  let mut endpoint = String::with_capacity(HTTP_ENDPOINT.len() + 64);
-  endpoint.push_str(HTTP_ENDPOINT);
+pub fn build_http_endpoint(env: &Env, do_id: &str) -> String {
+  let host = device_api_host(env);
+  let mut endpoint = String::with_capacity(8 + host.len() + DEVICE_PIGEONS_PATH.len() + 64);
+  endpoint.push_str("https://");
+  endpoint.push_str(&host);
+  endpoint.push_str(DEVICE_PIGEONS_PATH);
   endpoint.push_str(do_id);
   endpoint
 }
 
 #[inline]
-pub fn build_coap_endpoint(do_id: &str) -> String {
-  let mut endpoint = String::with_capacity(COAP_ENDPOINT.len() + 64);
-  endpoint.push_str(COAP_ENDPOINT);
+pub fn build_coap_endpoint(env: &Env, do_id: &str) -> String {
+  let host = device_api_host(env);
+  let mut endpoint = String::with_capacity(12 + host.len() + DEVICE_PIGEONS_PATH.len() + 64);
+  endpoint.push_str("coaps+tcp://");
+  endpoint.push_str(&host);
+  endpoint.push_str(DEVICE_PIGEONS_PATH);
   endpoint.push_str(do_id);
   endpoint
 }
@@ -528,11 +551,11 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   let server_connector = match row.connector {
     Connector::Https(_) => Connector::Https(HttpsConfig {
-      endpoint: build_http_endpoint(&do_id),
+      endpoint: build_http_endpoint(&pigeons.env, &do_id),
       token: device_token,
     }),
     Connector::Coap(_) => Connector::Coap(CoapConfig {
-      endpoint: build_coap_endpoint(&do_id),
+      endpoint: build_coap_endpoint(&pigeons.env, &do_id),
       token: device_token.clone(),
       tls_psk_identity: Some(do_id.clone()),
       tls_psk_secret: Some(device_token),
@@ -648,14 +671,14 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   // Build new connector with refreshed token
   pigeon.connector = match &pigeon.connector {
     Connector::Https(_) => {
-      let endpoint = build_http_endpoint(&do_id);
+      let endpoint = build_http_endpoint(&pigeons.env, &do_id);
       Connector::Https(HttpsConfig {
         endpoint,
         token: device_token.clone(),
       })
     }
     Connector::Coap(_) => {
-      let endpoint = build_coap_endpoint(&do_id);
+      let endpoint = build_coap_endpoint(&pigeons.env, &do_id);
       Connector::Coap(CoapConfig {
         endpoint,
         token: device_token.clone(),
