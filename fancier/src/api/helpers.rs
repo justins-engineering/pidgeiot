@@ -32,7 +32,11 @@ async fn dispatch(
   let resp_value = JsFuture::from(window.fetch_with_request(&request))
     .await
     .ok()?;
-  let response = resp_value.dyn_into::<Response>().ok()?;
+  resp_value.dyn_into::<Response>().ok()
+}
+
+pub async fn fetch_json(method: &str, path: &str, body: Option<&JsValue>) -> Option<Response> {
+  let response = fetch_json_any_status(method, path, body).await?;
 
   if !response.ok() {
     error!("{method} {path} failed with status: {}", response.status());
@@ -42,7 +46,19 @@ async fn dispatch(
   Some(response)
 }
 
-pub async fn fetch_json(method: &str, path: &str, body: Option<&JsValue>) -> Option<Response> {
+/// Like `fetch_json`, but hands back the `Response` regardless of HTTP
+/// status instead of collapsing every non-2xx to `None` -- for callers
+/// that need to distinguish *which* error occurred (status code + body
+/// text), not just "it failed". Most routes only care about success vs.
+/// failure, which `fetch_json` already covers; this exists for routes like
+/// `POST /pigeons/:id/shell` (task #34) whose 400/403/409/502/504
+/// responses are each a distinct, actionable state the UI shows
+/// differently rather than one generic error.
+pub async fn fetch_json_any_status(
+  method: &str,
+  path: &str,
+  body: Option<&JsValue>,
+) -> Option<Response> {
   let Ok(headers) = Headers::new() else {
     error!("Failed to create fetch headers!");
     return None;
@@ -75,5 +91,12 @@ pub async fn fetch_bytes(method: &str, path: &str, body: &[u8]) -> Option<Respon
     .ok()?;
 
   let array = js_sys::Uint8Array::from(body);
-  dispatch(method, path, headers, Some(array.as_ref())).await
+  let response = dispatch(method, path, headers, Some(array.as_ref())).await?;
+
+  if !response.ok() {
+    error!("{method} {path} failed with status: {}", response.status());
+    return None;
+  }
+
+  Some(response)
 }

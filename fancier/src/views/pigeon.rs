@@ -2,6 +2,7 @@ use crate::components::{
   ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer, LogViewer, PigeonGraphs,
   TelemetryEndpointModal,
 };
+use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::{Route, api};
 use capsules::{
@@ -10,7 +11,7 @@ use capsules::{
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
+use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTerminal, LdX};
 use uuid::Uuid;
 
 #[component]
@@ -138,6 +139,19 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   LogViewer {
                     pigeon_id: pigeon_id.clone(),
                     on_latest_received: move |t| latest_log_received.set(t),
+                  }
+                }
+                // Owner-gated (task #34, v1): mirrors dovecote's own
+                // `is_owner` gate on `POST /pigeons/:id/shell` -- `pd.acl`
+                // is the *requesting user's own* ACL row for this pigeon
+                // (see `AclInfo`'s "You" badge below), so this check is the
+                // same "is this user this pigeon's owner" question the
+                // server itself answers. The UI gate is a courtesy (avoid
+                // showing a control that would just 403); the real
+                // enforcement is server-side, already done in dovecote.
+                if pd.acl.role == "owner" {
+                  section { id: "diagnosticShell",
+                    DiagnosticShell { pigeon_id: pigeon_id.clone() }
                   }
                 }
                 section { id: "aclInfo",
@@ -656,6 +670,122 @@ fn ShadowInfo(shadow: PigeonShadow) -> Element {
           json: shadow.current_config.clone(),
           title: "Current Config [Version: {shadow.current_version}]",
         }
+      }
+    }
+  }
+}
+
+/// Remote diagnostic shell (task #34, v1) -- runs one command on the
+/// device over its existing WebSocket channel and shows the result.
+/// Rendered only for the pigeon's owner by `PigeonView` above; the caller
+/// gate is a courtesy, dovecote's `is_owner` check on the route itself is
+/// the actual security boundary (see the comment at that call site).
+///
+/// One request in flight at a time, matching the backend's own v1
+/// constraint (a second concurrent `POST .../shell` for the same pigeon
+/// 409s) -- `is_running` disables the form for the duration rather than
+/// letting the user queue up a request that would just bounce.
+#[component]
+fn DiagnosticShell(pigeon_id: String) -> Element {
+  let mut cmd = use_signal(String::new);
+  let mut timeout_secs = use_signal(String::new);
+  let mut is_running = use_signal(|| false);
+  let mut outcome: Signal<Option<Result<ShellExecuteResponse, ShellError>>> = use_signal(|| None);
+
+  rsx! {
+    div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-2 items-center md:px-4",
+        Icon { width: 22, height: 22, icon: LdTerminal }
+        h2 { class: "text-3xl font-bold", "Diagnostic Shell" }
+      }
+      p { class: "text-xs text-base-content/60 md:px-4",
+        "Runs a single command directly on the device over its existing connection. This is remote code execution on physical hardware by design — use it for emergency debugging, not routine operation."
+      }
+      form {
+        class: "flex flex-col md:flex-row gap-2 items-stretch md:items-end md:px-4",
+        onsubmit: move |evt: FormEvent| {
+            let pigeon_id = pigeon_id.clone();
+            async move {
+                evt.prevent_default();
+                let command = cmd();
+                if command.trim().is_empty() || is_running() {
+                    return;
+                }
+                let timeout_ms = timeout_secs()
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .map(|secs| secs.saturating_mul(1000));
+                is_running.set(true);
+                outcome.set(None);
+                let result = api::pigeons::execute_shell(&pigeon_id, &command, timeout_ms).await;
+                outcome.set(Some(result));
+                is_running.set(false);
+            }
+        },
+        div { class: "flex-1",
+          label { class: "fieldset-legend text-xs font-semibold mb-1 block", "Command" }
+          input {
+            class: "input input-bordered w-full font-mono text-sm",
+            r#type: "text",
+            placeholder: "pigeon shadow",
+            autocomplete: "off",
+            disabled: is_running(),
+            value: "{cmd}",
+            oninput: move |e| cmd.set(e.value()),
+          }
+        }
+        div { class: "w-full md:w-36",
+          label { class: "fieldset-legend text-xs font-semibold mb-1 block",
+            "Timeout (s, max 30)"
+          }
+          input {
+            class: "input input-bordered w-full text-sm",
+            r#type: "number",
+            min: "1",
+            max: "30",
+            placeholder: "10",
+            disabled: is_running(),
+            value: "{timeout_secs}",
+            oninput: move |e| timeout_secs.set(e.value()),
+          }
+        }
+        button {
+          class: "btn btn-primary",
+          r#type: "submit",
+          disabled: is_running() || cmd().trim().is_empty(),
+          if is_running() {
+            span { class: "loading loading-spinner loading-sm" }
+          } else {
+            "Run"
+          }
+        }
+      }
+      match outcome() {
+        Some(Ok(res)) => rsx! {
+          div { class: "flex flex-col gap-2 md:px-4",
+            div { class: "flex flex-row items-center gap-2",
+              span {
+                class: "badge badge-sm",
+                class: if res.exit_code == 0 { "badge-success" } else { "badge-error" },
+                "exit code {res.exit_code}"
+              }
+              if res.truncated {
+                span { class: "badge badge-sm badge-warning",
+                  "output truncated — device buffer overflowed"
+                }
+              }
+            }
+            pre {
+              class: "bg-base-200 rounded-box p-4 text-xs font-mono whitespace-pre-wrap break-all max-h-80 overflow-y-auto",
+              "{res.output}"
+            }
+          }
+        },
+        Some(Err(err)) => rsx! {
+          p { class: "text-error text-xs md:px-4", "⚠️ {err}" }
+        },
+        None => rsx! {},
       }
     }
   }
