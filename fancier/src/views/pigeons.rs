@@ -1,7 +1,7 @@
 use crate::components::{ConnectionBadge, ConnectorBadge, FlockGraphs};
 use crate::helpers::connection_state;
 use crate::{Route, api};
-use capsules::{CoapConfig, Connector, HttpsConfig, PigeonCreateRequest};
+use capsules::{CoapConfig, Connector, HttpsConfig, Pigeon, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
@@ -50,6 +50,30 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
     }
   });
 
+  let mut search = use_signal(String::new);
+  // Scoped to this flock's own pigeon_ids, not the full LocalSession.pigeons
+  // cache -- that cache is shared and additive (api::pigeons::list extends
+  // it, never prunes it), so without this filter a pigeon fetched while
+  // viewing a *previous* flock stayed visible here after an in-app
+  // navigation between flocks (no full page reload to reset client state).
+  // Confirmed live: visiting Flock A's pigeon list then Flock B's showed
+  // Flock A's pigeon in Flock B's table, complete with a working link into
+  // it. flock_id on Pigeon (capsules) is what actually scopes membership.
+  let all_pigeons = use_context::<crate::LocalSession>().pigeons;
+  let total = all_pigeons.read().values().filter(|p| p.flock_id == flock_id).count();
+  let filtered: Vec<(String, Pigeon)> = all_pigeons
+    .read()
+    .iter()
+    .filter(|(_, pigeon)| pigeon.flock_id == flock_id)
+    .filter(|(_, pigeon)| {
+      let query = search.read().to_lowercase();
+      query.is_empty()
+        || pigeon.name.as_deref().unwrap_or("").to_lowercase().contains(&query)
+        || pigeon.serial.as_deref().unwrap_or("").to_lowercase().contains(&query)
+    })
+    .map(|(id, pigeon)| (id.clone(), pigeon.clone()))
+    .collect();
+
   rsx! {
     section { id: "pigeons",
       div { class: "my-1 max-w-7xl mx-auto w-full",
@@ -66,21 +90,25 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               title: "Flocks",
             }
           }
-          h1 { class: "text-xl font-bold",
-            "Pigeons ({use_context::<crate::LocalSession>().pigeons.read().len()})"
-          }
+          h1 { class: "text-xl font-bold", "Pigeons ({filtered.len()})" }
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
             label { class: "input input-bordered flex items-center gap-2 bg-base-100 w-full",
               input {
                 "type": "text",
                 class: "grow text-sm",
                 placeholder: "Search by serial or name",
+                value: "{search}",
+                oninput: move |evt| search.set(evt.value()),
               }
-              Icon {
-                width: 16,
-                height: 16,
-                icon: LdX,
-                class: "text-base-content/50 cursor-pointer hover:text-base-content/80",
+              span {
+                class: "cursor-pointer",
+                onclick: move |_| search.set(String::new()),
+                Icon {
+                  width: 16,
+                  height: 16,
+                  icon: LdX,
+                  class: "text-base-content/50 hover:text-base-content/80",
+                }
               }
             }
           }
@@ -93,51 +121,62 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
         }
 
-        // Pigeons Table
-        div { class: "overflow-x-auto rounded-box border border-base-content/10 shadow-sm bg-base-100",
-          table { class: "table table-zebra w-full",
-            thead {
-              tr { class: "bg-base-200/50 text-base-content",
-                th { "Name" }
-                th { "Serial" }
-                th { "Connector" }
-                th { "Status" }
-                th { class: "text-right", "Action" }
-              }
+        if total == 0 {
+          EmptyPigeonsState {}
+        } else if filtered.is_empty() {
+          div { class: "flex flex-col items-center text-center gap-2 bg-base-100 border border-base-content/10 rounded-box p-12 mb-10 max-w-xl mx-auto",
+            h2 { class: "text-lg font-semibold", "No pigeons match \"{search}\"" }
+            p { class: "text-base-content/60 max-w-sm",
+              "Try a different name or serial, or clear the search to see all pigeons in this flock."
             }
-            tbody {
-              for (id , pigeon) in use_context::<crate::LocalSession>().pigeons.read().iter() {
-                tr { class: "hover",
-                  td { class: "font-semibold text-primary",
-                    "{pigeon.name.as_deref().unwrap_or(\"--\")}"
-                  }
-                  td { class: "font-mono text-sm text-base-content/70",
-                    "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
-                  }
-                  td { class: "text-sm",
-                    ConnectorBadge { connector: pigeon.connector.clone() }
-                  }
-                  td { class: "text-sm",
-                    {
-                        let last_seen = last_seen_by_pigeon.read().get(id).copied();
-                        let state = connection_state::classify(
-                            last_seen,
-                            None,
-                            time::OffsetDateTime::now_utc(),
-                        );
-                        rsx! {
-                          ConnectionBadge { state, last_seen }
-                        }
+          }
+        } else {
+          // Pigeons Table
+          div { class: "overflow-x-auto rounded-box border border-base-content/10 shadow-sm bg-base-100",
+            table { class: "table table-zebra w-full",
+              thead {
+                tr { class: "bg-base-200/50 text-base-content",
+                  th { "Name" }
+                  th { "Serial" }
+                  th { "Connector" }
+                  th { "Status" }
+                  th { class: "text-right", "Action" }
+                }
+              }
+              tbody {
+                for (id , pigeon) in filtered {
+                  tr { class: "hover",
+                    td { class: "font-semibold text-primary",
+                      "{pigeon.name.as_deref().unwrap_or(\"--\")}"
                     }
-                  }
-                  td { class: "text-right",
-                    Link {
-                      to: Route::PigeonView {
-                          flock_id,
-                          pigeon_id: id.clone(),
-                      },
-                      class: "btn btn-ghost btn-xs text-base-content/50",
-                      "View →"
+                    td { class: "font-mono text-sm text-base-content/70",
+                      "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
+                    }
+                    td { class: "text-sm",
+                      ConnectorBadge { connector: pigeon.connector.clone() }
+                    }
+                    td { class: "text-sm",
+                      {
+                          let last_seen = last_seen_by_pigeon.read().get(&id).copied();
+                          let state = connection_state::classify(
+                              last_seen,
+                              None,
+                              time::OffsetDateTime::now_utc(),
+                          );
+                          rsx! {
+                            ConnectionBadge { state, last_seen }
+                          }
+                      }
+                    }
+                    td { class: "text-right",
+                      Link {
+                        to: Route::PigeonView {
+                            flock_id,
+                            pigeon_id: id.clone(),
+                        },
+                        class: "btn btn-ghost btn-xs text-base-content/50",
+                        "View →"
+                      }
                     }
                   }
                 }
@@ -170,6 +209,24 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           flock_id,
           on_created: move |(pigeon_id, token)| new_token.set(Some((pigeon_id, token))),
         }
+      }
+    }
+  }
+}
+
+#[component]
+fn EmptyPigeonsState() -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-base-content/10 rounded-box p-12 mb-10 max-w-xl mx-auto",
+      Icon {
+        width: 40,
+        height: 40,
+        icon: LdX,
+        class: "text-base-content/30 rotate-45",
+      }
+      h2 { class: "text-lg font-semibold", "No pigeons in this flock yet" }
+      p { class: "text-base-content/60 max-w-sm",
+        "Register a pigeon to mint its device keypair and get a one-time bearer token you can bake into firmware."
       }
     }
   }

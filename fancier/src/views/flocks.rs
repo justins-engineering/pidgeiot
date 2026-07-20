@@ -2,19 +2,31 @@ use crate::{Route, api};
 use capsules::{Flock, FlockCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::LdX;
+use dioxus_free_icons::icons::ld_icons::{LdCopy, LdX};
+use uuid::Uuid;
 
 #[component]
 pub fn Flocks() -> Element {
+  let mut search = use_signal(String::new);
+  let all_flocks = use_context::<crate::LocalSession>().flocks;
+  let total = all_flocks.read().len();
+  let filtered: Vec<(Uuid, Flock)> = all_flocks
+    .read()
+    .iter()
+    .filter(|(_, flock)| {
+      let query = search.read();
+      query.is_empty() || flock.name.to_lowercase().contains(&query.to_lowercase())
+    })
+    .map(|(id, flock)| (*id, flock.clone()))
+    .collect();
+
   rsx! {
     section { id: "flocks",
       div { class: "my-1",
         // Top Navigation / Header
         header { class: "flex flex-col md:flex-row items-center justify-between gap-4 mb-10 grow",
           // Title
-          h1 { class: "text-xl font-bold",
-            "Flocks ({use_context::<crate::LocalSession>().flocks.read().len()})"
-          }
+          h1 { class: "text-xl font-bold", "Flocks ({filtered.len()})" }
 
           // Search Bar
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
@@ -23,12 +35,18 @@ pub fn Flocks() -> Element {
                 "type": "text",
                 class: "grow text-sm",
                 placeholder: "Search by flock name",
+                value: "{search}",
+                oninput: move |evt| search.set(evt.value()),
               }
-              Icon {
-                width: 16,
-                height: 16,
-                icon: LdX,
-                class: "text-base-content/50 cursor-pointer hover:text-base-content/80",
+              span {
+                class: "cursor-pointer",
+                onclick: move |_| search.set(String::new()),
+                Icon {
+                  width: 16,
+                  height: 16,
+                  icon: LdX,
+                  class: "text-base-content/50 hover:text-base-content/80",
+                }
               }
             }
           }
@@ -43,14 +61,20 @@ pub fn Flocks() -> Element {
           }
         }
 
-        // Flocks Grid
-        div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16",
-          for (flock_id , flock) in use_context::<crate::LocalSession>().flocks.read().iter() {
-            Link {
-              to: Route::Pigeons {
-                  flock_id: *flock_id,
-              },
-              FlockCard { flock: flock.clone() }
+        if total == 0 {
+          EmptyFlocksState {}
+        } else if filtered.is_empty() {
+          NoSearchMatchesState { query: search() }
+        } else {
+          // Flocks Grid
+          div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16",
+            for (flock_id , flock) in filtered {
+              Link {
+                to: Route::Pigeons {
+                    flock_id,
+                },
+                FlockCard { flock: flock.clone() }
+              }
             }
           }
         }
@@ -61,15 +85,59 @@ pub fn Flocks() -> Element {
 }
 
 #[component]
+fn EmptyFlocksState() -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-base-200 rounded-box p-12 mb-16 max-w-xl mx-auto",
+      Icon {
+        width: 40,
+        height: 40,
+        icon: LdX,
+        class: "text-base-content/30 rotate-45",
+      }
+      h2 { class: "text-lg font-semibold", "No flocks yet" }
+      p { class: "text-base-content/60 max-w-sm",
+        "A flock groups pigeons under one owner — think of it as a project or a fleet. Create your first one to start provisioning devices."
+      }
+    }
+  }
+}
+
+#[component]
+fn NoSearchMatchesState(query: String) -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-2 bg-base-100 border border-base-200 rounded-box p-12 mb-16 max-w-xl mx-auto",
+      h2 { class: "text-lg font-semibold", "No flocks match \"{query}\"" }
+      p { class: "text-base-content/60 max-w-sm",
+        "Try a different name, or clear the search to see all flocks."
+      }
+    }
+  }
+}
+
+#[component]
 fn FlockCard(flock: Flock) -> Element {
+  let short_id: String = flock.id.to_string().chars().take(8).collect();
+
   rsx! {
     div { class: "card bg-base-100 shadow-sm border border-base-200 rounded-md max-w-md card-hover",
       div { class: "card-body",
         // Card Header Row
-        div { class: "flex flex-row justify-between",
+        div { class: "flex flex-row justify-between items-center",
           h2 { class: "card-title text-secondary font-bold mb-1", "{flock.name}" }
-          div { class: "flex items-center gap-2 text-xs text-base-content/60",
-            "ID: {flock.id}"
+          div { class: "flex items-center gap-1 text-xs text-base-content/60",
+            span { class: "font-mono bg-base-200 rounded px-2 py-1", "{short_id}…" }
+            button {
+              class: "btn btn-square btn-ghost btn-xs",
+              title: "Copy full flock ID",
+              onclick: move |evt| {
+                  evt.stop_propagation();
+                  #[cfg(feature = "web")]
+                  if let Some(window) = web_sys::window() {
+                      let _ = window.navigator().clipboard().write_text(&flock.id.to_string());
+                  }
+              },
+              Icon { icon: LdCopy, width: 14, height: 14 }
+            }
           }
         }
 
