@@ -580,7 +580,7 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/logs \
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
 `Authorization: Bearer <device_token>` — see [Device authentication](#device-authentication-bearer-token). None of these accept or check a Kratos session.
 
-#### `GET /device/pigeons/:pigeon_id/shadow`
+### `GET /device/pigeons/:pigeon_id/shadow`
 
 Reads the current shadow — same shape as the dashboard's `GET /pigeons/:pigeon_id/shadow`
 above (same `JsonString`-wrapped-fields caveat applies).
@@ -590,7 +590,7 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/shadow \
   -H 'Authorization: Bearer <device_token>'
 ```
 
-#### `POST /device/pigeons/:pigeon_id/shadow`
+### `POST /device/pigeons/:pigeon_id/shadow`
 
 Device report-back: confirms `target_config` was applied. Body:
 `capsules::PigeonShadowReportRequest` — `{ current_config: <JSON object>, current_version: <int> }`.
@@ -609,7 +609,7 @@ This also best-effort syncs the reported shadow into dovecote's Postgres mirror 
 side, so `fancier` doesn't need to poll the Durable Object directly to see a device's latest
 reported state.
 
-#### `POST /device/pigeons/:pigeon_id/telemetry`
+### `POST /device/pigeons/:pigeon_id/telemetry`
 
 Reports telemetry. Body: a **flat JSON object of string key/value pairs** — no nesting, no
 typed values; this matches the wire shape the `pigeon` Zephyr device library's
@@ -646,7 +646,7 @@ the same auth + write happens synchronously in one round trip and returns:
 
 (the metrics you just sent, echoed back).
 
-#### `POST /device/pigeons/:pigeon_id/logs`
+### `POST /device/pigeons/:pigeon_id/logs`
 
 Ingests one binary log chunk — the request body **is** the chunk, sent as raw bytes (not
 wrapped in JSON, no base64 encoding needed on the way in — that only happens on the read side,
@@ -664,7 +664,7 @@ curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/logs \
   --data-binary @log-chunk.bin
 ```
 
-#### `GET /device/pigeons/:pigeon_id/firmware`
+### `GET /device/pigeons/:pigeon_id/firmware`
 
 Downloads the firmware image currently assigned to **this pigeon's own shadow**
 (`target_config.firmware` — see [Shadow](#shadow) above). There's no version/sha256 path
@@ -698,7 +698,7 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
   -o chunk0.bin
 ```
 
-#### `GET /device/pigeons/:pigeon_id/ws`
+### `GET /device/pigeons/:pigeon_id/ws`
 
 Upgrades to a persistent WebSocket — the real-time channel for non-cellular (WiFi/mains-powered)
 devices (task #32), replacing the poll (`GET .../shadow`) + report (`POST .../shadow`,
