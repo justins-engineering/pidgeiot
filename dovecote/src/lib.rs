@@ -646,7 +646,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
-      Response::from_json(&pcr)?.with_cors(&cors)
+      let headers = Headers::new();
+      if headers
+        .set("Location", &format!("/pigeons/{}", pcr.pigeon.id))
+        .is_err()
+      {
+        console_error!(
+          "Failed to set Location header for pigeon {}",
+          pcr.pigeon.id
+        );
+      }
+
+      Response::from_json(&pcr)?
+        .with_status(201)
+        .with_headers(headers)
+        .with_cors(&cors)
     })
     .get_async(
       "/pigeons/:pigeon_id",
