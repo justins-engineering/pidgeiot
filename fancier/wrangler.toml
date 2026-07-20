@@ -23,5 +23,5 @@ directory = "../target/dx/fancier/release/web/public"
 not_found_handling = "single-page-application"
 
 [build]
-command = "bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m && dx build --web --release --debug-symbols=false"
+command = "./scripts/build-release.sh"
 watch_dir = ["./src"]

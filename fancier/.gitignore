@@ -12,3 +12,4 @@
 build/
 dist
 assets/styling/main.css
+public/assets/styling/main.css

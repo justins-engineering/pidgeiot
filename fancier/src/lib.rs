@@ -168,7 +168,16 @@ pub fn App() -> Element {
       name: "description",
       content: "PidgeIoT is an edge-native IoT device management platform: provision devices, push configuration, and collect telemetry from a Cloudflare Workers + Durable Objects backend.",
     }
-    document::Link { rel: "stylesheet", href: asset!("/assets/styling/main.css") }
+    // Release builds get main.css from a static <link> in index.html instead
+    // (Dioxus.toml's [web.resource], populated by scripts/build-release.sh) —
+    // it loads in parallel with app.js/wasm rather than only after this
+    // component mounts post-WASM-boot, which was the FOUC/CLS root cause
+    // (task #9 design review, ~0.10 layout shift on every page load). Dev
+    // keeps this runtime injection since `[web.resource.dev]` is
+    // deliberately left empty — see that config's comment for why.
+    if cfg!(debug_assertions) {
+      document::Link { rel: "stylesheet", href: asset!("/assets/styling/main.css") }
+    }
     document::Link {
       rel: "icon",
       href: asset!("/assets/images/icon-light.ico"),
