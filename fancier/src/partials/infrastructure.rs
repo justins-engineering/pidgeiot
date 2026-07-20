@@ -12,7 +12,7 @@ pub fn Infrastructure() -> Element {
     section { id: "infrastructure", class: "front-page",
       div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8",
         div { class: "relative col-span-full",
-          div { class: "bg-base-300/30 border border-base-300 rounded-3xl overflow-hidden shadow-2xl scroll-reveal",
+          div { class: "bg-base-300/30 border border-base-300 rounded-3xl overflow-hidden shadow-2xl",
             div { class: "relative h-64 md:h-80 lg:h-96",
               div {
                 class: "absolute inset-0",

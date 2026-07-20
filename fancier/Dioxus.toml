@@ -18,15 +18,20 @@ pre_compress = false
 
 [web.resource]
 style = ["assets/styling/main.css"]
+script = ["assets/theme-init.js"]
 
-# Left empty deliberately: dev keeps the old runtime document::Link
-# (App(), src/lib.rs) instead of this static-link workaround, since
-# `bunx @tailwindcss/cli --watch` (CLAUDE.md dev workflow) overwrites
-# assets/styling/main.css live, and this feature's release-mode fix (see
-# scripts/build-release.sh) relies on a copy that's frozen at build time —
-# fine for a release artifact, wrong for live-reloading local dev.
+# style is left empty deliberately: dev keeps the old runtime
+# document::Link (App(), src/lib.rs) instead of this static-link
+# workaround, since `bunx @tailwindcss/cli --watch` (CLAUDE.md dev
+# workflow) overwrites assets/styling/main.css live, and this feature's
+# release-mode fix (see scripts/build-release.sh) relies on a copy
+# that's frozen at build time — fine for a release artifact, wrong for
+# live-reloading local dev. theme-init.js has no such conflict (it's a
+# static, never-regenerated file — see its own header comment), so dev
+# gets it too.
 [web.resource.dev]
 style = []
+script = ["assets/theme-init.js"]
 
 [web.app]
 title = "PidgeIoT"

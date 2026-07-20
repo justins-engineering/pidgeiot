@@ -6,7 +6,7 @@ use dioxus_free_icons::icons::ld_icons::{LdKeyRound, LdRadio, LdShieldHalf};
 pub fn Connectivity() -> Element {
   rsx! {
     section { id: "connectivity", class: "front-page",
-      div { class: "bg-linear-to-bl/srgb from-primary/40 via-secondary/40 to-accent/40 border border-primary rounded-3xl p-8 md:p-12 shadow-2xl scroll-reveal",
+      div { class: "bg-linear-to-bl/srgb from-primary/40 via-secondary/40 to-accent/40 border border-primary rounded-3xl p-8 md:p-12 shadow-2xl",
         div { class: "flex flex-col lg:flex-row items-center gap-12",
           div { class: "lg:w-2/3",
             h2 { class: "text-3xl md:text-4xl font-bold mb-6",

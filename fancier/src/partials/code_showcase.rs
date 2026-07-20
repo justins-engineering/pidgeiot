@@ -8,7 +8,7 @@ pub fn CodeShowcase() -> Element {
   rsx! {
     section { id: "showcase", class: "front-page",
       div { class: "flex flex-col lg:flex-row items-center gap-12",
-        div { class: "lg:w-1/2 scroll-reveal",
+        div { class: "lg:w-1/2",
           h2 { class: "text-3xl md:text-4xl font-bold mb-6",
             span { class: "gradient-text", "Memory Safety" }
             " Meets Performance"

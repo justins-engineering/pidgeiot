@@ -7,7 +7,7 @@ use dioxus_free_icons::icons::ld_icons::{LdFileCode, LdGift, LdPlay};
 pub fn Cta() -> Element {
   rsx! {
     section { id: "cta", class: "front-page",
-      div { class: "bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 border border-neutral-content rounded-3xl p-8 md:p-12 text-center shadow-2xl scroll-reveal",
+      div { class: "bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 border border-neutral-content rounded-3xl p-8 md:p-12 text-center shadow-2xl",
         h2 { class: "text-3xl md:text-4xl lg:text-5xl font-bold mb-6",
           "Ready to Build Secure IoT Solutions?"
         }

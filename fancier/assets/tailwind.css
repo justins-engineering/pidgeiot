@@ -373,12 +373,8 @@ section {
   transform: scale(1.1) rotate(5deg);
 }
 
-body.loaded .scroll-reveal {
-  animation: slideIn 0.8s ease-out forwards;
-}
-
 /* Accessibility improvements */
-.focus-visible {
+:focus-visible {
   outline: 2px solid #2dd4bf;
   outline-offset: 2px;
 }
