@@ -1247,7 +1247,12 @@ fn upsert_telemetry(
 /// (auth + write in one call) in environments with no telemetry queue bound
 /// -- see the gateway route in `lib.rs`; where a queue *is* bound, that
 /// route calls `verify_telemetry_device` + enqueues instead, and the queue
-/// consumer (`src/queue.rs`) reaches `write_telemetry_device` below.
+/// consumer (`src/queue.rs`) reaches `write_telemetry_device` below. Since
+/// this handler is only ever dispatched from the no-queue fallback branch
+/// of the gateway route, it also best-effort writes `pigeon_telemetry_history`
+/// directly here -- the same fallback `handle_ws_telemetry` already does for
+/// the WebSocket `telemetry` frame -- so the HTTP route doesn't silently skip
+/// history that environment would otherwise have recorded via the queue.
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1268,6 +1273,13 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
 
   if upsert_telemetry(pigeons, &metrics).is_err() {
     return Response::error("Internal Server Error", 500);
+  }
+
+  let pigeon_id = pigeons.state.id().to_string();
+  if let Err(e) =
+    crate::helpers::write_telemetry_history(&pigeons.env, &pigeon_id, &metrics).await
+  {
+    console_error!("HTTP telemetry: PG history write failed for pigeon {pigeon_id}: {e}");
   }
 
   Response::from_json(&metrics)
