@@ -164,6 +164,10 @@ pub fn App() -> Element {
   });
 
   rsx! {
+    document::Meta {
+      name: "description",
+      content: "PidgeIoT is an edge-native IoT device management platform: provision devices, push configuration, and collect telemetry from a Cloudflare Workers + Durable Objects backend.",
+    }
     document::Link { rel: "stylesheet", href: asset!("/assets/styling/main.css") }
     document::Link {
       rel: "icon",
