@@ -554,7 +554,19 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       get_db!(ctx.env, client, &cors);
 
       let flock = create_user_flock(&client, &user_id, &payload.name).await?;
-      Response::from_json(&flock)?.with_cors(&cors)
+
+      let headers = Headers::new();
+      if headers
+        .set("Location", &format!("/flocks/{}", flock.id))
+        .is_err()
+      {
+        console_error!("Failed to set Location header for flock {}", flock.id);
+      }
+
+      Response::from_json(&flock)?
+        .with_status(201)
+        .with_headers(headers)
+        .with_cors(&cors)
     })
     .post_async("/pigeons/batch", |mut req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);

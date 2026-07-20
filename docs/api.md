@@ -183,7 +183,8 @@ curl -s -X POST https://api.pidgeiot.com/flocks \
   -d '{"name":"Backyard Coop"}'
 ```
 
-Returns `201`-shaped `capsules::Flock` JSON (empty `pigeon_ids`). `400` if `name` is empty.
+Response is `capsules::Flock` JSON (empty `pigeon_ids`) with status `201` and a
+`Location: /flocks/<flock_id>` header. `400` if `name` is empty.
 
 There is no `PUT`/`DELETE /flocks/:id` route today, even though `capsules::FlockUpdateRequest`
 exists as a type — it isn't wired to anything yet.
