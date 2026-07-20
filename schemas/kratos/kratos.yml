@@ -87,13 +87,15 @@ selfservice:
     registration:
       lifespan: 10m
       ui_url: http://127.0.0.1:4455/registration
-      # Kratos v25.4 defaults registration to a two-step flow (profile traits
-      # first, credential/password on a second step). fancier's registration
-      # view only renders single-step flows (like login), so it never showed
-      # the password field. Revert to the legacy single-page email+password
-      # form the UI already handles. Remove this once fancier's registration
-      # view learns the two-step flow (tracked, task #16 part 2).
-      enable_legacy_one_step: true
+      # Uses Kratos v25.4's default TWO-STEP registration (profile traits
+      # first, password on a second step). This works end-to-end in a real
+      # browser: fancier's FormBuilder posts a native <form>, Kratos 303s back
+      # to ui_url, the SPA re-fetches the merged flow and renders the password
+      # step. NOTE: inspecting the flow with `Accept: application/json` shows
+      # only profile nodes on step 1 (Kratos's JSON path returns 400 + the
+      # next step's nodes) — that is NOT "registration is broken"; the native
+      # browser form path (Accept: text/html) works. Do not re-add
+      # enable_legacy_one_step on that false alarm. (See task #16.)
       after:
         default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
         password:
