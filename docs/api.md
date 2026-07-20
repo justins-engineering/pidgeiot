@@ -729,6 +729,13 @@ than coexisting with it — the old socket is closed (code `4009`, reason "repla
 connection") as part of accepting the new one. Useful for a device that reconnects after a
 network blip before its old socket has timed out.
 
+**Shadow snapshot on connect.** Immediately after the socket is accepted, the server pushes one
+`shadow_update` frame (same shape as every other `shadow_update` — see the frame table below)
+carrying this pigeon's current shadow, so a freshly (re)connected device doesn't need a separate
+`GET .../shadow` to catch up on a `target_config` it missed while disconnected. This is
+best-effort — a device should still be able to fall back to `GET .../shadow` on connect if it
+wants to be defensive, but in practice it's redundant once this frame arrives.
+
 **Server implementation note (not a wire-protocol detail, but relevant if you're touching this
 code):** accepted via the Durable Object *hibernation* WebSocket API
 (`State::accept_websocket_with_tags`, `worker` crate v0.8+), not the in-memory
@@ -746,7 +753,7 @@ was sent for a while.
 | device → server | `shadow_report` | `current_version: int`, `current_config: <JSON object>` | Same handling as `POST /device/pigeons/:id/shadow`: updates `pigeon_shadow.current_config`/`current_version` and best-effort syncs the result to Postgres. |
 | device → server | `ping` | — | Server replies with `{"type":"pong"}`. |
 | device → server | `pong` | — | Liveness acknowledgement only; no reply, no other effect. |
-| server → device | `shadow_update` | `shadow: <capsules::PigeonShadow, same shape as the GET .../shadow responses above>` | Pushed **immediately** whenever this pigeon's `target_config` changes via a dashboard `PUT /pigeons/:id/shadow` (including a firmware assignment, which reuses that same route) — this is the headline reason this endpoint exists: no more waiting for the device's next poll to learn about a new target. |
+| server → device | `shadow_update` | `shadow: <capsules::PigeonShadow, same shape as the GET .../shadow responses above>` | Pushed **immediately** whenever this pigeon's `target_config` changes via a dashboard `PUT /pigeons/:id/shadow` (including a firmware assignment, which reuses that same route) — this is the headline reason this endpoint exists: no more waiting for the device's next poll to learn about a new target. Also pushed once, unprompted, right after the socket is accepted (see "Shadow snapshot on connect" above), so a reconnecting device is caught up before it ever sends a frame of its own. |
 | server → device | `pong` | — | Reply to a device-sent `ping`. |
 
 ```json

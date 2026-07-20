@@ -1048,6 +1048,18 @@ fn write_shadow_report(
   one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
 }
 
+/// Shared shadow read behind `accept_websocket_device`'s initial push --
+/// same `SELECT` every other shadow read site in this file uses (`get_shadow`,
+/// `get_shadow_device`, `update_shadow`), pulled out here since this is the
+/// one call site that has no request/response of its own to shape around.
+fn read_shadow(pigeons: &Pigeons) -> Result<PigeonShadow> {
+  let cursor = pigeons.sql.exec(
+    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
+    None,
+  )?;
+  one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
+}
+
 /// Device WebSocket upgrade (task #32) -- the real-time channel for
 /// non-cellular (WiFi/mains-powered) devices, replacing the HTTP shadow
 /// poll/telemetry-POST pattern with a persistent connection. Bearer auth
@@ -1070,6 +1082,21 @@ fn write_shadow_report(
 /// either class's "close the old one"/broadcast logic touching the other's
 /// sockets; see the tag-scoped `get_websockets_with_tag` calls here and in
 /// `update_shadow`.
+///
+/// Pushes an immediate `shadow_update` snapshot on the just-accepted socket
+/// (task #5, follow-up from #33) so a freshly (re)connected device doesn't
+/// have to wait for the next dashboard `PUT` -- or fall back to its own
+/// HTTPS `GET .../shadow` -- to catch up on a `target_config` it missed
+/// while disconnected. `WebSocketPair::new()` creates both ends of the pair
+/// synchronously and `WebSocket::send` has no dependency on an inbound
+/// message first (confirmed against the `worker` crate's own
+/// `websocket.rs`/`durable.rs` -- `accept_websocket_with_tags` only
+/// registers the socket with the hibernation manager, it doesn't gate
+/// sending), so this sends on `pair.server` directly, before the upgrade
+/// response is even returned. Best-effort like `broadcast_shadow_update`: a
+/// failed read or send here is logged and swallowed, never fails the
+/// upgrade -- the device's existing CONNECTED-event HTTPS GET remains as a
+/// fallback either way, this just makes that round trip usually redundant.
 async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1084,6 +1111,23 @@ async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Resp
   pigeons
     .state
     .accept_websocket_with_tags(&pair.server, &[WS_DEVICE_TAG]);
+
+  match read_shadow(pigeons) {
+    Ok(shadow) => {
+      if let Err(e) = pair.server.send(&WsOutboundFrame::ShadowUpdate { shadow }) {
+        console_error!(
+          "WS accept: initial shadow push failed for pigeon {}: {e}",
+          pigeons.state.id()
+        );
+      }
+    }
+    Err(e) => {
+      console_error!(
+        "WS accept: shadow read failed for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+    }
+  }
 
   Response::from_websocket(pair.client)
 }
