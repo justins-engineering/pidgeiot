@@ -67,7 +67,13 @@ pub fn CodeShowcase() -> Element {
             }
             span { class: "text-sm font-medium", "Rust-Powered Excellence" }
           }
-          div { class: "mockup-code",
+          // DaisyUI's .mockup-code already scrolls horizontally on overflow
+          // (overflow: auto hidden) — the code lines below aren't actually
+          // clipped, just not visibly scrollable at a glance on platforms
+          // with auto-hiding overlay scrollbars. scrollbar-thin (same
+          // convention as components/json_view.rs's mockup-code) keeps a
+          // persistent thin scrollbar so the affordance is discoverable.
+          div { class: "mockup-code scrollbar-thin",
             pre {
               code { class: "text-base-content/50", "// each pigeon owns one Ed25519 keypair;" }
             }

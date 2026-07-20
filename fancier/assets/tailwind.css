@@ -211,8 +211,13 @@
 
 
 .front-page:not(:first-child) {
-  min-height: 100vh;
-  padding-top: 4.5rem;
+  /* Content-driven height, not min-height: 100vh — that forced every
+     section past the hero to at least a full viewport regardless of how
+     much content it actually had, producing large dead-space gaps between
+     short sections (e.g. Features -> CodeShowcase on a 900px desktop
+     viewport). padding-block keeps the same breathing room between
+     sections without the artificial floor. */
+  padding-block: 4.5rem;
 }
 
 html {
