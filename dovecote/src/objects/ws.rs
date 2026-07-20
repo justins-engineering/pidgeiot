@@ -44,6 +44,19 @@ pub enum WsInboundFrame {
   },
   Ping,
   Pong,
+  // Reply to a server-sent `ShellCmd` (task #34, v1 -- request/response
+  // only, no interactive/streaming shell, see the design doc). `exit_code`
+  // is always present (`shell_execute_cmd()`'s own return value is never
+  // null). `truncated` compensates for `shell_dummy`'s output buffer
+  // silently dropping overflow bytes with no signal of its own -- the
+  // device sets this when its local output buffer filled, so an operator
+  // reading `output` knows it might be incomplete.
+  ShellOutput {
+    request_id: String,
+    output: String,
+    exit_code: i32,
+    truncated: bool,
+  },
 }
 
 /// Frames the server may push to a connected device (task #32).
@@ -63,6 +76,19 @@ pub enum WsOutboundFrame {
   #[allow(dead_code)]
   Ping,
   Pong,
+  // Triggers a diagnostic shell command on the device (task #34, v1),
+  // sent from `execute_shell_command` (`objects/pigeons.rs`) in response
+  // to a dashboard `POST /pigeons/:id/shell`. `request_id` is a plain
+  // correlation token, not a security boundary -- the auth gate is the
+  // owner-only check before this frame is ever sent, not the request_id's
+  // guessability. Devices without shell support compiled in
+  // (`CONFIG_PIGEON_SHELL`) silently ignore this frame type via the
+  // existing forward-compat fallthrough in the device's own frame
+  // dispatch, so old/unsupporting firmware in the field is unaffected.
+  ShellCmd {
+    request_id: String,
+    cmd: String,
+  },
 }
 
 #[derive(Serialize, Deserialize, Default)]

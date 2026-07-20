@@ -139,6 +139,7 @@ applies at the platform level). The limits that do exist are:
 | `GET .../telemetry/history` rows per query | 5000 (silently truncated, not an error) | `helpers/telemetry.rs` |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
+| `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
 
 ---
 
@@ -295,6 +296,49 @@ updated `capsules::Pigeon` with the new token visible in `connector.Https.token`
 ```sh
 curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/token/refresh \
   -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `POST /pigeons/:pigeon_id/shell` — owner (task #34, v1)
+
+Runs one diagnostic command on the device and returns its output — a remote shell relayed
+over the pigeon's existing device WebSocket connection (see [`GET
+/device/pigeons/:pigeon_id/ws`](#get-devicepigeonspigeon_idws) below), **not** a new
+persistent connection of its own. The dashboard is a plain HTTP request/response client here;
+there is no WebSocket on the operator side in v1. Body: `{"cmd": string, "timeout_ms"?: u32}`.
+
+- Gated by `owner`, stricter than the `member` bar most pigeon routes use — a shell command is
+  remote code execution on physical hardware by design, and this project's convention for
+  high-blast-radius features is the narrowest gate that's still usable, not the most
+  permissive one.
+- `timeout_ms` is optional and caller-configurable, clamped server-side to a 30 second maximum
+  regardless of what's requested; defaults to 10 seconds if omitted.
+- `409 Conflict` if this pigeon currently has no open device WebSocket (nothing to relay
+  through — a cellular/HTTPS-only device, or a WS-capable one that just isn't connected right
+  now, can never receive a shell command under this design), or if a previous shell command on
+  this pigeon is still awaiting a reply (v1 is one command in flight at a time, per pigeon).
+- `504 Gateway Timeout` if the device doesn't reply within `timeout_ms`.
+- `502 Bad Gateway` if the device's socket disconnects while a command is still in flight.
+- `400` for an empty/missing `cmd`.
+- On success, `200` with `{"output": string, "exit_code": int, "truncated": bool}` — same
+  shape as the WebSocket `shell_output` frame's fields (see the frame table below).
+
+Whether a specific `cmd` string actually does anything is entirely up to the device's own
+command allowlist (`CONFIG_PIGEON_SHELL`, off by default) — dovecote relays whatever string is
+sent and has no allowlist of its own; the device is the enforcement point.
+
+Audit trail for v1 is log-only, not a durable Postgres table: dovecote logs the requesting
+user, pigeon, and command text via `console_log!` before relaying, and the device independently
+logs the same locally (see the device library's own docs) before executing.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/shell \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"cmd":"pigeon shadow","timeout_ms":5000}'
+```
+
+```json
+{"output":"target_version=2 current_version=1\n","exit_code":0,"truncated":false}
 ```
 
 ### ACL
@@ -753,19 +797,27 @@ was sent for a while.
 | device → server | `shadow_report` | `current_version: int`, `current_config: <JSON object>` | Same handling as `POST /device/pigeons/:id/shadow`: updates `pigeon_shadow.current_config`/`current_version` and best-effort syncs the result to Postgres. |
 | device → server | `ping` | — | Server replies with `{"type":"pong"}`. |
 | device → server | `pong` | — | Liveness acknowledgement only; no reply, no other effect. |
+| device → server | `shell_output` | `request_id: string`, `output: string`, `exit_code: int`, `truncated: bool` | Reply to a server-sent `shell_cmd` (task #34, v1). Resolves the matching `POST /pigeons/:pigeon_id/shell` request by `request_id`; a reply with no matching in-flight request (already timed out, or a stray/duplicate) is logged server-side and dropped, not treated as a protocol error. `truncated` is set if the command's output exceeded the device's local output buffer — the honest signal that `output` might be incomplete, since the device's shell backend silently drops overflow bytes with no other indication. |
 | server → device | `shadow_update` | `shadow: <capsules::PigeonShadow, same shape as the GET .../shadow responses above>` | Pushed **immediately** whenever this pigeon's `target_config` changes via a dashboard `PUT /pigeons/:id/shadow` (including a firmware assignment, which reuses that same route) — this is the headline reason this endpoint exists: no more waiting for the device's next poll to learn about a new target. Also pushed once, unprompted, right after the socket is accepted (see "Shadow snapshot on connect" above), so a reconnecting device is caught up before it ever sends a frame of its own. |
 | server → device | `pong` | — | Reply to a device-sent `ping`. |
+| server → device | `shell_cmd` | `request_id: string`, `cmd: string` | Sent by `POST /pigeons/:pigeon_id/shell` (task #34, v1, owner-gated — see [Pigeons](#pigeons) above) to run one command on the device and relay its output back over plain HTTP. `request_id` is a correlation token, not a security boundary — the auth gate is the owner-only check before this frame is ever sent. Devices without shell support compiled in (`CONFIG_PIGEON_SHELL`, off by default) silently ignore this frame type via the existing forward-compat unknown-`type` fallthrough, so older/non-participating firmware in the field is unaffected. |
 
 ```json
 // device -> server
 {"type":"telemetry","metrics":{"temp":"21.5","status":"ok"}}
 {"type":"shadow_report","current_version":1,"current_config":{"telemetry_interval":60}}
 {"type":"ping"}
+{"type":"shell_output","request_id":"01991a2b-...","output":"target_version=2 current_version=1\n","exit_code":0,"truncated":false}
 ```
 
 ```json
 // server -> device, pushed the moment a dashboard PUT lands
 {"type":"shadow_update","shadow":{"target_version":2,"current_version":1,"target_config":"{\"telemetry_interval\":30}","current_config":"{\"telemetry_interval\":60}","updated_at":1784390937}}
+```
+
+```json
+// server -> device, sent by POST /pigeons/:pigeon_id/shell
+{"type":"shell_cmd","request_id":"01991a2b-...","cmd":"pigeon shadow"}
 ```
 
 Note `shadow.target_config`/`current_config` in a `shadow_update` push are `capsules::JsonString`
@@ -782,6 +834,11 @@ Note `shadow.target_config`/`current_config` in a `shadow_update` push are `caps
 
 None of these three are "recoverable" mid-connection — reconnect (a fresh `GET .../ws`) to
 resume after any of them.
+
+**`shell_cmd`/`shell_output` count toward the same 50-frame/10s budget above — no carve-out in
+v1.** One command invocation is one frame each way, negligible against that budget; see the
+task #34 design doc if a future interactive/streaming shell ever needs a dedicated rate-limit
+class of its own.
 
 **`TELEMETRY_QUEUE` and the `telemetry` frame — same environment-dependent behavior as the HTTP
 route** (see [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry)

@@ -888,6 +888,29 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&endpoint)?.with_cors(&cors)
       },
     )
+    // --- Shell Route (task #34, v1 -- request/response diagnostic shell
+    // over the device WebSocket channel, not a new persistent connection
+    // of its own; see the design doc and objects/pigeons.rs::execute_shell_command
+    // for the relay/timeout/owner-gate details) ---
+    .post_async("/pigeons/:pigeon_id/shell", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // No Postgres sync afterward -- unlike shadow/ACL/telemetry-endpoint
+      // writes, a shell command's result isn't persisted state, just a
+      // one-shot response the DO relays back from the device. The DO's own
+      // handler already enforces owner-only auth, the "device not
+      // connected"/"already in flight" 409s, and the timeout -> 504; this
+      // route just forwards its response (success or error) unchanged.
+      proxy_to_pigeon_do(req, &user_id, &obj_id, "/shell/execute")
+        .await?
+        .with_cors(&cors)
+    })
     .get_async(
       "/pigeons/:pigeon_id/telemetry/history",
       |req, ctx| async move {

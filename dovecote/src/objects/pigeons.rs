@@ -11,6 +11,10 @@ use capsules::{
   PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest, TelemetryLatestRow,
   unwrap_or_return_response,
 };
+use futures::FutureExt;
+use futures::channel::oneshot;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use worker::{
   Date, DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State,
   WebSocket, WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
@@ -69,6 +73,35 @@ pub struct Pigeons {
   sql: SqlStorage,
   state: State,
   env: Env,
+  // In-memory (not SQLite-persisted) waiters for an in-flight `POST
+  // /pigeons/:id/shell` request (task #34, v1) -- keyed by `request_id`,
+  // resolved from `websocket_message` when the matching `shell_output`
+  // frame arrives. `RefCell` rather than a lock is correct here, not just
+  // convenient: a Durable Object's async tasks all run on one thread under
+  // a cooperative (not preemptive) executor, so there's no data race
+  // between the HTTP handler task that inserts a waiter and the later
+  // `websocket_message` invocation that removes/resolves it, even though
+  // they're two separate `async fn` calls interleaved by the runtime --
+  // see `execute_shell_command`'s doc comment for the fuller argument.
+  // Deliberately NOT SQLite-backed like every other durable field on this
+  // struct: a pending shell command has no meaning across a DO eviction
+  // (there's no in-flight HTTP handler left to resolve if this DO is
+  // recreated from scratch), so surviving hibernation would be pointless
+  // complexity, not a correctness requirement.
+  shell_waiters: RefCell<HashMap<String, oneshot::Sender<ShellOutputPayload>>>,
+}
+
+/// Internal (never serialized) carrier for a device's `shell_output` frame
+/// fields, handed from `websocket_message`'s dispatch to whichever
+/// `execute_shell_command` invocation is awaiting it via `shell_waiters`.
+/// Distinct from `WsInboundFrame::ShellOutput`, which is the actual wire
+/// frame this is built from -- kept separate so `shell_waiters`' value type
+/// doesn't need to carry the frame's own `request_id` a second time (the
+/// map key already is that).
+struct ShellOutputPayload {
+  output: String,
+  exit_code: i32,
+  truncated: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -219,7 +252,12 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_log_chunks table");
 
-    Pigeons { sql, state, env }
+    Pigeons {
+      sql,
+      state,
+      env,
+      shell_waiters: RefCell::new(HashMap::new()),
+    }
   }
 
   async fn fetch(&self, req: Request) -> Result<Response> {
@@ -250,6 +288,7 @@ impl DurableObject for Pigeons {
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
+      "/pigeon/shell/execute" => execute_shell_command(self, req).await,
       _ => Response::error("Not Found", 404),
     }
   }
@@ -321,6 +360,12 @@ impl DurableObject for Pigeons {
         }
       }
       WsInboundFrame::Pong => {}
+      WsInboundFrame::ShellOutput {
+        request_id,
+        output,
+        exit_code,
+        truncated,
+      } => handle_ws_shell_output(self, &request_id, output, exit_code, truncated),
     }
 
     Ok(())
@@ -342,6 +387,7 @@ impl DurableObject for Pigeons {
       "WS closed for pigeon {}: code={code} reason={reason} clean={was_clean}",
       self.state.id()
     );
+    clear_shell_waiters(self, "socket closed");
     Ok(())
   }
 
@@ -350,7 +396,31 @@ impl DurableObject for Pigeons {
   /// of just logging.
   async fn websocket_error(&self, _ws: WebSocket, error: worker::Error) -> Result<()> {
     console_error!("WS error for pigeon {}: {error}", self.state.id());
+    clear_shell_waiters(self, "socket error");
     Ok(())
+  }
+}
+
+/// Drops every pending `shell_waiters` entry (task #34) when the device's
+/// socket goes away mid-command -- dropping a `oneshot::Sender` without
+/// calling `send` resolves its paired `Receiver` with `Err(Canceled)`
+/// automatically, so whichever `execute_shell_command` invocation is
+/// awaiting it wakes immediately with an error response instead of sitting
+/// out its own timeout window for no reason (the device is never coming
+/// back on this connection). Safe to clear the whole map unconditionally
+/// rather than filtering by socket: this codebase enforces one device
+/// socket per pigeon (`accept_websocket_device`), so there is never a
+/// second, still-live connection whose in-flight waiters this could
+/// wrongly cancel.
+fn clear_shell_waiters(pigeons: &Pigeons, reason: &str) {
+  let mut waiters = pigeons.shell_waiters.borrow_mut();
+  if !waiters.is_empty() {
+    console_log!(
+      "Shell: clearing {} pending waiter(s) for pigeon {} ({reason})",
+      waiters.len(),
+      pigeons.state.id()
+    );
+    waiters.clear();
   }
 }
 
@@ -1130,6 +1200,201 @@ async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Resp
   }
 
   Response::from_websocket(pair.client)
+}
+
+#[derive(serde::Deserialize)]
+struct ShellExecuteRequest {
+  cmd: String,
+  #[serde(default)]
+  timeout_ms: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct ShellExecuteResponse {
+  output: String,
+  exit_code: i32,
+  truncated: bool,
+}
+
+// Plain Rust constants, not per-env `wrangler.toml` vars, matching this
+// file's existing convention for protocol-level limits with no reason to
+// differ by environment (`MAX_WS_FRAME_BYTES`, `WS_RATE_LIMIT_*` in
+// `objects/ws.rs`, `MAX_LOG_CHUNK_BYTES` in `capsules`) -- unlike
+// `DEVICE_API_HOST` (task #21), which genuinely differs per environment
+// because it's a hostname.
+const SHELL_TIMEOUT_DEFAULT_MS: u64 = 10_000;
+const SHELL_TIMEOUT_MAX_MS: u64 = 30_000;
+
+/// Backs `POST /pigeons/:id/shell` (task #34, v1) -- the dovecote side of
+/// the remote diagnostic shell relay. The dashboard is a plain
+/// Kratos-authenticated HTTP client here, not a second WebSocket (see the
+/// task's design doc, `## 3`): this handler sends one `ShellCmd` frame down
+/// the device's *existing* WS connection, waits for the matching
+/// `ShellOutput` reply (or a timeout), and returns it as an ordinary HTTP
+/// response.
+///
+/// Gated by `is_owner`, not `is_authorized` -- stricter than every other
+/// dashboard route on this DO except ACL changes/token refresh/delete,
+/// because a shell command is RCE on physical hardware by design (see the
+/// design doc's `## 5`); reusing `is_owner` as-is (including its "Only
+/// owners can modify ACL" message, already reused verbatim by
+/// `refresh_token`/`delete` for non-ACL routes) rather than introducing a
+/// bespoke owner-check variant, matching this file's existing precedent.
+///
+/// **Waiter registration/resolution race, addressed explicitly since this
+/// is the one place in the codebase coordinating two independently-invoked
+/// `async fn`s through shared mutable state**: a Durable Object's `fetch`
+/// and `websocket_message` handlers are two different top-level entry
+/// points the Cloudflare runtime can invoke, but neither actually runs
+/// concurrently with the other in the sense of true parallelism -- the
+/// `worker` crate's WASM environment is single-threaded, and Rust's `async`
+/// model only ever advances a future at an `.await` point; nothing between
+/// this function's `shell_waiters.borrow_mut().insert(...)` call and its
+/// next `.await` can be interleaved with any other async task, including a
+/// `websocket_message` invocation. Once this function *does* start
+/// `.await`-ing the oneshot receiver (via `futures::select!` against a
+/// timeout below), the runtime is free to run other tasks -- including the
+/// `websocket_message` call that resolves this exact waiter -- which is
+/// the intended handoff, not a race: `shell_waiters` is a `RefCell`, safe
+/// under this model precisely because there's no preemption, only
+/// cooperative yielding at `.await` boundaries.
+async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  let body = match req.json::<ShellExecuteRequest>().await {
+    Ok(b) => b,
+    Err(e) => {
+      console_error!("Shell EXECUTE json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  if body.cmd.trim().is_empty() {
+    return Response::error("Bad Request: Empty command", 400);
+  }
+
+  // Exactly one device socket per pigeon is enforced at accept time
+  // (`accept_websocket_device`) -- if there's none, this pigeon simply has
+  // no live channel to relay a command over right now (a cellular/
+  // HTTPS-only device, or a WS-capable one that's just not currently
+  // connected).
+  let Some(ws) = pigeons
+    .state
+    .get_websockets_with_tag(WS_DEVICE_TAG)
+    .into_iter()
+    .next()
+  else {
+    return Response::error("Conflict: Device has no open WebSocket connection", 409);
+  };
+
+  // v1 is one command in flight at a time per pigeon, mirrored on the
+  // device side by a depth-1 queue (see the design doc's `## 4`) -- refuse
+  // a second concurrent request rather than sending a `ShellCmd` the
+  // device will just reject anyway.
+  if !pigeons.shell_waiters.borrow().is_empty() {
+    return Response::error(
+      "Conflict: A shell command is already in flight for this pigeon",
+      409,
+    );
+  }
+
+  let request_id = uuid::Uuid::now_v7().to_string();
+  let timeout_ms = body
+    .timeout_ms
+    .map(u64::from)
+    .unwrap_or(SHELL_TIMEOUT_DEFAULT_MS)
+    .min(SHELL_TIMEOUT_MAX_MS);
+
+  let (tx, rx) = oneshot::channel::<ShellOutputPayload>();
+  pigeons
+    .shell_waiters
+    .borrow_mut()
+    .insert(request_id.clone(), tx);
+
+  // Log-only audit trail for v1 (no Postgres audit table -- see the design
+  // doc's `## 6`, open question 3): the requesting user, pigeon, and
+  // command text, before the command is ever sent to the device.
+  let requesting_user = req.headers().get("X-User-Id").ok().flatten();
+  console_log!(
+    "Shell EXEC: pigeon {} user={:?} request_id={request_id} cmd={:?}",
+    pigeons.state.id(),
+    requesting_user,
+    body.cmd
+  );
+
+  if let Err(e) = ws.send(&WsOutboundFrame::ShellCmd {
+    request_id: request_id.clone(),
+    cmd: body.cmd,
+  }) {
+    pigeons.shell_waiters.borrow_mut().remove(&request_id);
+    console_error!(
+      "Shell EXEC: send failed for pigeon {}: {e}",
+      pigeons.state.id()
+    );
+    return Response::error("Internal Server Error", 500);
+  }
+
+  let mut reply = rx.fuse();
+  let mut timeout = worker::Delay::from(std::time::Duration::from_millis(timeout_ms)).fuse();
+
+  futures::select! {
+    result = reply => match result {
+      Ok(payload) => {
+        console_log!(
+          "Shell EXEC: pigeon {} request_id={request_id} exit_code={} truncated={}",
+          pigeons.state.id(),
+          payload.exit_code,
+          payload.truncated
+        );
+        Response::from_json(&ShellExecuteResponse {
+          output: payload.output,
+          exit_code: payload.exit_code,
+          truncated: payload.truncated,
+        })
+      }
+      // The sender was dropped without sending -- `clear_shell_waiters`
+      // ran because the socket closed/errored while this request was
+      // still waiting (see `websocket_close`/`websocket_error` above).
+      Err(_) => Response::error("Bad Gateway: Device disconnected before replying", 502),
+    },
+    _ = timeout => {
+      pigeons.shell_waiters.borrow_mut().remove(&request_id);
+      console_error!(
+        "Shell EXEC: timed out after {timeout_ms}ms for pigeon {} request_id={request_id}",
+        pigeons.state.id()
+      );
+      Response::error("Gateway Timeout: Device did not reply in time", 504)
+    }
+  }
+}
+
+/// Resolves the `shell_waiters` entry for an inbound `shell_output` frame
+/// (task #34) -- the counterpart to `execute_shell_command`'s registration.
+/// No matching waiter (already timed out, or a stray/duplicate reply) is
+/// logged and dropped, matching this file's existing "log, then no-op"
+/// convention for anything that isn't a hard protocol violation.
+fn handle_ws_shell_output(
+  pigeons: &Pigeons,
+  request_id: &str,
+  output: String,
+  exit_code: i32,
+  truncated: bool,
+) {
+  match pigeons.shell_waiters.borrow_mut().remove(request_id) {
+    Some(sender) => {
+      let _ = sender.send(ShellOutputPayload {
+        output,
+        exit_code,
+        truncated,
+      });
+    }
+    None => {
+      console_error!(
+        "Shell OUTPUT: no waiter for request_id={request_id} on pigeon {} (late or duplicate reply)",
+        pigeons.state.id()
+      );
+    }
+  }
 }
 
 /// Backs the WebSocket `shadow_report` frame (task #32) -- the WS
