@@ -33,6 +33,7 @@ pub fn Footer() -> Element {
                 a {
                   class: "btn btn-circle bg-base-100 hover:bg-[#0FBF3E] hover:text-[#0A241B] transition-all duration-300",
                   href: "https://github.com/justins-engineering",
+                  aria_label: "PidgeIoT on GitHub",
                   Icon {
                     icon: FaGithub,
                     class: "size-5",
@@ -42,6 +43,7 @@ pub fn Footer() -> Element {
                 a {
                   class: "btn btn-circle bg-base-100 hover:bg-[#E0E3FF] hover:text-[#5865F2] transition-all duration-300",
                   href: "https://discord.gg/W2vjtpeP",
+                  aria_label: "PidgeIoT on Discord",
                   Icon {
                     icon: FaDiscord,
                     class: "size-5",
@@ -51,6 +53,7 @@ pub fn Footer() -> Element {
                 a {
                   class: "btn btn-circle bg-base-100 hover:bg-[#212121] hover:text-[#FF0033] transition-all duration-300",
                   href: "https://www.youtube.com/channel/UCrWAKM3eEnbimkdzUGMCNoQ",
+                  aria_label: "PidgeIoT on YouTube",
                   Icon {
                     icon: FaYoutube,
                     class: "size-5",
@@ -61,7 +64,7 @@ pub fn Footer() -> Element {
             }
             div { class: "grid grid-cols-2 md:grid-cols-3 gap-8 lg:w-3/5",
               nav {
-                h4 { class: "ml-2 footer-title text-lg text-primary",
+                h2 { class: "ml-2 footer-title text-lg text-primary",
                   "Product"
                 }
                 ul { class: "menu menu-vertical sm:menu-lg p-0",
@@ -116,7 +119,7 @@ pub fn Footer() -> Element {
                 }
               }
               nav {
-                h4 { class: "ml-2 footer-title text-lg text-secondary",
+                h2 { class: "ml-2 footer-title text-lg text-secondary",
                   "Company"
                 }
                 ul { class: "menu menu-vertical sm:menu-lg p-0",
@@ -147,7 +150,7 @@ pub fn Footer() -> Element {
                 }
               }
               nav {
-                h4 { class: "ml-2 footer-title text-lg text-primary",
+                h2 { class: "ml-2 footer-title text-lg text-primary",
                   "Community"
                 }
                 ul { class: "menu menu-vertical sm:menu-lg p-0",

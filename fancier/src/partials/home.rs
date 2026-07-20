@@ -43,7 +43,7 @@ pub fn Home() -> Element {
         }
       }
       div { class: "mx-auto",
-        a { href: "/#features",
+        a { href: "/#features", aria_label: "Scroll to features section",
           Icon {
             icon: LdChevronsDown,
             class: "size-15 mx-auto stroke-primary animate-pulse-slow",

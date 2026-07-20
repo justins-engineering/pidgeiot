@@ -23,7 +23,7 @@ pub fn Connectivity() -> Element {
                   title: "Key icon",
                 }
                 div {
-                  h4 { class: "font-bold text-lg mb-2", "69-Byte Tokens" }
+                  h3 { class: "font-bold text-lg mb-2", "69-Byte Tokens" }
                   p { class: "text-sm",
                     "A compact binary bearer token — version, expiry, signature — verified with one Ed25519 check at the edge. No JWT overhead."
                   }
@@ -36,7 +36,7 @@ pub fn Connectivity() -> Element {
                   title: "Shield icon",
                 }
                 div {
-                  h4 { class: "font-bold text-lg mb-2", "CoAP-over-TLS/TCP" }
+                  h3 { class: "font-bold text-lg mb-2", "CoAP-over-TLS/TCP" }
                   p { class: "text-sm",
                     "RFC 8323 CoAP for devices too constrained for a full HTTPS stack — still fully encrypted, no bare UDP."
                   }
@@ -50,7 +50,7 @@ pub fn Connectivity() -> Element {
                 }
                 div {
                   div { class: "flex items-center gap-2 mb-2",
-                    h4 { class: "font-bold text-lg", "Dictionary Logging" }
+                    h3 { class: "font-bold text-lg", "Dictionary Logging" }
                     span { class: "badge badge-xs badge-primary", "Rolling out" }
                   }
                   p { class: "text-sm",

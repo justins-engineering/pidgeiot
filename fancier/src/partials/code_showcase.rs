@@ -26,7 +26,7 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h4 { class: "font-bold text-lg mb-1", "Zero Runtime Overhead" }
+                h3 { class: "font-bold text-lg mb-1", "Zero Runtime Overhead" }
                 p { "No garbage collector, no runtime. Pure performance." }
               }
             }
@@ -39,7 +39,7 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h4 { class: "font-bold text-lg mb-1", "69 Bytes on the Wire" }
+                h3 { class: "font-bold text-lg mb-1", "69 Bytes on the Wire" }
                 p { "No JWT, no base64 bloat — a binary bearer token: version, expiry, signature." }
               }
             }
@@ -52,7 +52,7 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h4 { class: "font-bold text-lg mb-1", "Refresh Revokes" }
+                h3 { class: "font-bold text-lg mb-1", "Refresh Revokes" }
                 p { "Minting a new device token overwrites the old public key — no revocation list needed." }
               }
             }
