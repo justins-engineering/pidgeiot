@@ -49,7 +49,23 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   rsx! {
     match pigeon_detail() {
         Some(pd) => {
-            let shadow_seen = time::OffsetDateTime::from_unix_timestamp(pd.shadow.updated_at).ok();
+            // A shadow row's own updated_at bumps on creation and on every
+            // dashboard-initiated write, not just a device report-back (see
+            // this module's top-level doc comment on that general
+            // ambiguity) -- so for a pigeon whose shadow has never actually
+            // been confirmed by a device (has_never_reported), that
+            // timestamp is dropped from the merge entirely rather than fed
+            // to classify() as a "seen" signal. Genuine telemetry/log
+            // activity still counts normally even when the shadow itself
+            // was never confirmed -- this only distrusts the shadow signal
+            // specifically, not the pigeon as a whole.
+            let shadow_confirmed = !connection_state::has_never_reported(
+                pd.shadow.current_version,
+                &pd.shadow.current_config,
+            );
+            let shadow_seen = shadow_confirmed
+                .then(|| time::OffsetDateTime::from_unix_timestamp(pd.shadow.updated_at).ok())
+                .flatten();
             let telemetry_seen = telemetry_latest().and_then(|latest| {
                 connection_state::latest_of(latest.iter().map(|t| Some(t.reported_at)))
             });

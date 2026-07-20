@@ -99,6 +99,25 @@ pub fn telemetry_interval_secs(config: &JsonString) -> Option<i64> {
   value.get("telemetry_interval")?.as_i64()
 }
 
+/// True when a pigeon's shadow shows no evidence a device has ever
+/// reported back -- `current_version` is still the SQLite-default `0`
+/// (a real device report bumps it, see dovecote's `report_shadow_device`)
+/// and `current_config` is still the empty object it starts as. Used by
+/// `classify` (v1, frontend-only heuristic -- see its own doc comment) to
+/// stop a shadow write timestamp from reading as a "seen" signal for a
+/// pigeon that has never actually connected. A pigeon that's connected at
+/// least once and later goes offline keeps its real `current_version`/
+/// `current_config`, so this never fires again for it, even offline.
+pub fn has_never_reported(current_version: i32, current_config: &JsonString) -> bool {
+  if current_version != 0 {
+    return false;
+  }
+  serde_json::from_str::<serde_json::Value>(&current_config.to_string())
+    .ok()
+    .and_then(|v| v.as_object().map(|obj| obj.is_empty()))
+    .unwrap_or(false)
+}
+
 /// The newest of however many "last seen" signals are available. `None`
 /// entries (a signal that wasn't fetched, or came back empty) are simply
 /// ignored; an all-`None` input means "never seen".
@@ -110,6 +129,12 @@ pub fn latest_of(times: impl IntoIterator<Item = Option<OffsetDateTime>>) -> Opt
 /// signal and (if known) its own reporting cadence. Clock skew tolerance:
 /// a `last_seen` in the future (device clock ahead of the dashboard's) is
 /// treated as "now" rather than producing a negative age.
+///
+/// Deliberately takes one already-merged `last_seen`, not the individual
+/// telemetry/shadow/log signals that fed it: callers decide which signals
+/// are trustworthy (see `has_never_reported`, used by `PigeonView` to drop
+/// a never-confirmed shadow's `updated_at` before merging) and hand this
+/// function only the result, so it stays a pure threshold check.
 pub fn classify(
   last_seen: Option<OffsetDateTime>,
   interval_secs: Option<i64>,
@@ -202,6 +227,26 @@ mod tests {
     // not constructible via JsonString::new at all (mirrors
     // extract_firmware_target's contract).
     assert_eq!(telemetry_interval_secs(&cfg), None);
+  }
+
+  #[test]
+  fn never_reported_true_for_fresh_pigeon_defaults() {
+    assert!(has_never_reported(0, &config("{}")));
+  }
+
+  #[test]
+  fn never_reported_false_once_version_bumps() {
+    // A real device report bumps current_version even if the config it
+    // echoed back happens to still be empty (e.g. echoing an empty
+    // target_config).
+    assert!(!has_never_reported(1, &config("{}")));
+  }
+
+  #[test]
+  fn never_reported_false_once_config_is_non_trivial() {
+    // Belt-and-suspenders: a non-empty current_config alone (regardless of
+    // version) means something real got written back.
+    assert!(!has_never_reported(0, &config(r#"{"telemetry_interval":60}"#)));
   }
 
   #[test]
