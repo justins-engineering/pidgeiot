@@ -1,15 +1,18 @@
 use crate::helpers::{
-  authenticate_browser, check_pigeon_authz, create_user_flock, delete_pigeon_pg_db, get_db_client,
-  get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_flock_owner, list_flock_firmware,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
-  update_pigeon_pg_db, update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do,
+  authenticate_browser, check_pigeon_authz, create_flock_alert, create_pigeon_alert,
+  create_user_flock, delete_alert_definition, delete_pigeon_pg_db, get_db_client,
+  get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_alert_owner, is_flock_owner,
+  list_flock_alerts, list_flock_firmware, list_pigeon_alerts, proxy_binary_to_pigeon_do,
+  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, sha256_hex, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
+  verify_cf_access, verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
-  FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TelemetryEndpoint, TelemetryHistoryQuery,
+  AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, FirmwareTarget, FirmwareUploadQuery,
+  FlockCreateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint,
+  TelemetryHistoryQuery,
 };
 use futures::future::join_all;
 use worker::{
@@ -1211,6 +1214,278 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         Response::from_json(&images)?.with_cors(&cors)
+      },
+    )
+    // --- Alert Routes (task #32) ---
+    // Owner-gated CRUD for user-defined alert definitions
+    // (docs/design/alerts-triggers.md). Scope (pigeon vs. flock) is implied
+    // by which of the two create/list route pairs was hit, never trusted
+    // from the request body -- see capsules::AlertDefinitionCreateRequest's
+    // doc comment. Update/delete are flat `/alerts/:alert_id` routes gated
+    // by `is_alert_owner` (a direct `alert_definitions.user_id` check),
+    // since an alert's owner is unambiguous regardless of its scope.
+    .post_async(
+      "/pigeons/:pigeon_id/alerts",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // Cloned before the body is read below -- `check_pigeon_authz`
+        // proxies to the DO's bare ACL probe route, which forwards
+        // whatever body the request carries even though that route never
+        // inspects it; cloning here (rather than reading the body twice
+        // off the same `Request`) means the clone's body can be consumed
+        // by that proxy without disturbing the original `req`, which still
+        // needs to be read as the create payload below.
+        let Ok(authz_req) = req.clone() else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let authz_result = check_pigeon_authz(authz_req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(payload) = req.json::<AlertDefinitionCreateRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if payload.name.trim().is_empty() {
+          return Response::error("Bad Request: 'name' cannot be empty", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(alert) = create_pigeon_alert(&client, &access, &user_id, &payload).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&alert)?
+          .with_status(201)
+          .with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/pigeons/:pigeon_id/alerts",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // GET carries no body, so the original `req` can be reused directly
+        // for the ACL probe (unlike the POST route above).
+        let authz_result = check_pigeon_authz(req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(alerts) = list_pigeon_alerts(&client, &access).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&alerts)?.with_cors(&cors)
+      },
+    )
+    .post_async(
+      "/flocks/:flock_id/alerts",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(payload) = req.json::<AlertDefinitionCreateRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if payload.name.trim().is_empty() {
+          return Response::error("Bad Request: 'name' cannot be empty", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_flock_owner(&client, &flock_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_access) = owner else {
+          return Response::error("Forbidden: Only the flock owner can create alerts", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(alert) = create_flock_alert(&client, &flock_access, &user_id, &payload).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&alert)?
+          .with_status(201)
+          .with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/flocks/:flock_id/alerts",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_flock_owner(&client, &flock_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_access) = owner else {
+          return Response::error("Forbidden: Only the flock owner can view alerts", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(alerts) = list_flock_alerts(&client, &flock_access).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&alerts)?.with_cors(&cors)
+      },
+    )
+    .put_async(
+      "/alerts/:alert_id",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(alert_id) = ctx.param("alert_id").cloned() else {
+          return Response::error("Alert ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(payload) = req.json::<AlertDefinitionUpdateRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_alert_owner(&client, &alert_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(alert_access) = owner else {
+          return Response::error("Forbidden: Only the alert owner can update it", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(alert) = update_alert_definition(&client, &alert_access, &payload).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&alert)?.with_cors(&cors)
+      },
+    )
+    .delete_async(
+      "/alerts/:alert_id",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(alert_id) = ctx.param("alert_id").cloned() else {
+          return Response::error("Alert ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = is_alert_owner(&client, &alert_id, &user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(alert_access) = owner else {
+          return Response::error("Forbidden: Only the alert owner can delete it", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(()) = delete_alert_definition(&client, &alert_access).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::empty()?.with_cors(&cors)
       },
     )
     .or_else_any_method_async("/*any", |mut req, ctx: RouteContext<()>| async move {

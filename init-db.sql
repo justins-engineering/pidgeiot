@@ -146,8 +146,70 @@ CREATE TABLE IF NOT EXISTS flock_firmware (
 -- before this column existed.
 ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;
 
+-- ALERT DEFINITIONS Table (task #32)
+-- Postgres-only, not DO-mirrored -- same reasoning already applied to
+-- flock_firmware above: this is dashboard-authored config with no
+-- device-facing counterpart, and a flock-scoped alert has no DO to live in
+-- at all (flocks have none). condition/channel are JSONB (not columns per
+-- condition-type field), matching the existing polymorphic-config
+-- convention this file already uses for pigeons.connector/
+-- pigeons.telemetry_endpoint. Exactly one of flock_id/pigeon_id is set,
+-- enforced by the CHECK constraint below (mirrors AlertScope being an
+-- enum, not two independent optional fields, in capsules).
+CREATE TABLE IF NOT EXISTS alert_definitions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  flock_id UUID REFERENCES flocks(id) ON DELETE CASCADE,
+  pigeon_id TEXT REFERENCES pigeons(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  condition JSONB NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'warning',
+  channel JSONB NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_definitions_scope_check CHECK (
+    (flock_id IS NOT NULL AND pigeon_id IS NULL) OR
+    (flock_id IS NULL AND pigeon_id IS NOT NULL)
+  )
+);
+
+CREATE TRIGGER trigger_alert_definitions_updated_at
+  BEFORE UPDATE ON alert_definitions
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_set_timestamp();
+
+-- ALERT STATE Table (task #32)
+-- Debounce/hysteresis + fired-state tracking (see capsules::AlertState) --
+-- one row per (alert_definition_id, pigeon_id), not per definition, since a
+-- flock-scoped alert fires/clears independently per pigeon it applies to.
+-- Written/read entirely by dovecote's check_telemetry_alerts evaluator
+-- (helpers/alerts.rs), no dashboard route reads/writes this directly today.
+CREATE TABLE IF NOT EXISTS alert_state (
+  alert_definition_id UUID NOT NULL REFERENCES alert_definitions(id) ON DELETE CASCADE,
+  pigeon_id TEXT NOT NULL REFERENCES pigeons(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'ok',
+  first_true_at TIMESTAMPTZ,
+  last_notified_at TIMESTAMPTZ,
+  PRIMARY KEY (alert_definition_id, pigeon_id)
+);
+
+-- Denormalized flock-owner email (task #32, design doc §3.4) -- needed to
+-- resolve an alert notification's recipient without a Kratos admin-API call
+-- from the edge (none is reachable from staging/prod today). NULL until a
+-- follow-up wires `require_auth`/`create_user_flock` to populate it from
+-- the session's own `identity.traits` (already fetched, currently
+-- discarded, on every authenticated request) -- see
+-- docs/design/alerts-triggers.md §3.4 and dovecote's
+-- helpers/alerts.rs::resolve_alert_recipient, which already reads this
+-- column and degrades to "no recipient, log and skip" until it's populated.
+ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
+CREATE INDEX IF NOT EXISTS idx_alert_definitions_pigeon ON alert_definitions(pigeon_id) WHERE pigeon_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_alert_definitions_flock ON alert_definitions(flock_id) WHERE flock_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_alert_definitions_user_id ON alert_definitions(user_id);
 CREATE INDEX IF NOT EXISTS idx_flock_firmware_flock_id ON flock_firmware(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeons_flock_id ON pigeons(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);

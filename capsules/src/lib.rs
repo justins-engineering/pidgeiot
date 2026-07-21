@@ -555,3 +555,313 @@ pub struct FirmwareUploadQuery {
   pub version: String,
   pub board: String,
 }
+
+// --- Alerts (task #32) ---
+//
+// Model follows docs/design/alerts-triggers.md §1 exactly. This is the
+// backend-foundation slice of that design: only the two condition types
+// that are actually evaluated by dovecote's ingest-hook evaluator today
+// (`Threshold`, `DeviceState` -- see `check_telemetry_alerts` in
+// `dovecote/src/helpers/alerts.rs`) are modeled here. `RateOfChange` and
+// `MissingReport` (the doc's other two condition types) are deliberately
+// left out of this enum rather than added unevaluated -- both need
+// machinery this task doesn't build (a "previous value" lookup for the
+// former, a Cron-Trigger-driven scheduled evaluator for the latter -- see
+// the design doc §2.2/§2.4). Adding them later is an additive new variant,
+// not a breaking change to what's here, which is what the doc means by
+// "leave room for more."
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum Comparator {
+  Gt,
+  Gte,
+  Lt,
+  Lte,
+  Eq,
+}
+
+impl Comparator {
+  pub fn evaluate(&self, observed: f64, threshold: f64) -> bool {
+    match self {
+      Comparator::Gt => observed > threshold,
+      Comparator::Gte => observed >= threshold,
+      Comparator::Lt => observed < threshold,
+      Comparator::Lte => observed <= threshold,
+      Comparator::Eq => observed == threshold,
+    }
+  }
+}
+
+impl Default for Comparator {
+  fn default() -> Self {
+    Comparator::Eq
+  }
+}
+
+/// Mirrors `fancier::helpers::connection_state::ConnectionState` today,
+/// minus `Unknown` -- an alert on "we've never heard from this pigeon" is
+/// exactly what `MissingReport` already models (once it exists), and it
+/// needs different semantics anyway (an `Unknown` pigeon has no
+/// `interval_secs` to compute an age against). See design doc §1.1/§1.3.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum ConnectionStateKind {
+  Offline,
+  Stale,
+}
+
+/// A boolean predicate over one pigeon's (or one flock's) observable state
+/// (design doc §1.1). `Threshold` is fully evaluated by
+/// `check_telemetry_alerts` at every telemetry ingest; `DeviceState` is
+/// modeled here but is NOT evaluated by that ingest-triggered hook --
+/// "went offline/stale" is an absence-of-signal condition by definition
+/// (design doc §2.4), so it can't be usefully decided at the moment a
+/// report just arrived (that arrival itself proves the pigeon is online).
+/// Real device-state alerting needs the missing-heartbeat scheduled
+/// evaluator this task explicitly excludes -- see this crate's `CLAUDE.md`
+/// and the design doc for the follow-up.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum AlertCondition {
+  Threshold {
+    key: String,
+    comparator: Comparator,
+    value: f64,
+  },
+  DeviceState {
+    state: ConnectionStateKind,
+    min_duration_secs: Option<i64>,
+  },
+}
+
+impl Default for AlertCondition {
+  fn default() -> Self {
+    AlertCondition::Threshold {
+      key: String::new(),
+      comparator: Comparator::default(),
+      value: 0.0,
+    }
+  }
+}
+
+/// Delivery channel for a fired/cleared alert (design doc §3). `Email` is
+/// the only variant today -- kept as an enum (rather than a bare struct) so
+/// adding `Webhook`/`Sms`/`Push` later is additive, matching how
+/// `Connector` already lets `Pigeon` support more than one protocol without
+/// a rewrite. `to: None` means "use the owning flock's stored
+/// `owner_email`" (design doc §3.4); `Some` is an explicit per-alert
+/// override.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum AlertChannel {
+  Email { to: Option<String> },
+}
+
+impl Default for AlertChannel {
+  fn default() -> Self {
+    AlertChannel::Email { to: None }
+  }
+}
+
+/// Mirrors ThingsBoard's alarm severity framing (design doc §2.3) -- carried
+/// through to the notification email's subject/badge color. Stored as plain
+/// `TEXT` in Postgres (not JSONB like `condition`/`channel`), so this has
+/// its own `FromStr`/`as_str` rather than going through `serde_json`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum AlertSeverity {
+  Warning,
+  Critical,
+}
+
+impl AlertSeverity {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      AlertSeverity::Warning => "warning",
+      AlertSeverity::Critical => "critical",
+    }
+  }
+}
+
+impl std::str::FromStr for AlertSeverity {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "warning" => Ok(AlertSeverity::Warning),
+      "critical" => Ok(AlertSeverity::Critical),
+      other => Err(format!("invalid alert severity '{other}'")),
+    }
+  }
+}
+
+impl Default for AlertSeverity {
+  fn default() -> Self {
+    AlertSeverity::Warning
+  }
+}
+
+/// Which pigeon(s) an `AlertDefinition` applies to (design doc §1.2) --
+/// mutually exclusive, mirrors how `Connector`/`TelemetryEndpoint` are
+/// already per-pigeon while `FirmwareImage` is already per-flock in this
+/// same codebase. A flock-scoped alert evaluates independently per pigeon
+/// currently in that flock (one `AlertState` row per `(definition_id,
+/// pigeon_id)` -- see `AlertState` below), not one combined state for the
+/// whole flock.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum AlertScope {
+  Pigeon(String),
+  Flock(Uuid),
+}
+
+/// DB model for one row of Postgres's `alert_definitions` table (design doc
+/// §1.4) -- `condition`/`channel` arrive as `::text`-cast JSONB (see
+/// `dovecote/src/helpers/alerts.rs`, which SELECTs them cast to text since
+/// this workspace's `tokio-postgres` isn't built with the
+/// `with-serde_json-1` feature), `severity` as its own plain-text column.
+/// Postgres already hands back a native `OffsetDateTime` for
+/// `TIMESTAMPTZ` columns (unlike the DO's SQLite bindings elsewhere in this
+/// crate), so no epoch-float `deserialize_with` is needed here, same as
+/// `Flock`/`FirmwareImage`.
+#[derive(Deserialize, Debug)]
+pub struct AlertDefinitionRow {
+  pub id: Uuid,
+  pub user_id: Uuid,
+  pub flock_id: Option<Uuid>,
+  pub pigeon_id: Option<String>,
+  pub name: String,
+  pub condition: String,
+  pub severity: String,
+  pub channel: String,
+  pub enabled: bool,
+  pub created_at: OffsetDateTime,
+  pub updated_at: OffsetDateTime,
+}
+
+impl From<AlertDefinitionRow> for AlertDefinition {
+  fn from(row: AlertDefinitionRow) -> Self {
+    // Postgres's CHECK constraint (see init-db.sql) guarantees exactly one
+    // of pigeon_id/flock_id is set for any real row -- the (None, None) arm
+    // below should be unreachable, but falls back to an empty pigeon scope
+    // rather than panicking, matching this crate's existing
+    // permissive-on-malformed-stored-data convention (e.g. PigeonRow's
+    // `connector` parse).
+    let scope = match (row.pigeon_id, row.flock_id) {
+      (Some(id), _) => AlertScope::Pigeon(id),
+      (None, Some(id)) => AlertScope::Flock(id),
+      (None, None) => AlertScope::Pigeon(String::new()),
+    };
+
+    Self {
+      id: row.id,
+      user_id: row.user_id,
+      scope,
+      name: row.name,
+      condition: serde_json::from_str(&row.condition).unwrap_or_default(),
+      severity: row.severity.parse().unwrap_or_default(),
+      channel: serde_json::from_str(&row.channel).unwrap_or_default(),
+      enabled: row.enabled,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }
+  }
+}
+
+/// Public API model for one user-defined alert (design doc §1.4) --
+/// Postgres-only, not DO-mirrored (same reasoning already applied to
+/// `FirmwareImage`: this is dashboard-authored config with no device-facing
+/// counterpart, and a flock-scoped alert has no DO to live in at all).
+/// Debounce/fired-state deliberately does NOT live on this struct -- see
+/// `AlertState` below for why a flock-scoped alert needs one state row per
+/// pigeon it applies to, not one shared state on the definition itself.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct AlertDefinition {
+  pub id: Uuid,
+  pub user_id: Uuid,
+  pub scope: AlertScope,
+  pub name: String,
+  pub condition: AlertCondition,
+  pub severity: AlertSeverity,
+  pub channel: AlertChannel,
+  pub enabled: bool,
+  #[serde(with = "time::serde::rfc3339")]
+  pub created_at: OffsetDateTime,
+  #[serde(with = "time::serde::rfc3339")]
+  pub updated_at: OffsetDateTime,
+}
+
+/// Body for `POST /pigeons/:pigeon_id/alerts` and `POST
+/// /flocks/:flock_id/alerts` -- scope is deliberately NOT part of this
+/// request body; it's implied by which route was hit (and which
+/// owner-gate, `PigeonAccess`/`FlockAccess`, already passed), not trusted
+/// from the client.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AlertDefinitionCreateRequest {
+  pub name: String,
+  pub condition: AlertCondition,
+  #[serde(default)]
+  pub severity: AlertSeverity,
+  pub channel: AlertChannel,
+}
+
+/// Body for `PUT /alerts/:alert_id` -- `None` keeps the current value for
+/// that field, same partial-update convention as `PigeonUpdateRequest`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct AlertDefinitionUpdateRequest {
+  pub name: Option<String>,
+  pub condition: Option<AlertCondition>,
+  pub severity: Option<AlertSeverity>,
+  pub channel: Option<AlertChannel>,
+  pub enabled: Option<bool>,
+}
+
+/// Debounce/hysteresis + fired-state tracking (design doc §2.3) -- one row
+/// per `(alert_definition_id, pigeon_id)` pair, NOT per definition, because
+/// a flock-scoped alert fires/clears independently per pigeon it applies to
+/// (five pigeons going offline is five clear notifications, not one
+/// ambiguous one). `status` mirrors ThingsBoard's raise/clear alarm
+/// lifecycle: `Ok -> Firing` only once the condition has been continuously
+/// true for the definition's own debounce window, sending exactly one
+/// "fired" email on that transition; `Firing -> Ok` sends exactly one
+/// "cleared" email on the reverse transition. No `*Row` variant needed --
+/// same as `Flock`/`FirmwareImage`, Postgres hands back native
+/// `OffsetDateTime`s directly.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum AlertStatus {
+  Ok,
+  Firing,
+}
+
+impl AlertStatus {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      AlertStatus::Ok => "ok",
+      AlertStatus::Firing => "firing",
+    }
+  }
+}
+
+impl std::str::FromStr for AlertStatus {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "ok" => Ok(AlertStatus::Ok),
+      "firing" => Ok(AlertStatus::Firing),
+      other => Err(format!("invalid alert status '{other}'")),
+    }
+  }
+}
+
+impl Default for AlertStatus {
+  fn default() -> Self {
+    AlertStatus::Ok
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct AlertState {
+  pub alert_definition_id: Uuid,
+  pub pigeon_id: String,
+  pub status: AlertStatus,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub first_true_at: Option<OffsetDateTime>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub last_notified_at: Option<OffsetDateTime>,
+}

@@ -5,7 +5,9 @@ use worker::{
 };
 
 use crate::helpers::write_telemetry_default;
-use crate::helpers::{build_line_protocol, post_line_protocol, url_encode_component};
+use crate::helpers::{
+  build_line_protocol, check_telemetry_alerts, post_line_protocol, url_encode_component,
+};
 use crate::objects::pigeons::TelemetryWriteResult;
 
 /// Message enqueued by the `POST /device/pigeons/:id/telemetry` gateway
@@ -158,6 +160,18 @@ async fn dispatch_to_do(
               body.pigeon_id
             );
           }
+
+          // Alert evaluation (task #32) -- best-effort, alongside the
+          // default write above, same "log and move on, never fail/retry
+          // the queue message" convention.
+          if let Err(e) =
+            check_telemetry_alerts(env, &body.pigeon_id, &metrics, body.reported_at_ms).await
+          {
+            console_error!(
+              "Telemetry consumer: alert evaluation failed for '{}': {e}",
+              body.pigeon_id
+            );
+          }
         }
         Err(e) => {
           // Fall back to the pre-task-#18 behavior: re-parse the queue
@@ -183,6 +197,17 @@ async fn dispatch_to_do(
               {
                 console_error!(
                   "Telemetry consumer: default write failed for '{}': {e}",
+                  body.pigeon_id
+                );
+              }
+
+              // Alert evaluation (task #32) -- same best-effort convention
+              // as the fallback write above.
+              if let Err(e) =
+                check_telemetry_alerts(env, &body.pigeon_id, &metrics, body.reported_at_ms).await
+              {
+                console_error!(
+                  "Telemetry consumer: alert evaluation failed for '{}': {e}",
                   body.pigeon_id
                 );
               }

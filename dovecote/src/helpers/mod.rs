@@ -43,8 +43,19 @@ pub use greptime::url_encode_component;
 pub use greptime::write_telemetry_default;
 
 mod firmware;
+pub use firmware::FlockAccess;
 pub use firmware::get_firmware_board;
 pub use firmware::is_flock_owner;
 pub use firmware::list_flock_firmware;
 pub use firmware::sha256_hex;
 pub use firmware::upsert_flock_firmware;
+
+mod alerts;
+pub use alerts::check_telemetry_alerts;
+pub use alerts::create_flock_alert;
+pub use alerts::create_pigeon_alert;
+pub use alerts::delete_alert_definition;
+pub use alerts::is_alert_owner;
+pub use alerts::list_flock_alerts;
+pub use alerts::list_pigeon_alerts;
+pub use alerts::update_alert_definition;

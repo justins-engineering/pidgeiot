@@ -1504,6 +1504,15 @@ async fn handle_ws_telemetry(
       {
         console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
+
+      // Alert evaluation (task #32) -- same best-effort convention as the
+      // default write above.
+      if let Err(e) =
+        crate::helpers::check_telemetry_alerts(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
+          .await
+      {
+        console_error!("WS telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
+      }
     }
   }
 }
@@ -1632,6 +1641,14 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
       .await
   {
     console_error!("HTTP telemetry: default write failed for pigeon {pigeon_id}: {e}");
+  }
+
+  // Alert evaluation (task #32) -- same best-effort convention as the
+  // default write above.
+  if let Err(e) =
+    crate::helpers::check_telemetry_alerts(&pigeons.env, &pigeon_id, &metrics, reported_at_ms).await
+  {
+    console_error!("HTTP telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
   }
 
   Response::from_json(&metrics)
