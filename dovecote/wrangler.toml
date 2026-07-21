@@ -17,14 +17,16 @@ head_sampling_rate = 0
 # below) -- the platform's own default telemetry store, read via
 # helpers/greptime.rs::greptime_origin. A bare origin (scheme+host+port),
 # e.g. "http://127.0.0.1:4000" in dev, NOT a full path -- the read/write
-# code appends its own "/v1/influxdb/write" / "/v1/sql" paths. Deliberately
-# ABSENT here and in [env.staging.vars] -- prod/staging GreptimeDB is a
-# self-hosted instance on Proxmox behind a Cloudflare Tunnel that doesn't
-# exist yet (a user infra step, not a code dependency); until it's stood
-# up and this var is set, every write/read call treats "unset" as "use the
+# code appends its own "/v1/influxdb/write" / "/v1/sql" paths. Prod and
+# staging both point at the self-hosted GreptimeDB on Proxmox, published
+# at https://telemetry.pidgeiot.com through a Cloudflare Tunnel with an
+# Access policy in front (so the two ACCESS_CLIENT_* secrets below are
+# REQUIRED there -- without them the Tunnel's Access gate 403s the Worker
+# and telemetry silently falls back to Postgres history). Staging shares
+# the same instance, isolated only by GREPTIMEDB_DB (see below). If this
+# var is ever unset, every write/read call treats "unset" as "use the
 # Postgres fallback" (see write_telemetry_default/the telemetry/history
-# routes in lib.rs) -- no code change needed once the tunnel exists, just
-# set this var (+ the secrets below) and deploy.
+# routes in lib.rs).
 #
 # GREPTIMEDB_DB (optional, per-env var) -- the GreptimeDB *database* the
 # read/write paths target (helpers/greptime.rs::greptime_db). Unset → the
@@ -51,7 +53,10 @@ head_sampling_rate = 0
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
 DEVICE_API_HOST = "api.pidgeiot.com"
-# GREPTIMEDB_ENDPOINT intentionally unset -- see the comment block above.
+# Self-hosted GreptimeDB behind the Cloudflare Tunnel/Access policy (see
+# the comment block above). Prod uses the default `public` database (no
+# GREPTIMEDB_DB). Requires the GREPTIMEDB_ACCESS_CLIENT_ID/SECRET secrets.
+GREPTIMEDB_ENDPOINT = "https://telemetry.pidgeiot.com"
 
 [[hyperdrive]]
 binding = "YugabyteDB"
@@ -113,13 +118,15 @@ routes = []
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
-# GREPTIMEDB_ENDPOINT intentionally unset -- see the top-of-file comment
-# block above [vars]. TBD once the user's Proxmox+Tunnel infra step lands
-# (something like "https://telemetry.pidgeiot.com"). When it does and staging
-# shares prod's instance, keep this GREPTIMEDB_DB so staging telemetry stays
-# in its own database (requires a one-time `CREATE DATABASE staging;` on the
-# instance -- see the top-of-file GREPTIMEDB_DB note). Harmless while
-# GREPTIMEDB_ENDPOINT is unset (the whole Greptime path is skipped).
+# Same self-hosted GreptimeDB instance as prod (https://telemetry.pidgeiot.com
+# behind the Cloudflare Tunnel/Access policy -- see the top-of-file comment
+# block above [vars]), shared but isolated via GREPTIMEDB_DB below so staging
+# telemetry lands in its own `staging` database rather than prod's `public`.
+# Requires the GREPTIMEDB_ACCESS_CLIENT_ID/SECRET secrets (--env staging) plus
+# a one-time `CREATE DATABASE staging;` on the instance -- see the top-of-file
+# GREPTIMEDB_DB note. Until that CREATE DATABASE runs, staging writes 400 and
+# fall back to Postgres history.
+GREPTIMEDB_ENDPOINT = "https://telemetry.pidgeiot.com"
 GREPTIMEDB_DB = "staging"
 
 [env.staging.durable_objects]
