@@ -19,6 +19,26 @@ pub fn greptime_origin(env: &Env) -> Option<String> {
     .filter(|s| !s.trim().is_empty())
 }
 
+/// Optional GreptimeDB **database name** (`GREPTIMEDB_DB` var, per-env) the
+/// platform-default read/write paths target. `None` → GreptimeDB's built-in
+/// `public` database (dev and prod both use it as-is). Staging sets this to
+/// its own name (e.g. `"staging"`) so it can share prod's single self-hosted
+/// instance without its telemetry landing in prod's `public` db — the
+/// isolation the task #26 design doc (§1.4) and `wrangler.toml` call for.
+/// Only ever applied to our own `GREPTIMEDB_ENDPOINT` origin, never a
+/// per-pigeon `telemetry_endpoint`. NOTE: GreptimeDB's InfluxDB write does
+/// NOT auto-create a missing database (it 400s "Failed to find schema"), so
+/// a non-`public` name here must be `CREATE DATABASE`'d once at setup — see
+/// `wrangler.toml`. Until it is, `write_telemetry_default` just falls back to
+/// Postgres history, so telemetry is never lost, only un-isolated.
+fn greptime_db(env: &Env) -> Option<String> {
+  env
+    .var("GREPTIMEDB_DB")
+    .ok()
+    .map(|v| v.to_string())
+    .filter(|s| !s.trim().is_empty())
+}
+
 /// Optional bearer token for GreptimeDB's own HTTP auth, if the deployment
 /// has one configured — a Worker secret (`wrangler secret put
 /// GREPTIMEDB_AUTH_TOKEN`), never a plaintext var. Local dev's docker
@@ -193,7 +213,13 @@ async fn write_greptime_default(
   };
 
   let line = build_line_protocol(pigeon_id, metrics, reported_at_ms);
-  let url = format!("{origin}/v1/influxdb/write?precision=ms");
+  let url = match greptime_db(env) {
+    Some(db) => format!(
+      "{origin}/v1/influxdb/write?db={}&precision=ms",
+      url_encode_component(&db)
+    ),
+    None => format!("{origin}/v1/influxdb/write?precision=ms"),
+  };
   let token = greptime_auth_token(env);
   let extra_headers = greptime_access_headers(env);
 
@@ -334,7 +360,15 @@ async fn query_greptime_sql(env: &Env, sql: &str) -> Result<Vec<TelemetryHistory
   let url = format!("{origin}/v1/sql");
   let mut init = RequestInit::default();
   init.with_method(Method::Post);
-  init.body = Some(format!("sql={}", url_encode_component(sql)).into());
+  // `db` (if set) rides alongside `sql` as a second form field — the same
+  // isolation the write path applies via `?db=` (see `greptime_db`). Unset
+  // → GreptimeDB queries its default `public` database.
+  let mut body = format!("sql={}", url_encode_component(sql));
+  if let Some(db) = greptime_db(env) {
+    body.push_str("&db=");
+    body.push_str(&url_encode_component(&db));
+  }
+  init.body = Some(body.into());
   init
     .headers
     .set("Content-Type", "application/x-www-form-urlencoded")?;

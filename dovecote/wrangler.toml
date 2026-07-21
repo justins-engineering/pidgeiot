@@ -26,6 +26,17 @@ head_sampling_rate = 0
 # routes in lib.rs) -- no code change needed once the tunnel exists, just
 # set this var (+ the secrets below) and deploy.
 #
+# GREPTIMEDB_DB (optional, per-env var) -- the GreptimeDB *database* the
+# read/write paths target (helpers/greptime.rs::greptime_db). Unset → the
+# built-in `public` database (what prod + dev use). Staging sets it to its
+# own name so it can share prod's single self-hosted instance without its
+# telemetry landing in prod's `public` db (task #26 design doc §1.4). ONE-
+# TIME SETUP for any non-`public` name: GreptimeDB's InfluxDB write does not
+# auto-create a missing database (it 400s "Failed to find schema"), so run
+# `CREATE DATABASE <name>;` against the instance once (e.g. via its SQL HTTP
+# endpoint) before pointing an env at it. Until then telemetry silently
+# falls back to Postgres history rather than being lost.
+#
 # Companion Worker SECRETS (never here -- wrangler.toml is committed):
 # GREPTIMEDB_AUTH_TOKEN (GreptimeDB's own HTTP auth, if the deployment has
 # one -- local dev's docker GreptimeDB has none configured, so this stays
@@ -104,7 +115,12 @@ ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
 # GREPTIMEDB_ENDPOINT intentionally unset -- see the top-of-file comment
 # block above [vars]. TBD once the user's Proxmox+Tunnel infra step lands
-# (something like "https://telemetry.pidgeiot.com").
+# (something like "https://telemetry.pidgeiot.com"). When it does and staging
+# shares prod's instance, keep this GREPTIMEDB_DB so staging telemetry stays
+# in its own database (requires a one-time `CREATE DATABASE staging;` on the
+# instance -- see the top-of-file GREPTIMEDB_DB note). Harmless while
+# GREPTIMEDB_ENDPOINT is unset (the whole Greptime path is skipped).
+GREPTIMEDB_DB = "staging"
 
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
