@@ -1,4 +1,5 @@
 use crate::api;
+use crate::components::{BOARD_DATALIST_ID, BoardDatalist};
 use capsules::{
   FirmwareImage, FirmwareTarget, JsonString, PigeonShadow, PigeonShadowUpdateRequest,
 };
@@ -28,6 +29,23 @@ fn extract_firmware_target(config: &JsonString) -> Option<FirmwareTarget> {
   let value: serde_json::Value = serde_json::from_str(&config.to_string()).ok()?;
   let firmware = value.get("firmware")?.clone();
   serde_json::from_value(firmware).ok()
+}
+
+/// Fail-closed board/geometry compatibility check (task #20, phase 1),
+/// mirrored client-side from dovecote's own `check_firmware_board_compat`
+/// (`objects/pigeons.rs`) -- both sides must be set AND equal; an unset
+/// pigeon board, an unset/untagged image board, or an explicit mismatch
+/// are all incompatible, not a free pass. This is a courtesy that avoids
+/// the round trip for the common case and lets the Assign button explain
+/// itself instead of failing with a bare 400 -- dovecote still enforces
+/// the real check server-side regardless, so this being wrong in some edge
+/// case (e.g. stale client state) can't itself cause an incorrect
+/// assignment, only an avoidable failed request.
+fn boards_compatible(pigeon_board: Option<&str>, image_board: Option<&str>) -> bool {
+  match (pigeon_board, image_board) {
+    (Some(p), Some(i)) => p == i,
+    _ => false,
+  }
 }
 
 /// Merges a `firmware` key into an existing `target_config` (task #23/#25B
@@ -79,6 +97,7 @@ fn merge_firmware_target(
 pub fn FirmwareModal(
   flock_id: Uuid,
   pigeon_id: String,
+  pigeon_board: Option<String>,
   shadow: PigeonShadow,
   on_close: EventHandler<()>,
   on_assigned: EventHandler<PigeonShadow>,
@@ -103,6 +122,7 @@ pub fn FirmwareModal(
   let mut is_hashing = use_signal(|| false);
   let mut file_error = use_signal(|| Option::<String>::None);
   let mut version_input = use_signal(String::new);
+  let mut board_input = use_signal(String::new);
   let mut is_uploading = use_signal(|| false);
   let mut upload_error = use_signal(|| Option::<String>::None);
   let mut upload_result: Signal<Option<FirmwareImage>> = use_signal(|| None);
@@ -155,6 +175,21 @@ pub fn FirmwareModal(
                     },
                     None => rsx! {
                       span { class: "text-base-content/50 italic", "none assigned" }
+                    },
+                  }
+                }
+              }
+              tr {
+                th { "This pigeon's board" }
+                td { class: "font-mono text-sm",
+                  match pigeon_board.as_deref() {
+                    Some(board) => rsx! {
+                      "{board}"
+                    },
+                    None => rsx! {
+                      span { class: "text-warning italic",
+                        "untagged — set via the pigeon's Edit button before assigning firmware"
+                      }
                     },
                   }
                 }
@@ -247,6 +282,22 @@ pub fn FirmwareModal(
             }
           }
 
+          div {
+            label { class: "fieldset-legend text-xs font-semibold mb-1", "Board (required)" }
+            input {
+              class: "input input-bordered input-sm w-full text-sm font-mono",
+              r#type: "text",
+              list: BOARD_DATALIST_ID,
+              autocomplete: "off",
+              placeholder: "e.g., circuitdojo_feather/nrf9160/ns",
+              value: "{board_input}",
+              oninput: move |e| board_input.set(e.value()),
+            }
+            p { class: "text-xs text-base-content/60 mt-1",
+              "The exact CONFIG_BOARD_TARGET this image was built for — dovecote rejects the upload without it, and won't assign this image to a pigeon whose own board doesn't match exactly."
+            }
+          }
+
           if let Some(err) = upload_error.read().as_ref() {
             p { class: "text-error text-xs", "⚠️ {err}" }
           }
@@ -270,17 +321,18 @@ pub fn FirmwareModal(
           button {
             class: "btn btn-primary btn-sm self-start",
             disabled: selected_bytes.read().is_none() || version_input.read().trim().is_empty()
-                || is_uploading() || is_hashing(),
+                || board_input.read().trim().is_empty() || is_uploading() || is_hashing(),
             onclick: move |_| {
                 let bytes = selected_bytes.read().clone();
                 let version = version_input.read().trim().to_string();
+                let board = board_input.read().trim().to_string();
                 async move {
                     let Some(bytes) = bytes else {
                         return;
                     };
                     is_uploading.set(true);
                     upload_error.set(None);
-                    match api::firmware::upload(flock_id, &version, &bytes).await {
+                    match api::firmware::upload(flock_id, &version, &board, &bytes).await {
                         Some(image) => {
                             is_uploading.set(false);
                             upload_result.set(Some(image.clone()));
@@ -329,6 +381,7 @@ pub fn FirmwareModal(
                 thead {
                   tr {
                     th { "Version" }
+                    th { "Board" }
                     th { "Size" }
                     th { "sha256" }
                     th {}
@@ -342,6 +395,10 @@ pub fn FirmwareModal(
                             .as_ref()
                             .map(|t| t.sha256 == image.sha256)
                             .unwrap_or(false);
+                        let boards_match = boards_compatible(
+                            pigeon_board.as_deref(),
+                            image.board.as_deref(),
+                        );
                         let pigeon_id = pigeon_id.clone();
                         let base_target_config = base_target_config.clone();
                         let target = FirmwareTarget {
@@ -353,55 +410,74 @@ pub fn FirmwareModal(
                         rsx! {
                           tr {
                             td { class: "font-mono text-xs", "{image.version}" }
+                            td { class: "font-mono text-xs",
+                              match image.board.as_deref() {
+                                Some(board) => rsx! {
+                                  "{board}"
+                                },
+                                None => rsx! {
+                                  span { class: "text-base-content/50 italic", "untagged" }
+                                },
+                              }
+                            }
                             td { class: "font-mono text-xs", "{format_bytes(image.size)}" }
                             td { class: "font-mono text-xs", "{short_sha}…" }
                             td {
-                              button {
-                                class: "btn btn-outline btn-xs",
-                                disabled: is_current_target || assigning_id() == Some(image_id),
-                                onclick: move |_| {
-                                    let pigeon_id = pigeon_id.clone();
-                                    let target = target.clone();
-                                    let base_target_config = base_target_config.clone();
-                                    async move {
-                                        assigning_id.set(Some(image_id));
-                                        assign_error.set(None);
-                                        match merge_firmware_target(&base_target_config, &target) {
-                                            Ok(merged) => {
-                                                let req = PigeonShadowUpdateRequest {
-                                                    target_config: merged,
-                                                };
-                                                match api::pigeons::update_shadow(&pigeon_id, &req).await {
-                                                    Some(new_shadow) => {
-                                                        assigning_id.set(None);
-                                                        on_assigned.call(new_shadow);
-                                                        on_close.call(());
-                                                    }
-                                                    None => {
-                                                        assigning_id.set(None);
-                                                        assign_error
-                                                            .set(
-                                                                Some(
-                                                                    "Failed to assign firmware. Please try again."
-                                                                        .to_string(),
-                                                                ),
-                                                            );
-                                                    }
-                                                }
-                                            }
-                                            Err(err) => {
-                                                assigning_id.set(None);
-                                                assign_error.set(Some(err));
-                                            }
-                                        }
-                                    }
-                                },
-                                if assigning_id() == Some(image_id) {
-                                  span { class: "loading loading-spinner loading-xs" }
-                                } else if is_current_target {
-                                  "Assigned"
-                                } else {
-                                  "Assign"
+                              div { class: "flex flex-col items-end gap-1",
+                                button {
+                                  class: "btn btn-outline btn-xs",
+                                  disabled: is_current_target || !boards_match
+                                      || assigning_id() == Some(image_id),
+                                  title: if !boards_match && !is_current_target {
+                                      "This pigeon's board and this image's board must both be set and match exactly before it can be assigned."
+                                  },
+                                  onclick: move |_| {
+                                      let pigeon_id = pigeon_id.clone();
+                                      let target = target.clone();
+                                      let base_target_config = base_target_config.clone();
+                                      async move {
+                                          assigning_id.set(Some(image_id));
+                                          assign_error.set(None);
+                                          match merge_firmware_target(&base_target_config, &target) {
+                                              Ok(merged) => {
+                                                  let req = PigeonShadowUpdateRequest {
+                                                      target_config: merged,
+                                                  };
+                                                  match api::pigeons::update_shadow(&pigeon_id, &req).await {
+                                                      Some(new_shadow) => {
+                                                          assigning_id.set(None);
+                                                          on_assigned.call(new_shadow);
+                                                          on_close.call(());
+                                                      }
+                                                      None => {
+                                                          assigning_id.set(None);
+                                                          assign_error
+                                                              .set(
+                                                                  Some(
+                                                                      "Failed to assign firmware -- dovecote rejected it, most likely because this pigeon's board and this image's board aren't both set and matching. Please try again."
+                                                                          .to_string(),
+                                                                  ),
+                                                              );
+                                                      }
+                                                  }
+                                              }
+                                              Err(err) => {
+                                                  assigning_id.set(None);
+                                                  assign_error.set(Some(err));
+                                              }
+                                          }
+                                      }
+                                  },
+                                  if assigning_id() == Some(image_id) {
+                                    span { class: "loading loading-spinner loading-xs" }
+                                  } else if is_current_target {
+                                    "Assigned"
+                                  } else {
+                                    "Assign"
+                                  }
+                                }
+                                if !boards_match && !is_current_target {
+                                  span { class: "text-warning text-xs", "board mismatch" }
                                 }
                               }
                             }
@@ -415,14 +491,52 @@ pub fn FirmwareModal(
           },
         }
       }
+      BoardDatalist {}
     }
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{extract_firmware_target, merge_firmware_target};
+  use super::{boards_compatible, extract_firmware_target, merge_firmware_target};
   use capsules::{FirmwareTarget, JsonString};
+
+  #[test]
+  fn boards_match_when_both_set_and_equal() {
+    assert!(boards_compatible(
+      Some("esp32c6_devkitc/esp32c6/hpcore"),
+      Some("esp32c6_devkitc/esp32c6/hpcore")
+    ));
+  }
+
+  #[test]
+  fn boards_mismatch_when_set_but_different() {
+    assert!(!boards_compatible(
+      Some("esp32c6_devkitc/esp32c6/hpcore"),
+      Some("circuitdojo_feather/nrf9160/ns")
+    ));
+  }
+
+  #[test]
+  fn boards_incompatible_when_pigeon_board_unset() {
+    assert!(!boards_compatible(
+      None,
+      Some("esp32c6_devkitc/esp32c6/hpcore")
+    ));
+  }
+
+  #[test]
+  fn boards_incompatible_when_image_board_unset() {
+    assert!(!boards_compatible(
+      Some("esp32c6_devkitc/esp32c6/hpcore"),
+      None
+    ));
+  }
+
+  #[test]
+  fn boards_incompatible_when_both_unset() {
+    assert!(!boards_compatible(None, None));
+  }
 
   fn config(raw: &str) -> JsonString {
     JsonString::new(raw.to_string()).expect("test fixture must be valid JSON")

@@ -1,8 +1,8 @@
-use crate::components::{
-  ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer, LogViewer, PigeonGraphs,
-  TelemetryEndpointModal,
-};
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
+use crate::components::{
+  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer,
+  LogViewer, PigeonGraphs, TelemetryEndpointModal,
+};
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::{Route, api};
 use capsules::{
@@ -163,6 +163,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   FirmwareModal {
                     flock_id,
                     pigeon_id: pigeon_id.clone(),
+                    pigeon_board: pd.pigeon.board.clone(),
                     shadow: pd.shadow.clone(),
                     on_close: move |_| show_firmware_modal.set(false),
                     on_assigned: move |new_shadow: PigeonShadow| {
@@ -307,6 +308,17 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                   Icon { icon: LdCopy }
                 }
               }
+            }
+            tr {
+              th { "Board" }
+              td {
+                if let Some(board) = pigeon.board.as_deref() {
+                  div { class: "font-mono bg-base-200 rounded px-2 w-fit text-xs", "{board}" }
+                } else {
+                  span { class: "text-base-content/50 italic text-sm", "untagged — set via Edit" }
+                }
+              }
+              td {}
             }
             tr {
               th { "Name" }
@@ -1258,6 +1270,9 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                               "tags" => {
                                   pur.tags = if !val.is_empty() { Some(val) } else { None };
                               }
+                              "board" => {
+                                  pur.board = if !val.is_empty() { Some(val) } else { None };
+                              }
                               _ => {}
                           }
                       }
@@ -1348,6 +1363,23 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                 value: pigeon.tags.as_deref().unwrap_or(""),
               }
             }
+            div {
+              label { class: "fieldset-legend text-xs font-semibold mb-1",
+                "Board"
+              }
+              input {
+                class: "input input-bordered w-full text-sm font-mono",
+                name: "board",
+                list: BOARD_DATALIST_ID,
+                placeholder: "e.g., circuitdojo_feather/nrf9160/ns",
+                r#type: "text",
+                autocomplete: "off",
+                value: pigeon.board.as_deref().unwrap_or(""),
+              }
+              p { class: "text-xs text-base-content/60 mt-1",
+                "Required to assign firmware — must match the image's own board exactly (task #20). Clearing this field won't unset an already-tagged board."
+              }
+            }
           }
           if let Some(err) = submit_error.read().as_ref() {
             p { class: "text-error text-xs mt-2", "⚠️ {err}" }
@@ -1369,6 +1401,7 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
       form { class: "modal-backdrop", method: "dialog",
         button { "close" }
       }
+      BoardDatalist {}
     }
   }
 }

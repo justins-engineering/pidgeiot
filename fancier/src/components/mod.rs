@@ -44,3 +44,6 @@ pub use firmware_modal::FirmwareModal;
 
 mod connection_badge;
 pub use connection_badge::ConnectionBadge;
+
+mod board_select;
+pub use board_select::{BOARD_DATALIST_ID, BoardDatalist};

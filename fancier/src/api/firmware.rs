@@ -8,17 +8,29 @@ use capsules::FirmwareImage;
 use uuid::Uuid;
 use wasm_bindgen_futures::JsFuture;
 
-/// `POST /flocks/:flock_id/firmware?version=<version>` -- the request body
-/// **is** the image (raw bytes), not JSON. `size`/`sha256` in the response
-/// are always computed server-side from the uploaded bytes; the caller
-/// should compare its own client-side `helpers::sha256_hex` result against
-/// the returned `sha256` rather than trust its own computation blindly.
-/// `version` is percent-encoded via the browser's own `encodeURIComponent`
-/// (`js_sys::encode_uri_component`) since it's free-text and may contain
-/// `+`/`&`/spaces etc. that would otherwise corrupt the query string.
-pub async fn upload(flock_id: Uuid, version: &str, bytes: &[u8]) -> Option<FirmwareImage> {
+/// `POST /flocks/:flock_id/firmware?version=<version>&board=<board>` -- the
+/// request body **is** the image (raw bytes), not JSON. `size`/`sha256` in
+/// the response are always computed server-side from the uploaded bytes;
+/// the caller should compare its own client-side `helpers::sha256_hex`
+/// result against the returned `sha256` rather than trust its own
+/// computation blindly. `version`/`board` are percent-encoded via the
+/// browser's own `encodeURIComponent` (`js_sys::encode_uri_component`)
+/// since both are free-text and may contain `+`/`&`/spaces/`/` etc. that
+/// would otherwise corrupt the query string. `board` (task #20, phase 1)
+/// is required by dovecote as of commit 5a54948 -- an upload with an empty
+/// board 400s -- it's the Zephyr `CONFIG_BOARD_TARGET` this image was
+/// built for, matched against a pigeon's own `board` before a shadow
+/// assignment is allowed (see `components::FirmwareModal`'s fail-closed
+/// assign gating).
+pub async fn upload(
+  flock_id: Uuid,
+  version: &str,
+  board: &str,
+  bytes: &[u8],
+) -> Option<FirmwareImage> {
   let encoded_version = js_sys::encode_uri_component(version);
-  let path = format!("/flocks/{flock_id}/firmware?version={encoded_version}");
+  let encoded_board = js_sys::encode_uri_component(board);
+  let path = format!("/flocks/{flock_id}/firmware?version={encoded_version}&board={encoded_board}");
 
   let response = fetch_bytes("POST", &path, bytes).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;

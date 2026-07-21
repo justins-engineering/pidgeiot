@@ -1,4 +1,6 @@
-use crate::components::{ConnectionBadge, ConnectorBadge, FlockGraphs};
+use crate::components::{
+  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FlockGraphs,
+};
 use crate::helpers::connection_state;
 use crate::{Route, api};
 use capsules::{CoapConfig, Connector, HttpsConfig, Pigeon, PigeonCreateRequest};
@@ -25,9 +27,8 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // the reveal can navigate to the pigeon it belongs to.
   let mut new_token = use_signal(|| None::<(String, String)>);
   let nav = use_navigator();
-  let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> = use_signal(
-    HashMap::new,
-  );
+  let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
+    use_signal(HashMap::new);
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -60,7 +61,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // Flock A's pigeon in Flock B's table, complete with a working link into
   // it. flock_id on Pigeon (capsules) is what actually scopes membership.
   let all_pigeons = use_context::<crate::LocalSession>().pigeons;
-  let total = all_pigeons.read().values().filter(|p| p.flock_id == flock_id).count();
+  let total = all_pigeons
+    .read()
+    .values()
+    .filter(|p| p.flock_id == flock_id)
+    .count();
   let filtered: Vec<(String, Pigeon)> = all_pigeons
     .read()
     .iter()
@@ -68,8 +73,18 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
     .filter(|(_, pigeon)| {
       let query = search.read().to_lowercase();
       query.is_empty()
-        || pigeon.name.as_deref().unwrap_or("").to_lowercase().contains(&query)
-        || pigeon.serial.as_deref().unwrap_or("").to_lowercase().contains(&query)
+        || pigeon
+          .name
+          .as_deref()
+          .unwrap_or("")
+          .to_lowercase()
+          .contains(&query)
+        || pigeon
+          .serial
+          .as_deref()
+          .unwrap_or("")
+          .to_lowercase()
+          .contains(&query)
     })
     .map(|(id, pigeon)| (id.clone(), pigeon.clone()))
     .collect();
@@ -333,6 +348,9 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
                               "serial" => {
                                   pcr.serial = if !val.is_empty() { Some(val) } else { None };
                               }
+                              "board" => {
+                                  pcr.board = if !val.is_empty() { Some(val) } else { None };
+                              }
                               _ => {}
                           }
                       }
@@ -405,6 +423,22 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
                 option { value: "Coap", "CoAP (IoT/MQTT)" }
               }
             }
+            div {
+              label { class: "fieldset-legend text-xs font-semibold mb-1",
+                "Board"
+              }
+              input {
+                class: "input input-bordered w-full text-sm font-mono",
+                name: "board",
+                list: BOARD_DATALIST_ID,
+                placeholder: "e.g., circuitdojo_feather/nrf9160/ns",
+                r#type: "text",
+                autocomplete: "off",
+              }
+              p { class: "text-xs text-base-content/60 mt-1",
+                "Optional — the pigeon's Zephyr board target. Required later to assign firmware (task #20)."
+              }
+            }
           }
           if let Some(err) = submit_error.read().as_ref() {
             p { class: "text-error text-xs mt-2", "⚠️ {err}" }
@@ -426,6 +460,7 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
       form { class: "modal-backdrop", method: "dialog",
         button { "close" }
       }
+      BoardDatalist {}
     }
   }
 }
