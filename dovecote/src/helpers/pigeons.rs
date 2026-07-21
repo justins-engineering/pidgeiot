@@ -4,6 +4,48 @@ use worker::{Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 
+/// Proof that this pigeon's ACL check (the DO's `/pigeon/authz/check`
+/// route, dispatched to `objects::pigeons::check_authorized`) has already
+/// run and passed for the current request. Constructible only via
+/// `check_pigeon_authz` below -- a bare `pigeon_id` string can be
+/// constructed or forwarded by anyone, but a `PigeonAccess` can only come
+/// from code that actually queried `pigeon_acl` and got a passing result.
+/// See docs/design/tenancy-isolation.md §2.1 -- this closes the one
+/// "caller must have already checked" gap the tenancy-isolation audit
+/// found on the Postgres side.
+pub struct PigeonAccess {
+  pigeon_id: String,
+}
+
+impl PigeonAccess {
+  pub fn pigeon_id(&self) -> &str {
+    &self.pigeon_id
+  }
+}
+
+/// Runs the DO's bare ACL probe (`/pigeon/authz/check`) for `pigeon_id` and
+/// returns proof of a passing check, or the DO's own error response
+/// unchanged for the caller to return as-is. Factored out of what used to
+/// be inline in `GET /pigeons/:id/telemetry/history` (`lib.rs`) so that
+/// `query_telemetry_history_for_pigeon`, which otherwise trusts
+/// `pigeon_id` unconditionally, can require this type instead of a bare
+/// `&str`. Behavior (status codes, response bodies) is unchanged from the
+/// inline version -- this is purely a compile-time guard, not a new check.
+pub async fn check_pigeon_authz(
+  req: Request,
+  user_id_str: &str,
+  stub: &worker::ObjectId<'_>,
+  pigeon_id: &str,
+) -> worker::Result<std::result::Result<PigeonAccess, Response>> {
+  let authz_resp = proxy_to_pigeon_do(req, user_id_str, stub, "/authz/check").await?;
+  if authz_resp.status_code() >= 400 {
+    return Ok(Err(authz_resp));
+  }
+  Ok(Ok(PigeonAccess {
+    pigeon_id: pigeon_id.to_string(),
+  }))
+}
+
 pub async fn proxy_to_pigeon_do(
   mut req: Request,
   user_id_str: &str,

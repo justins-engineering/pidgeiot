@@ -13,6 +13,8 @@ pub use flocks::create_user_flock;
 pub use flocks::get_user_flocks;
 
 mod pigeons;
+pub use pigeons::PigeonAccess;
+pub use pigeons::check_pigeon_authz;
 pub use pigeons::delete_pigeon_pg_db;
 pub use pigeons::insert_pigeon_pg_db;
 pub use pigeons::proxy_binary_to_pigeon_do;

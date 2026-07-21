@@ -49,17 +49,36 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     })
 }
 
+/// Proof that `is_flock_owner` already confirmed the requesting user owns
+/// this flock. Constructible only via `is_flock_owner`'s `Some` case below
+/// -- same "caller must have already checked" guard as `PigeonAccess`
+/// (`helpers/pigeons.rs`), applied to the flock-ownership side (see
+/// docs/design/tenancy-isolation.md §2.1).
+pub struct FlockAccess {
+  flock_id: String,
+}
+
+impl FlockAccess {
+  pub fn flock_id(&self) -> &str {
+    &self.flock_id
+  }
+}
+
 /// Firmware images are shared across every pigeon in a flock (the same
 /// hardware fleet), not scoped per-pigeon, so ownership is checked
 /// directly against `flocks.user_id` — the same "fold ownership into the
 /// query" model `query_telemetry_history_for_flock` (`helpers/telemetry.rs`)
-/// uses, just returned as a bool here since the upload/list routes need an
-/// explicit 403 rather than silently-empty results.
+/// uses. Returns `Some(FlockAccess)` on a passing check and `None`
+/// otherwise, rather than a bare `bool`, so a caller that wants to reach
+/// `list_flock_firmware` has to have unwrapped a real "yes" from this
+/// function first -- callers that only need the 403/200 split (e.g. the
+/// upload route) can still match on `Some`/`None` exactly as they matched
+/// on `true`/`false` before.
 pub async fn is_flock_owner(
   client: &Client,
   flock_id_str: &str,
   user_id_str: &str,
-) -> Result<bool> {
+) -> Result<Option<FlockAccess>> {
   let flock_uuid = Uuid::parse_str(flock_id_str)
     .map_err(|e| Error::RustError(format!("Invalid flock_id format: {e}")))?;
   let user_uuid = Uuid::parse_str(user_id_str)
@@ -76,7 +95,9 @@ pub async fn is_flock_owner(
       Error::RustError("Internal Server Error".into())
     })?;
 
-  Ok(row.get::<_, bool>("exists_flag"))
+  Ok(row.get::<_, bool>("exists_flag").then(|| FlockAccess {
+    flock_id: flock_id_str.to_string(),
+  }))
 }
 
 /// Content-addressed by `(flock_id, sha256)`: re-uploading the same binary
@@ -132,17 +153,18 @@ pub async fn upsert_flock_firmware(
   })
 }
 
-/// Backs `GET /flocks/:flock_id/firmware`. Caller is responsible for
-/// owner-gating (`is_flock_owner`) before this runs — mirrors
-/// `query_telemetry_history_for_pigeon`'s convention of trusting
-/// `flock_id_str` unconditionally once authorization has already been
-/// checked.
+/// Backs `GET /flocks/:flock_id/firmware`. Takes a `FlockAccess` proof
+/// rather than a bare `flock_id_str` -- that proof is only constructible
+/// via `is_flock_owner`'s passing case above, so a caller can no longer
+/// reach this query without having run the owner-gate first (see
+/// docs/design/tenancy-isolation.md §2.1).
 pub async fn list_flock_firmware(
   client: &Client,
-  flock_id_str: &str,
+  access: &FlockAccess,
 ) -> Result<Vec<FirmwareImage>> {
   ensure_flock_firmware_table(client).await?;
 
+  let flock_id_str = access.flock_id();
   let flock_uuid = Uuid::parse_str(flock_id_str)
     .map_err(|e| Error::RustError(format!("Invalid flock_id format: {e}")))?;
 

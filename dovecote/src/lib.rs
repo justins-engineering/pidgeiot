@@ -1,6 +1,6 @@
 use crate::helpers::{
-  authenticate_browser, create_user_flock, delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn,
-  get_user_flocks, insert_pigeon_pg_db, is_flock_owner, list_flock_firmware,
+  authenticate_browser, check_pigeon_authz, create_user_flock, delete_pigeon_pg_db, get_db_client,
+  get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_flock_owner, list_flock_firmware,
   proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
   update_pigeon_pg_db, update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
@@ -932,11 +932,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         // Authorization lives in the DO's pigeon_acl table, but the data
         // itself is in Postgres/Greptime -- check the DO first via the ACL
-        // probe route before ever touching either.
-        let authz_resp = proxy_to_pigeon_do(req, &user_id, &obj_id, "/authz/check").await?;
-        if authz_resp.status_code() >= 400 {
-          return authz_resp.with_cors(&cors);
-        }
+        // probe route before ever touching either. `check_pigeon_authz`
+        // returns a `PigeonAccess` proof on success, which is what makes
+        // `query_telemetry_history_for_pigeon` below callable at all (its
+        // signature requires the proof, not a bare pigeon_id) -- see
+        // docs/design/tenancy-isolation.md §2.1.
+        let authz_result = check_pigeon_authz(req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         // Greptime-first, PG-fallback-on-error (task #26) -- see
         // helpers/greptime.rs's doc comments for the full reasoning.
@@ -964,7 +969,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let points = query_telemetry_history_for_pigeon(
           &client,
-          &pigeon_id,
+          &access,
           query.key.as_deref(),
           query.since,
           query.until,
@@ -1110,7 +1115,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        if !owner {
+        // `is_flock_owner` now returns `Option<FlockAccess>` rather than a
+        // bare `bool` (see docs/design/tenancy-isolation.md §2.1) -- the
+        // upload route doesn't need the proof itself (`upsert_flock_firmware`
+        // isn't one of the "trusts the caller" helpers), so it's discarded
+        // here, but the `Some`/`None` split and resulting 403 are identical
+        // to the old `if !owner` check.
+        if owner.is_none() {
           return Response::error("Forbidden: Only the flock owner can upload firmware", 403)
             .unwrap()
             .with_cors(&cors);
@@ -1183,13 +1194,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        if !owner {
+        // `list_flock_firmware` requires a `FlockAccess` proof rather than a
+        // bare `flock_id` (see docs/design/tenancy-isolation.md §2.1), so
+        // the owner-check's `Some` case is threaded straight through instead
+        // of being collapsed back into a `bool` first.
+        let Some(flock_access) = owner else {
           return Response::error("Forbidden: Only the flock owner can view firmware", 403)
             .unwrap()
             .with_cors(&cors);
-        }
+        };
 
-        let Ok(images) = list_flock_firmware(&client, &flock_id).await else {
+        let Ok(images) = list_flock_firmware(&client, &flock_access).await else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
             .with_cors(&cors);

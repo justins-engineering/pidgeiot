@@ -4,6 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 use worker::{Env, Result, console_error};
 
+use crate::helpers::PigeonAccess;
 use crate::helpers::get_db_client;
 
 /// Idempotently ensures the PG telemetry-history table + indexes exist —
@@ -73,17 +74,24 @@ pub async fn write_telemetry_history(
   Ok(())
 }
 
-/// Backs `GET /pigeons/:id/telemetry/history`. Caller is responsible for
-/// ACL-gating (see the DO's `/pigeon/authz/check` route) before this runs —
-/// this function trusts `pigeon_id` unconditionally.
+/// Backs `GET /pigeons/:id/telemetry/history`. Takes a `PigeonAccess` proof
+/// rather than a bare `pigeon_id` -- that proof is only constructible via
+/// `check_pigeon_authz` (`helpers/pigeons.rs`), which is the thing that
+/// actually ACL-gates against the DO's `/pigeon/authz/check` route, so a
+/// caller can no longer reach this query without having run that check
+/// first (see docs/design/tenancy-isolation.md §2.1). Previously this
+/// function's doc comment just asserted the caller was responsible for
+/// gating; now the compiler does.
 pub async fn query_telemetry_history_for_pigeon(
   client: &Client,
-  pigeon_id: &str,
+  access: &PigeonAccess,
   key: Option<&str>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
 ) -> Result<Vec<TelemetryHistoryPoint>> {
   ensure_telemetry_history_table(client).await?;
+
+  let pigeon_id = access.pigeon_id();
 
   let rows = client
     .query_typed(
