@@ -184,7 +184,30 @@ pub async fn verify_device_via_do(
   stub.fetch_with_request(do_req).await
 }
 
+/// Idempotently ensures the `pigeons.board` column exists on the Postgres
+/// mirror table (task #20, phase 1) -- same no-separate-migration-runner
+/// rationale as `ensure_pigeons_telemetry_endpoint_column`
+/// (`helpers/telemetry.rs`). Unlike that column, `board` is written
+/// unconditionally on every `insert_pigeon_pg_db`/`update_pigeon_pg_db`
+/// call (not just a dedicated opt-in route), so both call this first --
+/// discovered by actually running a fresh pigeon-create against a
+/// long-lived local Postgres while testing task #26 end-to-end (the write
+/// 500'd with a real "column does not exist" error until this was added;
+/// the same gap would have bitten staging/prod's shared, already-running
+/// database identically).
+pub async fn ensure_pigeons_board_column(client: &Client) -> worker::Result<()> {
+  client
+    .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;")
+    .await
+    .map_err(|e| {
+      console_error!("pigeons.board column bootstrap error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })
+}
+
 pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
+  ensure_pigeons_board_column(&client).await?;
+
   let tx = client.transaction().await.map_err(|e| {
     console_error!("Postgres transaction error: {e}");
     worker::Error::RustError("Internal Server Error".into())
@@ -276,6 +299,8 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
 }
 
 pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Result<()> {
+  ensure_pigeons_board_column(&client).await?;
+
   let connector_json =
     serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
 

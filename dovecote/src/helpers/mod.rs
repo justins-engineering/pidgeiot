@@ -26,9 +26,19 @@ pub use pigeons::verify_device_via_do;
 
 mod telemetry;
 pub use telemetry::ensure_pigeons_telemetry_endpoint_column;
+pub use telemetry::get_flock_pigeon_ids;
 pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
+
+mod greptime;
+pub use greptime::build_line_protocol;
+pub use greptime::greptime_origin;
+pub use greptime::post_line_protocol;
+pub use greptime::query_greptime_history_for_pigeon;
+pub use greptime::query_greptime_history_for_pigeons;
+pub use greptime::url_encode_component;
+pub use greptime::write_telemetry_default;
 
 mod firmware;
 pub use firmware::get_firmware_board;

@@ -122,6 +122,45 @@ pub async fn query_telemetry_history_for_pigeon(
   )
 }
 
+/// Pigeon-ID list for one flock, scoped by ownership (task #26) -- the
+/// Postgres round-trip `query_greptime_history_for_pigeons`
+/// (`helpers/greptime.rs`) needs before it can query Greptime's
+/// SQL-over-HTTP API: Greptime has no `pigeons`/`flocks` tables of its own
+/// (relational entity data, not time-series), so "which pigeon IDs belong
+/// to this flock, and does this user actually own it" can only be answered
+/// from Postgres. Same "fold ownership into the query" pattern as
+/// `query_telemetry_history_for_flock` below -- a flock this user doesn't
+/// own returns an empty list, not a 403.
+pub async fn get_flock_pigeon_ids(
+  client: &Client,
+  flock_id_str: &str,
+  user_id_str: &str,
+) -> Result<Vec<String>> {
+  let flock_uuid = Uuid::parse_str(flock_id_str).map_err(|e| {
+    console_error!("Invalid flock_id format: {e}");
+    worker::Error::RustError("Bad Request: Invalid flock_id".into())
+  })?;
+  let user_uuid = Uuid::parse_str(user_id_str).map_err(|e| {
+    console_error!("Invalid X-User-Id format: {e}");
+    worker::Error::RustError("Bad Request: Invalid X-User-Id".into())
+  })?;
+
+  let rows = client
+    .query_typed(
+      "SELECT p.id FROM pigeons p
+       JOIN flocks f ON f.id = p.flock_id
+       WHERE f.id = $1 AND f.user_id = $2;",
+      &[(&flock_uuid, Type::UUID), (&user_uuid, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock pigeon-id lookup error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.into_iter().map(|row| row.get("id")).collect())
+}
+
 /// Backs `GET /flocks/:id/telemetry/history`. Flocks have no per-entity ACL
 /// table (unlike pigeons' `pigeon_acl`) -- ownership is the single
 /// `flocks.user_id` column (see `helpers/flocks.rs::get_user_flocks`), so

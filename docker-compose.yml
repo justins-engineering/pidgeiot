@@ -66,16 +66,29 @@ services:
     networks:
       - intranet
 
+  # Pinned (task #26) — was `:latest`; dev and prod should run the exact
+  # same version once prod is stood up (see dovecote's CLAUDE.md/wrangler.toml
+  # notes on GREPTIMEDB_ENDPOINT), and an unpinned tag here would let the two
+  # drift silently. `v1.1.2` is what `:latest` actually resolved to at the
+  # time of pinning.
   greptimedb:
-    image: greptime/greptimedb:latest
+    image: greptime/greptimedb:v1.1.2
     ports:
-      - '4000:4000' # HTTP
+      - '4000:4000' # HTTP (line-protocol write + SQL-over-HTTP read, both used by dovecote)
       - '4001:4001' # gRPC
       - '4002:4002' # MySQL wire
       - '4003:4003' # Postgres wire
     command: standalone start --http-addr 0.0.0.0:4000 --rpc-bind-addr 0.0.0.0:4001 --mysql-addr 0.0.0.0:4002 --postgres-addr 0.0.0.0:4003
+    volumes:
+      # Named volume (task #26) — was unmounted, so all telemetry data was
+      # lost on every `docker-compose down`. `/greptimedb_data` is
+      # GreptimeDB's own default data-home inside the image.
+      - greptimedb_data:/greptimedb_data
     networks:
       - intranet
 
 networks:
   intranet:
+
+volumes:
+  greptimedb_data:

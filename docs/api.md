@@ -564,9 +564,17 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?key=temp
 ]
 ```
 
-(`Vec<capsules::TelemetryHistoryPoint>`, capped at 5000 rows, oldest first.) **Only populated
-for reports made while the pigeon had no `telemetry_endpoint` configured** — see the next
-section.
+(`Vec<capsules::TelemetryHistoryPoint>`, capped at 5000 rows, oldest first.)
+
+**Backing store (task #26).** This route reads from whichever store actually holds this data:
+the platform's own self-hosted GreptimeDB by default (when `GREPTIMEDB_ENDPOINT` is configured
+for this environment — see `helpers/greptime.rs`), falling back to a Postgres
+`pigeon_telemetry_history` table on either an unconfigured endpoint or a query error. This is
+transparent to the caller — the response shape (`TelemetryHistoryPoint`) is identical either
+way. **Only populated for reports made while the pigeon had no `telemetry_endpoint` configured**
+— see the next section for the per-pigeon override, which still takes precedence over the
+platform default in both directions (write and, indirectly, read: an overridden pigeon's data
+never lands in either the default Greptime instance or Postgres, only at the URL you configured).
 
 #### `GET /flocks/:flock_id/telemetry/history` — flock owner
 
@@ -584,12 +592,13 @@ curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026
 
 Sets or clears a per-pigeon forwarding target: when configured, every telemetry report for
 this pigeon is forwarded as an **InfluxDB line protocol v2 HTTP write** (GreptimeDB-compatible)
-to that endpoint *instead of* being written into dovecote's own Postgres history table above.
+to that endpoint *instead of* the platform default (task #26: dovecote's own self-hosted
+GreptimeDB, or Postgres history as a fallback — see [above](#get-pigeonspigeon_idtelemetryhistory)).
 The Durable Object's own latest-value table (`GET /pigeons/:pigeon_id/telemetry`) is unaffected
 either way — it always gets written.
 
 Body: `capsules::PigeonTelemetryEndpointUpdateRequest` — `{"telemetry_endpoint": {...}}` to
-set/replace, or `{"telemetry_endpoint": null}` to clear (revert to Postgres history).
+set/replace, or `{"telemetry_endpoint": null}` to clear (revert to the platform default).
 `capsules::TelemetryEndpoint` is `{ url, db?, auth_token? }` — `url` is the full write endpoint
 (dovecote only appends `precision`/`db` query params, it doesn't assume a fixed path), `db` is
 an optional target database name, `auth_token` is sent as `Authorization: Token <auth_token>` on
@@ -705,11 +714,13 @@ immediately:
 {}
 ```
 
-The actual write (both the Durable Object's latest-value upsert and, depending on
-`telemetry_endpoint`, either the Postgres history write or the external line-protocol forward)
-happens asynchronously afterward — a `202` confirms the report was authenticated and queued, not
-that it's been persisted yet. In an environment with no queue bound (dev, and production today),
-the same auth + write happens synchronously in one round trip and returns:
+The actual write (the Durable Object's latest-value upsert, plus history — either the platform's
+own GreptimeDB by default, a Postgres fallback, or an external line-protocol forward if this
+pigeon has its own `telemetry_endpoint` configured; see [task
+#26](#get-pigeonspigeon_idtelemetryhistory) above) happens asynchronously afterward — a `202`
+confirms the report was authenticated and queued, not that it's been persisted yet. In an
+environment with no queue bound (dev, and production today), the same auth + write happens
+synchronously in one round trip and returns:
 
 ```
 200 OK
@@ -871,12 +882,13 @@ class of its own.
 route** (see [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry)
 above). Where a telemetry queue is bound (staging and production today), a `telemetry` frame's
 metrics are upserted into the Durable Object's latest-value table synchronously, then enqueued
-for the same consumer path the HTTP route uses (Postgres history write, or an external
-line-protocol forward if `telemetry_endpoint` is configured) — but since the frame already
-arrived on an authenticated connection, there's no separate verify-before-enqueue round trip the
-way the HTTP route needs (auth happened once, at socket accept). Where no queue is bound (dev),
-the Durable Object writes Postgres history directly instead, so telemetry sent over the socket
-doesn't silently skip history in that environment.
+for the same consumer path the HTTP route uses (the platform's own GreptimeDB by default, with a
+Postgres fallback, or an external line-protocol forward if `telemetry_endpoint` is configured —
+task #26) — but since the frame already arrived on an authenticated connection, there's no
+separate verify-before-enqueue round trip the way the HTTP route needs (auth happened once, at
+socket accept). Where no queue is bound (dev), the Durable Object writes the same
+Greptime-or-Postgres default directly instead, so telemetry sent over the socket doesn't
+silently skip history in that environment.
 
 **No response is sent for `telemetry`/`shadow_report` frames themselves** — there's no
 frame-level ack. Read back the result via the ordinary HTTP routes (`GET

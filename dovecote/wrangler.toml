@@ -13,10 +13,34 @@ enabled = true
 invocation_logs = true
 head_sampling_rate = 0
 
+# GREPTIMEDB_ENDPOINT (task #26, all three [vars]/[env.*.vars] blocks
+# below) -- the platform's own default telemetry store, read via
+# helpers/greptime.rs::greptime_origin. A bare origin (scheme+host+port),
+# e.g. "http://127.0.0.1:4000" in dev, NOT a full path -- the read/write
+# code appends its own "/v1/influxdb/write" / "/v1/sql" paths. Deliberately
+# ABSENT here and in [env.staging.vars] -- prod/staging GreptimeDB is a
+# self-hosted instance on Proxmox behind a Cloudflare Tunnel that doesn't
+# exist yet (a user infra step, not a code dependency); until it's stood
+# up and this var is set, every write/read call treats "unset" as "use the
+# Postgres fallback" (see write_telemetry_default/the telemetry/history
+# routes in lib.rs) -- no code change needed once the tunnel exists, just
+# set this var (+ the secrets below) and deploy.
+#
+# Companion Worker SECRETS (never here -- wrangler.toml is committed):
+# GREPTIMEDB_AUTH_TOKEN (GreptimeDB's own HTTP auth, if the deployment has
+# one -- local dev's docker GreptimeDB has none configured, so this stays
+# unset in dev too) and GREPTIMEDB_ACCESS_CLIENT_ID/
+# GREPTIMEDB_ACCESS_CLIENT_SECRET (the Cloudflare Access service-token
+# pair this Worker presents so the Tunnel's Access policy lets it through
+# -- only meaningful once staging/prod's tunnel exists; irrelevant in dev,
+# which reaches the local docker instance directly with no Access gate).
+# Set via `wrangler secret put <NAME> --env <env>` once the user's infra
+# step lands.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
 DEVICE_API_HOST = "api.pidgeiot.com"
+# GREPTIMEDB_ENDPOINT intentionally unset -- see the comment block above.
 
 [[hyperdrive]]
 binding = "YugabyteDB"
@@ -78,6 +102,9 @@ routes = []
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
+# GREPTIMEDB_ENDPOINT intentionally unset -- see the top-of-file comment
+# block above [vars]. TBD once the user's Proxmox+Tunnel infra step lands
+# (something like "https://telemetry.pidgeiot.com").
 
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
@@ -110,6 +137,12 @@ queue = "pidgeiot-telemetry-staging"
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
 DEVICE_API_HOST = "127.0.0.1:8787"
+# Local docker-compose GreptimeDB (task #26, docker-compose.yml's
+# `greptimedb` service) -- reachable directly, no Cloudflare Tunnel/Access
+# in dev, and no auth configured on the local instance either, so neither
+# GREPTIMEDB_AUTH_TOKEN nor the GREPTIMEDB_ACCESS_CLIENT_* secrets are
+# needed here.
+GREPTIMEDB_ENDPOINT = "http://127.0.0.1:4000"
 
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name

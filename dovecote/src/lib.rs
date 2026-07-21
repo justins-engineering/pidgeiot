@@ -931,11 +931,33 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
         // Authorization lives in the DO's pigeon_acl table, but the data
-        // itself is in Postgres -- check the DO first via the ACL probe
-        // route before ever touching Postgres.
+        // itself is in Postgres/Greptime -- check the DO first via the ACL
+        // probe route before ever touching either.
         let authz_resp = proxy_to_pigeon_do(req, &user_id, &obj_id, "/authz/check").await?;
         if authz_resp.status_code() >= 400 {
           return authz_resp.with_cors(&cors);
+        }
+
+        // Greptime-first, PG-fallback-on-error (task #26) -- see
+        // helpers/greptime.rs's doc comments for the full reasoning.
+        // `greptime_origin` returning `None` (unconfigured for this
+        // environment, e.g. staging/prod before the tunnel exists) skips
+        // straight to the PG path below without attempting a request.
+        if crate::helpers::greptime_origin(&ctx.env).is_some() {
+          match crate::helpers::query_greptime_history_for_pigeon(
+            &ctx.env,
+            &pigeon_id,
+            query.key.as_deref(),
+            query.since,
+            query.until,
+          )
+          .await
+          {
+            Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+            Err(e) => console_error!(
+              "Greptime history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
+            ),
+          }
         }
 
         get_db!(ctx.env, client, &cors);
@@ -976,8 +998,36 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         // Flocks have no per-entity ACL table (unlike pigeons) -- ownership
         // is folded directly into the query's WHERE clause (see
-        // query_telemetry_history_for_flock's doc comment).
+        // query_telemetry_history_for_flock's doc comment). This PG
+        // round-trip is needed regardless of whether Greptime is
+        // configured (task #26) -- Greptime has no pigeons/flocks tables
+        // of its own to resolve membership/ownership from, so the
+        // pigeon-ID list always comes from here first.
         get_db!(ctx.env, client, &cors);
+
+        if crate::helpers::greptime_origin(&ctx.env).is_some() {
+          match crate::helpers::get_flock_pigeon_ids(&client, &flock_id, &user_id).await {
+            Ok(pigeon_ids) => {
+              match crate::helpers::query_greptime_history_for_pigeons(
+                &ctx.env,
+                &pigeon_ids,
+                query.key.as_deref(),
+                query.since,
+                query.until,
+              )
+              .await
+              {
+                Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+                Err(e) => console_error!(
+                  "Greptime flock history query failed for flock {flock_id}, falling back to PG: {e}"
+                ),
+              }
+            }
+            Err(e) => console_error!(
+              "Flock pigeon-id lookup failed for {flock_id}, falling back to PG: {e}"
+            ),
+          }
+        }
 
         let points = query_telemetry_history_for_flock(
           &client,

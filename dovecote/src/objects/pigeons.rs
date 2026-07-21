@@ -1494,12 +1494,15 @@ async fn handle_ws_telemetry(
     Err(_) => {
       // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
       // HTTP route's own no-queue fallback (report_telemetry_device, which
-      // is auth+write in one call with no queue involved) by writing PG
-      // history directly here instead of silently dropping it.
+      // is auth+write in one call with no queue involved) by writing our
+      // default (task #26: the platform's own GreptimeDB if configured,
+      // else PG history) directly here instead of silently dropping it.
+      let reported_at_ms = Date::now().as_millis();
       if let Err(e) =
-        crate::helpers::write_telemetry_history(&pigeons.env, &pigeon_id, &metrics).await
+        crate::helpers::write_telemetry_default(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
+          .await
       {
-        console_error!("WS telemetry: PG history write failed for pigeon {pigeon_id}: {e}");
+        console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
     }
   }
@@ -1594,10 +1597,12 @@ fn upsert_telemetry(
 /// route calls `verify_telemetry_device` + enqueues instead, and the queue
 /// consumer (`src/queue.rs`) reaches `write_telemetry_device` below. Since
 /// this handler is only ever dispatched from the no-queue fallback branch
-/// of the gateway route, it also best-effort writes `pigeon_telemetry_history`
-/// directly here -- the same fallback `handle_ws_telemetry` already does for
-/// the WebSocket `telemetry` frame -- so the HTTP route doesn't silently skip
-/// history that environment would otherwise have recorded via the queue.
+/// of the gateway route, it also best-effort writes history directly here
+/// via `write_telemetry_default` (task #26: platform GreptimeDB if
+/// configured, else PG) -- the same fallback `handle_ws_telemetry` already
+/// does for the WebSocket `telemetry` frame -- so the HTTP route doesn't
+/// silently skip history that environment would otherwise have recorded
+/// via the queue.
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1621,10 +1626,12 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
   }
 
   let pigeon_id = pigeons.state.id().to_string();
+  let reported_at_ms = Date::now().as_millis();
   if let Err(e) =
-    crate::helpers::write_telemetry_history(&pigeons.env, &pigeon_id, &metrics).await
+    crate::helpers::write_telemetry_default(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
+      .await
   {
-    console_error!("HTTP telemetry: PG history write failed for pigeon {pigeon_id}: {e}");
+    console_error!("HTTP telemetry: default write failed for pigeon {pigeon_id}: {e}");
   }
 
   Response::from_json(&metrics)
