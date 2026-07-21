@@ -3,7 +3,7 @@ use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdHome, LdInfo, LdLogIn, LdMenu, LdSettings, LdUser, LdX,
+  LdBird, LdBookOpen, LdHome, LdInfo, LdLogIn, LdMenu, LdSettings, LdSparkles, LdTag, LdUser, LdX,
 };
 
 #[component]
@@ -53,9 +53,23 @@ pub fn Navbar() -> Element {
               }
               li {
                 Link {
-                  to: Route::Architecture {},
+                  to: Route::FeaturesPage {},
                   class: "hover:text-primary transition-colors duration-300",
-                  "Architecture"
+                  "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::PricingPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "Pricing"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DocumentationPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "Documentation"
                 }
               }
             }
@@ -162,6 +176,39 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "About Us"
+                }
+              }
+              li {
+                Link {
+                  to: Route::FeaturesPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdSparkles,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::PricingPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdTag,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Pricing"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DocumentationPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdBookOpen,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Documentation"
                 }
               }
               div { class: "divider my-2" }
