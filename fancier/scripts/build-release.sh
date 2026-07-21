@@ -28,3 +28,26 @@ mkdir -p ./public/assets/styling
 cp ./assets/styling/main.css ./public/assets/styling/main.css
 
 dx build --web --release --debug-symbols=false
+
+# Second, unrelated dx-cli defect in the same [web.resource] tag writer
+# (task #28): the CSS/theme-init.js <link>/<script> tags above land in
+# index.html as bare relative paths ("assets/...", no leading "/"), unlike
+# the auto-injected wasm loader tag, which dx does correctly root
+# ("/./wasm/fancier.js"). A relative href resolves against the REQUESTING
+# URL's path, not the site root -- fine for "/" or any single-segment
+# route, but a direct/bookmarked/refreshed load of a 2+-segment route
+# (e.g. /flocks/<id>/pigeons/<id>) resolves it to a nonexistent path
+# nested under that route and 404s, leaving the page unstyled. Confirmed
+# this reproduces in the actual prod artifact, not just `dx serve`:
+# wrangler's static-assets handler serves this exact index.html verbatim
+# for any unmatched path (`not_found_handling = "single-page-application"`
+# in wrangler.toml), so the browser — not the server — is what resolves
+# the bad relative path. Root-fixing every such href here is simpler and
+# safer than a <base href="/"> tag, which would silently affect any other
+# relative reference added later; this only touches the two tags actually
+# affected, leaving the already-correct wasm loader tag untouched.
+INDEX_HTML="../target/dx/fancier/release/web/public/index.html"
+sed -i \
+  -e 's#href="assets/#href="/assets/#g' \
+  -e 's#src="assets/#src="/assets/#g' \
+  "$INDEX_HTML"
