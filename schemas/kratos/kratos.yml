@@ -140,6 +140,87 @@ identity:
 courier:
   smtp:
     connection_uri: smtps://test:test@mailslurper:1025/?skip_ssl_verify=true
+  # Branded HTML/plaintext overrides for the verification/recovery email
+  # flows (task #33), replacing Kratos's stock templates. Versioned as a
+  # subdirectory (v1) rather than the bare courier-templates/ root so a
+  # future redesign can land as v2/ and cut over by changing this one path,
+  # without clobbering the previous version or requiring an in-place rewrite.
+  # This path lives inside the same ./schemas/kratos bind mount
+  # docker-compose.yml already uses for kratos.yml/identity.user.schema.json
+  # (target /opt/kratos/ on the `kratos` service), so no separate volume
+  # entry is needed for it to be visible in the container.
+  template_override_path: /opt/kratos/courier-templates/v1
+  # `template_override_path` above is Ory's documented mechanism and does work
+  # for the subject line (confirmed live against a real recovery flow +
+  # MailSlurper capture) -- but on this exact `oryd/kratos:v25.4` image, the
+  # body (both HTML and plaintext) silently falls back to Kratos's *built-in*
+  # stock body wording instead of reading the override file, even for a
+  # trivial single-line replacement with no template directives at all. No
+  # error is logged (the built-in template renders fine), so this is easy to
+  # miss without literally rendering a real email end-to-end -- config
+  # validation and even `wrangler`-style template parsing both look correct.
+  # The explicit per-flow `templates:` keys below use a different, independent
+  # code path (Kratos fetches the `file://` URI itself rather than resolving
+  # it via template_override_path's directory-glob lookup) and were verified
+  # live to render the real branded HTML correctly. Kept both: the explicit
+  # keys win (a non-empty subject/body URL here always takes priority over
+  # template_override_path), so this is belt-and-suspenders, not redundant
+  # dead config -- if a future Kratos version fixes the underlying bug,
+  # template_override_path alone would already be sufficient and these keys
+  # simply stop mattering.
+  templates:
+    recovery:
+      valid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/recovery/valid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/recovery/valid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/recovery/valid/email.body.plaintext.gotmpl
+      invalid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/recovery/invalid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/recovery/invalid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/recovery/invalid/email.body.plaintext.gotmpl
+    recovery_code:
+      valid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/recovery_code/valid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/recovery_code/valid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/recovery_code/valid/email.body.plaintext.gotmpl
+      invalid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/recovery_code/invalid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/recovery_code/invalid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/recovery_code/invalid/email.body.plaintext.gotmpl
+    verification:
+      valid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/verification/valid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/verification/valid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/verification/valid/email.body.plaintext.gotmpl
+      invalid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/verification/invalid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/verification/invalid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/verification/invalid/email.body.plaintext.gotmpl
+    verification_code:
+      valid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/verification_code/valid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/verification_code/valid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/verification_code/valid/email.body.plaintext.gotmpl
+      invalid:
+        email:
+          subject: file:///opt/kratos/courier-templates/v1/verification_code/invalid/email.subject.gotmpl
+          body:
+            html: file:///opt/kratos/courier-templates/v1/verification_code/invalid/email.body.gotmpl
+            plaintext: file:///opt/kratos/courier-templates/v1/verification_code/invalid/email.body.plaintext.gotmpl
 
 feature_flags:
   use_continue_with_transitions: true

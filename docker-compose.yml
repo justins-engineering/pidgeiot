@@ -40,6 +40,11 @@ services:
       - LOG_LEVEL=info
     command: serve -c /opt/kratos/kratos.yml --dev --watch-courier --sqa-opt-out
     volumes:
+      # This one bind mount also covers courier.template_override_path
+      # (kratos.yml) at /opt/kratos/courier-templates/v1 -- the branded
+      # email templates (task #33) live under ./schemas/kratos too, so no
+      # extra volume entry is required for the container to see them.
+      # --watch-courier (above) hot-reloads template edits without a restart.
       - type: bind
         source: ./schemas/kratos
         target: /opt/kratos/

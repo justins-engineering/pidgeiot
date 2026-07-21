@@ -1,0 +1,21 @@
+PidgeIoT
+========
+
+Confirm your email address
+
+Hi {{ .Identity.traits.email }},
+
+Enter the code below to verify this email address, or use the button to open the verification page directly.
+
+    {{ .VerificationCode }}
+
+Or open the verification page directly:
+{{ .VerificationURL }}
+This code expires in {{ .ExpiresInMinutes }} minutes.
+
+If you did not create a PidgeIoT account, you can safely ignore this email.
+
+--
+This email was sent to {{ .To }} by PidgeIoT.
+(c) Justin's Engineering Services, LLC.
+An open-source IoT platform built in Rust.

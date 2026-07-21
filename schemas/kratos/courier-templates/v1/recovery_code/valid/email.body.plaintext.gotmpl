@@ -1,0 +1,20 @@
+PidgeIoT
+========
+
+Recover your account
+
+Hi {{ .Identity.traits.email }},
+
+Enter the code below on the recovery page to regain access to your PidgeIoT account.
+
+    {{ .RecoveryCode }}
+
+
+This code expires in {{ .ExpiresInMinutes }} minutes.
+
+If you did not request this, you can safely ignore this email &mdash; your account is still secure.
+
+--
+This email was sent to {{ .To }} by PidgeIoT.
+(c) Justin's Engineering Services, LLC.
+An open-source IoT platform built in Rust.
