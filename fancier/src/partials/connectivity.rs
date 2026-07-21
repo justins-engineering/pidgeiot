@@ -49,10 +49,7 @@ pub fn Connectivity() -> Element {
                   title: "Radio icon",
                 }
                 div {
-                  div { class: "flex items-center gap-2 mb-2",
-                    h3 { class: "font-bold text-lg", "Dictionary Logging" }
-                    span { class: "badge badge-xs badge-primary", "Rolling out" }
-                  }
+                  h3 { class: "font-bold text-lg mb-2", "Dictionary Logging" }
                   p { class: "text-sm",
                     "Structured device logs from our Zephyr library, shipped as dictionary-compressed codes instead of raw strings."
                   }

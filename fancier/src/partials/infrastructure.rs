@@ -78,13 +78,10 @@ pub fn Infrastructure() -> Element {
                 title: "Database icon",
               }
             }
-            div { class: "flex items-center gap-2 flex-wrap",
-              h3 { class: "text-2xl font-bold", "No Telemetry Lock-In" }
-              span { class: "badge badge-xs badge-primary", "Rolling out" }
-            }
+            h3 { class: "text-2xl font-bold", "No Telemetry Lock-In" }
           }
           p { class: "leading-relaxed",
-            "Point a device at your own GreptimeDB-compatible endpoint and its telemetry goes straight there instead of our default store — your data, your database."
+            "Point a device at your own GreptimeDB-compatible endpoint and its telemetry goes straight there instead of our default self-hosted GreptimeDB store — your data, your database."
           }
         }
         div {

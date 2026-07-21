@@ -47,3 +47,6 @@ pub use connection_badge::ConnectionBadge;
 
 mod board_select;
 pub use board_select::{BOARD_DATALIST_ID, BoardDatalist};
+
+mod maturity_badge;
+pub use maturity_badge::{Maturity, MaturityBadge};
