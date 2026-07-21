@@ -1191,7 +1191,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "js-sys",
- "ory-kratos-client-wasm 0.2.3 (git+https://github.com/justins-engineering/kratos-client-rust.git)",
+ "ory-kratos-client-wasm 0.2.4 (git+https://github.com/justins-engineering/kratos-client-rust.git)",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -1314,7 +1314,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "js-sys",
- "ory-kratos-client-wasm 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ory-kratos-client-wasm 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "pulldown-cmark",
  "serde",
  "serde-wasm-bindgen",
@@ -2086,9 +2086,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.187"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "a7743783ea728ef5c31194c6590797eed286449b4a4e87d626d8a51f0a94e732"
 
 [[package]]
 name = "libloading"
@@ -2416,9 +2416,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "ory-kratos-client-wasm"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d08b0ec7622b0a7e9a31c8459e37d61c27b1b8d9b132e6c8ad0f81a965ea17c2"
+checksum = "737f6882f148e08ed5fd0b3cf48bb7097795f51c9735b89dd0b4e84bf28037fa"
 dependencies = [
  "gloo-utils 0.3.0",
  "serde",
@@ -2433,8 +2433,8 @@ dependencies = [
 
 [[package]]
 name = "ory-kratos-client-wasm"
-version = "0.2.3"
-source = "git+https://github.com/justins-engineering/kratos-client-rust.git#dc4aac0f52d5732546489e69c33464c228083f60"
+version = "0.2.4"
+source = "git+https://github.com/justins-engineering/kratos-client-rust.git#1dc0bdceab76b76c6c4321cc11b679bc8fc2eecb"
 dependencies = [
  "gloo-utils 0.3.0",
  "serde",

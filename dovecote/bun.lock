@@ -4,7 +4,7 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "wrangler": "^4.111.0",
+        "wrangler": "^4.112.0",
       },
     },
   },
