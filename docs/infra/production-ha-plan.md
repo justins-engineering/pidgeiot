@@ -9,36 +9,35 @@ drift — treat every number as "roughly this, as of this date," not a quote.
 
 ## TL;DR
 
-- **Node 1 is the US-East anchor, near Springfield, MA.** All 3 nodes need to
-  be in the same broad US-East region for low Raft write latency — but
-  "same region" doesn't have to mean "same city." Springfield to the
-  NJ/NYC/northern-VA corridor is ~100-400 miles of well-peered fiber, which
-  in practice costs single-digit milliseconds of extra round-trip, nothing
-  like the old doc's actual problem (EU vs US, tens to ~100ms). That gap is
-  small enough to not be the deciding factor — see the latency math below.
-- **Top pick: OVH Rise-2 at Vint Hill, VA.** Real bare metal (Proxmox is a
-  non-question, same as node 1 today), 8c/16t + 32-128GB RAM + NVMe for
-  **~$80/mo** [[1]](#sources) — the only surveyed option that's simultaneously
-  on the user's exact target list, cheap, and self-serve-orderable today (no
-  auction roulette, no sales call).
-- **Runner-up: InterServer custom-build in Secaucus, NJ** — the metro
-  physically closest to Springfield of everything surveyed, real bare metal,
-  built-to-order (8-core AMD EPYC/192GB/4TB NVMe spotted at **~$119/mo**,
-  more RAM than needed — a smaller custom config would likely cost less)
-  [[2]](#sources), with a price-lock guarantee against renewal hikes.
-- **Headline budget: ≈ $250-300/mo** for 3× OVH Rise-2 boxes + Cloudflare
-  Load Balancer + incremental R2 — sized to co-run all three stateful
-  services (YugabyteDB, GreptimeDB cluster, Kratos) on the same 3 boxes at
-  hobby-to-small-IoT scale, not enterprise scale. Full BOM below.
+- **Decided: node 1 is a home lab, and does not count as one of the 3 RF3
+  voting members.** The budget below is **3 fresh US-East DC nodes** —
+  node 1 is demoted to a dev/staging box and a cold backup/restore target,
+  not a production quorum vote. Springfield, MA is still the **geographic
+  anchor** that determines where those 3 new boxes should live (NJ/VA
+  corridor, close by), it just isn't itself one of them anymore.
+- **Decided: bare metal + Proxmox is the preference.** Per instruction,
+  this doc quantifies exactly what that preference costs against the
+  cheaper direct-services alternative, side by side — see the cost
+  comparison section. Both totals are reported.
+- **Primary recommendation: 3× OVH Rise-2 at Vint Hill, VA, running
+  Proxmox.** Real bare metal (Proxmox is a non-question, same pattern as
+  node 1 today), 8c/16t + 32-128GB RAM + NVMe for **~$80/mo/box**
+  [[1]](#sources) — **≈ $250-300/mo total**, the cheapest *and*
+  Proxmox-compatible option surveyed.
+- **Cheaper alternative (services run directly, no Proxmox): ≈ $565-590/mo
+  using the Hetzner Cloud CCX line named as the comparison point** —
+  which is actually **more expensive**, not less, than bare metal +
+  Proxmox at current 2026 pricing (see below for why, and for a genuinely
+  cheaper direct-services option instead).
+- **Runner-up bare-metal pick: InterServer custom-build in Secaucus, NJ** —
+  the metro physically closest to Springfield of everything surveyed, real
+  bare metal, built-to-order (8-core AMD EPYC/192GB/4TB NVMe spotted at
+  **~$119/mo**, more RAM than needed — a smaller custom config would
+  likely cost less) [[2]](#sources), with a price-lock guarantee against
+  renewal hikes.
 - **Per-box target spec: 8 cores / 32GB RAM / 2×NVMe / 1Gbps** — this
   matches the user's starting hypothesis almost exactly; see the sizing
   breakdown for why it's not oversized or undersized.
-- **The home-lab-vs-colo question has a real third option**: Springfield
-  itself has genuine carrier-neutral DC space (1 Federal Street — Crown
-  Castle/Lumen/Lightower all present) [[3]](#sources), which changes the
-  framing from "home-lab or move away" to "possibly colo right where node 1
-  already is." Recommendation and caveats below — this is still a decision
-  only the user can make.
 - **GreptimeDB's open-source region-failover needs Kafka remote WAL to be
   fast/automatic** [[4]](#sources) — a finding that didn't exist to the
   same degree in the old doc's analysis. Given the existing
@@ -49,11 +48,13 @@ drift — treat every number as "roughly this, as of this date," not a quote.
 ## Grounding: what changed since the last doc
 
 - The old doc's open questions (where node 1 lives, what RF/HA level is
-  wanted) are now answered by the user directly: **near Springfield, MA**,
-  and **real 3-node automatic-failover HA (RF3)** — not the 2-node
-  data-redundancy-only step the old doc settled for. Its RF2-vs-RF3 quorum
-  math is unchanged and not repeated here; read it there if a refresher is
-  needed.
+  wanted) are now answered by the user directly: node 1 is near
+  Springfield, MA, **and is a home lab, not a candidate voting member** —
+  the target is **real 3-node automatic-failover HA (RF3)** across 3
+  fresh DC nodes, not the 2-node data-redundancy-only step the old doc
+  settled for, and not a mix of one home box + two rented ones either.
+  Its RF2-vs-RF3 quorum math is unchanged and not repeated here; read it
+  there if a refresher is needed.
 - **New constraint this doc adds**: cluster all three stateful services
   (YugabyteDB, GreptimeDB, Kratos) onto the *same* 3 physical boxes, not 9
   separate ones. This is the single biggest cost lever in this plan — see
@@ -106,81 +107,100 @@ here" data point.
   sub-millisecond metro-exact colocation — the NJ/VA options are fine on
   latency grounds alone.
 - The practical decision driver is therefore **not** "which of these
-  metros is technically closest" — it's the home-lab-reliability and
-  Proxmox questions below.
+  metros is technically closest" — the NJ/VA corridor is fine on latency
+  grounds alone, full stop.
 
-## The home-lab-vs-colo question for node 1
+## Node 1's role: home lab, demoted to dev/backup, not a voting member
 
-This is flagged as a decision only the user can make — here's the
-grounding to make it with:
+Settled: node 1 is a home lab, and stays one. It is **not** one of the 3
+RF3 voting members in this plan — all 3 production nodes below are freshly
+provisioned DC hardware. The reasoning that led here, for the record:
 
 - **A residential/home-lab connection is not, on its own, a valid voting
-  member of a production Raft quorum.** Not because of latency (see
-  above), but because of the reliability profile: dynamic IP (workable
-  today via the existing Cloudflare Tunnel model, but worth confirming
-  Yugabyte inter-node RPC — not just the Worker-facing Hyperdrive path — 
-  can tolerate it), no redundant utility feed/generator, no carrier SLA,
-  and consumer-grade upload bandwidth that a Raft leader election storm or
-  a Greptime datanode rebalance could actually saturate. A single
-  ISP-side outage or power blip takes out a voting member exactly when a
-  real production incident is happening — the same "looks safe but
+  member of a production Raft quorum** — not primarily because of latency
+  (the NJ/VA corridor costs single-digit ms, see above), but because of the
+  reliability profile: dynamic IP, no redundant utility feed/generator, no
+  carrier SLA, and consumer-grade upload bandwidth that a Raft leader
+  election storm or a Greptime datanode rebalance could actually saturate.
+  A single ISP-side outage or power blip takes out a voting member exactly
+  when a real production incident is happening — the same "looks safe but
   isn't" trap the old doc calls out for RF2.
-- **New finding this doc adds: Springfield itself has real carrier-neutral
-  DC space.** 1 Federal Street, Springfield, MA hosts Crown Castle,
-  Lumen, and Lightower facilities, and is described as carrier-neutral
-  with cross-connects to multiple providers [[3]](#sources) — this
-  isn't a hypothetical "somewhere in New England," it's the same city as
-  the anchor. **Caveat**: these read, from public sources, as
-  interconnection/carrier-hotel facilities (historically built for
-  telecom fiber meet-me-room use) rather than confirmed self-serve retail
-  1U/quarter-rack colocation for a small operator — none of them publish
-  a retail colo price list the way OVH/Contabo publish dedicated-server
-  pricing. This needs a direct phone/email quote before counting on it,
-  not an assumption either way.
-- **Fallback New England options if 1 Federal St doesn't offer retail
-  single-server colo**: ColoSpace (Marlborough, MA, ~75 min from
-  Springfield, N+1 power, SSAE-16/HIPAA/PCI) [[12]](#sources), or general
-  Boston-area colocation providers — all still comfortably inside the
-  latency budget above.
-- **Recommendation**: try to get a real quote for 1U/quarter-rack colo at
-  1 Federal St (or ColoSpace as backup) before deciding — if either pans
-  out, it's the best of both worlds (anchor stays literally in
-  Springfield, gets real DC power/network). If neither is workable for a
-  single small server at reasonable cost, the fallback is exactly what the
-  task framed it as: **treat the home-lab box as a non-voting 4th/DR
-  node**, and provision all 3 RF3 voting members as rented dedicated
-  servers in the NJ/VA corridor (OVH Rise-2 ×3, below) — the few
-  milliseconds of extra latency is a much smaller cost than carrying a
-  residential connection as a quorum-critical vote. Don't split the
-  difference by making the home box a full voting member "because it's
-  closest" — the reliability gap is the real risk, not the distance.
+- **What node 1 is good for instead**: a dev/staging environment (safe
+  place to test schema changes, new GreptimeDB config, etc. before they
+  touch the production cluster) and a cold backup/restore target — a
+  place the R2 snapshots/dumps described below could also land or be
+  restored to for a local recovery drill, without it ever being in the
+  write path of a live request.
+- **Worth knowing regardless of the voting decision**: Springfield itself
+  has real carrier-neutral DC space — 1 Federal Street hosts Crown
+  Castle, Lumen, and Lightower facilities, carrier-neutral with
+  cross-connects to multiple providers [[3]](#sources). These read, from
+  public sources, as interconnection/carrier-hotel facilities rather than
+  confirmed self-serve retail 1U colocation for a small operator, so this
+  isn't a ready-made answer — but if the home-lab box (or its successor)
+  is ever worth hardening into a more reliable dev/DR node without
+  leaving Springfield, this — or ColoSpace in Marlborough, MA (~75 min
+  away, N+1 power, SSAE-16/HIPAA/PCI) [[12]](#sources) — is where to call
+  first. Not required for this plan's production budget either way.
 
-## Proxmox vs. running services directly
+## Cost comparison: bare metal + Proxmox (preferred) vs. running services directly
 
-- **On any of the real-bare-metal picks (OVH Rise-2, InterServer,
-  Contabo dedicated, Scaleway Elastic Metal)**: Proxmox works exactly like
-  node 1 does today — it's physical hardware, so there's no nested-virt
-  question at all. This is the path of least operational change: same
-  LXC-per-service pattern, same `pct`/`pveam` tooling, same mental model.
-- **On Hetzner Cloud CCX (Ashburn)**: this is KVM-virtualized dedicated
-  vCPU, not physical bare metal — nested virtualization support is
-  unconfirmed by any official source found in this pass (the same
-  uncertainty the old doc flagged for Hetzner Cloud CCX generally). If
-  cost or availability ever forces this option, run services **directly**
-  via Docker/systemd rather than trying to nest Proxmox on top of an
-  unconfirmed hypervisor policy.
-- **Recommendation**: since the cheapest confirmed option (OVH Rise-2) is
-  also real bare metal, this sidesteps the whole question — keep Proxmox
-  + LXC-per-service, zero new operational pattern to learn. Docker/systemd
-  direct-on-host remains a valid simpler alternative worth considering
-  independent of the virtualization question, though: none of these 3
-  boxes need Proxmox's own multi-tenant VM isolation the way a
-  general-purpose hypervisor host might, and skipping it removes one
-  more layer (Proxmox's own cluster/quorum/patching overhead) between the
-  OS and the actual clustered services. Not a hard blocker either way —
-  call it a wash unless the team specifically wants fewer moving parts.
+The user's preference is bare metal + Proxmox, matching node 1's existing
+pattern — but wants the actual $/mo cost of that preference quantified
+against the cheaper-in-principle alternative (dedicated-vCPU cloud
+instances, running the services directly via Docker/systemd, no Proxmox,
+no nested-virt requirement). Both are fully costed here; **the honest
+finding is that the requested comparison point doesn't actually come out
+cheaper** at current 2026 pricing — read on for why, and for the option
+that would be.
 
-## Topology: what runs on each of the 3 nodes
+- **Bare metal + Proxmox (preferred, primary recommendation)**: on any of
+  the real-bare-metal picks (OVH Rise-2, InterServer, Contabo dedicated,
+  Scaleway Elastic Metal), Proxmox works exactly like node 1 does today —
+  it's physical hardware, so there's no nested-virt question at all. Same
+  LXC-per-service pattern, same `pct`/`pveam` tooling, same mental model
+  as node 1. **3× OVH Rise-2 ≈ $240/mo compute** (full BOM below).
+- **Direct services, no Proxmox — the comparison point named for this
+  exercise: Hetzner Cloud CCX33 in Ashburn, VA.** This is KVM-virtualized
+  dedicated vCPU (8 vCPU / 31GB RAM), not physical bare metal, so
+  Docker/systemd runs directly on the host with no nested-virt question
+  to solve — but at **$0.2534/hr ≈ $185/mo per box** post the June 2026 US
+  repricing [[7]](#sources), **3× CCX33 ≈ $555/mo compute** — noticeably
+  **more** expensive than the bare-metal Proxmox pick, not less. (Hetzner
+  Cloud CCX also has an unconfirmed nested-virt story, which is moot here
+  since the whole point of this column is *not* running Proxmox on it.)
+- **Why the "obvious" alternative isn't actually cheaper**: dedicated-vCPU
+  cloud lines like CCX are priced for guaranteed, isolated compute — closer
+  to bare metal in cost structure than to cheap shared-vCPU cloud VMs — and
+  Hetzner's US CCX line specifically got a 2.1-2.7x repricing in June 2026
+  [[7]](#sources). "No Proxmox" doesn't inherently mean "cheaper"; it only
+  removes the nested-virt question. The real cost lever is whether the
+  compute tier is dedicated/bare-metal-grade or shared/oversubscribed.
+- **A genuinely cheaper direct-services option, for comparison**: ordinary
+  shared-vCPU cloud compute (DigitalOcean Basic Droplets, 8 vCPU/16GB, is
+  $96/mo per box with no regional surcharge for NYC [[20]](#sources); 3× ≈
+  $288/mo compute) sits close to the bare-metal price, though at half the
+  target RAM and with noisy-neighbor/shared-tenancy tradeoffs a dedicated
+  or bare-metal tier doesn't have. This is the more apples-to-apples
+  "cheap and no Proxmox" comparison if the goal is minimum $/mo rather
+  than matching CCX specifically — worth a look if the CCX number above
+  is a deal-breaker, understanding it's a real spec downgrade, not a
+  free lunch.
+- **Recommendation**: keep the stated preference — bare metal + Proxmox on
+  OVH Rise-2. It is simultaneously the **cheapest fully-costed option in
+  this survey** (cheaper than the "skip Proxmox" alternative actually
+  named for comparison) *and* the path of least operational change from
+  node 1's existing pattern. There is no real tradeoff being made here
+  between cost and preference — they point the same direction. The only
+  scenario where "run directly, no Proxmox" saves real money is dropping
+  to a shared-vCPU tier like DigitalOcean's, which is a genuine
+  spec/isolation downgrade, not a like-for-like substitution.
+
+## Topology: what runs on each of the 3 production nodes
+
+**Naming note**: these are 3 freshly provisioned DC boxes (e.g. OVH
+Rise-2 #A/#B/#C below) — not "node 1" from the old doc, which is the
+home lab and sits outside this production quorum entirely (see above).
 
 ```mermaid
 flowchart TB
@@ -191,35 +211,35 @@ flowchart TB
         R2["R2: pidgeiot-firmware /\nGreptimeDB datanode storage"]
     end
 
-    subgraph N1["Node 1 — e.g. OVH Rise-2 #1"]
-        Y1["Yugabyte master + tserver"]
-        G1["Greptime metasrv"]
-        F1["Greptime frontend"]
-        D1["Greptime datanode"]
-        K1["Kratos instance"]
+    subgraph NA["Prod node A — e.g. OVH Rise-2 #1"]
+        YA["Yugabyte master + tserver"]
+        GA["Greptime metasrv"]
+        FA["Greptime frontend"]
+        DA["Greptime datanode"]
+        KA["Kratos instance"]
     end
 
-    subgraph N2["Node 2 — e.g. OVH Rise-2 #2"]
-        Y2["Yugabyte master + tserver"]
-        G2["Greptime metasrv"]
-        F2["Greptime frontend"]
-        D2["Greptime datanode"]
-        K2["Kratos instance"]
+    subgraph NB["Prod node B — e.g. OVH Rise-2 #2"]
+        YB["Yugabyte master + tserver"]
+        GB["Greptime metasrv"]
+        FB["Greptime frontend"]
+        DB["Greptime datanode"]
+        KB["Kratos instance"]
     end
 
-    subgraph N3["Node 3 — e.g. OVH Rise-2 #3"]
-        Y3["Yugabyte master + tserver"]
-        G3["Greptime metasrv"]
-        F3["Greptime frontend"]
-        D3["Greptime datanode"]
-        K3["Kratos instance"]
+    subgraph NC["Prod node C — e.g. OVH Rise-2 #3"]
+        YC["Yugabyte master + tserver"]
+        GC["Greptime metasrv"]
+        FC["Greptime frontend"]
+        DC_["Greptime datanode"]
+        KC["Kratos instance"]
     end
 
-    W --> HD --> Y1 & Y2 & Y3
-    W --> LB --> F1 & F2 & F3
-    LB --> K1 & K2 & K3
-    D1 & D2 & D3 --> R2
-    G1 & G2 & G3 -.->|"metadata (postgres_store\nor separate etcd)"| Y1
+    W --> HD --> YA & YB & YC
+    W --> LB --> FA & FB & FC
+    LB --> KA & KB & KC
+    DA & DB & DC_ --> R2
+    GA & GB & GC -.->|"metadata (postgres_store\nor separate etcd)"| YA
 ```
 
 - **YugabyteDB**: master + tserver on all 3 — the standard RF3 topology,
@@ -349,6 +369,8 @@ flowchart TB
 
 ## Bill of materials + monthly total
 
+**Primary recommendation — bare metal + Proxmox (OVH Rise-2, Vint Hill VA):**
+
 | Line item | Spec | Cost/mo |
 |---|---|---|
 | 3× OVH Rise-2 (Vint Hill, VA) | 8c/16t, 32GB RAM, 2×512GB NVMe, 1-3Gbps each | 3 × $80 = **$240** [[1]](#sources) |
@@ -358,12 +380,33 @@ flowchart TB
 | Cloudflare Workers paid plan | Already in place for Queues/Hyperdrive/R2 today | **$0 incremental** |
 | **Total** | | **≈ $250-300/mo** |
 
-**If InterServer (Secaucus, NJ) or Contabo (NYC) is picked instead** —
-either for closer proximity to Springfield or more built-in RAM headroom —
-substitute 3 × ~$120-150/mo for the compute line, landing the total around
-**≈ $375-475/mo**. Both are real, defensible picks; OVH is the
-budget-optimized answer, InterServer/Contabo the proximity/headroom-
-optimized one.
+**Cost-comparison alternative — direct services, no Proxmox (Hetzner Cloud
+CCX33, Ashburn VA, the comparison point named for this exercise):**
+
+| Line item | Spec | Cost/mo |
+|---|---|---|
+| 3× Hetzner CCX33 (Ashburn, VA) | 8 vCPU, 31GB RAM, KVM dedicated-vCPU, Docker/systemd direct | 3 × $185 = **$555** [[7]](#sources) |
+| Cloudflare Load Balancer | Same 3 pools | **$5-25** [[17]](#sources) |
+| R2 (GreptimeDB datanode storage) | Same | **$0-10** [[16]](#sources) |
+| etcd or postgres_store overhead | Same — compute only | **$0** |
+| **Total** | | **≈ $565-590/mo** |
+
+**The delta: bare metal + Proxmox is ≈ $290-315/mo *cheaper* than the named
+direct-services alternative**, not more expensive — the preference and the
+budget-optimal choice are the same option here. If minimum $/mo regardless
+of spec match is the actual goal, 3× DigitalOcean Basic Droplets (8
+vCPU/16GB, $96/mo each, $288/mo compute, ≈ $300-325/mo total) undercuts
+bare metal by roughly this same margin in the other direction — but at
+half the target RAM and shared-tenancy performance, a real spec downgrade
+rather than a clean substitution.
+
+**If InterServer (Secaucus, NJ) or Contabo (NYC) is picked instead of OVH**
+for the bare-metal option — either for closer proximity to Springfield or
+more built-in RAM headroom — substitute 3 × ~$120-150/mo for the compute
+line, landing the total around **≈ $375-475/mo**. Both are real,
+defensible picks; OVH is the budget-optimized answer, InterServer/Contabo
+the proximity/headroom-optimized one — and both still undercut the named
+CCX alternative.
 
 ## Phasing
 
@@ -390,20 +433,19 @@ optimized one.
 
 ## Open questions for the user
 
-1. **Is 1 Federal St (or ColoSpace) retail-colo-able for a single small
-   server, and at what price?** This doc couldn't confirm it from public
-   sources — it needs a direct quote before the home-lab-vs-colo decision
-   can be finalized either way.
-2. **OVH budget pick vs. InterServer/Contabo proximity-and-headroom pick**
+1. **OVH budget pick vs. InterServer/Contabo proximity-and-headroom pick**
    — both are defensible; which matters more, the ~$150/mo savings or the
    closer metro / extra RAM ceiling?
-3. **etcd vs. postgres_store for Greptime metasrv** — this doc recommends
+2. **etcd vs. postgres_store for Greptime metasrv** — this doc recommends
    postgres_store for footprint reasons, but flags the shared-fate risk
    explicitly; worth a second look once real load patterns exist.
-4. **Is automatic multi-datanode Greptime failover (Kafka remote WAL)
+3. **Is automatic multi-datanode Greptime failover (Kafka remote WAL)
    ever actually wanted**, given the existing Postgres fallback already
    softens the urgency — same open question as the old doc's Greptime
    section, now with the added Kafka-WAL specifics.
+4. **Is it worth calling 1 Federal St / ColoSpace about retail single-server
+   colo** to harden node 1's dev/DR role, given it's no longer a voting
+   member and there's no budget urgency attached to it either way.
 
 ## Sources
 
@@ -492,4 +534,7 @@ optimized one.
     wire protocol via TCP sockets, e.g. node-postgres) —
     [Supported databases and features — Hyperdrive Docs](https://developers.cloudflare.com/hyperdrive/reference/supported-databases-and-features/),
     [Connect to PostgreSQL — Hyperdrive Docs](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/)
+    (accessed 2026-07-22)
+20. DigitalOcean Basic Droplet pricing (8 vCPU/16GB, no regional surcharge) —
+    [DigitalOcean Droplet Pricing](https://www.digitalocean.com/pricing/droplets)
     (accessed 2026-07-22)
