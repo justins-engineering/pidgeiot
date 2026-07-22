@@ -561,21 +561,21 @@ pub struct FirmwareUploadQuery {
   pub board: String,
 }
 
-// --- Alerts (task #32, extended task #38) ---
+// --- Alerts (task #32, extended task #38, #39) ---
 //
 // Model follows docs/design/alerts-triggers.md §1, with one deliberate
 // simplification (see `AlertCondition::MissingReport`'s own doc comment).
-// `Threshold` is evaluated by dovecote's ingest-hook evaluator
-// (`check_telemetry_alerts`, `dovecote/src/helpers/alerts.rs`);
-// `DeviceState`/`MissingReport` are both evaluated by its Cron-Trigger-driven
-// scheduled sweep instead (`evaluate_scheduled_alerts`, same file, task
-// #38) -- see the design doc §2.2/§2.4 for why absence-of-signal
-// conditions can't be decided at ingest time. `RateOfChange` (the doc's
-// fourth condition type) is still deliberately left out of this enum
-// rather than added unevaluated -- it needs a "previous value" lookup this
-// codebase hasn't built yet (design doc §2.2). Adding it later is an
-// additive new variant, not a breaking change to what's here, which is
-// what the doc means by "leave room for more."
+// `Threshold` and `RateOfChange` (task #39) are both evaluated by
+// dovecote's ingest-hook evaluator (`check_telemetry_alerts`,
+// `dovecote/src/helpers/alerts.rs`); `DeviceState`/`MissingReport` are both
+// evaluated by its Cron-Trigger-driven scheduled sweep instead
+// (`evaluate_scheduled_alerts`, same file, task #38) -- see the design doc
+// §2.2/§2.4 for why absence-of-signal conditions can't be decided at
+// ingest time. `RateOfChange` needed a "previous value" lookup this
+// codebase hadn't built yet as of task #38 (design doc §2.2) -- see that
+// variant's own doc comment below for how `check_telemetry_alerts` now
+// sources it (read-before-overwrite in the DO, not a second history
+// round-trip).
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum Comparator {
@@ -616,20 +616,17 @@ pub enum ConnectionStateKind {
 }
 
 /// A boolean predicate over one pigeon's (or one flock's) observable state
-/// (design doc §1.1). `Threshold` is fully evaluated by
-/// `check_telemetry_alerts` at every telemetry ingest; `DeviceState` and
-/// `MissingReport` are both absence-of-signal conditions by definition
-/// (design doc §2.4) -- "went offline/stale" or "nothing arrived in N
-/// seconds" can't be usefully decided at the moment a report just arrived
-/// (that arrival itself proves the pigeon is online), so neither is
-/// evaluated by the ingest-triggered hook. Both are instead evaluated by
-/// dovecote's Cron-Trigger-driven scheduled sweep
+/// (design doc §1.1). `Threshold` and `RateOfChange` are both fully
+/// evaluated by `check_telemetry_alerts` at every telemetry ingest;
+/// `DeviceState` and `MissingReport` are both absence-of-signal conditions
+/// by definition (design doc §2.4) -- "went offline/stale" or "nothing
+/// arrived in N seconds" can't be usefully decided at the moment a report
+/// just arrived (that arrival itself proves the pigeon is online), so
+/// neither is evaluated by the ingest-triggered hook. Both are instead
+/// evaluated by dovecote's Cron-Trigger-driven scheduled sweep
 /// (`helpers/alerts.rs::evaluate_scheduled_alerts`, task #38) -- see that
 /// function's own doc comment for how it derives a pigeon's last-seen
-/// signal. `RateOfChange` (the design doc's fourth condition type) still
-/// isn't modeled here -- it needs a "previous value" lookup this codebase
-/// hasn't built yet (design doc §2.2) -- adding it later is an additive new
-/// variant, not a breaking change to what's here.
+/// signal.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertCondition {
   Threshold {
@@ -651,6 +648,35 @@ pub enum AlertCondition {
   /// anyway. Evaluated the same way as `DeviceState` -- see
   /// `evaluate_scheduled_alerts`'s doc comment (`dovecote/src/helpers/alerts.rs`).
   MissingReport { max_silence_secs: i64 },
+  /// Fires when `key`'s numeric value has moved by more than `max_delta`
+  /// (`|new - old| > max_delta`) since the previous report of that same
+  /// key (task #39, design doc §1.1/§2.2). Edge-triggered, like
+  /// `Threshold` -- a spike is only observable at the moment a new report
+  /// lands next to the one before it, unlike `DeviceState`/`MissingReport`'s
+  /// absence-of-signal checks. `window_secs`, if set, bounds how far apart
+  /// the two samples may be: a gap larger than the window means the two
+  /// reports aren't close enough in time to call the difference a "rate"
+  /// of anything (e.g. a pigeon that was offline for a day and resumed at
+  /// a very different reading is not a spike), so that comparison is
+  /// skipped entirely rather than fired. `None` means no such bound --
+  /// compare against the previous report regardless of how long ago it was.
+  ///
+  /// The "previous value" this needs doesn't live in any table today --
+  /// `pigeon_telemetry` (the DO's own store) is latest-value-per-key, and
+  /// the incoming report's own UPSERT overwrites the only copy before an
+  /// evaluator could otherwise read it. `dovecote::objects::pigeons` solves
+  /// this by reading each key's current row immediately before its UPSERT
+  /// runs (`read_previous_telemetry`), carrying the result alongside the
+  /// new values (`TelemetryWriteResult::previous_values`) to wherever
+  /// `check_telemetry_alerts` ends up running -- no second table, no extra
+  /// history-store round trip. A key with no previous row (this pigeon's
+  /// first-ever report of it) simply has no entry to compare against, so
+  /// this condition can never fire on a first reading.
+  RateOfChange {
+    key: String,
+    max_delta: f64,
+    window_secs: Option<i64>,
+  },
 }
 
 impl Default for AlertCondition {

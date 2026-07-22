@@ -1468,6 +1468,22 @@ async fn handle_ws_telemetry(
     return;
   }
 
+  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
+  // comment (task #39, RateOfChange). Known gap when TELEMETRY_QUEUE *is*
+  // bound (staging today, per queue.rs's own doc comment -- not dev/prod):
+  // this capture is only consulted below, in the no-queue branch. In the
+  // queue-bound branch, alert evaluation instead happens later in
+  // queue.rs, off of write_telemetry_device's own read-before-upsert --
+  // but by then this function's own upsert (just below) has already
+  // overwritten the row, so that later read sees the *new* value, not the
+  // true previous one, and a genuine RateOfChange spike over WS in a
+  // queue-bound environment goes undetected rather than false-firing.
+  // Threading this capture through TelemetryMessage/the queue as well
+  // would close that gap, but is deliberately left as a follow-up rather
+  // than expanding this task's scope further for a combination that
+  // doesn't affect dev or production today.
+  let previous_values = read_previous_telemetry(pigeons, &metrics);
+
   if upsert_telemetry(pigeons, &metrics).is_err() {
     return;
   }
@@ -1505,11 +1521,16 @@ async fn handle_ws_telemetry(
         console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
 
-      // Alert evaluation (task #32) -- same best-effort convention as the
-      // default write above.
-      if let Err(e) =
-        crate::helpers::check_telemetry_alerts(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
-          .await
+      // Alert evaluation (task #32, extended #39) -- same best-effort
+      // convention as the default write above.
+      if let Err(e) = crate::helpers::check_telemetry_alerts(
+        &pigeons.env,
+        &pigeon_id,
+        &metrics,
+        &previous_values,
+        reported_at_ms,
+      )
+      .await
       {
         console_error!("WS telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
       }
@@ -1596,6 +1617,67 @@ fn upsert_telemetry(
   Ok(())
 }
 
+/// One telemetry key's stored value + timestamp from immediately before
+/// this report's `upsert_telemetry` overwrote it -- feeds the
+/// `RateOfChange` alert condition (task #39, see `capsules::AlertCondition`'s
+/// own doc comment for why this exists at all: `pigeon_telemetry` is
+/// latest-value-per-key, so the prior row is gone the instant the UPSERT
+/// runs, and this is the only chance to see it). `reported_at` is the
+/// *previous* report's own unix-seconds timestamp (not this one's), used by
+/// `check_telemetry_alerts` to enforce `RateOfChange::window_secs`.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct PreviousTelemetryValue {
+  pub value: String,
+  pub reported_at: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct TelemetryKeyRow {
+  key: String,
+  value: String,
+  reported_at: i64,
+}
+
+/// Reads whatever is currently stored for exactly the keys `metrics` is
+/// about to overwrite -- MUST be called before `upsert_telemetry` for the
+/// same report, since that call is a destructive UPSERT and this is the
+/// only chance to see the prior value (see `PreviousTelemetryValue`'s doc
+/// comment). A key with no existing row (this pigeon's first-ever report
+/// of it) is simply absent from the result, which
+/// `check_telemetry_alerts`'s `RateOfChange` arm treats as "nothing to
+/// diff against yet" rather than a synthetic zero -- so that condition can
+/// never fire on a pigeon's first reading of a key. Reads the whole table
+/// rather than building a dynamic `IN (?, ...)` clause -- `pigeon_telemetry`
+/// holds one row per distinct key this pigeon has ever reported, the same
+/// bounded size `get_telemetry_latest` already reads unconditionally.
+fn read_previous_telemetry(
+  pigeons: &Pigeons,
+  metrics: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, PreviousTelemetryValue> {
+  let Ok(cursor) = pigeons.sql.exec(
+    "SELECT key, value, reported_at FROM pigeon_telemetry;",
+    None,
+  ) else {
+    return std::collections::HashMap::new();
+  };
+  let Ok(rows) = cursor.to_array::<TelemetryKeyRow>() else {
+    return std::collections::HashMap::new();
+  };
+  rows
+    .into_iter()
+    .filter(|row| metrics.contains_key(&row.key))
+    .map(|row| {
+      (
+        row.key,
+        PreviousTelemetryValue {
+          value: row.value,
+          reported_at: row.reported_at,
+        },
+      )
+    })
+    .collect()
+}
+
 /// Device-facing telemetry ingestion. Same device-auth model as
 /// `get_shadow_device`/`report_shadow_device` (bearer token verified against
 /// this pigeon's own `device_public_key`, no `X-User-Id`/ACL). Body is a
@@ -1630,6 +1712,10 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
+  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
+  // comment (task #39, RateOfChange).
+  let previous_values = read_previous_telemetry(pigeons, &metrics);
+
   if upsert_telemetry(pigeons, &metrics).is_err() {
     return Response::error("Internal Server Error", 500);
   }
@@ -1643,10 +1729,16 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     console_error!("HTTP telemetry: default write failed for pigeon {pigeon_id}: {e}");
   }
 
-  // Alert evaluation (task #32) -- same best-effort convention as the
-  // default write above.
-  if let Err(e) =
-    crate::helpers::check_telemetry_alerts(&pigeons.env, &pigeon_id, &metrics, reported_at_ms).await
+  // Alert evaluation (task #32, extended #39) -- same best-effort
+  // convention as the default write above.
+  if let Err(e) = crate::helpers::check_telemetry_alerts(
+    &pigeons.env,
+    &pigeon_id,
+    &metrics,
+    &previous_values,
+    reported_at_ms,
+  )
+  .await
   {
     console_error!("HTTP telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
   }
@@ -1683,11 +1775,15 @@ async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Resp
 /// `pub` (and its fields) so the queue consumer (`queue.rs`) can deserialize
 /// this same shape from the DO's write response and decide, without
 /// duplicating the type, whether to forward externally or write our own PG
-/// history (task #18, part 2).
+/// history (task #18, part 2). `previous_values` (task #39) rides along the
+/// same way, so `check_telemetry_alerts` can evaluate `RateOfChange` at the
+/// queue-consumer call site without a second DO round trip -- see
+/// `PreviousTelemetryValue`'s doc comment.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TelemetryWriteResult {
   pub metrics: std::collections::HashMap<String, String>,
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
+  pub previous_values: std::collections::HashMap<String, PreviousTelemetryValue>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1722,6 +1818,10 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
+  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
+  // comment (task #39, RateOfChange).
+  let previous_values = read_previous_telemetry(pigeons, &metrics);
+
   if upsert_telemetry(pigeons, &metrics).is_err() {
     return Response::error("Internal Server Error", 500);
   }
@@ -1729,6 +1829,7 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
   Response::from_json(&TelemetryWriteResult {
     metrics,
     telemetry_endpoint: read_telemetry_endpoint(pigeons),
+    previous_values,
   })
 }
 

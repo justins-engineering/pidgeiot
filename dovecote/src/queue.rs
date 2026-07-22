@@ -137,6 +137,7 @@ async fn dispatch_to_do(
         Ok(TelemetryWriteResult {
           metrics,
           telemetry_endpoint: Some(endpoint),
+          previous_values: _,
         }) => {
           if let Err(e) =
             forward_line_protocol(&endpoint, &body.pigeon_id, &metrics, body.reported_at_ms).await
@@ -151,6 +152,7 @@ async fn dispatch_to_do(
         Ok(TelemetryWriteResult {
           metrics,
           telemetry_endpoint: None,
+          previous_values,
         }) => {
           if let Err(e) =
             write_telemetry_default(env, &body.pigeon_id, &metrics, body.reported_at_ms).await
@@ -161,11 +163,17 @@ async fn dispatch_to_do(
             );
           }
 
-          // Alert evaluation (task #32) -- best-effort, alongside the
-          // default write above, same "log and move on, never fail/retry
-          // the queue message" convention.
-          if let Err(e) =
-            check_telemetry_alerts(env, &body.pigeon_id, &metrics, body.reported_at_ms).await
+          // Alert evaluation (task #32, extended #39) -- best-effort,
+          // alongside the default write above, same "log and move on,
+          // never fail/retry the queue message" convention.
+          if let Err(e) = check_telemetry_alerts(
+            env,
+            &body.pigeon_id,
+            &metrics,
+            &previous_values,
+            body.reported_at_ms,
+          )
+          .await
           {
             console_error!(
               "Telemetry consumer: alert evaluation failed for '{}': {e}",
@@ -201,10 +209,20 @@ async fn dispatch_to_do(
                 );
               }
 
-              // Alert evaluation (task #32) -- same best-effort convention
-              // as the fallback write above.
-              if let Err(e) =
-                check_telemetry_alerts(env, &body.pigeon_id, &metrics, body.reported_at_ms).await
+              // Alert evaluation (task #32, extended #39) -- same
+              // best-effort convention as the fallback write above.
+              // `previous_values` isn't available here -- the DO's own
+              // response (the only place it's carried) is exactly what
+              // failed to parse -- so RateOfChange can't be evaluated on
+              // this degraded path; Threshold still can, same as before.
+              if let Err(e) = check_telemetry_alerts(
+                env,
+                &body.pigeon_id,
+                &metrics,
+                &std::collections::HashMap::new(),
+                body.reported_at_ms,
+              )
+              .await
               {
                 console_error!(
                   "Telemetry consumer: alert evaluation failed for '{}': {e}",

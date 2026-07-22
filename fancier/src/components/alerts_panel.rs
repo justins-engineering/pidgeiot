@@ -105,13 +105,13 @@ fn duration_label(secs: i64) -> String {
   }
 }
 
-/// One-line summary of an alert's condition for the list table -- the
-/// three variants `capsules::AlertCondition` has today (see that enum's
-/// own doc comment on why `RateOfChange` isn't modeled yet). All three are
-/// now evaluated by the backend: `Threshold` at every telemetry ingest
-/// (`check_telemetry_alerts`), `DeviceState`/`MissingReport` by the
-/// Cron-Trigger-driven scheduled sweep (`evaluate_scheduled_alerts`, task
-/// #38) -- see `dovecote/src/helpers/alerts.rs`.
+/// One-line summary of an alert's condition for the list table -- the four
+/// variants `capsules::AlertCondition` has today. All four are evaluated
+/// by the backend: `Threshold`/`RateOfChange` at every telemetry ingest
+/// (`check_telemetry_alerts`, task #39 added the latter),
+/// `DeviceState`/`MissingReport` by the Cron-Trigger-driven scheduled sweep
+/// (`evaluate_scheduled_alerts`, task #38) -- see
+/// `dovecote/src/helpers/alerts.rs`.
 fn condition_summary(condition: &AlertCondition) -> String {
   match condition {
     AlertCondition::Threshold {
@@ -138,6 +138,17 @@ fn condition_summary(condition: &AlertCondition) -> String {
         duration_label(*max_silence_secs)
       )
     }
+    AlertCondition::RateOfChange {
+      key,
+      max_delta,
+      window_secs,
+    } => match window_secs {
+      Some(secs) => format!(
+        "{key} changes by > {max_delta} within {}",
+        duration_label(*secs)
+      ),
+      None => format!("{key} changes by > {max_delta}"),
+    },
   }
 }
 
@@ -387,6 +398,7 @@ enum ConditionKind {
   Threshold,
   DeviceState,
   MissingReport,
+  RateOfChange,
 }
 
 /// Create/edit form (task #32). Rendered conditionally by `AlertsSection`
@@ -411,11 +423,13 @@ fn AlertFormModal(
   let mut condition_kind = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
     Some(AlertCondition::DeviceState { .. }) => ConditionKind::DeviceState,
     Some(AlertCondition::MissingReport { .. }) => ConditionKind::MissingReport,
+    Some(AlertCondition::RateOfChange { .. }) => ConditionKind::RateOfChange,
     _ => ConditionKind::Threshold,
   });
 
   let mut key = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
     Some(AlertCondition::Threshold { key, .. }) => key.clone(),
+    Some(AlertCondition::RateOfChange { key, .. }) => key.clone(),
     _ => available_keys.first().cloned().unwrap_or_default(),
   });
   let mut comparator = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
@@ -424,6 +438,18 @@ fn AlertFormModal(
   });
   let mut value_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
     Some(AlertCondition::Threshold { value, .. }) => value.to_string(),
+    _ => String::new(),
+  });
+
+  let mut max_delta_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
+    Some(AlertCondition::RateOfChange { max_delta, .. }) => max_delta.to_string(),
+    _ => String::new(),
+  });
+  let mut window_secs_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
+    Some(AlertCondition::RateOfChange {
+      window_secs: Some(secs),
+      ..
+    }) => (secs / 60).to_string(),
     _ => String::new(),
   });
 
@@ -464,11 +490,25 @@ fn AlertFormModal(
     .trim()
     .parse::<i64>()
     .is_ok_and(|m| m > 0);
+  let max_delta_valid = max_delta_input
+    .read()
+    .trim()
+    .parse::<f64>()
+    .is_ok_and(|v| v > 0.0);
+  let window_secs_valid = window_secs_input.read().trim().is_empty()
+    || window_secs_input
+      .read()
+      .trim()
+      .parse::<i64>()
+      .is_ok_and(|m| m > 0);
   let can_submit = !name.read().trim().is_empty()
     && match condition_kind() {
       ConditionKind::Threshold => !key.read().trim().is_empty() && threshold_value_valid,
       ConditionKind::DeviceState => true,
       ConditionKind::MissingReport => max_silence_valid,
+      ConditionKind::RateOfChange => {
+        !key.read().trim().is_empty() && max_delta_valid && window_secs_valid
+      }
     };
 
   rsx! {
@@ -538,6 +578,31 @@ fn AlertFormModal(
                           }
                           AlertCondition::MissingReport {
                               max_silence_secs: minutes * 60,
+                          }
+                      }
+                      ConditionKind::RateOfChange => {
+                          let Ok(max_delta) = max_delta_input.read().trim().parse::<f64>() else {
+                              return;
+                          };
+                          if max_delta <= 0.0 {
+                              return;
+                          }
+                          let window_raw = window_secs_input.read().trim().to_string();
+                          let window_secs = if window_raw.is_empty() {
+                              None
+                          } else {
+                              let Ok(minutes) = window_raw.parse::<i64>() else {
+                                  return;
+                              };
+                              if minutes <= 0 {
+                                  return;
+                              }
+                              Some(minutes * 60)
+                          };
+                          AlertCondition::RateOfChange {
+                              key: key.read().trim().to_string(),
+                              max_delta,
+                              window_secs,
                           }
                       }
                   };
@@ -613,6 +678,7 @@ fn AlertFormModal(
                     ConditionKind::Threshold => "Threshold",
                     ConditionKind::DeviceState => "DeviceState",
                     ConditionKind::MissingReport => "MissingReport",
+                    ConditionKind::RateOfChange => "RateOfChange",
                 },
                 onchange: move |evt: Event<FormData>| {
                     condition_kind
@@ -620,6 +686,7 @@ fn AlertFormModal(
                             match evt.value().as_str() {
                                 "DeviceState" => ConditionKind::DeviceState,
                                 "MissingReport" => ConditionKind::MissingReport,
+                                "RateOfChange" => ConditionKind::RateOfChange,
                                 _ => ConditionKind::Threshold,
                             },
                         );
@@ -627,6 +694,7 @@ fn AlertFormModal(
                 option { value: "Threshold", "Threshold (telemetry value)" }
                 option { value: "DeviceState", "Device State (offline / stale)" }
                 option { value: "MissingReport", "Missing Report (no telemetry)" }
+                option { value: "RateOfChange", "Rate of Change (spike detection)" }
               }
             }
 
@@ -730,7 +798,7 @@ fn AlertFormModal(
               p { class: "text-xs text-base-content/60 -mt-2",
                 "Fires when this pigeon is classified in the chosen state for at least the given duration (checked every few minutes, not instantly)."
               }
-            } else {
+            } else if condition_kind() == ConditionKind::MissingReport {
               div {
                 label { class: "fieldset-legend text-xs font-semibold mb-1", "Max silence (minutes)" }
                 input {
@@ -748,6 +816,72 @@ fn AlertFormModal(
               }
               if !max_silence_valid && !max_silence_input.read().is_empty() {
                 p { class: "text-error text-xs -mt-2", "Enter a whole number of minutes greater than 0." }
+              }
+            } else {
+              div { class: "grid grid-cols-3 gap-2",
+                div { class: "col-span-3 sm:col-span-1",
+                  label { class: "fieldset-legend text-xs font-semibold mb-1", "Telemetry key" }
+                  if available_keys.is_empty() {
+                    input {
+                      class: "input input-bordered input-sm w-full text-sm font-mono",
+                      r#type: "text",
+                      placeholder: "e.g., battery_mv",
+                      disabled: is_saving(),
+                      value: "{key}",
+                      oninput: move |e| key.set(e.value()),
+                    }
+                  } else {
+                    select {
+                      class: "select select-bordered select-sm w-full text-sm",
+                      disabled: is_saving(),
+                      value: "{key}",
+                      onchange: move |evt: Event<FormData>| key.set(evt.value()),
+                      for k in available_keys.iter().cloned() {
+                        option { value: "{k}", selected: k == key(), "{k}" }
+                      }
+                    }
+                  }
+                }
+                div { class: "col-span-1",
+                  label { class: "fieldset-legend text-xs font-semibold mb-1", "Max delta" }
+                  input {
+                    class: "input input-bordered input-sm w-full text-sm",
+                    r#type: "number",
+                    step: "any",
+                    min: "0",
+                    placeholder: "e.g., 500",
+                    disabled: is_saving(),
+                    value: "{max_delta_input}",
+                    oninput: move |e| max_delta_input.set(e.value()),
+                  }
+                }
+                div { class: "col-span-2 sm:col-span-1",
+                  label { class: "fieldset-legend text-xs font-semibold mb-1",
+                    "Within (minutes, optional)"
+                  }
+                  input {
+                    class: "input input-bordered input-sm w-full text-sm",
+                    r#type: "number",
+                    min: "1",
+                    placeholder: "e.g., 10",
+                    disabled: is_saving(),
+                    value: "{window_secs_input}",
+                    oninput: move |e| window_secs_input.set(e.value()),
+                  }
+                }
+              }
+              p { class: "text-xs text-base-content/60 -mt-2",
+                "Fires when this "
+                if matches!(scope, AlertScope::Flock(_)) { "flock's" } else { "pigeon's" }
+                " telemetry key changes by more than the given amount between two reports."
+                " Leave \"within\" blank to compare against the previous report regardless of"
+                " how long ago it was; set it to ignore a jump after a long silence."
+              }
+              if !max_delta_valid && !max_delta_input.read().is_empty() {
+                p { class: "text-error text-xs -mt-2", "Max delta must be a positive number." }
+              }
+              if !window_secs_valid {
+                p { class: "text-error text-xs -mt-2", "Enter a whole number of minutes greater than 0, or leave blank." }
               }
             }
 
@@ -1003,6 +1137,29 @@ mod tests {
       max_silence_secs: 3600,
     };
     assert_eq!(condition_summary(&cond), "no telemetry for \u{2265} 1h");
+  }
+
+  #[test]
+  fn rate_of_change_condition_summary_without_window() {
+    let cond = AlertCondition::RateOfChange {
+      key: "battery_mv".to_string(),
+      max_delta: 500.0,
+      window_secs: None,
+    };
+    assert_eq!(condition_summary(&cond), "battery_mv changes by > 500");
+  }
+
+  #[test]
+  fn rate_of_change_condition_summary_with_window() {
+    let cond = AlertCondition::RateOfChange {
+      key: "rssi_dbm".to_string(),
+      max_delta: 10.0,
+      window_secs: Some(600),
+    };
+    assert_eq!(
+      condition_summary(&cond),
+      "rssi_dbm changes by > 10 within 10m"
+    );
   }
 
   #[test]

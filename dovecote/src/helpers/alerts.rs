@@ -1,4 +1,5 @@
 use crate::helpers::{FlockAccess, PigeonAccess, get_db_client};
+use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
@@ -394,16 +395,22 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// pigeon or to the flock it belongs to (one query, via a LEFT JOIN against
 /// `pigeons` rather than a second round trip to resolve `flock_id`
 /// first -- this DO already has Hyperdrive access at this exact point in
-/// the request lifecycle, per the design doc's own confirmation). Only
-/// `Threshold` conditions are evaluated here -- see `AlertCondition`'s doc
-/// comment in `capsules` for why `DeviceState`/`MissingReport` are no-ops
-/// in this hook (they're evaluated instead by `evaluate_scheduled_alerts`
-/// below, task #38's Cron-Trigger-driven sweep).
+/// the request lifecycle, per the design doc's own confirmation). `Threshold`
+/// and `RateOfChange` (task #39) conditions are evaluated here -- see
+/// `AlertCondition`'s doc comment in `capsules` for why `DeviceState`/
+/// `MissingReport` are no-ops in this hook (they're evaluated instead by
+/// `evaluate_scheduled_alerts` below, task #38's Cron-Trigger-driven
+/// sweep). `previous` is each reported key's prior value + timestamp,
+/// captured by the caller (`objects/pigeons.rs::read_previous_telemetry`)
+/// before its own UPSERT overwrote it -- the only input `RateOfChange`
+/// needs that `Threshold` doesn't; see `PreviousTelemetryValue`'s doc
+/// comment for why that capture has to happen at the call site, not here.
 pub async fn check_telemetry_alerts(
   env: &Env,
   pigeon_id: &str,
   metrics: &HashMap<String, String>,
-  _reported_at_ms: u64,
+  previous: &HashMap<String, PreviousTelemetryValue>,
+  reported_at_ms: u64,
 ) -> Result<()> {
   if metrics.is_empty() {
     return Ok(());
@@ -434,26 +441,59 @@ pub async fn check_telemetry_alerts(
   for row in &rows {
     let def = AlertDefinition::from(row_to_alert_definition_row(row));
 
-    let AlertCondition::Threshold {
-      key,
-      comparator,
-      value,
-    } = &def.condition
-    else {
+    let is_true = match &def.condition {
+      AlertCondition::Threshold {
+        key,
+        comparator,
+        value,
+      } => {
+        let Some(raw) = metrics.get(key) else {
+          continue;
+        };
+        let Ok(observed) = raw.parse::<f64>() else {
+          continue;
+        };
+        comparator.evaluate(observed, *value)
+      }
+      AlertCondition::RateOfChange {
+        key,
+        max_delta,
+        window_secs,
+      } => {
+        let Some(raw) = metrics.get(key) else {
+          continue;
+        };
+        let Ok(observed) = raw.parse::<f64>() else {
+          continue;
+        };
+        // No previous row for this key -- either this pigeon's first-ever
+        // report of it, or the previous value wasn't numeric. Either way,
+        // nothing to diff against yet, so this can never fire on a first
+        // reading (capsules::AlertCondition::RateOfChange's own doc
+        // comment).
+        let Some(prev) = previous.get(key) else {
+          continue;
+        };
+        let Ok(prev_value) = prev.value.parse::<f64>() else {
+          continue;
+        };
+        if let Some(window) = window_secs {
+          let gap_secs = (reported_at_ms / 1000) as i64 - prev.reported_at;
+          if gap_secs > *window {
+            // The two samples are too far apart in time to call their
+            // difference a "rate" of anything (e.g. resuming after a long
+            // silence at a very different reading is not a spike) -- skip
+            // rather than fire.
+            continue;
+          }
+        }
+        (observed - prev_value).abs() > *max_delta
+      }
       // DeviceState/MissingReport (and any future absence-of-signal
       // variant) aren't ingest-evaluable here -- see AlertCondition's doc
       // comment in capsules and evaluate_scheduled_alerts below.
-      continue;
+      AlertCondition::DeviceState { .. } | AlertCondition::MissingReport { .. } => continue,
     };
-
-    let Some(raw) = metrics.get(key) else {
-      continue;
-    };
-    let Ok(observed) = raw.parse::<f64>() else {
-      continue;
-    };
-
-    let is_true = comparator.evaluate(observed, *value);
 
     if let Err(e) = apply_alert_transition(&client, env, &def, pigeon_id, is_true).await {
       console_error!(
@@ -586,10 +626,10 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
           Some(t) => (now - t).whole_seconds() >= *max_silence_secs,
         },
         // The query above only ever selects DeviceState/MissingReport
-        // definitions -- Threshold never reaches this loop, but the match
-        // stays exhaustive rather than reaching for a wildcard arm that
-        // would silently swallow a future variant too.
-        AlertCondition::Threshold { .. } => continue,
+        // definitions -- Threshold/RateOfChange never reach this loop, but
+        // the match stays exhaustive rather than reaching for a wildcard
+        // arm that would silently swallow a future variant too.
+        AlertCondition::Threshold { .. } | AlertCondition::RateOfChange { .. } => continue,
       };
 
       if let Err(e) = apply_alert_transition(&client, env, &def, &pigeon_id, is_true).await {
