@@ -123,7 +123,7 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone tired of waiting on the next poll interval",
           title: "A Persistent Channel for Config Pushes That Land Instantly",
-          body: "WiFi and mains-powered devices can hold one long-lived WebSocket connection instead of polling — a shadow update reaches the device the moment you push it, and telemetry can ride the same socket. Built on Durable Object hibernation, so an idle connection survives without keeping anything warm. Device-side client is hardware-verified (ESP32-C6, nRF9151); the backend has been proven on staging and hasn't been promoted to production yet.",
+          body: "WiFi and mains-powered devices can hold one long-lived WebSocket connection instead of polling — a shadow update reaches the device the moment you push it, and telemetry can ride the same socket. Built on Durable Object hibernation, so an idle connection survives without keeping anything warm. Device-side client is hardware-verified (ESP32-C6, nRF9151), and the backend is now live in production.",
           maturity: Some(Maturity::Beta),
         }
 
