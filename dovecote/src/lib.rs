@@ -361,10 +361,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let cors = build_cors(&ctx.env, &req);
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
-        // Telemetry queue (task #14) — staging-only for now (see
-        // [env.staging.queues] in wrangler.toml). Environments with no
-        // TELEMETRY_QUEUE binding (dev, prod today) fall through to the
-        // original synchronous direct-DO-write path unchanged.
+        // Telemetry queue (task #14) — bound in both env.staging.queues and
+        // the default/production [[queues.*]] blocks of wrangler.toml
+        // (promoted to production 2026-07-17; an earlier version of this
+        // comment claimed prod fell through to the no-queue path below,
+        // which was wrong — see task #41). Only dev has no TELEMETRY_QUEUE
+        // binding and falls through to the original synchronous
+        // direct-DO-write path unchanged.
         let Ok(telemetry_queue) = ctx.env.queue("TELEMETRY_QUEUE") else {
           // Same device-auth model as the shadow device routes above.
           return proxy_to_pigeon_do(req, "", &obj_id, "/device/telemetry")
@@ -417,6 +420,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           pigeon_id: pigeon_id.clone(),
           metrics_json,
           reported_at_ms: Date::now().as_millis(),
+          // This route enqueues right after a bare auth check (verify_resp
+          // above) -- no DO round trip has happened yet that could capture
+          // a previous value, so there's nothing to carry here.
+          // write_telemetry_device (queue.rs::dispatch_http_sourced) does
+          // that capture itself, unchanged from before task #41. See
+          // TelemetryMessage::previous_values_json's doc comment.
+          previous_values_json: None,
         };
 
         if telemetry_queue.send(message).await.is_err() {

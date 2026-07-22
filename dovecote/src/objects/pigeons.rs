@@ -290,6 +290,7 @@ impl DurableObject for Pigeons {
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/verify" => verify_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/write" => write_telemetry_device(self, req).await,
+      "/pigeon/device/telemetry/endpoint" => read_telemetry_endpoint_device(self, req).await,
       "/pigeon/telemetry/get" => get_telemetry_latest(self, req).await,
       "/pigeon/telemetry-endpoint/update" => update_telemetry_endpoint(self, req).await,
       "/pigeon/authz/check" => check_authorized(self, req).await,
@@ -1469,19 +1470,17 @@ async fn handle_ws_telemetry(
   }
 
   // Must run before upsert_telemetry -- see read_previous_telemetry's doc
-  // comment (task #39, RateOfChange). Known gap when TELEMETRY_QUEUE *is*
-  // bound (staging today, per queue.rs's own doc comment -- not dev/prod):
-  // this capture is only consulted below, in the no-queue branch. In the
-  // queue-bound branch, alert evaluation instead happens later in
-  // queue.rs, off of write_telemetry_device's own read-before-upsert --
-  // but by then this function's own upsert (just below) has already
-  // overwritten the row, so that later read sees the *new* value, not the
-  // true previous one, and a genuine RateOfChange spike over WS in a
-  // queue-bound environment goes undetected rather than false-firing.
-  // Threading this capture through TelemetryMessage/the queue as well
-  // would close that gap, but is deliberately left as a follow-up rather
-  // than expanding this task's scope further for a combination that
-  // doesn't affect dev or production today.
+  // comment (task #39, RateOfChange). NOTE (task #41): TELEMETRY_QUEUE is
+  // bound in every environment except dev (staging AND production -- see
+  // `wrangler.toml`'s default/`[[queues.*]]` blocks -- a prior comment here
+  // claimed this gap "doesn't affect dev or production", which was wrong
+  // for prod). In the queue-bound branch below, this capture is
+  // serialized onto the outgoing `TelemetryMessage` (see
+  // `TelemetryMessage::previous_values_json`'s doc comment) instead of
+  // being recomputed later in `queue.rs` -- recomputing it there, after
+  // this function's own upsert (just below) already ran, would see the
+  // *new* value where a previous one is needed, silently defeating
+  // RateOfChange for every WS-sourced report in a queue-bound environment.
   let previous_values = read_previous_telemetry(pigeons, &metrics);
 
   if upsert_telemetry(pigeons, &metrics).is_err() {
@@ -1497,10 +1496,30 @@ async fn handle_ws_telemetry(
         return;
       };
 
+      // Pre-serialized to a JSON string for the same reason as
+      // `metrics_json` above (see `TelemetryMessage::previous_values_json`'s
+      // doc comment) -- a raw `HashMap` field would hit the identical
+      // serde-wasm-bindgen -> JS `Map` -> `JSON.stringify` == `{}` bug. A
+      // serialization failure here (should never happen for this small,
+      // plain-data map) falls back to `None`, which makes `queue.rs`
+      // dispatch this message down the HTTP-sourced path instead --
+      // reverting to this task's original bug for that one message only,
+      // rather than dropping a report that already landed in this DO.
+      let previous_values_json = match serde_json::to_string(&previous_values) {
+        Ok(json) => Some(json),
+        Err(e) => {
+          console_error!(
+            "WS telemetry: failed to serialize previous_values for pigeon {pigeon_id}: {e}"
+          );
+          None
+        }
+      };
+
       let message = TelemetryMessage {
         pigeon_id: pigeon_id.clone(),
         metrics_json,
         reported_at_ms: Date::now().as_millis(),
+        previous_values_json,
       };
 
       if queue.send(message).await.is_err() {
@@ -1765,7 +1784,13 @@ async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Resp
 /// dispatches messages that already passed `verify_telemetry_device` at
 /// enqueue time -- Durable Objects have no public internet-facing address,
 /// so there is no path for an unauthenticated caller to reach this route
-/// directly.
+/// directly. Only reached for HTTP-sourced queue messages
+/// (`queue.rs::dispatch_http_sourced`) -- WS-sourced messages already
+/// upserted synchronously in `handle_ws_telemetry` before ever being
+/// enqueued, so they're routed to the read-only
+/// `read_telemetry_endpoint_device` below instead (task #41), which skips
+/// re-upserting and re-capturing "previous" values that would no longer be
+/// previous by the time this DO round trip happened.
 /// Response body for `write_telemetry_device`: besides confirming what got
 /// written, it hands the queue consumer (`src/queue.rs`) this pigeon's
 /// `telemetry_endpoint` (task #18) so it can decide, without a second DO
@@ -1830,6 +1855,37 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     metrics,
     telemetry_endpoint: read_telemetry_endpoint(pigeons),
     previous_values,
+  })
+}
+
+/// Response for `read_telemetry_endpoint_device` below -- deliberately its
+/// own small type rather than reusing `TelemetryWriteResult` wholesale, so
+/// the WS-sourced queue path (`queue.rs::dispatch_ws_sourced`) can't
+/// accidentally read a `metrics`/`previous_values` field this route never
+/// populates.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TelemetryEndpointLookup {
+  pub telemetry_endpoint: Option<TelemetryEndpoint>,
+}
+
+/// Trusted-internal, read-only counterpart to `write_telemetry_device` for
+/// WS-originated queue messages (task #41,
+/// `queue.rs::dispatch_ws_sourced`). `handle_ws_telemetry` already upserted
+/// `pigeon_telemetry` synchronously, before enqueueing, and captured this
+/// report's true previous values itself (see its own doc comment) -- so by
+/// the time a WS-sourced message reaches the queue consumer, re-running
+/// `write_telemetry_device`'s upsert would be redundant work, and re-running
+/// its `read_previous_telemetry` would see the value `handle_ws_telemetry`
+/// already wrote rather than the true previous one (the exact bug task #41
+/// fixes). This only fetches this pigeon's `telemetry_endpoint` -- the one
+/// other piece of per-pigeon state the queue consumer needs to decide where
+/// this report's history goes -- with no request body and no table write.
+/// Safe with no auth check for the same reason as `write_telemetry_device`:
+/// reachable only from this Worker's own queue consumer, never exposed to
+/// the internet.
+async fn read_telemetry_endpoint_device(pigeons: &Pigeons, _req: Request) -> Result<Response> {
+  Response::from_json(&TelemetryEndpointLookup {
+    telemetry_endpoint: read_telemetry_endpoint(pigeons),
   })
 }
 
