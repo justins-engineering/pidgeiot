@@ -1,7 +1,8 @@
 use crate::helpers::{FlockAccess, PigeonAccess, get_db_client};
+use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
-  AlertScope, AlertStatus,
+  AlertScope, AlertStatus, ConnectionStateKind, JsonString,
 };
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -25,12 +26,14 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// Fixed debounce window before a continuously-true condition transitions
 /// `Ok -> Firing` (design doc §2.3). The doc's own recommendation is to
 /// scale this per-pigeon off `telemetry_interval` the same way
-/// `fancier::helpers::connection_state::classify` already does -- that
-/// requires moving `classify` into this crate first (design doc §1.3),
-/// which is out of scope for this backend-foundation task. A single fixed
-/// window is a deliberate, documented simplification versus that
-/// recommendation, not an oversight -- see this module's top-level doc
-/// comment.
+/// `connection_state::classify` already does -- `classify` moved into this
+/// workspace's shared `capsules` crate as of task #38 (see
+/// `capsules::connection_state`), which removes the blocker the original
+/// version of this comment called out, but making the debounce itself
+/// interval-adaptive is still a separate, not-yet-done follow-up -- task
+/// #38's own scope was the scheduled evaluator + `MissingReport`, not
+/// reworking this constant. A single fixed window remains a deliberate,
+/// documented simplification, not an oversight.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` address for alert emails sent via Resend (design doc §3.2/§3.3)
@@ -393,7 +396,9 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// first -- this DO already has Hyperdrive access at this exact point in
 /// the request lifecycle, per the design doc's own confirmation). Only
 /// `Threshold` conditions are evaluated here -- see `AlertCondition`'s doc
-/// comment in `capsules` for why `DeviceState` is a no-op in this hook.
+/// comment in `capsules` for why `DeviceState`/`MissingReport` are no-ops
+/// in this hook (they're evaluated instead by `evaluate_scheduled_alerts`
+/// below, task #38's Cron-Trigger-driven sweep).
 pub async fn check_telemetry_alerts(
   env: &Env,
   pigeon_id: &str,
@@ -435,8 +440,9 @@ pub async fn check_telemetry_alerts(
       value,
     } = &def.condition
     else {
-      // DeviceState (and any future variant) isn't ingest-evaluable here --
-      // see AlertCondition's doc comment in capsules.
+      // DeviceState/MissingReport (and any future absence-of-signal
+      // variant) aren't ingest-evaluable here -- see AlertCondition's doc
+      // comment in capsules and evaluate_scheduled_alerts below.
       continue;
     };
 
@@ -458,6 +464,246 @@ pub async fn check_telemetry_alerts(
   }
 
   Ok(())
+}
+
+/// Cron-Trigger-driven scheduled evaluator (design doc §2.4, task #38) --
+/// the counterpart to `check_telemetry_alerts` above for the two condition
+/// types that can't be decided at ingest time: an ingest event arriving is
+/// itself proof the pigeon is online, so "went offline/stale"
+/// (`DeviceState`) and "nothing has arrived in N seconds"
+/// (`MissingReport`) both have to be polled on a timer instead. Wired up
+/// via `wrangler.toml`'s `[triggers] crons` and `src/scheduled.rs`'s
+/// `#[event(scheduled)]` handler, which just calls this and logs whatever
+/// it returns -- best-effort/logged throughout, same convention as every
+/// other cross-store sync in this codebase; a failure here must never
+/// panic the scheduled invocation.
+///
+/// Deliberately does NOT fan out to every matching pigeon's own Durable
+/// Object -- same reasoning the design doc gives for avoiding a per-DO
+/// sweep at fleet scale (§2.4, echoing `docs/design/tenancy-isolation.md`'s
+/// existing case against per-DO fan-out for cross-pigeon queries). "Last
+/// seen" here is resolved entirely from Postgres, via
+/// `resolve_pigeon_last_seen` below: `pigeon_shadow.updated_at` (filtered
+/// through `connection_state::has_never_reported`, same rule `fancier`'s
+/// `PigeonView` already applies) merged with the newest
+/// `pigeon_telemetry_history` row, through the same
+/// `connection_state::classify`/`latest_of` this crate now shares with
+/// `fancier`'s connection badge (task #38's other half -- see
+/// `capsules::connection_state`).
+///
+/// Known gap, documented rather than silently accepted: a pigeon with a
+/// user-configured `telemetry_endpoint` (CLAUDE.md's telemetry-forwarding
+/// note) never gets a row in `pigeon_telemetry_history` -- its reports go
+/// to that endpoint's target instead of Postgres/Greptime history, so this
+/// sweep can only see its shadow signal. Good enough for a v1 scheduled
+/// evaluator; a future iteration could also consult Greptime the way
+/// `query_greptime_history_for_pigeons` already does for the dashboard's
+/// own history routes.
+pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
+  let client = get_db_client(env).await?;
+  ensure_alert_tables(&client).await?;
+
+  // The jsonb `?` "does this top-level key exist" operator matches
+  // AlertCondition's externally-tagged serde encoding exactly (a
+  // `DeviceState` value serializes to `{"DeviceState": {...}}`) -- same
+  // idea as the `ad.pigeon_id = $1 OR ...` scoping check
+  // check_telemetry_alerts already does, just expressed against the JSON
+  // shape instead of a plain column.
+  let rows = client
+    .query_typed(
+      &format!(
+        "SELECT {ALERT_DEFINITION_COLUMNS} FROM alert_definitions
+         WHERE enabled = true
+           AND (condition ? 'DeviceState' OR condition ? 'MissingReport');"
+      ),
+      &[],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Scheduled alert eval: definition lookup failed: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let now = OffsetDateTime::now_utc();
+
+  for row in &rows {
+    let def = AlertDefinition::from(row_to_alert_definition_row(row));
+
+    let pigeon_ids = match resolve_scope_pigeon_ids(&client, &def.scope).await {
+      Ok(ids) => ids,
+      Err(e) => {
+        console_error!(
+          "Scheduled alert eval: scope resolution failed for definition {}: {e}",
+          def.id
+        );
+        continue;
+      }
+    };
+
+    for pigeon_id in pigeon_ids {
+      let seen = match resolve_pigeon_last_seen(&client, &pigeon_id).await {
+        Ok(Some(seen)) => seen,
+        // No pigeon_shadow row -- e.g. the pigeon was deleted between the
+        // scope resolution above and this lookup. Nothing to evaluate.
+        Ok(None) => continue,
+        Err(e) => {
+          console_error!(
+            "Scheduled alert eval: last-seen lookup failed for definition {} / pigeon {pigeon_id}: {e}",
+            def.id
+          );
+          continue;
+        }
+      };
+
+      let is_true = match &def.condition {
+        AlertCondition::DeviceState {
+          state,
+          min_duration_secs,
+        } => {
+          let classified = connection_state::classify(seen.last_seen, seen.interval_secs, now);
+          let target = match state {
+            ConnectionStateKind::Offline => ConnectionState::Offline,
+            ConnectionStateKind::Stale => ConnectionState::Stale,
+          };
+          let mut matched = classified == target;
+          if matched {
+            if let Some(min_secs) = min_duration_secs {
+              // How long the pigeon has been silent doubles as "how long
+              // it's been in this state" -- it entered Offline/Stale the
+              // moment it stopped reporting, so the age of its last-seen
+              // signal already is that duration.
+              let age_secs = seen
+                .last_seen
+                .map(|t| (now - t).whole_seconds())
+                .unwrap_or(i64::MAX);
+              matched = age_secs >= *min_secs;
+            }
+          }
+          matched
+        }
+        AlertCondition::MissingReport { max_silence_secs } => match seen.last_seen {
+          None => true,
+          Some(t) => (now - t).whole_seconds() >= *max_silence_secs,
+        },
+        // The query above only ever selects DeviceState/MissingReport
+        // definitions -- Threshold never reaches this loop, but the match
+        // stays exhaustive rather than reaching for a wildcard arm that
+        // would silently swallow a future variant too.
+        AlertCondition::Threshold { .. } => continue,
+      };
+
+      if let Err(e) = apply_alert_transition(&client, env, &def, &pigeon_id, is_true).await {
+        console_error!(
+          "Scheduled alert eval: transition failed for definition {} / pigeon {pigeon_id}: {e}",
+          def.id
+        );
+      }
+    }
+  }
+
+  Ok(())
+}
+
+/// Every pigeon_id a `DeviceState`/`MissingReport` definition's scope
+/// resolves to (design doc §1.2) -- `Pigeon` is trivially itself; `Flock`
+/// needs a lookup since a flock-scoped alert fires/clears independently
+/// per pigeon currently in it (`capsules::AlertScope`'s own doc comment).
+/// No ownership re-check here, unlike `helpers::telemetry::get_flock_pigeon_ids`
+/// (which exists to gate a *user's* dashboard request) -- this runs from
+/// the scheduled sweep, not on behalf of any one user, and the definition
+/// itself was already created through an owner-gated route
+/// (`create_flock_alert`/`create_pigeon_alert`, both take an
+/// already-checked `FlockAccess`/`PigeonAccess`), so re-deriving ownership
+/// here would just be re-answering a question already settled at
+/// creation time.
+async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result<Vec<String>> {
+  match scope {
+    AlertScope::Pigeon(pigeon_id) => Ok(vec![pigeon_id.clone()]),
+    AlertScope::Flock(flock_id) => {
+      let rows = client
+        .query_typed(
+          "SELECT id FROM pigeons WHERE flock_id = $1;",
+          &[(flock_id, Type::UUID)],
+        )
+        .await
+        .map_err(|e| {
+          console_error!(
+            "Scheduled alert eval: flock pigeon lookup failed for flock {flock_id}: {e}"
+          );
+          Error::RustError("Internal Server Error".into())
+        })?;
+      Ok(rows.into_iter().map(|row| row.get("id")).collect())
+    }
+  }
+}
+
+/// One pigeon's merged "last seen" signal + its own reporting cadence, as
+/// resolved from Postgres for `evaluate_scheduled_alerts` -- see that
+/// function's doc comment for the merge rule and its documented gap
+/// (telemetry-endpoint-forwarding pigeons).
+struct PigeonLastSeen {
+  last_seen: Option<OffsetDateTime>,
+  interval_secs: Option<i64>,
+}
+
+/// Resolves one pigeon's shadow + telemetry-history state in a single
+/// round trip: `pigeon_shadow` for `current_version`/`current_config`
+/// (feeding `has_never_reported`/`telemetry_interval_secs`) and
+/// `updated_at`, LEFT JOINed against a `MAX(reported_at)` aggregate over
+/// `pigeon_telemetry_history` for this pigeon (an aggregate with no
+/// `GROUP BY` always returns exactly one row, even when zero telemetry
+/// rows match, so `ON true` always finds a match -- this can only return
+/// `Ok(None)` when `pigeon_shadow` itself has no row, i.e. an already
+/// (or concurrently) deleted pigeon). Returns `Ok(Some(_))` with
+/// `last_seen: None` for a pigeon that has genuinely never reported
+/// anything, matching `classify`'s own `Unknown` handling.
+async fn resolve_pigeon_last_seen(
+  client: &Client,
+  pigeon_id: &str,
+) -> Result<Option<PigeonLastSeen>> {
+  let row = client
+    .query_typed_opt(
+      "SELECT s.current_version, s.current_config::text AS current_config,
+              s.updated_at AS shadow_updated_at, t.last_at
+       FROM pigeon_shadow s
+       LEFT JOIN (
+         SELECT MAX(reported_at) AS last_at
+         FROM pigeon_telemetry_history
+         WHERE pigeon_id = $1
+       ) t ON true
+       WHERE s.id = $1;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Scheduled alert eval: last-seen lookup failed for pigeon {pigeon_id}: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let Some(row) = row else {
+    return Ok(None);
+  };
+
+  let current_version: i32 = row.get("current_version");
+  let current_config_raw: String = row.get("current_config");
+  let shadow_updated_at: i64 = row.get("shadow_updated_at");
+  let telemetry_last_at: Option<OffsetDateTime> = row.get("last_at");
+
+  let config = JsonString::new(current_config_raw).ok();
+
+  let shadow_last_seen = config
+    .as_ref()
+    .filter(|c| !connection_state::has_never_reported(current_version, c))
+    .and_then(|_| OffsetDateTime::from_unix_timestamp(shadow_updated_at).ok());
+
+  let interval_secs = config
+    .as_ref()
+    .and_then(connection_state::telemetry_interval_secs);
+
+  Ok(Some(PigeonLastSeen {
+    last_seen: connection_state::latest_of([shadow_last_seen, telemetry_last_at]),
+    interval_secs,
+  }))
 }
 
 /// One alert definition's `Ok`/`Firing` state machine for one pigeon

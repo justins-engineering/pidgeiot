@@ -95,6 +95,23 @@ queue = "pidgeiot-telemetry"
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
 
+# Missing-heartbeat / device-state alert sweep (task #38) -- confirmed no
+# `[triggers]` block existed anywhere in this file before this, per
+# docs/design/alerts-triggers.md §2.4's own audit ("Absence-of-data cannot
+# be triggered by an ingest event by definition -- nothing arrives to
+# trigger it"). Every 5 minutes is a starting cadence: frequent enough that
+# a `MissingReport`/`DeviceState` alert's own configurable window/duration
+# (not this cron's interval) is what actually governs how quickly it fires,
+# cheap enough that a Cron Trigger invocation running one Postgres query
+# plus a handful of per-pigeon lookups every 5 minutes is a non-issue on
+# Workers' free/paid cron pricing. Handled by the `#[event(scheduled)]`
+# handler in `src/scheduled.rs`, which calls
+# `helpers::alerts::evaluate_scheduled_alerts` -- best-effort/logged
+# throughout, same convention as every other cross-store sync in this
+# codebase (see root CLAUDE.md).
+[triggers]
+crons = ["*/5 * * * *"]
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 watch_dir = ["./src"]
@@ -113,6 +130,13 @@ watch_dir = ["./src"]
 [env.staging]
 workers_dev = true
 routes = []
+
+# Same missing-heartbeat sweep as the production block above (task #38) --
+# staging gets its own cron since it's a wholly separate Worker script
+# (`dovecote-staging`), evaluating staging's own (disjoint) alert
+# definitions against staging's own pigeons.
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
 
 [env.staging.vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
@@ -155,6 +179,14 @@ binding = "TELEMETRY_QUEUE"
 
 [[env.staging.queues.consumers]]
 queue = "pidgeiot-telemetry-staging"
+
+# Same sweep as prod/staging (task #38). `wrangler dev` doesn't fire this
+# on a real timer, but it does let it be exercised on demand via
+# `curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`
+# (wrangler's local scheduled-event test endpoint), so dev still gets a
+# working config to test against rather than a cron-free carve-out.
+[env.dev.triggers]
+crons = ["*/5 * * * *"]
 
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"

@@ -5,7 +5,7 @@
 // page renders; this view is a summary layer on top of it, not a
 // replacement.
 use crate::components::{ConnectorBadge, Maturity, MaturityBadge};
-use crate::helpers::connection_state::{self, ConnectionState};
+use crate::helpers::connection_state::{self, ConnectionState, ConnectionStateStyle};
 use crate::{Route, api};
 use capsules::{Flock, Pigeon};
 use dioxus::prelude::*;

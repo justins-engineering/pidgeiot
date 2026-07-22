@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+// Connection-state classification (task #31, moved here task #38) --
+// shared by `fancier`'s connection badge and dovecote's scheduled alert
+// evaluator. See that module's own doc comment for the full rationale.
+pub mod connection_state;
+
 #[macro_export]
 macro_rules! unwrap_or_return_response {
   ($expr:expr) => {
@@ -556,20 +561,21 @@ pub struct FirmwareUploadQuery {
   pub board: String,
 }
 
-// --- Alerts (task #32) ---
+// --- Alerts (task #32, extended task #38) ---
 //
-// Model follows docs/design/alerts-triggers.md §1 exactly. This is the
-// backend-foundation slice of that design: only the two condition types
-// that are actually evaluated by dovecote's ingest-hook evaluator today
-// (`Threshold`, `DeviceState` -- see `check_telemetry_alerts` in
-// `dovecote/src/helpers/alerts.rs`) are modeled here. `RateOfChange` and
-// `MissingReport` (the doc's other two condition types) are deliberately
-// left out of this enum rather than added unevaluated -- both need
-// machinery this task doesn't build (a "previous value" lookup for the
-// former, a Cron-Trigger-driven scheduled evaluator for the latter -- see
-// the design doc §2.2/§2.4). Adding them later is an additive new variant,
-// not a breaking change to what's here, which is what the doc means by
-// "leave room for more."
+// Model follows docs/design/alerts-triggers.md §1, with one deliberate
+// simplification (see `AlertCondition::MissingReport`'s own doc comment).
+// `Threshold` is evaluated by dovecote's ingest-hook evaluator
+// (`check_telemetry_alerts`, `dovecote/src/helpers/alerts.rs`);
+// `DeviceState`/`MissingReport` are both evaluated by its Cron-Trigger-driven
+// scheduled sweep instead (`evaluate_scheduled_alerts`, same file, task
+// #38) -- see the design doc §2.2/§2.4 for why absence-of-signal
+// conditions can't be decided at ingest time. `RateOfChange` (the doc's
+// fourth condition type) is still deliberately left out of this enum
+// rather than added unevaluated -- it needs a "previous value" lookup this
+// codebase hasn't built yet (design doc §2.2). Adding it later is an
+// additive new variant, not a breaking change to what's here, which is
+// what the doc means by "leave room for more."
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum Comparator {
@@ -611,14 +617,19 @@ pub enum ConnectionStateKind {
 
 /// A boolean predicate over one pigeon's (or one flock's) observable state
 /// (design doc §1.1). `Threshold` is fully evaluated by
-/// `check_telemetry_alerts` at every telemetry ingest; `DeviceState` is
-/// modeled here but is NOT evaluated by that ingest-triggered hook --
-/// "went offline/stale" is an absence-of-signal condition by definition
-/// (design doc §2.4), so it can't be usefully decided at the moment a
-/// report just arrived (that arrival itself proves the pigeon is online).
-/// Real device-state alerting needs the missing-heartbeat scheduled
-/// evaluator this task explicitly excludes -- see this crate's `CLAUDE.md`
-/// and the design doc for the follow-up.
+/// `check_telemetry_alerts` at every telemetry ingest; `DeviceState` and
+/// `MissingReport` are both absence-of-signal conditions by definition
+/// (design doc §2.4) -- "went offline/stale" or "nothing arrived in N
+/// seconds" can't be usefully decided at the moment a report just arrived
+/// (that arrival itself proves the pigeon is online), so neither is
+/// evaluated by the ingest-triggered hook. Both are instead evaluated by
+/// dovecote's Cron-Trigger-driven scheduled sweep
+/// (`helpers/alerts.rs::evaluate_scheduled_alerts`, task #38) -- see that
+/// function's own doc comment for how it derives a pigeon's last-seen
+/// signal. `RateOfChange` (the design doc's fourth condition type) still
+/// isn't modeled here -- it needs a "previous value" lookup this codebase
+/// hasn't built yet (design doc §2.2) -- adding it later is an additive new
+/// variant, not a breaking change to what's here.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertCondition {
   Threshold {
@@ -630,6 +641,16 @@ pub enum AlertCondition {
     state: ConnectionStateKind,
     min_duration_secs: Option<i64>,
   },
+  /// No telemetry (any key) reported in at least `max_silence_secs` --
+  /// task #38's simplification of the design doc's `MissingReport { key:
+  /// Option<String>, window_secs: i64 }` sketch (§1.1): dropping the
+  /// optional per-key scoping keeps this a straightforward "heartbeat"
+  /// check (has this pigeon reported *anything* recently) rather than a
+  /// per-metric absence check, which `Threshold` combined with a
+  /// dashboard-side "hasn't crossed in a while" isn't really a fit for
+  /// anyway. Evaluated the same way as `DeviceState` -- see
+  /// `evaluate_scheduled_alerts`'s doc comment (`dovecote/src/helpers/alerts.rs`).
+  MissingReport { max_silence_secs: i64 },
 }
 
 impl Default for AlertCondition {

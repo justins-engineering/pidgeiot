@@ -105,9 +105,13 @@ fn duration_label(secs: i64) -> String {
   }
 }
 
-/// One-line summary of an alert's condition for the list table -- the only
-/// two variants `capsules::AlertCondition` has today (see that enum's own
-/// doc comment on why `RateOfChange`/`MissingReport` aren't modeled yet).
+/// One-line summary of an alert's condition for the list table -- the
+/// three variants `capsules::AlertCondition` has today (see that enum's
+/// own doc comment on why `RateOfChange` isn't modeled yet). All three are
+/// now evaluated by the backend: `Threshold` at every telemetry ingest
+/// (`check_telemetry_alerts`), `DeviceState`/`MissingReport` by the
+/// Cron-Trigger-driven scheduled sweep (`evaluate_scheduled_alerts`, task
+/// #38) -- see `dovecote/src/helpers/alerts.rs`.
 fn condition_summary(condition: &AlertCondition) -> String {
   match condition {
     AlertCondition::Threshold {
@@ -128,18 +132,13 @@ fn condition_summary(condition: &AlertCondition) -> String {
       }
       _ => format!("device state = {}", state_label(*state)),
     },
+    AlertCondition::MissingReport { max_silence_secs } => {
+      format!(
+        "no telemetry for \u{2265} {}",
+        duration_label(*max_silence_secs)
+      )
+    }
   }
-}
-
-/// True for a `DeviceState` condition -- surfaced in the list so users
-/// aren't misled into thinking a saved device-state alert is already live.
-/// Grounded directly in `dovecote/src/helpers/alerts.rs::check_telemetry_alerts`,
-/// which explicitly skips every non-`Threshold` condition today (device-state
-/// alerting needs the scheduled missing-heartbeat evaluator described in
-/// docs/design/alerts-triggers.md §2.4, which hasn't landed) -- this is not
-/// speculative, it's what the deployed backend actually does.
-fn is_not_yet_evaluated(condition: &AlertCondition) -> bool {
-  matches!(condition, AlertCondition::DeviceState { .. })
 }
 
 /// Telemetry keys eligible for a Threshold alert (task #32 point 4): a
@@ -324,18 +323,12 @@ fn AlertRow(
   let mut is_toggling = use_signal(|| false);
   let alert_id = alert.id;
   let enabled = alert.enabled;
-  let not_yet_evaluated = is_not_yet_evaluated(&alert.condition);
 
   rsx! {
     tr { class: "hover",
       td { class: "font-semibold text-primary", "{alert.name}" }
       td { class: "font-mono text-xs text-base-content/80",
         div { "{condition_summary(&alert.condition)}" }
-        if not_yet_evaluated {
-          div { class: "text-warning/80 text-[10px] font-sans mt-0.5",
-            "not yet evaluated — needs the scheduled heartbeat check (coming soon)"
-          }
-        }
       }
       td {
         span {
@@ -393,6 +386,7 @@ fn AlertRow(
 enum ConditionKind {
   Threshold,
   DeviceState,
+  MissingReport,
 }
 
 /// Create/edit form (task #32). Rendered conditionally by `AlertsSection`
@@ -416,6 +410,7 @@ fn AlertFormModal(
 
   let mut condition_kind = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
     Some(AlertCondition::DeviceState { .. }) => ConditionKind::DeviceState,
+    Some(AlertCondition::MissingReport { .. }) => ConditionKind::MissingReport,
     _ => ConditionKind::Threshold,
   });
 
@@ -444,6 +439,11 @@ fn AlertFormModal(
     _ => String::new(),
   });
 
+  let mut max_silence_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
+    Some(AlertCondition::MissingReport { max_silence_secs }) => (max_silence_secs / 60).to_string(),
+    _ => String::new(),
+  });
+
   let mut severity = use_signal(|| editing.as_ref().map(|a| a.severity).unwrap_or_default());
   let mut recipient = use_signal(|| match editing.as_ref().map(|a| &a.channel) {
     Some(AlertChannel::Email { to: Some(addr) }) => addr.clone(),
@@ -459,10 +459,16 @@ fn AlertFormModal(
   };
 
   let threshold_value_valid = value_input.read().trim().parse::<f64>().is_ok();
+  let max_silence_valid = max_silence_input
+    .read()
+    .trim()
+    .parse::<i64>()
+    .is_ok_and(|m| m > 0);
   let can_submit = !name.read().trim().is_empty()
     && match condition_kind() {
       ConditionKind::Threshold => !key.read().trim().is_empty() && threshold_value_valid,
       ConditionKind::DeviceState => true,
+      ConditionKind::MissingReport => max_silence_valid,
     };
 
   rsx! {
@@ -521,6 +527,17 @@ fn AlertFormModal(
                           AlertCondition::DeviceState {
                               state: device_state(),
                               min_duration_secs,
+                          }
+                      }
+                      ConditionKind::MissingReport => {
+                          let Ok(minutes) = max_silence_input.read().trim().parse::<i64>() else {
+                              return;
+                          };
+                          if minutes <= 0 {
+                              return;
+                          }
+                          AlertCondition::MissingReport {
+                              max_silence_secs: minutes * 60,
                           }
                       }
                   };
@@ -592,19 +609,24 @@ fn AlertFormModal(
               select {
                 class: "select select-bordered w-full text-sm",
                 disabled: is_saving(),
-                value: if condition_kind() == ConditionKind::Threshold { "Threshold" } else { "DeviceState" },
+                value: match condition_kind() {
+                    ConditionKind::Threshold => "Threshold",
+                    ConditionKind::DeviceState => "DeviceState",
+                    ConditionKind::MissingReport => "MissingReport",
+                },
                 onchange: move |evt: Event<FormData>| {
                     condition_kind
                         .set(
-                            if evt.value() == "DeviceState" {
-                                ConditionKind::DeviceState
-                            } else {
-                                ConditionKind::Threshold
+                            match evt.value().as_str() {
+                                "DeviceState" => ConditionKind::DeviceState,
+                                "MissingReport" => ConditionKind::MissingReport,
+                                _ => ConditionKind::Threshold,
                             },
                         );
                 },
                 option { value: "Threshold", "Threshold (telemetry value)" }
                 option { value: "DeviceState", "Device State (offline / stale)" }
+                option { value: "MissingReport", "Missing Report (no telemetry)" }
               }
             }
 
@@ -673,7 +695,7 @@ fn AlertFormModal(
               if !threshold_value_valid && !value_input.read().is_empty() {
                 p { class: "text-error text-xs -mt-2", "Value must be a number." }
               }
-            } else {
+            } else if condition_kind() == ConditionKind::DeviceState {
               div { class: "grid grid-cols-2 gap-2",
                 div {
                   label { class: "fieldset-legend text-xs font-semibold mb-1", "State" }
@@ -705,8 +727,27 @@ fn AlertFormModal(
                   }
                 }
               }
-              p { class: "text-xs text-warning/80 -mt-2",
-                "Device-state alerts aren't evaluated yet — the backend's scheduled heartbeat checker hasn't landed. This alert will save but won't fire until then."
+              p { class: "text-xs text-base-content/60 -mt-2",
+                "Fires when this pigeon is classified in the chosen state for at least the given duration (checked every few minutes, not instantly)."
+              }
+            } else {
+              div {
+                label { class: "fieldset-legend text-xs font-semibold mb-1", "Max silence (minutes)" }
+                input {
+                  class: "input input-bordered input-sm w-full text-sm",
+                  r#type: "number",
+                  min: "1",
+                  placeholder: "e.g., 60",
+                  disabled: is_saving(),
+                  value: "{max_silence_input}",
+                  oninput: move |e| max_silence_input.set(e.value()),
+                }
+              }
+              p { class: "text-xs text-base-content/60 -mt-2",
+                "Fires when no telemetry (any key) has been reported for this pigeon in at least this many minutes."
+              }
+              if !max_silence_valid && !max_silence_input.read().is_empty() {
+                p { class: "text-error text-xs -mt-2", "Enter a whole number of minutes greater than 0." }
               }
             }
 
@@ -853,8 +894,7 @@ fn DeleteAlertModal(
 mod tests {
   use super::{
     comparator_from_label, comparator_label, condition_summary, duration_label,
-    is_not_yet_evaluated, numeric_keys_from_history, numeric_keys_from_latest, state_from_label,
-    state_label,
+    numeric_keys_from_history, numeric_keys_from_latest, state_from_label, state_label,
   };
   use capsules::{
     AlertCondition, Comparator, ConnectionStateKind, TelemetryHistoryPoint, TelemetryLatest,
@@ -958,22 +998,11 @@ mod tests {
   }
 
   #[test]
-  fn device_state_is_not_yet_evaluated() {
-    let cond = AlertCondition::DeviceState {
-      state: ConnectionStateKind::Offline,
-      min_duration_secs: None,
+  fn missing_report_condition_summary() {
+    let cond = AlertCondition::MissingReport {
+      max_silence_secs: 3600,
     };
-    assert!(is_not_yet_evaluated(&cond));
-  }
-
-  #[test]
-  fn threshold_is_evaluated() {
-    let cond = AlertCondition::Threshold {
-      key: "battery_mv".to_string(),
-      comparator: Comparator::Lt,
-      value: 3300.0,
-    };
-    assert!(!is_not_yet_evaluated(&cond));
+    assert_eq!(condition_summary(&cond), "no telemetry for \u{2265} 1h");
   }
 
   #[test]

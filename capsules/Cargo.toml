@@ -8,3 +8,11 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 time.workspace = true
+
+# `macros` (time::macros::datetime!) is test-only -- needed by
+# connection_state's unit tests (moved here from fancier, task #38), which
+# already relied on it before the move. Same per-crate feature-add pattern
+# fancier/Cargo.toml already uses for its own (non-test) need of this
+# feature.
+[dev-dependencies]
+time = { workspace = true, features = ["macros"] }

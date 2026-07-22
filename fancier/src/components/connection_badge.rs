@@ -1,4 +1,4 @@
-use crate::helpers::connection_state::{ConnectionState, format_last_seen};
+use crate::helpers::connection_state::{ConnectionState, ConnectionStateStyle, format_last_seen};
 use dioxus::prelude::*;
 use time::OffsetDateTime;
 

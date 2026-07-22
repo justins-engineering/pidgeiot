@@ -56,6 +56,7 @@ pub use alerts::check_telemetry_alerts;
 pub use alerts::create_flock_alert;
 pub use alerts::create_pigeon_alert;
 pub use alerts::delete_alert_definition;
+pub use alerts::evaluate_scheduled_alerts;
 pub use alerts::is_alert_owner;
 pub use alerts::list_flock_alerts;
 pub use alerts::list_pigeon_alerts;
