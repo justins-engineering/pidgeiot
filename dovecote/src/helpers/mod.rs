@@ -9,6 +9,7 @@ mod access;
 pub use access::verify_cf_access;
 
 mod flocks;
+pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
 pub use flocks::get_user_flocks;
 

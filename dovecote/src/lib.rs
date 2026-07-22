@@ -1,12 +1,13 @@
 use crate::helpers::{
-  authenticate_browser, check_pigeon_authz, create_flock_alert, create_pigeon_alert,
-  create_user_flock, delete_alert_definition, delete_pigeon_pg_db, get_db_client,
-  get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_alert_owner, is_flock_owner,
-  list_flock_alerts, list_flock_firmware, list_pigeon_alerts, proxy_binary_to_pigeon_do,
-  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, sha256_hex, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do,
+  authenticate_browser, backfill_owner_email, check_pigeon_authz, create_flock_alert,
+  create_pigeon_alert, create_user_flock, delete_alert_definition, delete_pigeon_pg_db,
+  get_db_client, get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_alert_owner,
+  is_flock_owner, list_flock_alerts, list_flock_firmware, list_pigeon_alerts,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
+  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -67,16 +68,63 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
     .with_credentials(true)
 }
 
-/// Validates the Kratos cookie and returns the User ID as a String.
-pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
+/// A validated Kratos session's user id plus (if resolvable) the
+/// identity's own email trait -- see `require_auth_session` below. Named
+/// rather than a bare tuple to match this codebase's existing
+/// proof-of-check style (`PigeonAccess`/`FlockAccess`/`AlertAccess`, task
+/// #36's pattern, `docs/design/tenancy-isolation.md` §2.1), even though
+/// this isn't itself an authorization proof -- just a small, named bundle
+/// of what `require_auth` already extracts from the session.
+pub struct AuthSession {
+  pub user_id: String,
+  pub email: Option<String>,
+}
+
+/// Validates the Kratos cookie and returns the full session identity
+/// (`AuthSession`: user id + the identity's `traits.email`, if present).
+///
+/// `identity.traits` (`ory_kratos_client_wasm::models::Identity`) is
+/// `Option<serde_json::Value>` -- loosely typed coming off the wire, not a
+/// generated struct -- so the email is read via `.get("email")` against
+/// whatever shape it deserializes to. The trait's actual path is verified
+/// against this deployment's own identity schema
+/// (`schemas/kratos/identity.user.schema.json`): `traits.email` is a
+/// top-level, `required` string trait there, so `identity.traits.email` is
+/// the correct (and only) path -- not `identity.traits.identity.email` or
+/// similar. A session that's active but somehow can't resolve an email
+/// (malformed/missing trait) still yields `Ok` with `email: None` rather
+/// than failing the whole request -- most callers of `require_auth` (the
+/// thin wrapper below) never needed the email in the first place, and the
+/// two flock routes that do (`lib.rs`) treat a missing email as "nothing to
+/// write yet," not an authentication failure.
+pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<AuthSession> {
   let session = crate::authenticate_browser(req, env)
     .await
     .map_err(|_| worker::Error::RustError("Unauthorized".to_string()))?;
 
-  session
+  let identity = session
     .identity
-    .map(|identity| identity.id)
-    .ok_or_else(|| worker::Error::RustError("Session missing identity".to_string()))
+    .ok_or_else(|| worker::Error::RustError("Session missing identity".to_string()))?;
+
+  let email = identity
+    .traits
+    .as_ref()
+    .and_then(|traits| traits.get("email"))
+    .and_then(|v| v.as_str())
+    .map(|s| s.to_string());
+
+  Ok(AuthSession {
+    user_id: identity.id,
+    email,
+  })
+}
+
+/// Validates the Kratos cookie and returns the User ID as a String. Thin
+/// wrapper over `require_auth_session` -- kept so the ~25 existing call
+/// sites that only ever needed the user id (every route but the two flock
+/// ones, `lib.rs`) don't need to change shape for this addition.
+pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
+  require_auth_session(req, env).await.map(|s| s.user_id)
 }
 
 // --- MACROS & HELPERS ---
@@ -523,7 +571,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
-      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
         return Response::error("Unauthorized", 401)
           .unwrap()
           .with_cors(&cors);
@@ -531,12 +579,24 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       get_db!(ctx.env, client, &cors);
 
-      let user_flocks = get_user_flocks(&client, &user_id).await?;
+      let user_flocks = get_user_flocks(&client, &auth.user_id).await?;
+
+      // Best-effort backfill of `owner_email` (alerts recipient, task #32
+      // design doc §3.4) for any of this user's flocks created before that
+      // column was populated on create -- never fails this request, same
+      // fire-and-log convention as every other PG-sync side effect in this
+      // codebase.
+      if let Some(email) = &auth.email
+        && let Err(e) = backfill_owner_email(&client, &auth.user_id, email).await
+      {
+        console_error!("owner_email backfill failed for user {}: {e}", auth.user_id);
+      }
+
       Response::from_json(&user_flocks)?.with_cors(&cors)
     })
     .post_async("/flocks", |mut req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
-      let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
         return Response::error("Unauthorized", 401)
           .unwrap()
           .with_cors(&cors);
@@ -556,7 +616,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       get_db!(ctx.env, client, &cors);
 
-      let flock = create_user_flock(&client, &user_id, &payload.name).await?;
+      let flock = create_user_flock(
+        &client,
+        &auth.user_id,
+        &payload.name,
+        auth.email.as_deref(),
+      )
+      .await?;
 
       let headers = Headers::new();
       if headers

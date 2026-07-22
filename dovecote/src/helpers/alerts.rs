@@ -583,12 +583,14 @@ async fn apply_alert_transition(
 /// §3.4): the channel's own explicit override if set, otherwise the owning
 /// flock's stored `owner_email` -- resolved via this definition's own
 /// `flock_id` if flock-scoped, or via its pigeon's `flock_id` if
-/// pigeon-scoped. `owner_email` isn't populated by anything yet (see
-/// init-db.sql's comment on the column) -- until a follow-up wires
-/// `require_auth`/`create_user_flock` to write it from the session's own
-/// `identity.traits`, this resolves to `None` for any alert with no
-/// explicit channel override, and `send_alert_email` logs that clearly
-/// rather than silently dropping the notification.
+/// pigeon-scoped. `owner_email` is populated by `lib.rs`'s
+/// `require_auth_session`/`helpers/flocks.rs` (`create_user_flock` on
+/// create, `backfill_owner_email` opportunistically on `GET /flocks` for
+/// flocks that predate this) from the session's own `identity.traits.email`
+/// -- a flock created (or listed by its owner) before that landed, or one
+/// whose owner has never authenticated since, can still resolve to `None`
+/// here, and `send_alert_email` logs that clearly rather than silently
+/// dropping the notification.
 async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Option<String> {
   let AlertChannel::Email { to } = &def.channel;
   if let Some(explicit) = to {
