@@ -1,5 +1,5 @@
 name = "fancier"
-compatibility_date = "2026-07-15"
+compatibility_date = "2026-07-22"
 send_metrics = false
 # Keep version-preview URLs enabled on prod deploys — staging for this
 # script IS a version preview (`versions upload -c wrangler.staging.toml
