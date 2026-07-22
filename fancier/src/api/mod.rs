@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod firmware;
 pub mod flocks;
 mod helpers;

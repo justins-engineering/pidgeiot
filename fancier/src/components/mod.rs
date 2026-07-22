@@ -50,3 +50,6 @@ pub use board_select::{BOARD_DATALIST_ID, BoardDatalist};
 
 mod maturity_badge;
 pub use maturity_badge::{Maturity, MaturityBadge};
+
+mod alerts_panel;
+pub use alerts_panel::{FlockAlerts, PigeonAlerts};

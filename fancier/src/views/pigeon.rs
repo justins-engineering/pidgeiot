@@ -1,7 +1,7 @@
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::components::{
   BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer,
-  LogViewer, PigeonGraphs, TelemetryEndpointModal,
+  LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::{Route, api};
@@ -131,6 +131,9 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 section { id: "telemetryGraphs",
                   PigeonGraphs { pigeon_id: pigeon_id.clone() }
+                }
+                section { id: "pigeonAlerts",
+                  PigeonAlerts { pigeon_id: pigeon_id.clone() }
                 }
                 section { id: "shadowInfo",
                   ShadowInfo { shadow: pd.shadow.clone() }

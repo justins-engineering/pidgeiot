@@ -2,7 +2,7 @@ use crate::components::SetSessionCookie;
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use crate::helpers::session_cookie_valid;
 use crate::models::AuthState;
-use capsules::{Flock, Pigeon};
+use capsules::{AlertDefinition, Flock, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
 use ory_kratos_client_wasm::apis::configuration::Configuration;
@@ -123,6 +123,13 @@ fn AuthGuard() -> Element {
 struct LocalSession {
   flocks: Signal<HashMap<Uuid, Flock>>,
   pigeons: Signal<HashMap<String, Pigeon>>,
+  // User-defined alerts (task #32) -- keyed by alert id, same shared/additive
+  // cache convention as `flocks`/`pigeons` above: `api::alerts::list_pigeon`/
+  // `list_flock` extend this map, never prune it. `AlertDefinition::scope`
+  // already carries either the owning pigeon_id or flock_id, so callers
+  // filter this map by `scope` locally (see `components::AlertsPanel`)
+  // rather than needing a second, scope-keyed cache.
+  alerts: Signal<HashMap<Uuid, AlertDefinition>>,
 }
 
 #[component]
@@ -155,6 +162,7 @@ pub fn App() -> Element {
   let _local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),
     pigeons: Signal::new(HashMap::new()),
+    alerts: Signal::new(HashMap::new()),
   });
 
   use_resource(move || async move {

@@ -1,5 +1,5 @@
 use crate::components::{
-  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FlockGraphs,
+  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FlockAlerts, FlockGraphs,
 };
 use crate::helpers::connection_state;
 use crate::{Route, api};
@@ -202,6 +202,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 
         section { id: "flockTelemetryGraphs", class: "mt-10",
           FlockGraphs { flock_id }
+        }
+
+        section { id: "flockAlerts", class: "mt-10",
+          FlockAlerts { flock_id }
         }
 
         // One-time token reveal modal. Dismissal — not creation success —

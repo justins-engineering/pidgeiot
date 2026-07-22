@@ -36,6 +36,17 @@ pub fn Dashboard() -> Element {
   let pigeons = local.pigeons;
   let mut last_seen: Signal<HashMap<String, OffsetDateTime>> = use_signal(HashMap::new);
   let mut fleet_data_loaded = use_signal(|| false);
+  // Flock-scoped alert count per flock (task #32) -- deliberately NOT a
+  // fleet-wide total: there is no "list every alert this user owns" route,
+  // only per-pigeon and per-flock listing (dovecote/src/lib.rs's "Alert
+  // Routes"), so a true fleet total would mean fetching every pigeon's own
+  // alerts too -- an N-pigeon fan-out this page's own `MAX_DEVICE_CARDS`
+  // cap and `FLEET_LOOKBACK_HOURS` comment already treat as a cost worth
+  // avoiding for a summary widget. Flock-scoped counts alone are one cheap
+  // call per flock (same shape as the telemetry fetch above), so the card
+  // below is explicit that pigeon-level alerts aren't counted here rather
+  // than silently under-reporting.
+  let mut flock_alert_counts: Signal<HashMap<Uuid, usize>> = use_signal(HashMap::new);
 
   // Populates the two things this page needs that aren't already fetched
   // by the time an authenticated user lands here: each flock's pigeons
@@ -61,6 +72,7 @@ pub fn Dashboard() -> Element {
     let now = OffsetDateTime::now_utc();
     let since = now - time::Duration::hours(FLEET_LOOKBACK_HOURS);
     let mut merged: HashMap<String, OffsetDateTime> = HashMap::new();
+    let mut alert_counts: HashMap<Uuid, usize> = HashMap::new();
 
     for (flock_id, pigeon_ids) in flock_snapshot {
       if !pigeon_ids.is_empty() {
@@ -78,9 +90,13 @@ pub fn Dashboard() -> Element {
             .or_insert(seen);
         }
       }
+      if let Some(alerts) = api::alerts::list_flock(flock_id).await {
+        alert_counts.insert(flock_id, alerts.len());
+      }
     }
 
     last_seen.set(merged);
+    flock_alert_counts.set(alert_counts);
     fleet_data_loaded.set(true);
   });
 
@@ -168,6 +184,8 @@ pub fn Dashboard() -> Element {
   let mut flock_list: Vec<Flock> = flock_map.values().cloned().collect();
   flock_list.sort_by_key(|flock| flock.name.to_lowercase());
   drop(flock_map);
+
+  let total_flock_alerts: usize = flock_alert_counts.read().values().sum();
 
   rsx! {
     section { id: "dashboard",
@@ -351,24 +369,56 @@ pub fn Dashboard() -> Element {
               }
             }
 
-            // Alerts placeholder -- the alerts backend (task #32) has no
-            // data or dashboard-facing API yet, so this is an honest
-            // empty state rather than any fabricated alert.
+            // Alerts summary (task #32) -- the backend + dashboard CRUD are
+            // both real now, so this is no longer the "Planned" placeholder.
+            // Still `Beta`, not badge-free: only Threshold conditions are
+            // actually evaluated today (device-state alerts save but don't
+            // fire yet, see `components::alerts_panel`'s own doc comment),
+            // and this count is flock-scoped alerts only -- there's no
+            // "every alert this user owns" route to total up per-pigeon
+            // alerts too without an expensive per-pigeon fan-out (see the
+            // `flock_alert_counts` comment above).
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-3",
                 h2 { class: "text-lg font-bold", "Alerts" }
-                MaturityBadge { maturity: Maturity::Planned }
+                MaturityBadge { maturity: Maturity::Beta }
               }
-              div { class: "flex flex-col items-center text-center gap-2 py-6",
-                Icon {
-                  width: 32,
-                  height: 32,
-                  icon: LdBellOff,
-                  class: "text-base-content/30",
-                  title: "Alerts coming soon",
+              if !fleet_data_loaded() {
+                div { class: "flex justify-center py-6",
+                  span { class: "loading loading-spinner loading-sm text-primary" }
                 }
-                p { class: "text-sm text-base-content/60 max-w-[22ch]",
-                  "Alerting on telemetry & device state is coming soon."
+              } else if total_flock_alerts == 0 {
+                div { class: "flex flex-col items-center text-center gap-2 py-6",
+                  Icon {
+                    width: 32,
+                    height: 32,
+                    icon: LdBellOff,
+                    class: "text-base-content/30",
+                    title: "No alerts yet",
+                  }
+                  p { class: "text-sm text-base-content/60 max-w-[22ch]",
+                    "No flock-level alerts defined yet."
+                  }
+                  Link {
+                    to: Route::Flocks {},
+                    class: "link link-hover text-xs text-base-content/60",
+                    "Add one from a flock →"
+                  }
+                }
+              } else {
+                div { class: "flex flex-col gap-2",
+                  div { class: "flex items-center justify-between text-sm",
+                    span { class: "text-base-content/70", "Flock-level alerts defined" }
+                    span { class: "font-semibold", "{total_flock_alerts}" }
+                  }
+                  p { class: "text-xs text-base-content/50",
+                    "Per-pigeon alerts aren't counted here — open a pigeon's own page to see those."
+                  }
+                  Link {
+                    to: Route::Flocks {},
+                    class: "link link-hover text-xs text-base-content/60 mt-2",
+                    "Manage alerts in a flock →"
+                  }
                 }
               }
             }
