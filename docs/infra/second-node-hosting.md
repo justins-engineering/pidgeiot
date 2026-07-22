@@ -1,5 +1,14 @@
 # Second Proxmox node — hosting recommendation
 
+> **For the real 3-node HA case (YugabyteDB RF3 + GreptimeDB cluster +
+> Kratos, co-located on 3 US-East boxes near Springfield, MA), see
+> [`production-ha-plan.md`](./production-ha-plan.md) instead** — it
+> supersedes this doc's recommendation for that scenario (notably, the
+> Hetzner Server Auction pick below is EU-only and doesn't apply to a
+> US-East requirement). This doc's RF2-vs-RF3 quorum math and GreptimeDB
+> clustering-architecture explainer are still accurate and referenced from
+> the new doc rather than repeated there.
+
 Researched 2026-07-22. Pricing below is cited inline and will drift — treat
 numbers as "roughly this, as of this date," not a quote.
 
