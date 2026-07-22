@@ -10,7 +10,7 @@ use crate::LocalSession;
 use crate::api::telemetry;
 use crate::components::{ChartSeries, TelemetryChart};
 use crate::local_storage;
-use capsules::TelemetryHistoryPoint;
+use capsules::{TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -230,6 +230,42 @@ fn series_from_flock_history(keys: &[String], points: &[TelemetryHistoryPoint]) 
     .collect()
 }
 
+/// Example keys shown while live telemetry (or a numeric subset of it)
+/// isn't available yet -- see `is_mock_keys` below.
+fn fallback_keys() -> Vec<String> {
+  vec![
+    "battery_mv".to_string(),
+    "uptime_s".to_string(),
+    "rssi_dbm".to_string(),
+  ]
+}
+
+/// Telemetry keys with at least one numeric sample -- a non-numeric-valued
+/// key (e.g. a firmware version string) can't be plotted as a line series;
+/// `series_from_history`/`series_from_flock_history` above already drop
+/// non-numeric points via `value_num`, so a key with none would otherwise
+/// be pickable in `AddGraphModal` and render an empty chart. Mirrors
+/// alerts_panel.rs's `numeric_keys_from_latest`/`numeric_keys_from_history`
+/// (task #32 point 4, see CLAUDE.md's telemetry-forwarding note).
+fn numeric_keys_from_latest(latest: &[TelemetryLatest]) -> Vec<String> {
+  latest
+    .iter()
+    .filter(|l| l.value.trim().parse::<f64>().is_ok())
+    .map(|l| l.key.clone())
+    .collect()
+}
+
+fn numeric_keys_from_history(points: &[TelemetryHistoryPoint]) -> Vec<String> {
+  let mut keys: Vec<String> = points
+    .iter()
+    .filter(|p| p.value_num.is_some())
+    .map(|p| p.key.clone())
+    .collect();
+  keys.sort();
+  keys.dedup();
+  keys
+}
+
 #[component]
 pub fn PigeonGraphs(pigeon_id: String) -> Element {
   let mut graphs = use_signal(|| load_graphs("pigeon", &pigeon_id));
@@ -244,15 +280,17 @@ pub fn PigeonGraphs(pigeon_id: String) -> Element {
       async move {
         match telemetry::get_latest(&pigeon_id).await {
           Some(latest) if !latest.is_empty() => {
-            available_keys.set(latest.into_iter().map(|l| l.key).collect());
-            is_mock_keys.set(false);
+            let keys = numeric_keys_from_latest(&latest);
+            if keys.is_empty() {
+              available_keys.set(fallback_keys());
+              is_mock_keys.set(true);
+            } else {
+              available_keys.set(keys);
+              is_mock_keys.set(false);
+            }
           }
           _ => {
-            available_keys.set(vec![
-              "battery_mv".to_string(),
-              "uptime_s".to_string(),
-              "rssi_dbm".to_string(),
-            ]);
+            available_keys.set(fallback_keys());
             is_mock_keys.set(true);
           }
         }
@@ -345,18 +383,17 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
     let since = until - time::Duration::seconds(TimeRange::Last24h.seconds());
     match telemetry::get_flock_history(&flock_id, since, until).await {
       Some(points) if !points.is_empty() => {
-        let mut keys: Vec<String> = points.into_iter().map(|p| p.key).collect();
-        keys.sort();
-        keys.dedup();
-        available_keys.set(keys);
-        is_mock_keys.set(false);
+        let keys = numeric_keys_from_history(&points);
+        if keys.is_empty() {
+          available_keys.set(fallback_keys());
+          is_mock_keys.set(true);
+        } else {
+          available_keys.set(keys);
+          is_mock_keys.set(false);
+        }
       }
       _ => {
-        available_keys.set(vec![
-          "battery_mv".to_string(),
-          "uptime_s".to_string(),
-          "rssi_dbm".to_string(),
-        ]);
+        available_keys.set(fallback_keys());
         is_mock_keys.set(true);
       }
     }
@@ -634,5 +671,66 @@ fn AddGraphModal(
         }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{numeric_keys_from_history, numeric_keys_from_latest};
+  use capsules::{TelemetryHistoryPoint, TelemetryLatest};
+  use time::OffsetDateTime;
+
+  fn latest(key: &str, value: &str) -> TelemetryLatest {
+    TelemetryLatest {
+      key: key.to_string(),
+      value: value.to_string(),
+      reported_at: OffsetDateTime::UNIX_EPOCH,
+    }
+  }
+
+  fn history_point(key: &str, value: &str, value_num: Option<f64>) -> TelemetryHistoryPoint {
+    TelemetryHistoryPoint {
+      pigeon_id: "p1".to_string(),
+      key: key.to_string(),
+      value: value.to_string(),
+      value_num,
+      reported_at: OffsetDateTime::UNIX_EPOCH,
+    }
+  }
+
+  #[test]
+  fn numeric_keys_from_latest_excludes_non_numeric() {
+    let latest = vec![
+      latest("battery_mv", "3300"),
+      latest("fw_version", "1.2.0"),
+      latest("rssi_dbm", "-71.5"),
+    ];
+    assert_eq!(
+      numeric_keys_from_latest(&latest),
+      vec!["battery_mv", "rssi_dbm"]
+    );
+  }
+
+  #[test]
+  fn numeric_keys_from_history_excludes_key_with_no_numeric_samples() {
+    let points = vec![
+      history_point("battery_mv", "3300", Some(3300.0)),
+      history_point("fw_version", "1.2.0", None),
+      history_point("fw_version", "1.2.1", None),
+    ];
+    assert_eq!(numeric_keys_from_history(&points), vec!["battery_mv"]);
+  }
+
+  #[test]
+  fn numeric_keys_from_history_dedups_and_sorts() {
+    let points = vec![
+      history_point("uptime_s", "10", Some(10.0)),
+      history_point("battery_mv", "3300", Some(3300.0)),
+      history_point("uptime_s", "20", Some(20.0)),
+    ];
+    assert_eq!(
+      numeric_keys_from_history(&points),
+      vec!["battery_mv", "uptime_s"]
+    );
   }
 }
