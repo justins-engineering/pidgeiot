@@ -27,7 +27,25 @@ bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 mkdir -p ./public/assets/styling
 cp ./assets/styling/main.css ./public/assets/styling/main.css
 
-dx build --web --release --debug-symbols=false
+# --ssg (task #42): prerenders every statically-routable page (see
+# `static_routes` server fn, fancier/src/lib.rs) to its own
+# public/<route>/index.html via dioxus-server's incremental renderer, so
+# marketing pages have real content in the initial HTML response instead of
+# an empty shell hydrated by wasm. --force-sequential builds the server
+# target (used only at build time to run the prerender) before the client
+# wasm/js bundle, which the client-side dx CLI docs recommend for fullstack
+# release builds; the "server" binary itself is never shipped or run in
+# production -- wrangler only serves this directory's static files (see
+# wrangler.toml's [assets], no [build].main/worker script). Auth-gated
+# routes (/dashboard, /flocks, /session, /settings) are included in
+# `static_routes` too (dioxus-router only excludes routes with dynamic
+# segments, not layout/auth), but they prerender AuthGuard's "Verifying
+# session..." placeholder -- `Session`'s state Signal starts at
+# `AuthState::Pending` and the client-only cookie check in `use_future`
+# never resolves during the synchronous SSG render, so nothing private ever
+# lands in the static HTML. Confirmed empirically (2026-07-23): no crash,
+# no panic, real prerendered text for /, /features, /pricing, etc.
+dx build --web --ssg --force-sequential --release --debug-symbols=false
 
 # Second, unrelated dx-cli defect in the same [web.resource] tag writer
 # (task #28): the CSS/theme-init.js <link>/<script> tags above land in
@@ -46,8 +64,12 @@ dx build --web --release --debug-symbols=false
 # safer than a <base href="/"> tag, which would silently affect any other
 # relative reference added later; this only touches the two tags actually
 # affected, leaving the already-correct wasm loader tag untouched.
-INDEX_HTML="../target/dx/fancier/release/web/public/index.html"
-sed -i \
+#
+# --ssg (task #42) made this worse, not just present at "/": every
+# prerendered public/<route>/index.html carries its own copy of the same
+# two relative-path tags, one directory level deep, so ALL of them need the
+# same fix -- not just the site-root index.html.
+PUBLIC_DIR="../target/dx/fancier/release/web/public"
+find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
   -e 's#href="assets/#href="/assets/#g' \
-  -e 's#src="assets/#src="/assets/#g' \
-  "$INDEX_HTML"
+  -e 's#src="assets/#src="/assets/#g'

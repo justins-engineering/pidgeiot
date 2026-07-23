@@ -44,7 +44,7 @@ web-sys = { version = "0.3", features = [
   "SubtleCrypto",
 ] }
 js-sys = "0.3"
-dioxus = { version = "0.7", features = ["router"] }
+dioxus = { version = "0.7", features = ["router", "fullstack"] }
 dioxus-free-icons = { version = "0.10", features = [
   "font-awesome-brands",
   "lucide",
@@ -71,3 +71,4 @@ ignored = ["dotenvy"]
 [features]
 default = ["web"]
 web = ["dioxus/web"]
+server = ["dioxus/server"]

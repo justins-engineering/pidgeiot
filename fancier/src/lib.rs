@@ -96,6 +96,24 @@ enum Route {
   PageNotFound { route: Vec<String> },
 }
 
+// SSG spike (task #42): `dx build --ssg` calls this endpoint (must be named
+// exactly "static_routes") to discover which routes to prerender. Dioxus
+// router's `Route::static_routes()` already filters out any route with a
+// dynamic (`:flock_id`) or catch-all (`:..route`) segment, so this returns
+// every public marketing page plus the small number of statically-routable
+// AuthGuard'd pages (`/dashboard`, `/flocks`, `/session`, `/settings`) --
+// those prerender AuthGuard's logged-out redirect state, not real content
+// (see CLAUDE.md's SSG spike note for why that's harmless).
+#[server(endpoint = "static_routes", output = server_fn::codec::Json)]
+async fn static_routes() -> Result<Vec<String>, ServerFnError> {
+  Ok(
+    Route::static_routes()
+      .iter()
+      .map(ToString::to_string)
+      .collect(),
+  )
+}
+
 #[component]
 fn AuthGuard() -> Element {
   let session = use_context::<Session>();
