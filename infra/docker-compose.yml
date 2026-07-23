@@ -20,7 +20,7 @@ services:
       - DSN=postgres://kratos:secret@postgresd:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
     volumes:
       - type: bind
-        source: ./schemas/kratos
+        source: ../schemas/kratos
         target: /opt/kratos
     command: -c /opt/kratos/kratos.yml migrate sql -e --yes
     restart: on-failure
@@ -46,7 +46,7 @@ services:
       # extra volume entry is required for the container to see them.
       # --watch-courier (above) hot-reloads template edits without a restart.
       - type: bind
-        source: ./schemas/kratos
+        source: ../schemas/kratos
         target: /opt/kratos/
     networks:
       - intranet

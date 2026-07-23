@@ -28,7 +28,7 @@ Before you begin, ensure you have the following installed:
 PidgeIoT uses Ory Kratos for identity and session management. Start the local authentication and database containers from the root of the project:
 
 ```sh
-docker-compose -f docker-compose.yml up --force-recreate
+docker-compose -f infra/docker-compose.yml up --force-recreate
 ```
 
 - **Kratos Admin UI:** [http://127.0.0.1:3000](http://127.0.0.1:3000)

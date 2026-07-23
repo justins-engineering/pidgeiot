@@ -8,6 +8,16 @@ A place for our pigeons to rest. The main website and dashboard for PidgeIoT. A 
 - [Bun](https://bun.com/get)
 - [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started/)
 
+### Local services
+
+For login/auth and live API data you also need the backend (`dovecote`) and the
+local Kratos + Postgres services running. Start the services from the repo root
+(see the root README for the full dev setup):
+
+```sh
+docker-compose -f infra/docker-compose.yml up --force-recreate
+```
+
 ### Tailwind CSS
 
 1. Run the following command in the root of the project:

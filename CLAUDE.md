@@ -20,7 +20,7 @@ Three services run in parallel, each in its own terminal, from repo root unless 
 
 ```sh
 # 1. Auth + DB (Kratos, Postgres, MailSlurper)
-docker-compose -f docker-compose.yml up --force-recreate
+docker-compose -f infra/docker-compose.yml up --force-recreate
 
 # 2. Edge backend (dovecote) — served at http://127.0.0.1:8787
 cd dovecote && bunx wrangler dev --ip 127.0.0.1 --port 8787 --env dev
