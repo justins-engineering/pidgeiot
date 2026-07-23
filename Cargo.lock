@@ -4053,9 +4053,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-theme"
-version = "0.1.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "deb938f0903ae7f8eaa065e407ae1179fd6dfab1e1819a6318730ff3298a655a"
+checksum = "005527296f814535865e430996ba652332cca26dabe530e66ad4c50849f9ec9d"
 dependencies = [
  "wasm-bindgen",
  "web-sys",
