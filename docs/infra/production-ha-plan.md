@@ -1,9 +1,9 @@
 # Production 3-node HA plan + budget
 
 Researched 2026-07-22, revised 2026-07-23 (grounded per-node resource
-derivation, full OVH Eco Dedicated lineup, OVH VPS assessment — see
-those sections for what changed and why). This doc **supersedes
-[`second-node-hosting.md`](./second-node-hosting.md)
+derivation, full OVH Eco Dedicated lineup, OVH VPS assessment, and a
+SYS-2-vs-SYS-3 head-to-head — see those sections for what changed and
+why). This doc **supersedes [`second-node-hosting.md`](./second-node-hosting.md)
 for the 3-node/real-HA case** — that doc's YugabyteDB RF2/RF3 reasoning and its
 GreptimeDB clustering-architecture explainer are still correct and referenced
 below rather than repeated; its Hetzner-Server-Auction pick does **not**
@@ -39,6 +39,17 @@ drift — treat every number as "roughly this, as of this date," not a quote.
   less than the Rise-2 pick this doc previously led with** — see the new
   Eco lineup section for the full table and the support-tier tradeoff that
   comes with it.
+- **Checked whether an even cheaper SoYouStart tier is adequate (SYS-2 vs.
+  SYS-3 head-to-head, as requested): no.** SYS-2 itself couldn't be
+  confirmed as currently orderable (its product page errored out on every
+  fetch attempt and it's absent from OVH's live showcase), so the closest
+  verifiable cheaper stand-in (SYS-1, 6c/12t, ~$33/mo) was compared
+  instead — it clears the bare minimum-viable floor but falls short on
+  **cores specifically**, this doc's own identified binding constraint:
+  Yugabyte's 4-core production floor alone eats two-thirds of a 6-core
+  box, leaving too little for the co-located Greptime cluster role +
+  Kratos + overhead. SYS-3's extra 2 cores are worth the ~$80/mo premium
+  (~$960/yr) — see the new head-to-head section.
 - **New: an OVH VPS option was evaluated as requested and is honestly NOT
   recommended for this specific 3-node co-located design**, despite being
   dramatically cheaper (≈ $75-105/mo total) — OVH's VPS line is
@@ -189,6 +200,84 @@ availability in Vint Hill at order time regardless of what's below.
    requirement; no reason to pay $125-129/mo (SYS-4/5) or accept KS-6's
    hard 500Mbps cap when SYS-3 already clears the target at less than
    half the price.
+
+## Head-to-head: is a cheaper SoYouStart tier (SYS-2) adequate, or does SYS-3 earn its premium?
+
+Requested as a direct SYS-2 vs. SYS-3 comparison. **Important data-quality
+note before the numbers**: SYS-2's own product page
+(`eco.us.ovhcloud.com/soyoustart/sys-2/`, and the Canadian equivalent)
+returned an app-level error state on every fetch attempt in this pass, and
+**SYS-2 does not appear at all on OVH's own live SoYouStart showcase page
+right now** — which currently surfaces only SYS-3, SYS-4, SYS-5, and
+SYS-STOR [[22]](#sources). Combined with the Eco catalog's own hardware-
+rotation model (noted above — stock ages from Rise → SoYouStart →
+Kimsufi), this reads as SYS-2 not being a live, orderable tier in the
+*current* generation, rather than a fetch failure — but this doc can't
+fully rule out the latter either, so **confirm directly with OVH whether
+SYS-2 exists as an orderable SKU today before treating anything below as
+final**.
+
+Given that, the closest **verifiable, currently-referenced** cheaper
+SoYouStart tier is **SYS-1**, not SYS-2 — used below as the honest stand-
+in for "the cheaper tier" the comparison is actually asking about:
+
+| | SYS-1 (stand-in for the "cheaper tier" ask) | SYS-3 |
+|---|---|---|
+| CPU | Intel Xeon-E 2136 | Intel Xeon-E 2288G |
+| Cores/threads | **6c/12t** | **8c/16t** |
+| RAM | 32GB+ (max not confirmed) | 32-128GB |
+| Storage | NVMe (exact size/count not confirmed) | 2×960GB NVMe |
+| Bandwidth | Not confirmed in available sources | 1-2 Gbps public, 500Mbps private |
+| Price/mo | **$33.20** [[25]](#sources) | **$60** [[22]](#sources) |
+| US East (Vint Hill) availability | Listed generally for the SoYouStart line, but this specific model's regional stock wasn't independently confirmed | Confirmed |
+
+**Against the derived requirement (minimum viable 4c/8GB, comfortable
+6-8c/16-24GB)**:
+
+- **SYS-1/the cheaper tier clears minimum viable easily** — 6 cores and
+  32GB+ RAM is well past the 4c/8GB floor.
+- **It does *not* comfortably clear the comfortable-headroom target, and
+  the shortfall is exactly on the dimension this doc already identified as
+  the binding constraint: cores.** 6 cores sits at the very bottom edge of
+  the 6-8 core comfortable band, not with room inside it. Work through
+  what that actually means once the box is co-locating three
+  independently-clustered services: Yugabyte's own recommended production
+  floor (4 cores, per citation 21) already consumes **two-thirds of the
+  whole box's 6 cores**, leaving only **2 cores** for the entire
+  GreptimeDB cluster-role footprint (metasrv+frontend+datanode, this doc's
+  own comfortable-headroom estimate for that alone is 2-3 cores) *plus*
+  Kratos *plus* OS/Proxmox/tunnel/monitoring overhead. That doesn't fit —
+  it only works by assuming everything runs at its bare
+  minimum-viable footprint simultaneously, which is a real, specific risk
+  the request called out directly: **a distributed database sharing a box
+  with two other services, with no cushion, is precisely the wrong place
+  to be running hot.** A Raft leader-election storm coinciding with a
+  Greptime region rebalance or compaction — not a hypothetical, just
+  normal operational reality for both systems — would be competing for
+  scheduling time on a box that already has none to spare.
+- **SYS-3's extra 2 cores (8 vs. 6) are exactly the cores this doc's own
+  co-location math needs.** With SYS-3, Yugabyte's 4-core floor leaves 4
+  full cores for Greptime + Kratos + overhead — comfortably covering this
+  doc's own 2-3 + 0.5 + 1 core estimates for those, with a little slack
+  left over for real traffic variance. That's the difference between
+  "sized for what we derived" and "sized for the happy path only."
+
+**Cost delta**: 3× SYS-1 (~$33.20) ≈ $100/mo compute vs. 3× SYS-3 ($60) ≈
+$180/mo compute — **≈ $80/mo ($960/yr) cheaper** for the lower tier.
+
+**Verdict**: the ~$80/mo premium for SYS-3 is worth paying. This doc's own
+resource derivation identified cores — not RAM — as the binding
+constraint for this specific co-located design, and the cheaper tier's
+shortfall lands directly on that constraint, not on some other dimension
+that happens not to matter. $80/mo to avoid running a production
+Raft-consensus database with zero scheduling headroom on a box it shares
+with two other clustered services is a small price for what it buys. The
+cheaper tier (SYS-1, or SYS-2 if it turns out to still exist as an
+orderable SKU) is a reasonable choice for the non-production dev/staging
+role discussed earlier in this doc, or for a future phase where the
+topology is deliberately split so the stateful tier isn't sharing a box
+with anything else — but not for the 3 production, co-located nodes as
+specified.
 
 ## Latency reality check: does Springfield-to-NJ/VA actually matter?
 
@@ -758,4 +847,11 @@ undercut the named CCX alternative.
     OVH support relocated the account) —
     [OVHcloud VPS](https://us.ovhcloud.com/vps/),
     [Thoughts on OVHCloud VPS? — Web Hosting Talk](https://www.webhostingtalk.com/showthread.php?t=1907281)
+    (accessed 2026-07-23)
+25. OVH SoYouStart SYS-1 spec (Xeon-E 2136, 6c/12t, 32GB+ DDR4, NVMe,
+    $33.20/mo) — used as the honest stand-in for "the cheaper SoYouStart
+    tier" since SYS-2's own product page errored out on every fetch
+    attempt and doesn't appear on OVH's current live SoYouStart showcase
+    (see citation 22) —
+    [Cheap Dedicated Hosting: 7 Under $60/Month — Gaurav Tiwari](https://gauravtiwari.org/cheap-dedicated-hosting-server/)
     (accessed 2026-07-23)
