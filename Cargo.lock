@@ -2416,9 +2416,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "ory-kratos-client-wasm"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "737f6882f148e08ed5fd0b3cf48bb7097795f51c9735b89dd0b4e84bf28037fa"
+checksum = "b5203857f9293eef19860ded74a6b9c64e5178fb4c6e3430c51ebbe9ad2d471d"
 dependencies = [
  "gloo-utils 0.3.0",
  "serde",
@@ -2934,9 +2934,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.0"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046"
+checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "web-time",
  "zeroize",
