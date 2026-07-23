@@ -1,6 +1,9 @@
 # Production 3-node HA plan + budget
 
-Researched 2026-07-22. This doc **supersedes [`second-node-hosting.md`](./second-node-hosting.md)
+Researched 2026-07-22, revised 2026-07-23 (grounded per-node resource
+derivation, full OVH Eco Dedicated lineup, OVH VPS assessment — see
+those sections for what changed and why). This doc **supersedes
+[`second-node-hosting.md`](./second-node-hosting.md)
 for the 3-node/real-HA case** — that doc's YugabyteDB RF2/RF3 reasoning and its
 GreptimeDB clustering-architecture explainer are still correct and referenced
 below rather than repeated; its Hetzner-Server-Auction pick does **not**
@@ -19,25 +22,40 @@ drift — treat every number as "roughly this, as of this date," not a quote.
   this doc quantifies exactly what that preference costs against the
   cheaper direct-services alternative, side by side — see the cost
   comparison section. Both totals are reported.
-- **Primary recommendation: 3× OVH Rise-2 at Vint Hill, VA, running
-  Proxmox.** Real bare metal (Proxmox is a non-question, same pattern as
-  node 1 today), 8c/16t + 32-128GB RAM + NVMe for **~$80/mo/box**
-  [[1]](#sources) — **≈ $250-300/mo total**, the cheapest *and*
-  Proxmox-compatible option surveyed.
-- **Cheaper alternative (services run directly, no Proxmox): ≈ $565-590/mo
-  using the Hetzner Cloud CCX line named as the comparison point** —
-  which is actually **more expensive**, not less, than bare metal +
-  Proxmox at current 2026 pricing (see below for why, and for a genuinely
-  cheaper direct-services option instead).
-- **Runner-up bare-metal pick: InterServer custom-build in Secaucus, NJ** —
+- **Revised per-node target, derived bottom-up from the actual components
+  (not assumed): "minimum viable" ≈ 4 cores / 8GB; "comfortable headroom"
+  ≈ 6-8 cores / 16-24GB.** This mostly **confirms** the original 8-core
+  hypothesis rather than debunking it — YugabyteDB's own production-floor
+  guidance alone (4-8 vCPU/node) plus co-locating a real GreptimeDB
+  cluster role and Kratos on the same box adds back up to ~8 cores. The
+  real slack turned out to be in **RAM**, not cores: 32GB was a safe
+  buffer, but ~24GB is the honestly-derived comfortable ceiling. Full
+  derivation below.
+- **Revised primary recommendation: 3× OVH SoYouStart SYS-3 at Vint Hill,
+  VA, running Proxmox — ≈ $60/mo/box, ≈ $180 total compute, ≈ $185-215/mo
+  all-in.** A full survey of OVH's *entire* current Eco Dedicated lineup
+  (not just the Rise tier looked at previously) turned up a same-hardware-
+  class, same-generation-family box on the SoYouStart tier for **$20/mo
+  less than the Rise-2 pick this doc previously led with** — see the new
+  Eco lineup section for the full table and the support-tier tradeoff that
+  comes with it.
+- **New: an OVH VPS option was evaluated as requested and is honestly NOT
+  recommended for this specific 3-node co-located design**, despite being
+  dramatically cheaper (≈ $75-105/mo total) — OVH's VPS line is
+  shared-vCPU only (no dedicated-vCPU VPS tier exists in that product
+  family), and shared vCPU is a real risk specifically for YugabyteDB's
+  Raft consensus and GreptimeDB's datanode I/O, not for the stateless
+  Kratos/frontend tier. Because this plan co-locates the stateful and
+  stateless tiers on the same 3 boxes, the risk profile of the riskiest
+  service (Yugabyte) applies to the whole box. Full assessment below.
+- **Runner-up bare-metal pick, if newest hardware/best support tier
+  matters more than the $20/mo/box delta: OVH Rise-2** (same Vint Hill
+  location, $80/mo) — still a fine choice, just no longer the top one.
+  **Runner-up outside OVH: InterServer custom-build in Secaucus, NJ** —
   the metro physically closest to Springfield of everything surveyed, real
   bare metal, built-to-order (8-core AMD EPYC/192GB/4TB NVMe spotted at
-  **~$119/mo**, more RAM than needed — a smaller custom config would
-  likely cost less) [[2]](#sources), with a price-lock guarantee against
-  renewal hikes.
-- **Per-box target spec: 8 cores / 32GB RAM / 2×NVMe / 1Gbps** — this
-  matches the user's starting hypothesis almost exactly; see the sizing
-  breakdown for why it's not oversized or undersized.
+  **~$119/mo**, more RAM than needed) [[2]](#sources), with a price-lock
+  guarantee against renewal hikes.
 - **GreptimeDB's open-source region-failover needs Kafka remote WAL to be
   fast/automatic** [[4]](#sources) — a finding that didn't exist to the
   same degree in the old doc's analysis. Given the existing
@@ -61,23 +79,54 @@ drift — treat every number as "roughly this, as of this date," not a quote.
   the topology section.
 - Node 1's current footprint is still not in this repo for YugabyteDB
   specifically (only the GreptimeDB LXC script is, at 2 cores/2GB/8+32GB
-  disk — see `infra/proxmox-greptimedb-lxc.sh`). This doc sizes the new
-  boxes off YugabyteDB's own documented minimum (2 cores/2GB — the floor,
-  not a target) and its production-tier guidance (16+ cores/32-64GB —
-  enterprise scale, not this stack's target) [[5]](#sources), the same way
-  the old doc reasoned about Greptime's real footprint vs. Yugabyte's
-  official minimums.
+  disk — see `infra/proxmox-greptimedb-lxc.sh`). See the next section for
+  how this doc now derives the target spec bottom-up instead of assuming
+  it.
 
-## Provider comparison — US-East, sized for ~8 cores / 32GB / 2×NVMe / 1Gbps
+## Grounded per-node resource requirement: what do we actually need?
+
+The original pass in this doc assumed an 8c/32GB/2×NVMe/1Gbps target as a
+starting hypothesis. This section derives it bottom-up from the actual
+components instead, at **current** small-IoT scale (the GreptimeDB
+standalone LXC running today, `infra/proxmox-greptimedb-lxc.sh`, is the
+only real footprint data point this repo has — everything else is
+reasoned from each project's own documented guidance). Two bars are given,
+per the request: **minimum viable** (will run, no slack — not a
+recommendation to actually operate at) and **comfortable headroom**
+(the real target).
+
+| Component (per node) | Minimum viable | Comfortable headroom | Reasoning |
+|---|---|---|---|
+| YugabyteDB master + tserver | 2 cores / 2GB | **4 cores / 8-12GB** | YugabyteDB's own documented absolute floor is 2c/2GB — explicitly "will start," not a real-traffic target [[5]](#sources). But its **production cluster guidance is separately and specifically documented**: "a minimum of 3 nodes with 4 to 8 vCPUs per node is recommended" for production [[21]](#sources) — a real, specific number, not the enterprise-scale 16+-core/32-64GB+ language cited previously, which is for large clusters, not this stack. This doc targets the *low end* of that 4-8 vCPU band (4 cores) given hobby-to-small-IoT traffic. RAM isn't pinned as precisely in that same guidance; 8-12GB is this doc's own estimate, roughly following the same core-to-RAM ratio implied by Yugabyte's other sizing tables. |
+| GreptimeDB cluster roles (metasrv + frontend + datanode, combined) | ~1.5 cores / 2GB | **~2-3 cores / 3-5GB** | Today's *entire* standalone binary (metasrv+frontend+datanode logic all in one process) runs comfortably in 2c/2GB (`proxmox-greptimedb-lxc.sh:46-47`) at real current traffic. Splitting into 3 separate clustered roles, each also replicated ×3 for HA, doesn't reduce total demand, and adds real overhead (heartbeats, region-metadata gossip, 3× the query-routing processes) — so this doc budgets somewhat *more* than today's combined 2c/2GB, not less, once split and clustered. |
+| Kratos instance | ~0.25 core / 256MB | **~0.5 core / 0.5-1GB** | A near-idle stateless Go binary at this request volume; this is the cheapest tier by a wide margin regardless of bar. |
+| etcd (only if chosen over postgres_store) | ~0.25 core / 512MB | **~0.5 core / 1GB** | Optional — see the metasrv metadata-backend section; $0 either way since it's compute already inside the box, not a separate bill line. |
+| OS + Proxmox/Docker + cloudflared + monitoring overhead | ~0.5 core / 1GB | **~1 core / 2GB** | Real but small at this scale — one Cloudflare Tunnel daemon, one metrics/log agent, plus whatever Proxmox itself costs over bare Linux. |
+| **Total per node** | **≈ 4 cores / ~5-6GB** (round up to **4c/8GB** for a real floor with zero contention margin) | **≈ 7-8.5 cores / ~15-19GB** (round to **6-8 cores / 16-24GB**) | |
+
+**What this changes vs. the original hypothesis**: cores stay essentially
+where they were — **8 cores is right-sized for comfortable headroom, not
+oversized**, because co-locating three independently-clustered stateful
+services on one box is a genuinely more demanding ask than any one of them
+alone at hobby scale, and Yugabyte's own production-floor guidance (4-8
+vCPU/node) already accounts for a meaningful chunk of that budget on its
+own. **RAM is where the real slack was**: ~24GB comfortably covers the
+derived total with room to spare, vs. the 32GB originally budgeted — a
+~35% RAM buffer over the comfortable-headroom sum, which is a normal,
+sane amount of margin for a production database tier, not a sign of
+having over-asked. Both bars are used below to grade each SKU surveyed.
+
+## Provider comparison — US-East bare metal, general survey
 
 | Provider | Location | Real bare metal? | Spec at/near target | Cost (as of Jul 2026) | Notes |
 |---|---|---|---|---|---|
-| **OVH Rise-2** | Vint Hill, VA | Yes | Xeon-E 2388G, 8c/16t, 32-128GB, 2×512GB NVMe, 1-3Gbps | **~$80/mo** [[1]](#sources) | Top pick — on the user's exact list, self-serve, no nested-virt question |
+| **OVH SoYouStart SYS-3** | Vint Hill, VA | Yes | Xeon-E 2288G, 8c/16t, 32-128GB, 2×960GB NVMe, 1-2Gbps | **~$60/mo** [[22]](#sources) | **Revised top pick** — see the full OVH Eco lineup section below for why this beats Rise-2 on value |
+| OVH Rise-2 | Vint Hill, VA | Yes | Xeon-E 2388G, 8c/16t, 32-128GB, 2×512GB NVMe, 1-3Gbps | **~$80/mo** [[1]](#sources) | Previous top pick, still a solid runner-up — newer hardware generation, better support tier than SoYouStart |
 | InterServer (custom) | Secaucus, NJ | Yes | AMD EPYC 4344P, 8c, 192GB, 4TB NVMe (oversized vs. target) | **~$119/mo** as-spotted [[2]](#sources) | Closest metro to Springfield surveyed; built-to-order, price-lock guarantee; a leaner custom config (32GB not 192GB) would likely be cheaper — get a real quote |
 | Contabo dedicated | New York, NY (Manhattan) | Yes | AMD Ryzen 9 7900, 12c, 64GB (up to 128GB), 1TB NVMe | $134-149/mo intro, renews higher [[6]](#sources) | Real fixed catalog (no auction), oversized on cores for the target but comparable $/mo to InterServer |
 | Hetzner Cloud CCX33 | Ashburn, VA | **No** — KVM dedicated-vCPU, not physical bare metal | 8 vCPU, 31GB RAM | ~$0.2534/hr ≈ **$185/mo** [[7]](#sources) | 2.1-2.7x pricier since the June 2026 US repricing; nested-virt support unconfirmed — see Proxmox section |
-| Vultr Bare Metal | Piscataway/EWR, NJ | Yes | 6c/12t, 32GB, 1.9TB SSD (smallest plan) | **$185/mo** [[8]](#sources) | Literal closest-metro-to-Springfield NJ option, but ~2.3x OVH's price for fewer cores; bigger plans (8c/128GB/4TB) cost more still |
-| Latitude.sh | Trenton, NJ ("New York" region) | Yes | Smallest plan (m4.metal.small): 6c, 64GB, 2×960GB NVMe | $296/mo [[9]](#sources) | No tier near the 8c/32GB target that isn't already 3-4x the OVH price |
+| Vultr Bare Metal | Piscataway/EWR, NJ | Yes | 6c/12t, 32GB, 1.9TB SSD (smallest plan) | **$185/mo** [[8]](#sources) | Literal closest-metro-to-Springfield NJ option, but ~3x the SYS-3 pick's price for fewer cores; bigger plans (8c/128GB/4TB) cost more still |
+| Latitude.sh | Trenton, NJ ("New York" region) | Yes | Smallest plan (m4.metal.small): 6c, 64GB, 2×960GB NVMe | $296/mo [[9]](#sources) | No tier near the target spec that isn't already ~5x the SYS-3 pick's price |
 | PhoenixNAP Bare Metal Cloud | Ashburn network PoP (compute-region presence unconfirmed) | Yes | General Purpose instances "from $130/mo" [[10]](#sources) | ~$130+/mo | Exact Ashburn *compute* availability (vs. just a network PoP) wasn't confirmable without an account login — get a quote before counting on this one |
 | Colohouse / general NJ-NY colocation | NJ/NY | You supply the hardware | N/A — colocation, not rental | Quote-driven; general market 1U/quarter-rack colo runs ~$75-300/mo *before* buying a server [[11]](#sources) | A CapEx-vs-OpEx alternative model, not a rental spec comparison — see colo note below |
 
@@ -88,6 +137,58 @@ has no US inventory at all. Hetzner's actual US presence is Ashburn
 auction tier exists to substitute in [[7]](#sources). Hetzner is still in
 the table above via its Cloud CCX line, but only as a "no real bare metal
 here" data point.
+
+## The full current OVH Eco Dedicated lineup, US-East only
+
+OVH unified its old Kimsufi / SoYouStart / Rise brands into one "Eco"
+catalog with three tiers — Kimsufi (Eco Light), SoYouStart (Eco
+Essentials), Rise (Eco Advanced) — that share a control panel and rotate
+hardware between them over time (new stock enters at Rise, ages down to
+SoYouStart, then Kimsufi, as it's replaced by newer Rise generations)
+[[22]](#sources). All three tiers are confirmed available in North
+America with Vint Hill, VA (the required US-East location) specifically
+listed as a datacenter option for both Kimsufi and SoYouStart, alongside
+Rise [[23]](#sources) — **but individual model-to-location stock is not
+guaranteed and fluctuates** (this research pass saw some Rise models
+flagged "coming soon" on one fetch of OVH's site and not on another,
+consistent with the rotation model above) — confirm exact model
+availability in Vint Hill at order time regardless of what's below.
+
+| Tier | Model | CPU | Cores/threads | RAM | Storage | Bandwidth | Price/mo | Clears minimum (4c/8GB)? | Clears comfortable (6-8c/16-24GB)? |
+|---|---|---|---|---|---|---|---|---|---|
+| Kimsufi (Eco Light) | KS-1 | Xeon-D 1520 | 4c/8t | 32GB DDR4 | 2×480GB + 2×2TB SATA SSD | 500 Mbps | **$20** | Yes (RAM only comfortably; cores exactly at floor) | No — 4 cores short of the 6-8 target |
+| Kimsufi | KS-4 | Xeon-E3 1230v6 | 4c/8t | 16-64GB (config up) | 2×450GB + 2×2TB NVMe | 300-500 Mbps | **$20** | Yes, if configured to ≥32GB | No — same core shortfall as KS-1 |
+| Kimsufi | KS-6 | AMD EPYC 7351p | 16c/32t | 128-256GB | 2×500GB-2×8TB NVMe | 500 Mbps *(capped)* | **$44** | Yes, heavily | Yes on cores/RAM, but the 500Mbps cap is the tier's real ceiling — fine for this workload's actual traffic, just flagged since it's a hard cap not a "up to" figure like Rise/SoYouStart |
+| **SoYouStart (Eco Essentials)** | **SYS-3** | **Xeon-E 2288G** | **8c/16t** | **32-128GB** | **2×960GB NVMe** | **1-2 Gbps** | **$60** | **Yes** | **Yes — this doc's revised top pick** |
+| SoYouStart | SYS-4 | AMD EPYC 7371 | 16c/32t | 128-512GB | 2×960GB + 2×6TB NVMe | 1-2 Gbps | $129 | Yes, heavily | Yes, well past comfortable — overkill for this workload |
+| SoYouStart | SYS-5 | Dual Xeon Silver 4214R | 24c/48t | 96-384GB | 2×960GB + 2×6TB NVMe | 1-2 Gbps | $125 | Yes, heavily | Yes, well past comfortable — overkill, and dual-socket adds NUMA considerations this workload doesn't need |
+| Rise (Eco Advanced) | RISE-1 | Xeon-E 2386G | 6c/12t | 32-128GB | 2×512GB-4×3.84TB NVMe | 1 Gbps | $70 | Yes | Borderline — 2 cores under the comfortable-headroom target |
+| Rise | RISE-S | AMD Ryzen 7 9700X | 8c/16t | 64GB DDR5 ECC | 2×512GB NVMe | 1 Gbps | $77 | Yes | Yes — more RAM headroom than SYS-3 for $17/mo more; stock status was inconsistent across fetches in this pass |
+| Rise | RISE-2 | Xeon-E 2388G | 8c/16t | 32-128GB | 2×512GB-4×3.84TB NVMe | 1-3 Gbps | $80 | Yes | Yes — previous top pick, still a fine runner-up (newer generation, better support tier) |
+
+**Ranked by best value-for-adequate**:
+
+1. **SYS-3 ($60/mo) — new top pick.** Clears the comfortable-headroom bar
+   on every dimension (8c/32-128GB/NVMe/1-2Gbps), and is **$20/mo cheaper
+   per box than the previous Rise-2 pick** for essentially the same
+   hardware class — the Xeon-E 2288G and 2388G are one generation apart in
+   the same product family, not a meaningfully different machine. The
+   real tradeoff is support tier: SoYouStart is documented as ticketed
+   support (vs. Rise's more premium tier) — a real but modest downgrade
+   for a self-managed Proxmox+LXC setup that isn't leaning on vendor
+   hand-holding day-to-day anyway.
+2. **RISE-2 ($80/mo) — runner-up if support tier or newest hardware
+   generation matters more than $20/mo/box** (≈$60/mo across 3 boxes,
+   ≈$720/yr).
+3. **KS-1/KS-4 ($20/mo) — genuinely too small on cores** for the derived
+   comfortable-headroom target (4c vs. the 6-8c target), though they
+   clear the bare minimum-viable floor — a reasonable pick only for the
+   demoted-to-dev-lab node-1 role discussed earlier, not for the 3
+   production nodes.
+4. **KS-6, SYS-4, SYS-5 — all real overkill** for this workload's derived
+   requirement; no reason to pay $125-129/mo (SYS-4/5) or accept KS-6's
+   hard 500Mbps cap when SYS-3 already clears the target at less than
+   half the price.
 
 ## Latency reality check: does Springfield-to-NJ/VA actually matter?
 
@@ -155,11 +256,13 @@ cheaper** at current 2026 pricing — read on for why, and for the option
 that would be.
 
 - **Bare metal + Proxmox (preferred, primary recommendation)**: on any of
-  the real-bare-metal picks (OVH Rise-2, InterServer, Contabo dedicated,
-  Scaleway Elastic Metal), Proxmox works exactly like node 1 does today —
-  it's physical hardware, so there's no nested-virt question at all. Same
-  LXC-per-service pattern, same `pct`/`pveam` tooling, same mental model
-  as node 1. **3× OVH Rise-2 ≈ $240/mo compute** (full BOM below).
+  the real-bare-metal picks (OVH SoYouStart SYS-3, OVH Rise-2, InterServer,
+  Contabo dedicated, Scaleway Elastic Metal), Proxmox works exactly like
+  node 1 does today — it's physical hardware, so there's no nested-virt
+  question at all. Same LXC-per-service pattern, same `pct`/`pveam`
+  tooling, same mental model as node 1. **3× OVH SYS-3 ≈ $180/mo compute**
+  (full BOM below; this is revised down from the $240/mo this section
+  originally used, now that the fuller OVH Eco lineup survey found SYS-3).
 - **Direct services, no Proxmox — the comparison point named for this
   exercise: Hetzner Cloud CCX33 in Ashburn, VA.** This is KVM-virtualized
   dedicated vCPU (8 vCPU / 31GB RAM), not physical bare metal, so
@@ -187,14 +290,90 @@ that would be.
   is a deal-breaker, understanding it's a real spec downgrade, not a
   free lunch.
 - **Recommendation**: keep the stated preference — bare metal + Proxmox on
-  OVH Rise-2. It is simultaneously the **cheapest fully-costed option in
-  this survey** (cheaper than the "skip Proxmox" alternative actually
-  named for comparison) *and* the path of least operational change from
-  node 1's existing pattern. There is no real tradeoff being made here
-  between cost and preference — they point the same direction. The only
-  scenario where "run directly, no Proxmox" saves real money is dropping
-  to a shared-vCPU tier like DigitalOcean's, which is a genuine
-  spec/isolation downgrade, not a like-for-like substitution.
+  OVH SYS-3. It is simultaneously the **cheapest fully-costed bare-metal
+  option in this survey** (cheaper than the "skip Proxmox, run directly"
+  alternative actually named for comparison) *and* the path of least
+  operational change from node 1's existing pattern. There is no real
+  tradeoff being made here between cost and preference — they point the
+  same direction. Shared-vCPU options (DigitalOcean above, or OVH's own
+  VPS line below) are cheaper in raw $/mo, but that's a genuine
+  spec/isolation downgrade, not a like-for-like substitution — see the
+  next section for exactly how much cheaper, and exactly why it's risky
+  specifically for the stateful (Yugabyte/datanode) tier this plan
+  co-locates on the same boxes.
+
+## OVH VPS: cheaper, but not recommended for this specific design
+
+OVH's own VPS line was evaluated as a third option — cheaper than either
+bare-metal pick above, and worth quantifying honestly rather than
+dismissing outright.
+
+- **The lineup** (all shared-vCPU — OVH's VPS product family has no
+  dedicated-vCPU tier; a genuinely dedicated-vCPU OVH product exists, but
+  it's their separate, pricier Public Cloud compute-instance line, not
+  branded "VPS," and wasn't the ask here) [[24]](#sources):
+
+  | Plan | vCores | RAM | Storage | Bandwidth | Price/mo |
+  |---|---|---|---|---|---|
+  | VPS-1 | 2 | 4GB | 40GB SSD | 500 Mbps | $4.54 |
+  | VPS-2 | 4 | 8GB | 75GB NVMe | 1 Gbps | $8.50 |
+  | VPS-3 | 6 | 12GB | 100GB NVMe | 2 Gbps | $12.32 |
+  | **VPS-4** | **8** | **24GB** | **200GB NVMe** | **3 Gbps** | **$23.37** |
+
+  VPS-4 lands *inside* the derived comfortable-headroom target (6-8
+  cores/16-24GB) on paper. US East (Vint Hill) is selectable as an OVH VPS
+  region at order time, consistent with OVH's standard VPS ordering flow,
+  though this wasn't cross-confirmed on a live order form in this pass —
+  worth a quick check before committing.
+- **The honest suitability problem is "shared," not the numbers on the
+  spec sheet.** Shared vCPU means the hypervisor time-slices real cores
+  across other tenants' VMs on the same host — real user reports for OVH
+  VPS specifically describe CPU steal as high as 70% before OVH support
+  moved the affected account to a less-loaded host [[24]](#sources).
+  That's the actual risk, and it lands very differently depending on which
+  service is running on the affected box:
+  - **YugabyteDB (Raft consensus) — risky.** Consensus correctness and
+    latency depend on consistent, low-jitter CPU scheduling to ack writes
+    and send heartbeats within expected timeframes; sustained CPU steal is
+    a well-understood trigger for spurious leader re-elections and write
+    latency spikes in any Raft/Paxos-based system, not a Yugabyte-specific
+    quirk. A noisy neighbor on a shared host can manifest as intermittent
+    quorum instability that's hard to distinguish from a real node
+    failure.
+  - **GreptimeDB datanode — risky, for a second reason.** Datanodes do
+    real local disk I/O (WAL, caching) even though committed region data
+    lives in R2; budget shared-vCPU VPS tiers typically don't publish IOPS
+    guarantees on their NVMe the way dedicated/bare-metal storage does,
+    so this tier inherits the same "looks fine until a neighbor is busy"
+    risk on disk, not just CPU.
+  - **Kratos and the Greptime frontend — fine.** Both are stateless;
+    session/identity state lives in the (now-HA) Yugabyte cluster, not on
+    the Kratos box itself, so an occasional slow response from CPU steal
+    is a minor latency blip a client can retry, not a correctness or
+    quorum risk.
+- **Why this matters for *this specific* 3-node co-located design**: the
+  whole point of the topology in this doc is putting Yugabyte,
+  Greptime's datanode, and Kratos on the *same* 3 boxes. That means the
+  risk profile of the riskiest tenant (Yugabyte) applies to the entire
+  box, not just its own slice — there's no way to put "only the safe
+  parts" on VPS without splitting the topology into a stateful tier (bare
+  metal) and a stateless tier (VPS), which is a legitimate follow-on idea
+  but a different architecture than the one this doc, and the task, is
+  built around.
+- **Cost, quantified as requested**: 3× VPS-4 ≈ **$70/mo compute**, plus
+  the same Cloudflare LB (~$5-25) and R2 (~$0-10) line items ≈ **$75-105/mo
+  total** — roughly **a sixth of** the bare-metal-Proxmox total. That
+  savings is real, but it's being bought with real consensus-stability and
+  disk-latency risk on the two tiers (Yugabyte, Greptime datanode) that
+  matter most for correctness, not just a "no Proxmox" convenience trade.
+- **Recommendation**: do not use OVH VPS (or any shared-vCPU tier) for
+  this 3-node co-located design as specified. It's a legitimate option
+  **only** if the topology is later split — stateless Kratos/Greptime-
+  frontend instances on cheap VPS, Yugabyte + Greptime datanode kept on
+  dedicated/bare-metal hardware — which is worth keeping in mind as a
+  future cost-optimization once the cluster is running and real load
+  patterns are known, but is a scope change from "3 identical co-located
+  boxes," not a drop-in substitution today.
 
 ## Topology: what runs on each of the 3 production nodes
 
@@ -211,7 +390,7 @@ flowchart TB
         R2["R2: pidgeiot-firmware /\nGreptimeDB datanode storage"]
     end
 
-    subgraph NA["Prod node A — e.g. OVH Rise-2 #1"]
+    subgraph NA["Prod node A — e.g. OVH SYS-3 #1"]
         YA["Yugabyte master + tserver"]
         GA["Greptime metasrv"]
         FA["Greptime frontend"]
@@ -219,7 +398,7 @@ flowchart TB
         KA["Kratos instance"]
     end
 
-    subgraph NB["Prod node B — e.g. OVH Rise-2 #2"]
+    subgraph NB["Prod node B — e.g. OVH SYS-3 #2"]
         YB["Yugabyte master + tserver"]
         GB["Greptime metasrv"]
         FB["Greptime frontend"]
@@ -227,7 +406,7 @@ flowchart TB
         KB["Kratos instance"]
     end
 
-    subgraph NC["Prod node C — e.g. OVH Rise-2 #3"]
+    subgraph NC["Prod node C — e.g. OVH SYS-3 #3"]
         YC["Yugabyte master + tserver"]
         GC["Greptime metasrv"]
         FC["Greptime frontend"]
@@ -369,16 +548,21 @@ flowchart TB
 
 ## Bill of materials + monthly total
 
-**Primary recommendation — bare metal + Proxmox (OVH Rise-2, Vint Hill VA):**
+**Primary recommendation — bare metal + Proxmox (OVH SoYouStart SYS-3, Vint Hill VA):**
 
 | Line item | Spec | Cost/mo |
 |---|---|---|
-| 3× OVH Rise-2 (Vint Hill, VA) | 8c/16t, 32GB RAM, 2×512GB NVMe, 1-3Gbps each | 3 × $80 = **$240** [[1]](#sources) |
+| 3× OVH SYS-3 (Vint Hill, VA) | 8c/16t, 32-128GB RAM, 2×960GB NVMe, 1-2Gbps each | 3 × $60 = **$180** [[22]](#sources) |
 | Cloudflare Load Balancer | 3 pools (Greptime frontend, Kratos, Yugabyte tserver) + health checks | **$5-25** [[17]](#sources) |
 | R2 (GreptimeDB datanode storage) | New bucket, hobby-scale telemetry volume | **$0-10**, mostly already covered by free tier [[16]](#sources) |
 | etcd or postgres_store overhead | Compute only — already inside the 3 box prices above | **$0** |
 | Cloudflare Workers paid plan | Already in place for Queues/Hyperdrive/R2 today | **$0 incremental** |
-| **Total** | | **≈ $250-300/mo** |
+| **Total** | | **≈ $185-215/mo** |
+
+**If OVH Rise-2 is picked instead** (newer hardware generation, better
+support tier, $20/mo/box more) — substitute 3 × $80 = $240 for the
+compute line, landing at **≈ $245-275/mo**, close to this doc's previous
+headline figure.
 
 **Cost-comparison alternative — direct services, no Proxmox (Hetzner Cloud
 CCX33, Ashburn VA, the comparison point named for this exercise):**
@@ -391,22 +575,31 @@ CCX33, Ashburn VA, the comparison point named for this exercise):**
 | etcd or postgres_store overhead | Same — compute only | **$0** |
 | **Total** | | **≈ $565-590/mo** |
 
-**The delta: bare metal + Proxmox is ≈ $290-315/mo *cheaper* than the named
-direct-services alternative**, not more expensive — the preference and the
-budget-optimal choice are the same option here. If minimum $/mo regardless
-of spec match is the actual goal, 3× DigitalOcean Basic Droplets (8
-vCPU/16GB, $96/mo each, $288/mo compute, ≈ $300-325/mo total) undercuts
-bare metal by roughly this same margin in the other direction — but at
-half the target RAM and shared-tenancy performance, a real spec downgrade
-rather than a clean substitution.
+**Cheaper still, but not recommended as-is — OVH VPS (shared vCPU, no Proxmox):**
+
+| Line item | Spec | Cost/mo |
+|---|---|---|
+| 3× OVH VPS-4 (Vint Hill, VA) | 8 vCore (shared), 24GB RAM, 200GB NVMe, 3Gbps each | 3 × $23.37 = **$70** [[24]](#sources) |
+| Cloudflare Load Balancer | Same 3 pools | **$5-25** [[17]](#sources) |
+| R2 (GreptimeDB datanode storage) | Same | **$0-10** [[16]](#sources) |
+| **Total** | | **≈ $75-105/mo — but see the honest suitability call above; not recommended for this co-located design** |
+
+**The deltas, all relative to the $185-215/mo primary recommendation**:
+bare metal + Proxmox on SYS-3 is **≈ $350-375/mo cheaper** than the named
+direct-services (CCX) alternative, and **≈ $80-140/mo more** than the
+VPS option — but that VPS gap is the price of avoiding real Raft-
+consensus and disk-I/O risk on the stateful tier, not a clean discount.
+If minimum $/mo regardless of spec/isolation match is the actual goal, 3×
+DigitalOcean Basic Droplets (8 vCPU/16GB shared, $96/mo each, ≈ $300-325/mo
+total) is another data point in between, at half the target RAM.
 
 **If InterServer (Secaucus, NJ) or Contabo (NYC) is picked instead of OVH**
 for the bare-metal option — either for closer proximity to Springfield or
 more built-in RAM headroom — substitute 3 × ~$120-150/mo for the compute
 line, landing the total around **≈ $375-475/mo**. Both are real,
-defensible picks; OVH is the budget-optimized answer, InterServer/Contabo
-the proximity/headroom-optimized one — and both still undercut the named
-CCX alternative.
+defensible picks; OVH SYS-3 is the budget-optimized answer,
+InterServer/Contabo the proximity/headroom-optimized one — and both still
+undercut the named CCX alternative.
 
 ## Phasing
 
@@ -433,9 +626,11 @@ CCX alternative.
 
 ## Open questions for the user
 
-1. **OVH budget pick vs. InterServer/Contabo proximity-and-headroom pick**
-   — both are defensible; which matters more, the ~$150/mo savings or the
-   closer metro / extra RAM ceiling?
+1. **OVH SYS-3 budget pick vs. InterServer/Contabo proximity-and-headroom
+   pick** — both are defensible; which matters more, the ~$175-180/mo
+   savings (3 boxes) or the closer metro / extra RAM ceiling? Also within
+   OVH itself: SYS-3 ($60/mo) vs. Rise-2 ($80/mo) — is the better support
+   tier and newer hardware generation worth $20/mo/box?
 2. **etcd vs. postgres_store for Greptime metasrv** — this doc recommends
    postgres_store for footprint reasons, but flags the shared-fate risk
    explicitly; worth a second look once real load patterns exist.
@@ -468,8 +663,11 @@ CCX alternative.
    [Region Failover — GreptimeDB Docs](https://docs.greptime.com/user-guide/deployments-administration/manage-data/region-failover/),
    [How to Ensure High Availability for GreptimeDB Cluster](https://medium.com/@greptime/how-to-ensure-high-availability-for-greptimedb-cluster-introducing-region-failover-feature-f21ee19aec83)
    (accessed 2026-07-22)
-5. YugabyteDB hardware minimums/production guidance and multi-region
-   latency guidance —
+5. YugabyteDB absolute hardware floor (2 cores/2GB, "will start" not a
+   real-traffic target), enterprise-scale production tier guidance, and
+   multi-region latency guidance — see also citation 21 for the more
+   specific small-production-cluster (4-8 vCPU/node) guidance used in the
+   resource-derivation section —
    [Deployment checklist — YugabyteDB Docs](https://docs.yugabyte.com/stable/deploy/checklist/),
    [Synchronous multi region (3+ regions)](https://docs.yugabyte.com/stable/explore/multi-region-deployments/synchronous-replication-ysql/)
    (accessed 2026-07-22)
@@ -537,4 +735,27 @@ CCX alternative.
     (accessed 2026-07-22)
 20. DigitalOcean Basic Droplet pricing (8 vCPU/16GB, no regional surcharge) —
     [DigitalOcean Droplet Pricing](https://www.digitalocean.com/pricing/droplets)
-    (accessed 2026-07-22)
+    (accessed 2026-07-23)
+21. YugabyteDB small-production-cluster guidance ("a minimum of 3 nodes
+    with 4 to 8 vCPUs per node is recommended" for production, distinct
+    from the enterprise-scale 16+-core language and the 2c/2GB absolute
+    floor, both in citation 5) —
+    [Plan your cluster — YugabyteDB Docs](https://docs.yugabyte.com/stable/yugabyte-cloud/cloud-basics/create-clusters-overview/)
+    (accessed 2026-07-23)
+22. Full current OVH Eco Dedicated lineup (Kimsufi/SoYouStart/Rise model
+    specs and pricing, including SYS-3) and the rotation model between
+    tiers —
+    [OVHcloud Eco (US)](https://eco.us.ovhcloud.com/),
+    [OVH SoYouStart vs Kimsufi vs Eco — valebyte.com](https://valebyte.com/en/blog/ovh-soyoustart-vs-kimsufi-vs-eco-where-the-budget-dedicated-servers-moved/)
+    (accessed 2026-07-23)
+23. Kimsufi/SoYouStart Vint Hill, VA (US East) datacenter availability —
+    [Kimsufi Dedicated Server — OVHcloud US](https://eco.us.ovhcloud.com/kimsufi/),
+    [So You Start — OVHcloud US](https://eco.us.ovhcloud.com/soyoustart/),
+    [OVH US East Vint Hill Data Center — Baxtel](https://baxtel.com/data-center/ovh-us-east-vint-hill)
+    (accessed 2026-07-23)
+24. OVH VPS lineup (VPS-1 through VPS-4, shared vCPU, no dedicated-vCPU
+    VPS tier) and real-world OVH VPS CPU-steal reports (up to 70% before
+    OVH support relocated the account) —
+    [OVHcloud VPS](https://us.ovhcloud.com/vps/),
+    [Thoughts on OVHCloud VPS? — Web Hosting Talk](https://www.webhostingtalk.com/showthread.php?t=1907281)
+    (accessed 2026-07-23)
