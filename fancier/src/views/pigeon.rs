@@ -1,9 +1,10 @@
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::components::{
-  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, JsonViewer,
-  LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal,
+  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, GraphDef,
+  JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal, TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
+use crate::helpers::gps_track;
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
@@ -29,6 +30,11 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   // No new backend routes, no extra device traffic.
   let mut telemetry_latest: Signal<Option<Vec<TelemetryLatest>>> = use_signal(|| None);
   let mut latest_log_received: Signal<Option<time::OffsetDateTime>> = use_signal(|| None);
+
+  // Quick-add inbox for `TrackWidget`'s "+ Speed graph"/"+ Altitude graph"
+  // buttons -- see `PigeonGraphs`' own doc comment on why this has to be
+  // lifted up here rather than the two components talking directly.
+  let mut quick_add_graph: Signal<Option<GraphDef>> = use_signal(|| None);
 
   use_resource(move || {
     let id = id.to_owned();
@@ -83,6 +89,12 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 interval_secs,
                 time::OffsetDateTime::now_utc(),
             );
+            // TrackWidget gate: only render it for a pigeon whose latest
+            // telemetry snapshot has both gps_lat and gps_lon as numeric
+            // values -- a pigeon that's never reported GPS at all just
+            // doesn't get the card, rather than an always-empty one.
+            let latest_vec = telemetry_latest().unwrap_or_default();
+            let has_gps = gps_track::latest_has_gps_fix(&latest_vec);
             rsx! {
               header { class: "w-full flex flex-row items-center justify-between",
                 Link {
@@ -129,8 +141,17 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     show_modal: show_telemetry_endpoint_modal,
                   }
                 }
+                if has_gps {
+                  section { id: "gpsTrack",
+                    TrackWidget {
+                      pigeon_id: pigeon_id.clone(),
+                      latest: latest_vec.clone(),
+                      on_quick_add: move |def: GraphDef| quick_add_graph.set(Some(def)),
+                    }
+                  }
+                }
                 section { id: "telemetryGraphs",
-                  PigeonGraphs { pigeon_id: pigeon_id.clone() }
+                  PigeonGraphs { pigeon_id: pigeon_id.clone(), quick_add: quick_add_graph }
                 }
                 section { id: "pigeonAlerts",
                   PigeonAlerts { pigeon_id: pigeon_id.clone() }

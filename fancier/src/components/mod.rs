@@ -31,7 +31,10 @@ mod telemetry_chart;
 pub use telemetry_chart::{ChartSeries, TelemetryChart};
 
 mod graph_widget;
-pub use graph_widget::{FlockGraphs, PigeonGraphs};
+pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs};
+
+mod track_widget;
+pub use track_widget::TrackWidget;
 
 mod telemetry_endpoint_modal;
 pub use telemetry_endpoint_modal::TelemetryEndpointModal;

@@ -25,3 +25,5 @@ mod crypto;
 pub use crypto::sha256_hex;
 
 pub mod connection_state;
+
+pub mod gps_track;

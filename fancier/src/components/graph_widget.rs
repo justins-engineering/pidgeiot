@@ -9,6 +9,7 @@
 use crate::LocalSession;
 use crate::api::telemetry;
 use crate::components::{ChartSeries, TelemetryChart};
+use crate::helpers::gps_track;
 use crate::local_storage;
 use capsules::{TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
@@ -45,7 +46,10 @@ pub enum TimeRange {
 }
 
 impl TimeRange {
-  const ALL: [TimeRange; 5] = [
+  // `pub` (not module-private): `components::track_widget` reuses this
+  // exact same range enum/dropdown pattern for the GPS track widget's own
+  // time-range selector, per its own module doc comment.
+  pub const ALL: [TimeRange; 5] = [
     TimeRange::Last1h,
     TimeRange::Last6h,
     TimeRange::Last24h,
@@ -53,7 +57,7 @@ impl TimeRange {
     TimeRange::Last30d,
   ];
 
-  fn seconds(self) -> i64 {
+  pub fn seconds(self) -> i64 {
     match self {
       TimeRange::Last1h => 3_600,
       TimeRange::Last6h => 6 * 3_600,
@@ -63,7 +67,7 @@ impl TimeRange {
     }
   }
 
-  fn label(self) -> &'static str {
+  pub fn label(self) -> &'static str {
     match self {
       TimeRange::Last1h => "Last hour",
       TimeRange::Last6h => "Last 6 hours",
@@ -73,7 +77,7 @@ impl TimeRange {
     }
   }
 
-  fn from_label(label: &str) -> Option<TimeRange> {
+  pub fn from_label(label: &str) -> Option<TimeRange> {
     TimeRange::ALL.into_iter().find(|r| r.label() == label)
   }
 }
@@ -247,10 +251,18 @@ fn fallback_keys() -> Vec<String> {
 /// be pickable in `AddGraphModal` and render an empty chart. Mirrors
 /// alerts_panel.rs's `numeric_keys_from_latest`/`numeric_keys_from_history`
 /// (task #32 point 4, see CLAUDE.md's telemetry-forwarding note).
+///
+/// Also drops `gps_lat`/`gps_lon` specifically even though both parse as
+/// perfectly numeric floats -- see `gps_track::is_line_graph_excluded`'s
+/// own doc comment for why a raw absolute coordinate is a useless line
+/// series (the GPS track widget is the right visualization for those
+/// two). Every other gps_* key (altitude/speed/heading/sats/fix quality)
+/// is an ordinary scalar and stays pickable here.
 fn numeric_keys_from_latest(latest: &[TelemetryLatest]) -> Vec<String> {
   latest
     .iter()
     .filter(|l| l.value.trim().parse::<f64>().is_ok())
+    .filter(|l| !gps_track::is_line_graph_excluded(&l.key))
     .map(|l| l.key.clone())
     .collect()
 }
@@ -259,6 +271,7 @@ fn numeric_keys_from_history(points: &[TelemetryHistoryPoint]) -> Vec<String> {
   let mut keys: Vec<String> = points
     .iter()
     .filter(|p| p.value_num.is_some())
+    .filter(|p| !gps_track::is_line_graph_excluded(&p.key))
     .map(|p| p.key.clone())
     .collect();
   keys.sort();
@@ -267,11 +280,37 @@ fn numeric_keys_from_history(points: &[TelemetryHistoryPoint]) -> Vec<String> {
 }
 
 #[component]
-pub fn PigeonGraphs(pigeon_id: String) -> Element {
+pub fn PigeonGraphs(
+  pigeon_id: String,
+  /// One-click "add a graph" inbox for sibling widgets on the same page
+  /// (currently `components::track_widget::TrackWidget`'s "+ Speed
+  /// graph"/"+ Altitude graph" buttons) -- since `graphs` below is a
+  /// `localStorage`-backed signal owned entirely by this component, a
+  /// sibling can't push into it directly; the caller (`PigeonView`) wires
+  /// this Signal to both components so a write here is picked up
+  /// reactively instead of requiring a page reload to see the new graph.
+  mut quick_add: Signal<Option<GraphDef>>,
+) -> Element {
   let mut graphs = use_signal(|| load_graphs("pigeon", &pigeon_id));
   let mut show_add = use_signal(|| false);
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
+
+  {
+    let pigeon_id = pigeon_id.clone();
+    use_effect(move || {
+      if let Some(def) = quick_add() {
+        // Idempotent: clicking "+ Speed graph" twice shouldn't create two
+        // near-identical graphs -- a graph already covering this exact
+        // key set is left alone rather than duplicated.
+        if !graphs.read().iter().any(|g| g.keys == def.keys) {
+          graphs.write().push(def);
+          save_graphs("pigeon", &pigeon_id, &graphs.read());
+        }
+        quick_add.set(None);
+      }
+    });
+  }
 
   {
     let pigeon_id = pigeon_id.clone();
@@ -711,6 +750,30 @@ mod tests {
     );
   }
 
+  /// GPS device sample: `gps_lat`/`gps_lon` parse as perfectly valid
+  /// floats (so the plain numeric filter alone wouldn't catch them) but
+  /// are excluded as a dedicated line-graph-usefulness judgment call --
+  /// see `gps_track::is_line_graph_excluded`'s doc comment. Every other
+  /// gps_* key stays pickable since it's an ordinary scalar.
+  #[test]
+  fn numeric_keys_from_latest_excludes_gps_lat_lon_but_keeps_other_gps_keys() {
+    let latest = vec![
+      latest("gps_lat", "40.7128"),
+      latest("gps_lon", "-74.0060"),
+      latest("gps_speed_mps", "3.2"),
+      latest("gps_alt_m", "12.5"),
+      latest("gps_sats", "8"),
+      latest("battery_mv", "3300"),
+    ];
+    // `numeric_keys_from_latest` preserves input order (unlike the
+    // history variant below, which sorts/dedups) -- gps_lat/gps_lon are
+    // simply dropped from wherever they sat in `latest`.
+    assert_eq!(
+      numeric_keys_from_latest(&latest),
+      vec!["gps_speed_mps", "gps_alt_m", "gps_sats", "battery_mv"]
+    );
+  }
+
   #[test]
   fn numeric_keys_from_history_excludes_key_with_no_numeric_samples() {
     let points = vec![
@@ -731,6 +794,20 @@ mod tests {
     assert_eq!(
       numeric_keys_from_history(&points),
       vec!["battery_mv", "uptime_s"]
+    );
+  }
+
+  #[test]
+  fn numeric_keys_from_history_excludes_gps_lat_lon_but_keeps_other_gps_keys() {
+    let points = vec![
+      history_point("gps_lat", "40.7128", Some(40.7128)),
+      history_point("gps_lon", "-74.0060", Some(-74.0060)),
+      history_point("gps_heading_deg", "180", Some(180.0)),
+      history_point("battery_mv", "3300", Some(3300.0)),
+    ];
+    assert_eq!(
+      numeric_keys_from_history(&points),
+      vec!["battery_mv", "gps_heading_deg"]
     );
   }
 }

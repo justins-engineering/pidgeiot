@@ -72,7 +72,10 @@ fn format_value(v: f64) -> String {
   }
 }
 
-fn format_time(unix: i64) -> String {
+/// `pub(crate)` (not just module-private) so `components::track_widget`
+/// can reuse the exact same "Mon DD HH:MM" formatting for its own hover
+/// tooltip instead of a second copy drifting out of sync.
+pub(crate) fn format_time(unix: i64) -> String {
   let format = time::macros::format_description!("[month repr:short] [day] [hour]:[minute]");
   time::OffsetDateTime::from_unix_timestamp(unix)
     .ok()
