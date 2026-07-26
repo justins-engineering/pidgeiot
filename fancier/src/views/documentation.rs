@@ -53,7 +53,7 @@ pub fn DocumentationPage() -> Element {
           DocStep {
             number: "5",
             title: "Connect and confirm",
-            body: "Once the device reports in, its shadow, telemetry, and logs (if wired up) start showing on the pigeon's detail page in the dashboard.",
+            body: "Once the device reports in, its shadow, telemetry, and logs (if wired up) start showing on the pigeon's detail page in the dashboard — and any alerts you define start evaluating against it.",
           }
         }
         div { class: "mt-10 flex flex-col sm:flex-row gap-4",

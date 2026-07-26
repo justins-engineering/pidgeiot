@@ -12,7 +12,7 @@ pub fn Features() -> Element {
         }
         br {}
         p { class: "text-xl max-w-3xl mx-auto",
-          "A complete IoT platform built to work for you. No need to start from scratch. We've created simple API meant to easily integrate with any device, and the tech stack you're already using."
+          "A complete IoT platform built to work for you. No need to start from scratch. We've created a simple API meant to easily integrate with any device, and the tech stack you're already using."
         }
       }
       div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8",

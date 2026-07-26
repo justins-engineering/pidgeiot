@@ -566,15 +566,17 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?key=temp
 
 (`Vec<capsules::TelemetryHistoryPoint>`, capped at 5000 rows, oldest first.)
 
-**Backing store (task #26).** This route reads from whichever store actually holds this data:
-the platform's own self-hosted GreptimeDB by default (when `GREPTIMEDB_ENDPOINT` is configured
-for this environment — see `helpers/greptime.rs`), falling back to a Postgres
-`pigeon_telemetry_history` table on either an unconfigured endpoint or a query error. This is
+**Backing store (task #26, revised by the Postgres consolidation).** This route reads from
+whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`
+table by default. A GreptimeDB store remains supported per environment (when
+`GREPTIMEDB_ENDPOINT` is configured — see `helpers/greptime.rs`; no deployed environment
+currently sets it, see `docs/infra/postgres-consolidation.md`), in which case reads go there
+first and fall back to Postgres on a query error. This is
 transparent to the caller — the response shape (`TelemetryHistoryPoint`) is identical either
 way. **Only populated for reports made while the pigeon had no `telemetry_endpoint` configured**
 — see the next section for the per-pigeon override, which still takes precedence over the
 platform default in both directions (write and, indirectly, read: an overridden pigeon's data
-never lands in either the default Greptime instance or Postgres, only at the URL you configured).
+never lands in the platform's own history store at all, only at the URL you configured).
 
 #### `GET /flocks/:flock_id/telemetry/history` — flock owner
 
@@ -592,8 +594,8 @@ curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026
 
 Sets or clears a per-pigeon forwarding target: when configured, every telemetry report for
 this pigeon is forwarded as an **InfluxDB line protocol v2 HTTP write** (GreptimeDB-compatible)
-to that endpoint *instead of* the platform default (task #26: dovecote's own self-hosted
-GreptimeDB, or Postgres history as a fallback — see [above](#get-pigeonspigeon_idtelemetryhistory)).
+to that endpoint *instead of* the platform's own history store (task #26: Postgres by default,
+or GreptimeDB where an environment configures it — see [above](#get-pigeonspigeon_idtelemetryhistory)).
 The Durable Object's own latest-value table (`GET /pigeons/:pigeon_id/telemetry`) is unaffected
 either way — it always gets written.
 
@@ -714,8 +716,8 @@ immediately:
 {}
 ```
 
-The actual write (the Durable Object's latest-value upsert, plus history — either the platform's
-own GreptimeDB by default, a Postgres fallback, or an external line-protocol forward if this
+The actual write (the Durable Object's latest-value upsert, plus history — the platform's
+Postgres store (or GreptimeDB where configured), or an external line-protocol forward if this
 pigeon has its own `telemetry_endpoint` configured; see [task
 #26](#get-pigeonspigeon_idtelemetryhistory) above) happens asynchronously afterward — a `202`
 confirms the report was authenticated and queued, not that it's been persisted yet. In an
@@ -882,12 +884,13 @@ class of its own.
 route** (see [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry)
 above). Where a telemetry queue is bound (staging and production today), a `telemetry` frame's
 metrics are upserted into the Durable Object's latest-value table synchronously, then enqueued
-for the same consumer path the HTTP route uses (the platform's own GreptimeDB by default, with a
-Postgres fallback, or an external line-protocol forward if `telemetry_endpoint` is configured —
-task #26) — but since the frame already arrived on an authenticated connection, there's no
+for the same consumer path the HTTP route uses (the platform's Postgres history store — or
+GreptimeDB where configured — or an external line-protocol forward if `telemetry_endpoint` is
+configured — task #26) — but since the frame already arrived on an authenticated connection,
+there's no
 separate verify-before-enqueue round trip the way the HTTP route needs (auth happened once, at
 socket accept). Where no queue is bound (dev), the Durable Object writes the same
-Greptime-or-Postgres default directly instead, so telemetry sent over the socket doesn't
+platform history store directly instead, so telemetry sent over the socket doesn't
 silently skip history in that environment.
 
 **No response is sent for `telemetry`/`shadow_report` frames themselves** — there's no

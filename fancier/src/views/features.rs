@@ -53,7 +53,18 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone who's outgrown a spreadsheet of sensor readings",
           title: "Telemetry With Real History, On Your Terms",
-          body: "Devices report flat key/value telemetry over HTTPS, CoAP, or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, backed by our own self-hosted GreptimeDB (with an automatic Postgres fallback), so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own GreptimeDB-compatible line-protocol database and reports go straight there instead.",
+          body: "Devices report flat key/value telemetry over HTTPS, CoAP, or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports go straight there instead of into the platform's history store.",
+          maturity: None,
+        }
+
+        // Alerts
+        FeatureBlock {
+          icon: rsx! {
+            Icon { icon: LdMailWarning, class: "size-8 stroke-primary", title: "Mail warning icon" }
+          },
+          eyebrow: "For anyone who finds out about outages from their customers",
+          title: "Alerts That Watch So You Don't Have To",
+          body: "Define a condition once and get an email when it trips: a telemetry key crossing a threshold, a reading jumping further between reports than it plausibly should, a device sitting stale or offline, or a pigeon that's simply stopped reporting altogether. Value conditions are checked the moment a report arrives; silence conditions run on a scheduled sweep, because \"nothing arrived\" can't be observed at ingest time. Notifications go to the flock owner by default, or to any address you set per alert.",
           maturity: None,
         }
 
@@ -134,7 +145,7 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone who's wanted to poke a device without a physical console",
           title: "Owner-Gated Remote Diagnostic Shell",
-          body: "Run one diagnostic command on a WebSocket-connected device and get its output back over an ordinary dashboard request — relayed through that device's existing socket, gated to the pigeon's owner, with whatever the device's own command allowlist permits. Ships alongside the WebSocket channel above, so it carries the same staging-verified, not-yet-production status.",
+          body: "Run one diagnostic command on a WebSocket-connected device and get its output back over an ordinary dashboard request — relayed through that device's existing socket, gated to the pigeon's owner, with whatever the device's own command allowlist permits. Rides the same live production WebSocket channel described above.",
           maturity: Some(Maturity::Beta),
         }
 
@@ -160,14 +171,7 @@ pub fn FeaturesPage() -> Element {
             "Designed, not yet built. Nothing here is reachable in the product today — listed so you know what's coming, not what to expect right now."
           }
         }
-        div { class: "grid grid-cols-1 md:grid-cols-3 gap-6",
-          RoadmapCard {
-            icon: rsx! {
-              Icon { icon: LdMailWarning, class: "size-7 stroke-primary", title: "Mail warning icon" }
-            },
-            title: "Alerts & Triggers",
-            body: "User-defined conditions on telemetry, delivered by email.",
-          }
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto",
           RoadmapCard {
             icon: rsx! {
               Icon { icon: LdDatabase, class: "size-7 stroke-primary", title: "Database icon" }

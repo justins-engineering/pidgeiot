@@ -20,7 +20,7 @@ pub fn PricingPage() -> Element {
           "PidgeIoT is under active development. Every feature on this site is free to use right now — no credit card, no trial countdown."
         }
         p { class: "text-lg text-base-content/60 leading-relaxed max-w-2xl mx-auto text-balance",
-          "Paid tiers are planned for after beta, once the platform's core surface (device shadows, telemetry, firmware, logging) has settled. We haven't set that pricing yet, and we're not going to publish numbers before they're real."
+          "Paid tiers are planned for after beta, once the platform's core surface (device shadows, telemetry, alerts, firmware, logging) has settled. We haven't set that pricing yet, and we're not going to publish numbers before they're real."
         }
       }
     }

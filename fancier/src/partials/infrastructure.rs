@@ -81,7 +81,7 @@ pub fn Infrastructure() -> Element {
             h3 { class: "text-2xl font-bold", "No Telemetry Lock-In" }
           }
           p { class: "leading-relaxed",
-            "Point a device at your own GreptimeDB-compatible endpoint and its telemetry goes straight there instead of our default self-hosted GreptimeDB store — your data, your database."
+            "Point a device at your own InfluxDB-line-protocol-compatible endpoint and its telemetry goes straight there instead of the platform's built-in history store — your data, your database."
           }
         }
         div {
