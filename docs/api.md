@@ -707,7 +707,7 @@ curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
 ```
 
 **Response behavior differs by environment.** In an environment with a telemetry queue bound
-(currently staging only — `TELEMETRY_QUEUE` in `wrangler.toml`), the gateway synchronously
+(staging and production today — `TELEMETRY_QUEUE` in `wrangler.toml`), the gateway synchronously
 verifies the bearer token against the Durable Object, then enqueues the report and returns
 immediately:
 
@@ -721,7 +721,7 @@ Postgres store (or GreptimeDB where configured), or an external line-protocol fo
 pigeon has its own `telemetry_endpoint` configured; see [task
 #26](#get-pigeonspigeon_idtelemetryhistory) above) happens asynchronously afterward — a `202`
 confirms the report was authenticated and queued, not that it's been persisted yet. In an
-environment with no queue bound (dev, and production today), the same auth + write happens
+environment with no queue bound (dev only), the same auth + write happens
 synchronously in one round trip and returns:
 
 ```
