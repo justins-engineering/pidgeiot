@@ -1,6 +1,6 @@
 use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, event};
 
-use crate::helpers::evaluate_scheduled_alerts;
+use crate::helpers::{evaluate_scheduled_alerts, probe_kratos_health};
 
 /// Cron-Trigger entry point (`[triggers] crons`, `wrangler.toml`, task
 /// #38) for the missing-heartbeat / device-state alert sweep
@@ -26,4 +26,12 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   if let Err(e) = evaluate_scheduled_alerts(&env).await {
     console_error!("Scheduled alert sweep failed: {e}");
   }
+
+  // Kratos readiness probe (helpers/ops_probe.rs) -- rides the same cron
+  // rather than its own trigger because the Cloudflare account allows only
+  // 5 cron triggers total and dovecote prod+staging already consume 2.
+  // Self-gated: a no-op anywhere OPS_ALERT_EMAIL isn't configured
+  // (production [vars] only), so staging/dev invocations don't double-probe
+  // or double-email. Internally best-effort/logged, same as the sweep above.
+  probe_kratos_health(&env).await;
 }

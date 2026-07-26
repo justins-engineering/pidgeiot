@@ -968,7 +968,7 @@ struct ResendEmailRequest<'a> {
 /// an operator runs `wrangler secret put`) is treated the same way
 /// `greptime_auth_token` being absent is treated elsewhere -- logged,
 /// never a hard failure, since alert delivery is always best-effort.
-async fn send_via_resend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+pub(crate) async fn send_via_resend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
   let Some(api_key) = resend_api_key(env) else {
     console_error!(
       "RESEND_API_KEY not configured -- cannot send alert email to {to} (subject: {subject})"

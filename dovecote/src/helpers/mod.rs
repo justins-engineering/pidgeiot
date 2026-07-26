@@ -51,6 +51,9 @@ pub use firmware::list_flock_firmware;
 pub use firmware::sha256_hex;
 pub use firmware::upsert_flock_firmware;
 
+mod ops_probe;
+pub use ops_probe::probe_kratos_health;
+
 mod alerts;
 pub use alerts::check_telemetry_alerts;
 pub use alerts::create_flock_alert;

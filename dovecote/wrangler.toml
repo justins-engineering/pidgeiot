@@ -55,6 +55,12 @@ head_sampling_rate = 0
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
 DEVICE_API_HOST = "api.pidgeiot.com"
+# Recipient for platform-ops notifications (helpers/ops_probe.rs -- the
+# 5-minute cron's Kratos readiness probe emails state TRANSITIONS here via
+# Resend). Doubles as the probe's only enable switch: set in production
+# alone, deliberately absent from [env.staging.vars]/[env.dev.vars] so
+# their identical cron handlers never probe or email.
+OPS_ALERT_EMAIL = "code@jes.contact"
 # Greptime folded into Postgres (task #47, docs/infra/postgres-consolidation.md):
 # empty → every telemetry write/read uses the Postgres pigeon_telemetry_history
 # fallback (Crunchy Bridge via Hyperdrive). The Proxmox GreptimeDB instance and
