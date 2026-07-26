@@ -134,8 +134,8 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone tired of waiting on the next poll interval",
           title: "A Persistent Channel for Config Pushes That Land Instantly",
-          body: "WiFi and mains-powered devices can hold one long-lived WebSocket connection instead of polling — a shadow update reaches the device the moment you push it, and telemetry can ride the same socket. Built on Durable Object hibernation, so an idle connection survives without keeping anything warm. Device-side client is hardware-verified (ESP32-C6, nRF9151), and the backend is now live in production.",
-          maturity: Some(Maturity::Beta),
+          body: "WiFi and mains-powered devices can hold one long-lived WebSocket connection instead of polling — a shadow update reaches the device the moment you push it, and telemetry can ride the same socket. Built on Durable Object hibernation, so an idle connection survives without keeping anything warm. Hardware-verified end to end in production: connect, sub-second config pushes, telemetry ingestion, and autonomous reconnect, all on a real device against the live API.",
+          maturity: None,
         }
 
         // Remote shell
@@ -145,8 +145,8 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone who's wanted to poke a device without a physical console",
           title: "Owner-Gated Remote Diagnostic Shell",
-          body: "Run one diagnostic command on a WebSocket-connected device and get its output back over an ordinary dashboard request — relayed through that device's existing socket, gated to the pigeon's owner, with whatever the device's own command allowlist permits. Rides the same live production WebSocket channel described above.",
-          maturity: Some(Maturity::Beta),
+          body: "Run one diagnostic command on a WebSocket-connected device and get its output back over an ordinary dashboard request — relayed through that device's existing socket, gated to the pigeon's owner, with whatever the device's own command allowlist permits. Rides the same live production WebSocket channel described above, verified on real hardware.",
+          maturity: None,
         }
 
         // Codebase
