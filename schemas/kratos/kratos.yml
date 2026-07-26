@@ -1,4 +1,4 @@
-version: v25.4.0
+version: v26.2.0
 
 dsn: postgres://kratos:secret@127.0.0.1:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
 
