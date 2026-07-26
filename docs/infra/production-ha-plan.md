@@ -1,5 +1,15 @@
 # Production 3-node HA plan + budget
 
+> **DB-slot update (2026-07-26):** [`distributed-sql-comparison.md`](./distributed-sql-comparison.md)
+> replaces this plan's YugabyteDB RF3 choice with **plain PostgreSQL + Patroni**
+> (etcd ×3 co-located, one synchronous standby, HAProxy on Patroni's health
+> endpoint). Drivers: Ory Kratos officially supports Postgres but NOT Yugabyte
+> (real migration-failure reports upstream), zero SQL-dialect risk, and
+> ~1.5-2 cores/node vs Yugabyte's 4-8 vCPU floor — which plausibly re-opens
+> the cheaper SYS-1 tier (~$960/yr savings). Read that doc before executing
+> this plan's database sections; the topology/provider/Cloudflare sections
+> here otherwise stand.
+
 Researched 2026-07-22, revised 2026-07-23 (grounded per-node resource
 derivation, full OVH Eco Dedicated lineup, OVH VPS assessment, and a
 SYS-2-vs-SYS-3 head-to-head — see those sections for what changed and
