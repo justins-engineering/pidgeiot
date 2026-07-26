@@ -200,20 +200,15 @@ pub fn Footer() -> Element {
             "© {time::OffsetDateTime::now_utc().year()} Justin's Engineering Services, LLC."
           }
           div { class: "flex items-center space-x-6",
-            a {
+            Link {
               class: "hover:text-primary transition-colors duration-300 text-sm",
-              href: "#",
+              to: Route::PrivacyPage {},
               "Privacy Policy"
             }
-            a {
+            Link {
               class: "hover:text-primary transition-colors duration-300 text-sm",
-              href: "#",
+              to: Route::TermsPage {},
               "Terms of Service"
-            }
-            a {
-              class: "hover:text-primary transition-colors duration-300 text-sm",
-              href: "#",
-              "Cookie Policy"
             }
           }
         }

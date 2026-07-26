@@ -56,3 +56,9 @@ pub use pricing::PricingPage;
 
 mod api_reference;
 pub use api_reference::ApiReferencePage;
+
+mod privacy;
+pub use privacy::PrivacyPage;
+
+mod terms;
+pub use terms::TermsPage;
