@@ -36,6 +36,11 @@ pub fn Unauthorized() -> Element {
 
 #[component]
 pub fn ServerError(id: String) -> Element {
+  // The address bar, not the route prop, is the source of truth for `?id=`:
+  // SSG prerenders this route as `/error?id=` and hydration restores that
+  // empty id on the full-page Kratos error redirect — see
+  // helpers::url_query_param.
+  let id = crate::helpers::url_query_param("id").unwrap_or(id);
   let err_id = id.clone();
   let future = use_resource(move || {
     let err_id = err_id.to_owned();

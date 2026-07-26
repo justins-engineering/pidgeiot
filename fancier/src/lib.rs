@@ -236,3 +236,34 @@ pub fn App() -> Element {
     Router::<Route> {}
   }
 }
+
+// Regression evidence for the task #43 prod signup outage: these prove the
+// ROUTER parses `?flow=` correctly — including the trailing-slash form that
+// wrangler's `html_handling` 307 produces for every prerendered route
+// (`/registration?flow=X` → `/registration/?flow=X`) — so the router was
+// ruled OUT as the culprit. What actually dropped the flow id is SSG
+// hydration restoring the prerendered `flow: None` route instead of
+// re-parsing `window.location`; see helpers::url_query_param for the fix.
+#[cfg(test)]
+mod route_query_param_parsing {
+  use super::Route;
+  use std::str::FromStr;
+
+  #[test]
+  fn flow_param_no_trailing_slash() {
+    let r = Route::from_str("/registration?flow=abc123").unwrap();
+    assert!(matches!(r, Route::RegisterFlow { flow: Some(ref f) } if f == "abc123"), "got {}", r);
+  }
+
+  #[test]
+  fn flow_param_with_trailing_slash() {
+    let r = Route::from_str("/registration/?flow=abc123").unwrap();
+    assert!(matches!(r, Route::RegisterFlow { flow: Some(ref f) } if f == "abc123"), "got {}", r);
+  }
+
+  #[test]
+  fn session_local_state_param() {
+    let r = Route::from_str("/session/local?state=true").unwrap();
+    assert!(matches!(r, Route::SetSessionCookie { state: true }), "got {}", r);
+  }
+}

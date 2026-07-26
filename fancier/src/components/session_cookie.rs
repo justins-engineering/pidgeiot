@@ -1,4 +1,4 @@
-use crate::helpers::{remove_session_cookie, write_session_hint_cookie};
+use crate::helpers::{remove_session_cookie, url_query_param, write_session_hint_cookie};
 use crate::models::AuthState;
 use crate::{Configuration, Create, Route, Session};
 use dioxus::logger::tracing::error;
@@ -11,6 +11,14 @@ pub fn SetSessionCookie(state: bool) -> Element {
   let nav = use_navigator();
 
   use_future(move || async move {
+    // The address bar, not the route prop, is the source of truth for
+    // `?state=`: SSG prerenders this route as `/session/local?state=false`
+    // (bool Default), and hydration restores that route on the full-page
+    // Kratos redirect after login/verification — so trusting the prop alone
+    // ran the logout branch on every successful sign-in, tearing down the
+    // session hint that had just been established. See
+    // helpers::url_query_param.
+    let state = url_query_param("state").map_or(state, |s| s == "true");
     if state {
       // state = true: Kratos redirect after successful login or verification.
       // We must now ask the Kratos backend to validate the secure HttpOnly cookie

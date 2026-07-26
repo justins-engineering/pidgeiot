@@ -11,6 +11,9 @@ mod json;
 pub use json::parse_json_bool;
 pub use json::parse_json_string;
 
+mod url_query;
+pub use url_query::url_query_param;
+
 mod session_cookie;
 pub use session_cookie::remove_session_cookie;
 pub use session_cookie::session_cookie_valid;
