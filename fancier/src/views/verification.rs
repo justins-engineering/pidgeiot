@@ -1,5 +1,5 @@
 use crate::components::{Alert, FormBuilder};
-use crate::helpers::{DisplayError, extract_ui_messages, url_query_param};
+use crate::helpers::{DisplayError, continue_anchor_href, extract_ui_messages, url_query_param};
 use crate::{Configuration, Create};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{
@@ -25,7 +25,23 @@ pub fn VerificationFlow(flow: Option<String>) -> Element {
 
       if let Some(id) = flow_param {
         match get_verification_flow(&config, &id, None).await {
-          Ok(res) => return Ok(res),
+          Ok(res) => {
+            // Kratos v26 + `use_continue_with_transitions`: once the code is
+            // accepted the flow reaches `passed_challenge`, and its UI is
+            // just a success message plus a manual "Continue" anchor to the
+            // after-verification return URL (/session/local?state=true).
+            // Follow that transition automatically — the SPA is expected to
+            // consume it, not render it — so register → verify → signed-in
+            // completes with zero extra clicks. The success page still
+            // renders momentarily below while the browser navigates.
+            if res.state.as_ref().and_then(|s| s.as_str()) == Some("passed_challenge")
+              && let Some(href) = continue_anchor_href(&res.ui)
+              && let Some(window) = web_sys::window()
+            {
+              let _ = window.location().set_href(&href);
+            }
+            return Ok(res);
+          }
           Err(ory_kratos_client_wasm::apis::Error::ResponseError(res))
             if res.status == 410 || res.status == 404 || res.status == 403 =>
           {

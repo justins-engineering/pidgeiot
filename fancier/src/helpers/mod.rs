@@ -1,4 +1,5 @@
 mod ory_ui;
+pub use ory_ui::continue_anchor_href;
 pub use ory_ui::extract_ui_messages;
 
 mod ory_error;

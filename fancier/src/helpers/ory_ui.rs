@@ -1,5 +1,5 @@
 use crate::models::AlertVariant;
-use ory_kratos_client_wasm::models::{UiContainer, ui_text::TypeEnum};
+use ory_kratos_client_wasm::models::{UiContainer, UiNodeAttributes, ui_text::TypeEnum};
 
 pub fn extract_ui_messages(ui: &UiContainer) -> Vec<(AlertVariant, String)> {
   let mut alerts = Vec::new();
@@ -17,4 +17,19 @@ pub fn extract_ui_messages(ui: &UiContainer) -> Vec<(AlertVariant, String)> {
   }
 
   alerts
+}
+
+/// The href of the first anchor ("a") node in a flow's UI, if any.
+///
+/// Kratos v26 with `feature_flags.use_continue_with_transitions: true`
+/// renders a completed browser flow (e.g. a `passed_challenge` verification)
+/// as a success message plus a single manual "Continue" anchor pointing at
+/// the flow's after-completion return URL. A SPA is expected to follow that
+/// transition itself rather than make the user click it — see the
+/// verification view, which auto-navigates when this returns `Some`.
+pub fn continue_anchor_href(ui: &UiContainer) -> Option<String> {
+  ui.nodes.iter().find_map(|node| match node.attributes.as_ref() {
+    UiNodeAttributes::A(anchor) => Some(anchor.href.clone()),
+    _ => None,
+  })
 }
