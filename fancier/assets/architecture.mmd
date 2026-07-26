@@ -74,16 +74,17 @@ flowchart TB
     Router["dovecote Edge Router\n(HTTPS / CoAP-over-TLS Ingestion)"]:::cloudflare
     DO_Pigeon["Pigeon Durable Object\n(1:1 per device, SQLite, source of truth)"]:::cloudflare
     Queue["Cloudflare Queue\n(Telemetry buffer)"]:::cloudflare
+    R2[("R2 Bucket\n(Content-addressed firmware)")]:::cloudflare
     Hyperdrive[("Hyperdrive")]:::cloudflare
   end
 
-  subgraph SelfHosted ["Self-Hosted (docker-compose)"]
-    Kratos["Ory Kratos\n(Dashboard sessions)"]:::selfhosted
-    Postgres[("Postgres\n(Cross-device mirror + Kratos)")]:::storage
+  subgraph SelfHosted ["Off-Edge Services"]
+    Kratos["Ory Kratos\n(Dashboard sessions, VPS via Cloudflare Tunnel)"]:::selfhosted
+    Postgres[("Managed PostgreSQL\n(Cross-device mirror, telemetry history, identities)")]:::storage
   end
 
-  subgraph BYO ["Bring Your Own (rolling out)"]
-    Greptime[("GreptimeDB-compatible endpoint\n(per device, optional)")]:::byo
+  subgraph BYO ["Bring Your Own (optional)"]
+    LineProto[("InfluxDB-line-protocol endpoint\n(per device)")]:::byo
   end
 
   class Endpoints,Cloudflare,SelfHosted,BYO subTitle;
@@ -94,8 +95,9 @@ flowchart TB
   IoT -- "Ed25519-signed 69-byte token" --> Router
   Router -- "proxy_to_pigeon_do" --> DO_Pigeon
   Router -- "X-User-Id" --> Kratos
+  Router -- "firmware upload / Range download" --> R2
   DO_Pigeon -- "best-effort sync" --> Hyperdrive
   Hyperdrive --> Postgres
   Router -- "enqueue telemetry" --> Queue
-  Queue -- "consumer write" --> Postgres
-  Queue -. "optional, per device" .-> Greptime
+  Queue -- "consumer write (history)" --> Postgres
+  Queue -. "optional, per device" .-> LineProto
