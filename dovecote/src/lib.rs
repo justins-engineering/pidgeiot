@@ -79,6 +79,14 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
 pub struct AuthSession {
   pub user_id: String,
   pub email: Option<String>,
+  /// The identity's VERIFIED addresses (lowercased), from
+  /// `identity.verifiable_addresses` -- the only recipients an alert's
+  /// per-alert email override may name (task #48: with open signup, an
+  /// unrestricted override lets any account use alert delivery to spam an
+  /// address it doesn't own; a verify-extra-address flow can widen this
+  /// later). Distinct from `email` above, which is the raw trait and says
+  /// nothing about verification.
+  pub verified_emails: Vec<String>,
 }
 
 /// Validates the Kratos cookie and returns the full session identity
@@ -114,10 +122,47 @@ pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<Au
     .and_then(|v| v.as_str())
     .map(|s| s.to_string());
 
+  let verified_emails = identity
+    .verifiable_addresses
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|a| a.verified)
+    .map(|a| a.value.to_lowercase())
+    .collect();
+
   Ok(AuthSession {
     user_id: identity.id,
     email,
+    verified_emails,
   })
+}
+
+/// Task #48: an alert's per-alert email override may only name an address
+/// the caller's own identity has VERIFIED -- otherwise open free signup
+/// turns alert delivery into a spam relay (create account, point an alert's
+/// `channel.Email.to` at any stranger, feed it telemetry). `None` (deliver
+/// to flock owner_email, the default) is always fine. Returns the
+/// user-facing rejection message so both create routes and the update route
+/// emit the same 400 body. Case-insensitive; `verified_emails` is already
+/// lowercased at construction.
+fn validate_alert_channel(
+  channel: &capsules::AlertChannel,
+  auth: &AuthSession,
+) -> std::result::Result<(), &'static str> {
+  let capsules::AlertChannel::Email { to: Some(addr) } = channel else {
+    return Ok(());
+  };
+  if auth
+    .verified_emails
+    .iter()
+    .any(|v| v == &addr.trim().to_lowercase())
+  {
+    Ok(())
+  } else {
+    Err(
+      "Bad Request: alert email override must match your account's verified email address",
+    )
+  }
 }
 
 /// Validates the Kratos cookie and returns the User ID as a String. Thin
@@ -1305,11 +1350,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/pigeons/:pigeon_id/alerts",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        // Full session (not just the id): channel validation below needs the
+        // identity's verified addresses (task #48).
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
             .with_cors(&cors);
         };
+        let user_id = auth.user_id.clone();
 
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
@@ -1342,6 +1390,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return Response::error("Bad Request: 'name' cannot be empty", 400)
             .unwrap()
             .with_cors(&cors);
+        }
+
+        if let Err(msg) = validate_alert_channel(&payload.channel, &auth) {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
@@ -1392,11 +1444,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/flocks/:flock_id/alerts",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        // Full session for verified-address channel validation (task #48).
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
             .with_cors(&cors);
         };
+        let user_id = auth.user_id.clone();
 
         let Some(flock_id) = ctx.param("flock_id").cloned() else {
           return Response::error("Flock ID cannot be empty or invalid", 400)
@@ -1414,6 +1468,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return Response::error("Bad Request: 'name' cannot be empty", 400)
             .unwrap()
             .with_cors(&cors);
+        }
+
+        if let Err(msg) = validate_alert_channel(&payload.channel, &auth) {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
@@ -1485,11 +1543,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/alerts/:alert_id",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+        // Full session for verified-address channel validation (task #48).
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
             .with_cors(&cors);
         };
+        let user_id = auth.user_id.clone();
 
         let Some(alert_id) = ctx.param("alert_id").cloned() else {
           return Response::error("Alert ID cannot be empty or invalid", 400)
@@ -1502,6 +1562,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+
+        if let Some(channel) = &payload.channel
+          && let Err(msg) = validate_alert_channel(channel, &auth)
+        {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
+        }
 
         get_db!(ctx.env, client, &cors);
 

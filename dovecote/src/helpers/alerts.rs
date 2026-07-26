@@ -879,9 +879,6 @@ async fn apply_alert_transition(
 /// dropping the notification.
 async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Option<String> {
   let AlertChannel::Email { to } = &def.channel;
-  if let Some(explicit) = to {
-    return Some(explicit.clone());
-  }
 
   let result =
     match &def.scope {
@@ -901,7 +898,33 @@ async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Opti
         .await,
     };
 
-  result.ok().and_then(|row| row.get("owner_email"))
+  let owner_email: Option<String> = result.ok().and_then(|row| row.get("owner_email"));
+
+  // Task #48 defense-in-depth: the create/update routes already reject an
+  // override that isn't the caller's own verified address, but definitions
+  // that predate that validation (or rows written outside the API) could
+  // still carry an arbitrary `to`. At send time an override is honored only
+  // if it matches the flock's owner_email -- anything else falls back to
+  // the owner with a log line, so alert delivery can never be aimed at an
+  // address the platform hasn't tied to this account. Once a
+  // verify-extra-address flow exists, this is where its allowlist check
+  // replaces the strict owner_email equality.
+  if let Some(explicit) = to {
+    match &owner_email {
+      Some(owner) if owner.eq_ignore_ascii_case(explicit.trim()) => {
+        return Some(explicit.clone());
+      }
+      _ => {
+        console_error!(
+          "Alert '{}' ({}): ignoring email override that doesn't match the flock owner_email; delivering to owner instead",
+          def.name,
+          def.id
+        );
+      }
+    }
+  }
+
+  owner_email
 }
 
 async fn send_alert_email(
