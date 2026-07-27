@@ -1,3 +1,4 @@
 /target
 secrets.env
 .migration/
+kratos.yml
