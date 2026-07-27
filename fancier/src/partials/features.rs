@@ -58,7 +58,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "HTTPS or CoAP-over-TLS (RFC 8323) — same ingestion API" }
+              span { "HTTPS or WebSocket — same ingestion API (CoAP-over-TLS planned)" }
             }
           }
         }

@@ -71,7 +71,7 @@ flowchart TB
 
   subgraph Cloudflare ["Cloudflare Edge Compute"]
     Fancier["fancier Worker\n(Static WASM Dashboard Assets)"]:::cloudflare
-    Router["dovecote Edge Router\n(HTTPS / CoAP-over-TLS Ingestion)"]:::cloudflare
+    Router["dovecote Edge Router\n(HTTPS / WebSocket Ingestion)"]:::cloudflare
     DO_Pigeon["Pigeon Durable Object\n(1:1 per device, SQLite, source of truth)"]:::cloudflare
     Queue["Cloudflare Queue\n(Telemetry buffer)"]:::cloudflare
     R2[("R2 Bucket\n(Content-addressed firmware)")]:::cloudflare

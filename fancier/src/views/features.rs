@@ -53,7 +53,7 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone who's outgrown a spreadsheet of sensor readings",
           title: "Telemetry With Real History, On Your Terms",
-          body: "Devices report flat key/value telemetry over HTTPS, CoAP, or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports go straight there instead of into the platform's history store.",
+          body: "Devices report flat key/value telemetry over HTTPS or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports go straight there instead of into the platform's history store.",
           maturity: None,
         }
 
@@ -100,9 +100,9 @@ pub fn FeaturesPage() -> Element {
             Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
           },
           eyebrow: "For anyone whose hardware can't afford a full HTTPS stack",
-          title: "HTTPS or CoAP-over-TLS, Same API",
-          body: "No proprietary firmware, no supported-device list. Speak HTTPS if you can, or RFC 8323 CoAP-over-TLS/TCP if your hardware is too constrained for a full HTTPS stack — both hit the same ingestion API, both stay fully encrypted. There's no bare, unencrypted UDP path.",
-          maturity: None,
+          title: "CoAP-over-TLS for Constrained Hardware",
+          body: "For hardware too constrained for a full HTTPS stack, RFC 8323 CoAP-over-TLS/TCP is designed into the platform — per-device PSK credentials on the connector, the same ingestion API, and no bare unencrypted UDP path, ever. The network-side CoAP terminator isn't deployed yet, so today devices connect over HTTPS or WebSocket; CoAP-provisioned credentials will light up when it ships.",
+          maturity: Some(Maturity::Planned),
         }
 
         // Connection state

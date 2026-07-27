@@ -198,7 +198,13 @@ Creates a pigeon inside a flock. Body: `capsules::PigeonCreateRequest`
 (`{ flock_id, serial?, name?, tags?, connector, board? }`) — `connector` is either
 `{"Https": {"endpoint": "", "token": ""}}` or `{"Coap": {"endpoint": "", "token": ""}}`; the
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
-device endpoint URL and credential). `board` (task #20, phase 1) is optional — the pigeon's own
+device endpoint URL and credential).
+
+> **CoAP is not yet live network-side.** The `Coap` connector variant is accepted, stored, and
+> mints PSK credentials, but no CoAP-over-TLS/TCP terminator is deployed yet — a
+> `coaps+tcp://` endpoint has nothing listening behind it (the edge runtime is HTTP-based and
+> cannot terminate raw CoAP framing; a dedicated terminator is a tracked roadmap item).
+> Provision `Https` connectors; the dashboard's connector picker enforces this. `board` (task #20, phase 1) is optional — the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
 never be assigned firmware over the shadow route (see [Shadow](#shadow) above's fail-closed
 board-compatibility check) until it's tagged, either here or via a later `PUT`.

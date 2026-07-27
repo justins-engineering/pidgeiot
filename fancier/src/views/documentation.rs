@@ -54,7 +54,7 @@ pub fn DocumentationPage() -> Element {
           DocStep {
             number: "4",
             title: "Provision the device",
-            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below), or use the CoAP-over-TLS PSK fields if your device speaks CoAP instead of HTTPS.",
+            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). CoAP-over-TLS PSK credentials are designed into the connector model but not yet live network-side — use HTTPS or WebSocket today.",
           }
           DocStep {
             number: "5",
