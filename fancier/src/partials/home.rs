@@ -11,8 +11,9 @@ pub fn Home() -> Element {
       h1 { class: "text-center text-4xl md:text-6xl lg:text-7xl font-bold leading-tight",
         span { class: "italic", "The" }
         span { class: "gradient-text font-extrabold block", "No Compromise" }
-        "IoT Platform"
+        "IoT Platform*"
       }
+      p { class: "text-center text-xs text-base-content/70", "* Life is full of compromises" }
       article { class: "flex flex-col space-y-4 @min-[22rem]:space-y-8 text-xl text-pretty text-center leading-relaxed",
         p {
           "An open-source, distributed, and efficient IoT platform. Built in "
@@ -42,8 +43,8 @@ pub fn Home() -> Element {
           "View on GitHub"
         }
       }
-      p { class: "text-center text-base text-base-content/60",
-        "New to PidgeIoT? "
+      p { class: "text-center text-base text-base-content/70",
+        "New to IoT? "
         Link {
           class: "link link-secondary",
           to: Route::GettingStartedPage {},
@@ -51,7 +52,9 @@ pub fn Home() -> Element {
         }
       }
       div { class: "mx-auto",
-        a { href: "/#features", aria_label: "Scroll to features section",
+        a {
+          href: "/#features",
+          aria_label: "Scroll to features section",
           Icon {
             icon: LdChevronsDown,
             class: "size-15 mx-auto stroke-primary animate-pulse-slow",
