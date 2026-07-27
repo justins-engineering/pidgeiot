@@ -7,6 +7,14 @@ This file preserves their license notices as those licenses require.
 crates.io packages; this file covers assets whose notices would otherwise
 not accompany the *compiled* artifact served to browsers.)
 
+The dashboard's `/open-source` page is the user-facing rendering of this
+same inventory: it carries this file's Lucide notice verbatim, names the
+other directly user-visible open-source pieces (daisyUI, Tailwind CSS,
+Dioxus, Ory Kratos), and includes the full Rust crate license inventory for
+both `fancier` and `dovecote`, auto-generated from the actual dependency
+graph on every release build (`fancier/scripts/generate-oss-notices.sh`,
+via `cargo about`) rather than hand-maintained here.
+
 ## Lucide icons
 
 All inline UI icons, including the bird mark currently used as the

@@ -1,0 +1,49 @@
+{{!-- Renders cargo-about's JSON model as Markdown, grouped by SPDX license id
+    (one <details> per id, via `overview`/`first_of_kind` — same iteration
+    idiom as cargo-about's own bundled about.hbs), so a page with hundreds of
+    MIT-licensed crates gets one collapsible MIT section, not hundreds of
+    copies. Consumed by fancier/src/views/open_source.rs via include_str!,
+    rendered through the same pulldown-cmark pipeline as
+    fancier/src/views/api_reference.rs. Do not hand-edit the generated
+    .md output — edit this template and rerun
+    fancier/scripts/generate-oss-notices.sh instead.
+
+    Handlebars-rust ships no eq/length helpers beyond if/unless/each/with,
+    so this deliberately avoids expressions those would require. Every
+    interpolation below uses triple-stash syntax rather than plain
+    double-stash: handlebars HTML-escapes by default (quotes become the
+    &quot; entity etc.), which is wrong here since the output is Markdown
+    text that pulldown-cmark will itself HTML-escape exactly once when the
+    page renders; double-escaping would leave literal entity text visible
+    on the page. Fenced with 4 backticks (rather than 3) as cheap insurance
+    against a license text that happens to contain a bare triple-backtick
+    sequence. --}}
+Jump to a license:
+
+{{#each overview}}
+- [{{{name}}} ({{{id}}})](#license-{{{id}}}) — {{count}} package(s)
+{{/each}}
+
+{{#each licenses}}
+{{#if first_of_kind}}
+{{#unless @first}}
+
+</details>
+{{/unless}}
+
+### {{{name}}} ({{{id}}})
+
+<details id="license-{{{id}}}">
+<summary>Show license text and packages</summary>
+
+{{/if}}
+
+````text
+{{{text}}}
+````
+
+**Used by:** {{#each used_by}}{{#unless @first}}, {{/unless}}[{{{crate.name}}} {{{crate.version}}}]({{#if crate.repository}}{{{crate.repository}}}{{else}}https://crates.io/crates/{{{crate.name}}}{{/if}}){{/each}}
+
+{{/each}}
+
+</details>

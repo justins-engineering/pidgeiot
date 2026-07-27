@@ -1,0 +1,44 @@
+# cargo-about config shared by fancier's and dovecote's generated
+# open-source-license inventories (see fancier/scripts/generate-oss-notices.sh,
+# which drives both, and fancier/src/views/open_source.rs, which renders the
+# result at /open-source). One config, not two, since the accepted-license
+# policy is a whole-project decision, not a per-crate one.
+#
+# `targets` scopes each crate's dependency graph to what actually gets
+# compiled: both dovecote (Cloudflare Workers) and fancier (the WASM SPA)
+# build for wasm32-unknown-unknown. Without this, cargo-about also pulls in
+# native-only dependencies that dioxus's "fullstack"/server_fn machinery
+# needs only for the build-time SSG prerender (see CLAUDE.md's SSG note) —
+# those never ship to a browser, so listing them here would over-attribute.
+targets = ["wasm32-unknown-unknown"]
+
+# The permissive baseline the /open-source page design agreed on, plus two
+# more a real scan of the resolved wasm32 dependency graphs required:
+#   - CC0-1.0 (public-domain dedication): the `base16` crate, a transitive
+#     dependency of fancier's syntax-highlighting-adjacent tooling.
+#   - BSL-1.0 (Boost Software License, permissive): `xxhash-rust`.
+# Both are as permissive as the rest of this list. Anything encountered
+# outside this list fails the `cargo about generate` build with a loud
+# error instead of silently shipping an unreviewed license — see
+# generate-oss-notices.sh.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "ISC",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "BSL-1.0",
+]
+
+# capsules/dovecote/fancier are this repo's own crates (`publish = false` in
+# their own Cargo.toml, added alongside this file) — they're PidgeIoT's own
+# AGPL-3.0 code, not a third-party dependency, and are attributed separately
+# at the top of /open-source, not folded into this generated inventory.
+# Must come last: TOML table headers own every key that follows them until
+# the next header, so `accepted` has to precede this section.
+[private]
+ignore = true

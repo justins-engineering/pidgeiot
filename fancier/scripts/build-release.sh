@@ -8,6 +8,15 @@ cd "$(dirname "$0")/.."
 
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 
+# Regenerates the /open-source page's crate-license inventory from the
+# actual current dependency graph (see generate-oss-notices.sh and
+# fancier/src/views/open_source.rs) so it can't drift stale. Requires
+# cargo-about (`cargo install cargo-about --locked --features cli`); a
+# release build is expected to have it, unlike plain `cargo check`/`dx
+# serve`, which read the checked-in generated/oss-licenses.md snapshots
+# this overwrites and don't need cargo-about at all.
+./scripts/generate-oss-notices.sh
+
 # Dioxus.toml's [web.resource] writes a static <link rel="stylesheet"> into
 # the generated index.html so the browser can fetch CSS in parallel with
 # app.js/wasm, instead of only requesting it after Dioxus's runtime

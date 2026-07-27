@@ -60,5 +60,8 @@ pub use api_reference::ApiReferencePage;
 mod privacy;
 pub use privacy::PrivacyPage;
 
+mod open_source;
+pub use open_source::OpenSourcePage;
+
 mod terms;
 pub use terms::TermsPage;

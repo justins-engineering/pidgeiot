@@ -3,6 +3,7 @@ name = "fancier"
 version = "0.1.0"
 authors = ["justin <code@jes.contact>"]
 edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

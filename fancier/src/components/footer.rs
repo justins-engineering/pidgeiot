@@ -200,17 +200,20 @@ pub fn Footer() -> Element {
             "© {time::OffsetDateTime::now_utc().year()} Justin's Engineering Services, LLC."
             span { class: "opacity-60",
               " · Icons by "
-              a {
+              Link {
                 class: "hover:text-primary transition-colors duration-300",
-                href: "https://lucide.dev",
-                target: "_blank",
-                rel: "noopener",
+                to: Route::OpenSourcePage {},
                 "Lucide"
               }
               " (ISC)"
             }
           }
           div { class: "flex items-center space-x-6",
+            Link {
+              class: "hover:text-primary transition-colors duration-300 text-sm",
+              to: Route::OpenSourcePage {},
+              "Open Source"
+            }
             Link {
               class: "hover:text-primary transition-colors duration-300 text-sm",
               to: Route::PrivacyPage {},

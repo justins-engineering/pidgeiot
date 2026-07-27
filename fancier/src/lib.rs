@@ -11,9 +11,9 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, Dashboard, DocumentationPage, FeaturesPage, Flocks,
-  Index, LoginFlow, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow,
-  RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, VerificationFlow,
-  Wrapper,
+  Index, LoginFlow, OpenSourcePage, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage,
+  RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized,
+  VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -81,6 +81,8 @@ enum Route {
   ApiReferencePage {},
   #[route("/privacy")]
   PrivacyPage {},
+  #[route("/open-source")]
+  OpenSourcePage {},
   #[route("/terms")]
   TermsPage {},
   #[route("/login?:flow")]
