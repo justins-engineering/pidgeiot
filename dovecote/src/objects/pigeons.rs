@@ -292,6 +292,7 @@ impl DurableObject for Pigeons {
       "/pigeon/device/telemetry/write" => write_telemetry_device(self, req).await,
       "/pigeon/device/telemetry/endpoint" => read_telemetry_endpoint_device(self, req).await,
       "/pigeon/telemetry/get" => get_telemetry_latest(self, req).await,
+      "/pigeon/demo/telemetry" => get_telemetry_latest_demo(self, req).await,
       "/pigeon/telemetry-endpoint/update" => update_telemetry_endpoint(self, req).await,
       "/pigeon/authz/check" => check_authorized(self, req).await,
       "/pigeon/device/logs" => report_logs_device(self, req).await,
@@ -1920,6 +1921,36 @@ async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Respons
     },
     Err(e) => {
       console_error!("Telemetry latest READ error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Unauthenticated counterpart to `get_telemetry_latest` above, backing the
+/// public demo route (`GET /demo/pigeons/:id/telemetry`, `lib.rs`). This DO
+/// is never reachable directly from the internet (see this crate's
+/// CLAUDE.md) -- the gateway route only proxies here after confirming
+/// `pigeon_id` is in `DEMO_PIGEON_IDS` (`helpers::is_demo_pigeon`), so
+/// there's no `X-User-Id`/`pigeon_acl` check to run here, same posture as
+/// the `/pigeon/device/*` routes skipping `is_authorized` in favor of their
+/// own (different) proof. Otherwise identical to `get_telemetry_latest`.
+async fn get_telemetry_latest_demo(pigeons: &Pigeons, _req: Request) -> Result<Response> {
+  match pigeons
+    .sql
+    .exec("SELECT key, value, reported_at FROM pigeon_telemetry;", None)
+  {
+    Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
+      Ok(rows) => {
+        let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
+        Response::from_json(&latest)
+      }
+      Err(e) => {
+        console_error!("Telemetry latest LIST error (demo): {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("Telemetry latest READ error (demo): {e}");
       Response::error("Internal Server Error", 500)
     }
   }

@@ -29,6 +29,13 @@ head_sampling_rate = 0
 # secrets below -- without them the Access gate 403s the Worker and
 # telemetry silently falls back to Postgres history).
 #
+# DEMO_PIGEON_IDS (launch-eve, all three [vars]/[env.*.vars] blocks below)
+# -- comma-separated pigeon ids allowlisted for the public, unauthenticated
+# GET /demo/pigeons/:id/telemetry* routes (helpers/demo.rs::is_demo_pigeon,
+# lib.rs). Empty/unset means no pigeon is demo-eligible in that
+# environment -- NOT "allow anything". Exact string match after splitting
+# on ',' (whitespace-trimmed), so a typo just 404s rather than matching.
+#
 # GREPTIMEDB_DB (optional, per-env var) -- the GreptimeDB *database* the
 # read/write paths target (helpers/greptime.rs::greptime_db). Unset → the
 # built-in `public` database. Historically staging set it to `"staging"` so
@@ -61,6 +68,8 @@ DEVICE_API_HOST = "api.pidgeiot.com"
 # alone, deliberately absent from [env.staging.vars]/[env.dev.vars] so
 # their identical cron handlers never probe or email.
 OPS_ALERT_EMAIL = "code@jes.contact"
+# Production demo pigeon (see the DEMO_PIGEON_IDS note above).
+DEMO_PIGEON_IDS = "44e81fc18f5beddf8cabf57c3decd16ad1b7d24dd629213c2c4ac9038e50b03f"
 # Greptime folded into Postgres (task #47, docs/infra/postgres-consolidation.md):
 # empty → every telemetry write/read uses the Postgres pigeon_telemetry_history
 # fallback (Crunchy Bridge via Hyperdrive). The Proxmox GreptimeDB instance and
@@ -152,6 +161,9 @@ crons = ["*/5 * * * *"]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
+# Staging's own demo pigeon (see the DEMO_PIGEON_IDS note above) -- lives in
+# the "Demo Flock" flock, created for this purpose; NOT the prod demo id.
+DEMO_PIGEON_IDS = "0ec346b8c062431d0bada55f93ffa6089c6fd35eda5d64c75aff0381c4ea12a3"
 # Greptime folded into Postgres, same as prod (task #47,
 # docs/infra/postgres-consolidation.md): empty → Postgres
 # pigeon_telemetry_history fallback for both writes and reads. GREPTIMEDB_DB
@@ -199,6 +211,9 @@ crons = ["*/5 * * * *"]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
 DEVICE_API_HOST = "127.0.0.1:8787"
+# No demo pigeon in dev -- empty, not unset, matching the other per-env
+# vars' pattern of every environment declaring the key explicitly.
+DEMO_PIGEON_IDS = ""
 # Local docker-compose GreptimeDB (task #26, docker-compose.yml's
 # `greptimedb` service) -- reachable directly, no Cloudflare Tunnel/Access
 # in dev, and no auth configured on the local instance either, so neither

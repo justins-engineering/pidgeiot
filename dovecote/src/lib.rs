@@ -1,9 +1,9 @@
 use crate::helpers::{
-  authenticate_browser, backfill_owner_email, check_pigeon_authz, create_flock_alert,
-  create_pigeon_alert, create_user_flock, delete_alert_definition, delete_pigeon_pg_db,
-  get_db_client, get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_alert_owner,
-  is_flock_owner, list_flock_alerts, list_flock_firmware, list_pigeon_alerts,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
+  PigeonAccess, authenticate_browser, backfill_owner_email, check_pigeon_authz,
+  create_flock_alert, create_pigeon_alert, create_user_flock, delete_alert_definition,
+  delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db,
+  is_alert_owner, is_demo_pigeon, is_flock_owner, list_flock_alerts, list_flock_firmware,
+  list_pigeon_alerts, proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
   update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
   update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
@@ -1163,6 +1163,90 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           &client,
           &flock_id,
           &user_id,
+          query.key.as_deref(),
+          query.since,
+          query.until,
+        )
+        .await?;
+
+        Response::from_json(&points)?.with_cors(&cors)
+      },
+    )
+    // --- Public Demo Routes (launch-eve, no ticket number) ---
+    // Deliberately unauthenticated -- read-only, and gated by exact
+    // membership in DEMO_PIGEON_IDS (helpers::is_demo_pigeon) rather than
+    // any session/ACL/device-token check, since a demo visitor has none of
+    // those. A pigeon_id that isn't allowlisted 404s, matching how the
+    // authenticated pigeon routes 404 rather than 403 on an unknown id --
+    // this route surface must not leak which ids exist. Nothing else about
+    // a pigeon (shadow, logs, listing) is reachable here.
+    .get_async("/demo/pigeons/:pigeon_id/telemetry", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let Some(pigeon_id) = ctx.param("pigeon_id").cloned() else {
+        return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+      };
+      if !is_demo_pigeon(&ctx.env, &pigeon_id) {
+        return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+      }
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // No X-User-Id here -- the allowlist check above is the
+      // authorization; the DO's /pigeon/demo/telemetry handler skips its
+      // own ACL check accordingly (objects/pigeons.rs::
+      // get_telemetry_latest_demo).
+      proxy_to_pigeon_do(req, "", &obj_id, "/demo/telemetry")
+        .await?
+        .with_cors(&cors)
+    })
+    .get_async(
+      "/demo/pigeons/:pigeon_id/telemetry/history",
+      |req, ctx| async move {
+        let cors = build_cors(&ctx.env, &req);
+
+        let Some(pigeon_id) = ctx.param("pigeon_id").cloned() else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+        if !is_demo_pigeon(&ctx.env, &pigeon_id) {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        }
+
+        let Ok(query) = req.query::<TelemetryHistoryQuery>() else {
+          return Response::error("Bad Request: Invalid query parameters", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // No DO round-trip needed for authorization here (contrast the
+        // authenticated route's check_pigeon_authz probe) -- the allowlist
+        // check above already is the proof. from_demo_allowlist exists
+        // specifically so query_telemetry_history_for_pigeon still can't
+        // be called from a call site that skipped some form of check.
+        let access = PigeonAccess::from_demo_allowlist(&pigeon_id);
+
+        if crate::helpers::greptime_origin(&ctx.env).is_some() {
+          match crate::helpers::query_greptime_history_for_pigeon(
+            &ctx.env,
+            &pigeon_id,
+            query.key.as_deref(),
+            query.since,
+            query.until,
+          )
+          .await
+          {
+            Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+            Err(e) => console_error!(
+              "Greptime demo history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
+            ),
+          }
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let points = query_telemetry_history_for_pigeon(
+          &client,
+          &access,
           query.key.as_deref(),
           query.since,
           query.until,

@@ -664,6 +664,45 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/logs \
 
 ---
 
+## Public Demo API
+
+Two routes, both **read-only** and **unauthenticated** — no Kratos session, no device bearer
+token, no `X-User-Id`, nothing. They back `fancier`'s public `/demo` page (a live, no-signup
+preview of the platform) and exist for that page alone: no shadow, no logs, no listing route, no
+write path of any kind is reachable here.
+
+Authorization is a single allowlist check instead of a session/ACL/token check: the Worker var
+`DEMO_PIGEON_IDS` (`wrangler.toml` — a comma-separated list of pigeon ids, one demo pigeon per
+deployed environment) is matched exactly against the `:pigeon_id` path segment
+(`helpers/demo.rs::is_demo_pigeon`). A `pigeon_id` not on that list — including a real,
+currently-provisioned pigeon that just isn't the demo one — gets a plain **404**, not 403, so this
+surface never confirms or denies whether an arbitrary id exists. `DEMO_PIGEON_IDS` is empty in
+`dev`, so these routes 404 for every id there.
+
+### `GET /demo/pigeons/:pigeon_id/telemetry`
+
+Latest-value read — identical response shape to the dashboard's
+[`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry) above (`Vec<capsules::
+TelemetryLatest>`), reading the same Durable Object table, just without the `X-User-Id`/ACL
+check (`objects/pigeons.rs::get_telemetry_latest_demo`).
+
+```sh
+curl -s https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry
+```
+
+### `GET /demo/pigeons/:pigeon_id/telemetry/history`
+
+History read — same query params and response shape as the dashboard's
+[`GET /pigeons/:pigeon_id/telemetry/history`](#get-pigeonspigeon_idtelemetryhistory) above
+(`?key=<string>&since=<RFC3339>&until=<RFC3339>`, `Vec<capsules::TelemetryHistoryPoint>`,
+Greptime-first/Postgres-fallback), just without the ACL probe.
+
+```sh
+curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/history?key=temp_c"
+```
+
+---
+
 ## Device API
 
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via

@@ -21,6 +21,21 @@ impl PigeonAccess {
   pub fn pigeon_id(&self) -> &str {
     &self.pigeon_id
   }
+
+  /// Alternate proof source for the public, unauthenticated demo routes
+  /// (`GET /demo/pigeons/:id/telemetry/history`, `lib.rs`) -- a demo
+  /// visitor has no Kratos session, so `check_pigeon_authz`'s `X-User-Id`
+  /// + `pigeon_acl` check above can never run for these routes. The
+  /// gateway route's own `helpers::is_demo_pigeon` allowlist check IS the
+  /// authorization here; this constructor exists purely so that check
+  /// still has to happen at a call site that can prove it before reaching
+  /// `query_telemetry_history_for_pigeon`, rather than that function
+  /// falling back to trusting a bare `&str` again.
+  pub fn from_demo_allowlist(pigeon_id: &str) -> Self {
+    Self {
+      pigeon_id: pigeon_id.to_string(),
+    }
+  }
 }
 
 /// Runs the DO's bare ACL probe (`/pigeon/authz/check`) for `pigeon_id` and
