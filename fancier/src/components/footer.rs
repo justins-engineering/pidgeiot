@@ -198,6 +198,17 @@ pub fn Footer() -> Element {
         aside { class: "px-4 sm:px-6 w-full flex flex-col md:flex-row justify-between items-center",
           p { class: "mb-1 md:mb-0 text-sm",
             "© {time::OffsetDateTime::now_utc().year()} Justin's Engineering Services, LLC."
+            span { class: "opacity-60",
+              " · Icons by "
+              a {
+                class: "hover:text-primary transition-colors duration-300",
+                href: "https://lucide.dev",
+                target: "_blank",
+                rel: "noopener",
+                "Lucide"
+              }
+              " (ISC)"
+            }
           }
           div { class: "flex items-center space-x-6",
             Link {
