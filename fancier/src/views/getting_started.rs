@@ -20,6 +20,22 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
+    // The whole flow, recorded
+    section { class: "pb-16",
+      div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
+        p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
+          "The whole flow in under a minute"
+        }
+        img {
+          class: "w-full max-w-full rounded-2xl border border-base-content/10 shadow-lg mx-auto",
+          src: asset!("/assets/images/getting-started-demo.gif"),
+          alt: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
+          width: "796",
+          height: "564",
+        }
+      }
+    }
+
     // What you'll have at the end
     section { class: "pb-16",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
