@@ -14,3 +14,14 @@ pub const API_HOST: &str = match option_env!("API_HOST") {
   Some(name) => name,
   None => "http://127.0.0.1:8787",
 };
+
+// Pigeon id backing the public /demo page (views/demo.rs, api/demo.rs) --
+// must match whatever dovecote's own DEMO_PIGEON_IDS allowlists for this
+// environment (dovecote/wrangler.toml). Empty means "no demo pigeon here"
+// (dev's default -- dovecote's dev DEMO_PIGEON_IDS is empty too), which
+// api::demo short-circuits on rather than firing a request that would just
+// 404.
+pub const DEMO_PIGEON_ID: &str = match option_env!("DEMO_PIGEON_ID") {
+  Some(id) => id,
+  None => "",
+};

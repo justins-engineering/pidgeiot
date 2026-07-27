@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, ApiReferencePage, Architecture, Dashboard, DocumentationPage, FeaturesPage, Flocks,
-  GettingStartedPage, Index, LoginFlow, OpenSourcePage, PageNotFound, PigeonView, Pigeons,
+  AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DocumentationPage, FeaturesPage,
+  Flocks, GettingStartedPage, Index, LoginFlow, OpenSourcePage, PageNotFound, PigeonView, Pigeons,
   PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow,
   TermsPage, Unauthorized, VerificationFlow, Wrapper,
 };
@@ -79,6 +79,8 @@ enum Route {
   GettingStartedPage {},
   #[route("/pricing")]
   PricingPage {},
+  #[route("/demo")]
+  DemoPage {},
   #[route("/api-reference")]
   ApiReferencePage {},
   #[route("/privacy")]

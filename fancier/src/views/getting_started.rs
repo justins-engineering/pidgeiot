@@ -2,7 +2,7 @@ use crate::Route;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdCircleCheckBig, LdCode, LdFileText, LdKeyRound, LdPlay, LdRocket,
+  LdCircleCheckBig, LdCode, LdFileText, LdKeyRound, LdPlay, LdRadio, LdRocket,
 };
 
 #[component]
@@ -16,6 +16,28 @@ pub fn GettingStartedPage() -> Element {
         }
         p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-3xl mx-auto text-balance",
           "See the whole platform work end to end before you touch any hardware. In about ten minutes you'll have a simulated device reporting real telemetry to your dashboard."
+        }
+        Link {
+          class: "inline-flex items-center gap-1.5 mt-6 text-sm font-semibold text-primary hover:underline",
+          to: Route::DemoPage {},
+          Icon { icon: LdRadio, class: "size-4", title: "Live" }
+          "Just want to see it working? Live demo →"
+        }
+      }
+    }
+
+    // The whole flow, recorded
+    section { class: "pb-16",
+      div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
+        p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
+          "The whole flow in under a minute"
+        }
+        img {
+          class: "w-full max-w-full rounded-2xl border border-base-content/10 shadow-lg mx-auto",
+          src: asset!("/assets/images/getting-started-demo.gif"),
+          alt: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
+          width: "796",
+          height: "564",
         }
       }
     }
@@ -127,7 +149,7 @@ pub fn GettingStartedPage() -> Element {
 
         h3 { class: "text-lg font-bold mb-2", "1. Clone the repo and set up the west workspace" }
         GsCode {
-          code: "git clone https://github.com/justins-engineering/pigeon-examples\ncd pigeon-examples\npython3 -m venv .venv && source .venv/bin/activate\npip install west\nwest init -l samples\nwest update",
+          code: "git clone https://github.com/justins-engineering/pigeon-examples\ncd pigeon-examples\npython3 -m venv .venv && source .venv/bin/activate\npip install west\nwest update",
         }
         p { class: "text-sm text-base-content/60 mb-6",
           "\"west update\" fetches the Zephyr sources -- a few hundred MB, one time only."

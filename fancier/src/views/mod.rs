@@ -57,6 +57,9 @@ pub use getting_started::GettingStartedPage;
 mod pricing;
 pub use pricing::PricingPage;
 
+mod demo;
+pub use demo::DemoPage;
+
 mod api_reference;
 pub use api_reference::ApiReferencePage;
 
