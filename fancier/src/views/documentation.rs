@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBookOpen, LdChevronRight, LdCode, LdFileText, LdPlay, LdRadio,
+  LdBookOpen, LdChevronRight, LdCode, LdFileText, LdPlay, LdRadio, LdRocket,
 };
 
 #[component]
@@ -21,6 +21,12 @@ pub fn DocumentationPage() -> Element {
         }
         p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-3xl mx-auto text-balance",
           "This page is honest about what exists: a getting-started path through the dashboard, a full API reference, and the source for everything else."
+        }
+        Link {
+          class: "btn btn-primary rounded-full mt-8",
+          to: Route::GettingStartedPage {},
+          Icon { icon: LdRocket, class: "mr-2", title: "Rocket" }
+          "Try it now -- no hardware required"
         }
       }
     }

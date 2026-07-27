@@ -51,6 +51,9 @@ pub use features::FeaturesPage;
 mod documentation;
 pub use documentation::DocumentationPage;
 
+mod getting_started;
+pub use getting_started::GettingStartedPage;
+
 mod pricing;
 pub use pricing::PricingPage;
 

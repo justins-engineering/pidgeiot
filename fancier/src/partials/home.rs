@@ -42,6 +42,14 @@ pub fn Home() -> Element {
           "View on GitHub"
         }
       }
+      p { class: "text-center text-base text-base-content/60",
+        "New to PidgeIoT? "
+        Link {
+          class: "link link-secondary",
+          to: Route::GettingStartedPage {},
+          "Try it without hardware first →"
+        }
+      }
       div { class: "mx-auto",
         a { href: "/#features", aria_label: "Scroll to features section",
           Icon {
