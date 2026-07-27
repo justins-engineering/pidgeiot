@@ -88,6 +88,14 @@ initial mint.
 
 A missing/malformed/expired/wrong-pigeon token gets `401 Unauthorized`.
 
+> **Troubleshooting: `403` with an HTML body.** If a device request gets `403` and the body is
+> HTML (e.g. "Just a moment...") instead of plain text, the request was stopped by edge
+> security *before* reaching the API — your token was never even checked. Common triggers:
+> requests from datacenter IP ranges, or a client `User-Agent` on bot blocklists (Python's
+> default `Python-urllib/x.y` is a known offender). Set a distinctive `User-Agent` (e.g.
+> `my-gateway/1.0`) and retry; if it persists from your network, report it — the device routes
+> are meant to be exempt from browser-oriented challenges.
+
 ## CORS
 
 Every route is wrapped in a per-request CORS response computed from the incoming `Origin`
