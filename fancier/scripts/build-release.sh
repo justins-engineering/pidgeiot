@@ -92,3 +92,50 @@ PUBLIC_DIR="../target/dx/fancier/release/web/public"
 find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
   -e 's#href="assets/#href="/assets/#g' \
   -e 's#src="assets/#src="/assets/#g'
+
+# Social/crawler head tags (launch-day fix, 2026-07-28): Dioxus's
+# document::Title/Meta components only materialize CLIENT-SIDE after
+# hydration -- verified against the live prerendered HTML, which shipped
+# with no <title> and zero metas, so link unfurlers (Slack/Discord/X/
+# iMessage), none of which run JS, rendered bare previews. Same class of
+# problem as the [web.resource] CSS fix above, same class of solution:
+# inject the tags statically into every prerendered index.html. og:url is
+# derived per page from its output path. Idempotent (skips files already
+# carrying og:title). The 1200x630 card lives at a STABLE unhashed URL
+# (/og.png) because unfurlers cache og:image URLs long-term; it's copied
+# from assets/images/og.png (rendered from og.svg via rsvg-convert -- see
+# that file to regenerate).
+cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
+python3 - "$PUBLIC_DIR" <<'PYEOF'
+import sys, pathlib
+root = pathlib.Path(sys.argv[1])
+TITLE = "PidgeIoT — Open-Source IoT Device Management"
+DESC = ("PidgeIoT is an edge-native, open-source IoT device management platform: "
+        "provision devices, push configuration, collect telemetry, and update "
+        "firmware over the air. Rust from front to back. Free during early access.")
+for f in root.rglob("index.html"):
+    html = f.read_text()
+    if "og:title" in html:
+        continue
+    route = "/" + str(f.parent.relative_to(root)).replace("\\", "/").lstrip(".")
+    route = "/" if route in ("/", "/.") else route.rstrip("/") + "/"
+    tags = (
+        f"<title>{TITLE}</title>"
+        f'<meta name="description" content="{DESC}">'
+        f'<meta property="og:type" content="website">'
+        f'<meta property="og:site_name" content="PidgeIoT">'
+        f'<meta property="og:title" content="{TITLE}">'
+        f'<meta property="og:description" content="{DESC}">'
+        f'<meta property="og:url" content="https://pidgeiot.com{route}">'
+        f'<meta property="og:image" content="https://pidgeiot.com/og.png">'
+        f'<meta property="og:image:width" content="1200">'
+        f'<meta property="og:image:height" content="630">'
+        f'<meta name="twitter:card" content="summary_large_image">'
+        f'<meta name="twitter:title" content="{TITLE}">'
+        f'<meta name="twitter:description" content="{DESC}">'
+        f'<meta name="twitter:image" content="https://pidgeiot.com/og.png">'
+    )
+    if "<head>" in html:
+        f.write_text(html.replace("<head>", "<head>" + tags, 1))
+print("og/title tags injected")
+PYEOF
