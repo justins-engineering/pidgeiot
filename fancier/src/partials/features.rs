@@ -84,7 +84,7 @@ pub fn Features() -> Element {
                   title: "Check mark",
                 }
               }
-              span { "100% written in Rust" }
+              span { "Token refresh cryptographically revokes the old token" }
             }
             li { class: "flex items-center",
               div { class: "size-6 rounded-full bg-secondary-content flex items-center justify-center mr-3",

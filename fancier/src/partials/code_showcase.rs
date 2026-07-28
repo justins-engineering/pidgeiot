@@ -10,11 +10,11 @@ pub fn CodeShowcase() -> Element {
       div { class: "flex flex-col lg:flex-row items-center gap-12",
         div { class: "lg:w-1/2",
           h2 { class: "text-3xl md:text-4xl font-bold mb-6",
-            span { class: "gradient-text", "Memory Safety" }
-            " Meets Performance"
+            span { class: "gradient-text", "Per-Device Keys" }
+            ", Not Fleet Secrets"
           }
           p { class: "mb-8 text-lg leading-relaxed",
-            "Experience the power of Rust's compile-time guarantees. Our platform leverages Rust's ownership system to eliminate entire classes of bugs and security vulnerabilities while delivering C++-level performance."
+            "Every device gets its own Ed25519 keypair, minted where its state lives. Only the public key is ever stored — the private key signs one token and is discarded. Compromise one device, and the blast radius is one device."
           }
           div { class: "space-y-4",
             div { class: "flex items-start",
@@ -26,8 +26,8 @@ pub fn CodeShowcase() -> Element {
                 }
               }
               div {
-                h3 { class: "font-bold text-lg mb-1", "Zero Runtime Overhead" }
-                p { "No garbage collector, no runtime. Pure performance." }
+                h3 { class: "font-bold text-lg mb-1", "No Shared Secrets" }
+                p { "Verification happens against each device's own public key — there is no fleet-wide credential to leak." }
               }
             }
             div { class: "flex items-start",
@@ -65,7 +65,7 @@ pub fn CodeShowcase() -> Element {
               class: "text-orange-500 mr-2",
               title: "Rust Icon",
             }
-            span { class: "text-sm font-medium", "Rust-Powered Excellence" }
+            span { class: "text-sm font-medium", "Rust, end to end" }
           }
           // DaisyUI's .mockup-code already scrolls horizontally on overflow
           // (overflow: auto hidden) — the code lines below aren't actually

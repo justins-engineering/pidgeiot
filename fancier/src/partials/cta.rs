@@ -12,7 +12,7 @@ pub fn Cta() -> Element {
           "Ready to Build Secure IoT Solutions?"
         }
         p { class: "text-xl mb-10 leading-relaxed",
-          "Join us in creating the next generation of IoT management."
+          "Provision a device, push config, and watch telemetry land — in about ten minutes, no hardware required."
         }
         div { class: "flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-6 mb-8",
           Link {
