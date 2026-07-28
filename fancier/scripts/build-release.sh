@@ -45,6 +45,13 @@ bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 # fancier/public/* verbatim into the output root.
 mkdir -p ./public/assets/styling
 cp ./assets/styling/main.css ./public/assets/styling/main.css
+# /favicon.ico at the conventional root path: browsers and link-preview
+# tools request it unconditionally, and without a real file wrangler's
+# SPA fallback answers 200 with text/html — which OpaqueResponseBlocking
+# then blocks as an image (console noise on every visit, broken favicon
+# in preview tools). The head's <link rel=icon> tags still point at the
+# hashed light/dark variants; this is just the conventional-path catchall.
+cp ./assets/images/icon-light.ico ./public/favicon.ico
 
 # --ssg (task #42): prerenders every statically-routable page (see
 # `static_routes` server fn, fancier/src/lib.rs) to its own
