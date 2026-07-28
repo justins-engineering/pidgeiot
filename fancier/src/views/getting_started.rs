@@ -10,7 +10,11 @@ pub fn GettingStartedPage() -> Element {
   rsx! {
     section { class: "py-24 md:py-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8 text-center",
-        Icon { icon: LdRocket, class: "w-12 h-12 mx-auto mb-8", title: "Rocket" }
+        Icon {
+          icon: LdRocket,
+          class: "w-12 h-12 mx-auto mb-8",
+          title: "Rocket",
+        }
         h1 { class: "text-5xl md:text-6xl font-extrabold tracking-tighter mb-6 text-balance",
           "Getting Started"
         }
@@ -22,22 +26,6 @@ pub fn GettingStartedPage() -> Element {
           to: Route::DemoPage {},
           Icon { icon: LdRadio, class: "size-4", title: "Live" }
           "Just want to see it working? Live demo →"
-        }
-      }
-    }
-
-    // The whole flow, recorded
-    section { class: "pb-16",
-      div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
-        p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
-          "The whole flow in under a minute"
-        }
-        img {
-          class: "w-full max-w-full rounded-2xl border border-base-content/10 shadow-lg mx-auto",
-          src: asset!("/assets/images/getting-started-demo.gif"),
-          alt: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
-          width: "796",
-          height: "564",
         }
       }
     }
@@ -71,7 +59,9 @@ pub fn GettingStartedPage() -> Element {
             h2 { class: "text-xl font-bold mb-2", "What you'll have at the end" }
             p { class: "text-base-content/70 leading-relaxed",
               "A simulated pigeon -- Zephyr's "
-              code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "native_sim" }
+              code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+                "native_sim"
+              }
               " target, running as a plain binary on your own machine, no board or radio involved -- connected to your dashboard, fetching its shadow and reporting telemetry just like a real device would. It's the fastest way to try the whole platform before flashing anything real."
             }
           }
@@ -82,7 +72,9 @@ pub fn GettingStartedPage() -> Element {
     // Steps 1-5: account through device credentials
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
-        h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight", "Set up in the dashboard" }
+        h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
+          "Set up in the dashboard"
+        }
         div { class: "space-y-6",
           GsStep {
             number: "1",
@@ -129,13 +121,21 @@ pub fn GettingStartedPage() -> Element {
         }
         p { class: "text-base-content/70 leading-relaxed mb-6",
           "This runs "
-          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "wifi_init" }
+          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+            "wifi_init"
+          }
           ", a sample from the "
-          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "pigeon-examples" }
+          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+            "pigeon-examples"
+          }
           " repository, built for Zephyr's "
-          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "native_sim" }
+          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+            "native_sim"
+          }
           " board target. You don't need WiFi credentials or a board -- "
-          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "native_sim" }
+          code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+            "native_sim"
+          }
           " swaps in host-socket networking, and compiles as a plain native binary, so a working host C compiler is the only real prerequisite (no Zephyr SDK cross-toolchain needed for this target). See the "
           a {
             class: "link link-secondary",
@@ -147,10 +147,10 @@ pub fn GettingStartedPage() -> Element {
           " for the full west workspace walkthrough this reuses."
         }
 
-        h3 { class: "text-lg font-bold mb-2", "1. Clone the repo and set up the west workspace" }
-        GsCode {
-          code: "git clone https://github.com/justins-engineering/pigeon-examples\ncd pigeon-examples\npython3 -m venv .venv && source .venv/bin/activate\npip install west\nwest update",
+        h3 { class: "text-lg font-bold mb-2",
+          "1. Clone the repo and set up the west workspace"
         }
+        GsCode { code: "git clone https://github.com/justins-engineering/pigeon-examples\ncd pigeon-examples\npython3 -m venv .venv && source .venv/bin/activate\npip install west\nwest update" }
         p { class: "text-sm text-base-content/60 mb-6",
           "\"west update\" fetches the Zephyr sources -- a few hundred MB, one time only."
         }
@@ -159,30 +159,26 @@ pub fn GettingStartedPage() -> Element {
         p { class: "text-base-content/70 leading-relaxed mb-2",
           "Paste in the endpoint and token from steps 4-5 above:"
         }
-        GsCode {
-          code: "cat > samples/wifi_init/prj.local.conf <<'EOF'\nCONFIG_PIGEON_ENDPOINT=\"https://api.pidgeiot.com/device/pigeons/<pigeon-id>\"\nCONFIG_PIGEON_TOKEN=\"<device-bearer-token>\"\nEOF",
-        }
+        GsCode { code: "cat > samples/wifi_init/prj.local.conf <<'EOF'\nCONFIG_PIGEON_ENDPOINT=\"https://api.pidgeiot.com/device/pigeons/<pigeon-id>\"\nCONFIG_PIGEON_TOKEN=\"<device-bearer-token>\"\nEOF" }
         p { class: "text-sm text-base-content/60 mb-6",
           "This file is git-ignored -- these are real device secrets, never commit them."
         }
 
         h3 { class: "text-lg font-bold mb-2", "3. Build and run" }
-        GsCode {
-          code: "west build -d build_wifi_native samples/wifi_init -b native_sim/native/64\n./build_wifi_native/zephyr/zephyr.exe",
-        }
+        GsCode { code: "west build -d build_wifi_native samples/wifi_init -b native_sim/native/64\n./build_wifi_native/zephyr/zephyr.exe" }
       }
     }
 
     // What you should see
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
-        h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight", "What you should see" }
+        h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
+          "What you should see"
+        }
         p { class: "text-base-content/70 leading-relaxed mb-4",
           "Within about a second, the console prints something like:"
         }
-        GsCode {
-          code: "Network connectivity established\nShadow fetched: target_version=0 current_version=0\nFlushed shadow param: uptime_s=1",
-        }
+        GsCode { code: "Network connectivity established\nShadow fetched: target_version=0 current_version=0\nFlushed shadow param: uptime_s=1" }
         p { class: "text-base-content/70 leading-relaxed mb-4",
           "That last line is the simulator reporting its own uptime as a telemetry value. Leave it running -- it keeps flushing on an interval."
         }
@@ -190,7 +186,9 @@ pub fn GettingStartedPage() -> Element {
           "Back in the dashboard, on the pigeon's detail page:"
         }
         ul { class: "list-disc ml-6 space-y-2 text-base-content/70 leading-relaxed",
-          li { "The connection badge next to the pigeon's name flips to online once it's reported in." }
+          li {
+            "The connection badge next to the pigeon's name flips to online once it's reported in."
+          }
           li {
             "The Shadow section's "
             strong { "Current Config" }
@@ -200,7 +198,9 @@ pub fn GettingStartedPage() -> Element {
           }
           li {
             "Under Telemetry Graphs, click \"Add Graph\" and pick the "
-            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "uptime_s" }
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+              "uptime_s"
+            }
             " key to watch it climb live."
           }
         }
@@ -210,7 +210,9 @@ pub fn GettingStartedPage() -> Element {
     // Where to go next
     section { class: "pb-24 md:pb-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
-        h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight", "Where to go next" }
+        h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
+          "Where to go next"
+        }
         div { class: "grid grid-cols-1 md:grid-cols-3 gap-6",
           GsLink {
             icon: rsx! {
