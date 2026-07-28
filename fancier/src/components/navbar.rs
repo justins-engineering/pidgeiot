@@ -3,8 +3,8 @@ use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdBookOpen, LdHome, LdInfo, LdLayoutGrid, LdLogIn, LdMenu, LdSettings, LdSparkles, LdTag,
-  LdUser, LdX,
+  LdBird, LdBookOpen, LdLayoutGrid, LdLogIn, LdMenu, LdRadio, LdRocket, LdSettings, LdSparkles,
+  LdTag, LdUser, LdX,
 };
 
 #[component]
@@ -38,25 +38,27 @@ pub fn Navbar() -> Element {
         if !is_logged_in {
           div { class: "navbar-center hidden lg:flex",
             ul { class: "menu menu-horizontal px-1 gap-2 text-base font-medium",
-              li {
-                Link {
-                  to: Route::Index {},
-                  class: "hover:text-primary transition-colors duration-300",
-                  "Home"
-                }
-              }
-              li {
-                Link {
-                  to: Route::AboutUs {},
-                  class: "hover:text-primary transition-colors duration-300",
-                  "About Us"
-                }
-              }
+              // Five conversion-oriented links, ordered by visitor intent.
+              // Home is the logo's job; About Us lives in the footer.
               li {
                 Link {
                   to: Route::FeaturesPage {},
                   class: "hover:text-primary transition-colors duration-300",
                   "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DemoPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "Live Demo"
+                }
+              }
+              li {
+                Link {
+                  to: Route::GettingStartedPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "Getting Started"
                 }
               }
               li {
@@ -70,7 +72,7 @@ pub fn Navbar() -> Element {
                 Link {
                   to: Route::DocumentationPage {},
                   class: "hover:text-primary transition-colors duration-300",
-                  "Documentation"
+                  "Docs"
                 }
               }
             }
@@ -114,6 +116,11 @@ pub fn Navbar() -> Element {
                   li {
                     Link { to: Route::SettingsFlow { flow: None },
                       "Settings"
+                    }
+                  }
+                  li {
+                    Link { to: Route::DocumentationPage {},
+                      "Docs"
                     }
                   }
                   div { class: "divider my-0" } // Visual separator for logout
@@ -166,28 +173,6 @@ pub fn Navbar() -> Element {
             if !is_logged_in {
               li {
                 Link {
-                  to: Route::Index {},
-                  onclick: move |_| is_menu_open.set(false),
-                  Icon {
-                    icon: LdHome,
-                    class: "size-5 mr-2 opacity-70",
-                  }
-                  "Home"
-                }
-              }
-              li {
-                Link {
-                  to: Route::AboutUs {},
-                  onclick: move |_| is_menu_open.set(false),
-                  Icon {
-                    icon: LdInfo,
-                    class: "size-5 mr-2 opacity-70",
-                  }
-                  "About Us"
-                }
-              }
-              li {
-                Link {
                   to: Route::FeaturesPage {},
                   onclick: move |_| is_menu_open.set(false),
                   Icon {
@@ -195,6 +180,28 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DemoPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdRadio,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Live Demo"
+                }
+              }
+              li {
+                Link {
+                  to: Route::GettingStartedPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdRocket,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Getting Started"
                 }
               }
               li {
@@ -216,7 +223,7 @@ pub fn Navbar() -> Element {
                     icon: LdBookOpen,
                     class: "size-5 mr-2 opacity-70",
                   }
-                  "Documentation"
+                  "Docs"
                 }
               }
               div { class: "divider my-2" }
@@ -252,6 +259,17 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Settings"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DocumentationPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdBookOpen,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Docs"
                 }
               }
               li {
