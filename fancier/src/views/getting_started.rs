@@ -178,7 +178,10 @@ pub fn GettingStartedPage() -> Element {
         p { class: "text-base-content/70 leading-relaxed mb-4",
           "Within about a second, the console prints something like:"
         }
-        GsCode { code: "Network connectivity established\nShadow fetched: target_version=0 current_version=0\nFlushed shadow param: uptime_s=1" }
+        GsCode { code: "WARNING: Using a test - not safe - entropy source\n*** Pigeon v4.4.1 ***\n[00:00:00.000,000] <inf> wifi_connection_manager: Bringing network interface up\n[00:00:00.000,000] <inf> wifi_connection_manager: Connecting to the network\n[00:00:01.010,000] <inf> wifi_connection_manager: Network connectivity established and IP address assigned\n[00:00:01.010,000] <inf> pigeon: Transport mapped to secure HTTPS edge pipeline: https://api.pidgeiot.com/device/pigeons/<pigeon-id>\n[00:00:01.510,004] <inf> shadow: Shadow fetched: target_version=0 current_version=0\n[00:00:01.870,008] <inf> pigeon: Flushed shadow param: uptime_s=1\n[00:00:01.870,008] <inf> shadow: Next shadow poll in 60 s" }
+        p { class: "text-sm text-base-content/60 mb-6",
+          "The entropy warning is expected: native_sim has no hardware random source, so Zephyr simulates one and says so loudly. Real boards use their own TRNG."
+        }
         p { class: "text-base-content/70 leading-relaxed mb-4",
           "That last line is the simulator reporting its own uptime as a telemetry value. Leave it running -- it keeps flushing on an interval."
         }
@@ -190,18 +193,22 @@ pub fn GettingStartedPage() -> Element {
             "The connection badge next to the pigeon's name flips to online once it's reported in."
           }
           li {
-            "The Shadow section's "
-            strong { "Current Config" }
+            "Try the config loop: click "
+            strong { "Edit Shadow" }
+            ", change a value, and save. Within one poll the simulator's console logs the new shadow, and the Shadow section's "
+            strong { "Current" }
             " version catches up to "
-            strong { "Target Config" }
-            " -- confirmation the device applied it."
+            strong { "Target" }
+            " -- confirmation the device fetched and applied your change."
           }
           li {
-            "Under Telemetry Graphs, click \"Add Graph\" and pick the "
+            "Every numeric value the device reports becomes graphable under Telemetry Graphs. "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
               "uptime_s"
             }
-            " key to watch it climb live."
+            " is the only key this sample sends -- it plots as a dutiful climbing staircase, which proves the pipeline but wins no awards. Graphs get good when you report real sensor values ("
+            Link { class: "link link-secondary", to: Route::DemoPage {}, "see the live demo" }
+            ")."
           }
         }
       }
