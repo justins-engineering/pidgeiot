@@ -110,9 +110,9 @@ python3 - "$PUBLIC_DIR" <<'PYEOF'
 import sys, pathlib
 root = pathlib.Path(sys.argv[1])
 TITLE = "PidgeIoT — Open-Source IoT Device Management"
-DESC = ("PidgeIoT is an edge-native, open-source IoT device management platform: "
-        "provision devices, push configuration, collect telemetry, and update "
-        "firmware over the air. Rust from front to back. Free during early access.")
+# 158 chars -- validators want og:description in the 120-160 band.
+DESC = ("Open-source IoT device management: provision devices, push config, collect "
+        "telemetry, update firmware over the air. Rust end to end. Free during early access.")
 for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
