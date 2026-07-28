@@ -197,7 +197,7 @@ pub fn GettingStartedPage() -> Element {
             strong { "Edit Shadow" }
             " and set "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
-              "{\"telemetry_interval\": 30}"
+              "{{\"telemetry_interval\": 30}}"
             }
             ". Within one poll the simulator's console reads \"Next shadow poll in 30 s\", the reports speed up, and the Shadow section's "
             strong { "Current" }
