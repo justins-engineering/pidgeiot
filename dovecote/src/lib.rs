@@ -1,9 +1,9 @@
 use crate::helpers::{
-  PigeonAccess, authenticate_browser, backfill_owner_email, check_pigeon_authz,
-  create_flock_alert, create_pigeon_alert, create_user_flock, delete_alert_definition,
-  delete_pigeon_pg_db, get_db_client, get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db,
-  is_alert_owner, is_demo_pigeon, is_flock_owner, list_flock_alerts, list_flock_firmware,
-  list_pigeon_alerts, proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
+  PigeonAccess, authenticate_browser, backfill_owner_email, check_pigeon_authz, create_flock_alert,
+  create_pigeon_alert, create_user_flock, delete_alert_definition, delete_pigeon_pg_db,
+  get_db_client, get_hyperdrive_conn, get_user_flocks, insert_pigeon_pg_db, is_alert_owner,
+  is_demo_pigeon, is_flock_owner, list_flock_alerts, list_flock_firmware, list_pigeon_alerts,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, sha256_hex,
   update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
   update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
@@ -159,9 +159,7 @@ fn validate_alert_channel(
   {
     Ok(())
   } else {
-    Err(
-      "Bad Request: alert email override must match your account's verified email address",
-    )
+    Err("Bad Request: alert email override must match your account's verified email address")
   }
 }
 

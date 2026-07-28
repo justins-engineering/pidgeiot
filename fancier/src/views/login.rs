@@ -41,8 +41,7 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
         }
       }
 
-      match create_browser_login_flow(&config, None, None, None, None, None, None, None, None)
-        .await
+      match create_browser_login_flow(&config, None, None, None, None, None, None, None, None).await
       {
         Ok(res) => Ok(res),
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {

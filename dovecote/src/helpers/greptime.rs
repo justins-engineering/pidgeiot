@@ -173,9 +173,13 @@ pub async fn post_line_protocol(
   let mut init = RequestInit::default();
   init.with_method(Method::Post);
   init.body = Some(line.to_string().into());
-  init.headers.set("Content-Type", "text/plain; charset=utf-8")?;
+  init
+    .headers
+    .set("Content-Type", "text/plain; charset=utf-8")?;
   if let Some(token) = auth_token {
-    init.headers.set("Authorization", &format!("Token {token}"))?;
+    init
+      .headers
+      .set("Authorization", &format!("Token {token}"))?;
   }
   for (name, value) in extra_headers {
     init.headers.set(name, value)?;
@@ -373,7 +377,9 @@ async fn query_greptime_sql(env: &Env, sql: &str) -> Result<Vec<TelemetryHistory
     .headers
     .set("Content-Type", "application/x-www-form-urlencoded")?;
   if let Some(token) = greptime_auth_token(env) {
-    init.headers.set("Authorization", &format!("Token {token}"))?;
+    init
+      .headers
+      .set("Authorization", &format!("Token {token}"))?;
   }
   for (name, value) in greptime_access_headers(env) {
     init.headers.set(&name, &value)?;
@@ -472,7 +478,14 @@ pub async fn query_greptime_history_for_pigeon(
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
 ) -> Result<Vec<TelemetryHistoryPoint>> {
-  query_greptime_history_for_pigeons(env, std::slice::from_ref(&pigeon_id.to_string()), key, since, until).await
+  query_greptime_history_for_pigeons(
+    env,
+    std::slice::from_ref(&pigeon_id.to_string()),
+    key,
+    since,
+    until,
+  )
+  .await
 }
 
 /// Backs `GET /flocks/:id/telemetry/history` when `GREPTIMEDB_ENDPOINT` is
@@ -497,7 +510,9 @@ pub async fn query_greptime_history_for_pigeons(
   for id in pigeon_ids {
     if !is_valid_pigeon_id(id) {
       console_error!("Greptime history query: invalid pigeon_id '{id}'");
-      return Err(worker::Error::RustError("Bad Request: Invalid pigeon_id".into()));
+      return Err(worker::Error::RustError(
+        "Bad Request: Invalid pigeon_id".into(),
+      ));
     }
   }
 

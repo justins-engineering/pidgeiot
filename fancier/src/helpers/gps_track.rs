@@ -100,8 +100,11 @@ pub fn gps_fixes_from_history(points: &[TelemetryHistoryPoint]) -> Vec<GpsFix> {
 /// separate history fetch -- same reuse-existing-signal precedent as
 /// `graph_widget::numeric_keys_from_latest`.
 pub fn latest_has_gps_fix(latest: &[TelemetryLatest]) -> bool {
-  let has =
-    |key: &str| latest.iter().any(|l| l.key == key && l.value.trim().parse::<f64>().is_ok());
+  let has = |key: &str| {
+    latest
+      .iter()
+      .any(|l| l.key == key && l.value.trim().parse::<f64>().is_ok())
+  };
   has(KEY_LAT) && has(KEY_LON)
 }
 
@@ -148,9 +151,10 @@ pub fn current_position_line(latest: &[TelemetryLatest]) -> Option<String> {
   let sats = value_of(KEY_SATS);
   let fix_quality = value_of(KEY_FIX_QUALITY);
   match (sats, fix_quality) {
-    (Some(sats), Some(fq)) => {
-      line.push_str(&format!(" · {} sats · fix quality {}", sats as i64, fq as i64))
-    }
+    (Some(sats), Some(fq)) => line.push_str(&format!(
+      " · {} sats · fix quality {}",
+      sats as i64, fq as i64
+    )),
     (Some(sats), None) => line.push_str(&format!(" · {} sats", sats as i64)),
     (None, Some(fq)) => line.push_str(&format!(" · fix quality {}", fq as i64)),
     (None, None) => {}
@@ -181,7 +185,12 @@ impl Bounds {
       min_lon = min_lon.min(f.lon);
       max_lon = max_lon.max(f.lon);
     }
-    Some(Bounds { min_lat, max_lat, min_lon, max_lon })
+    Some(Bounds {
+      min_lat,
+      max_lat,
+      min_lon,
+      max_lon,
+    })
   }
 
   pub fn mean_lat(&self) -> f64 {
@@ -378,7 +387,10 @@ mod tests {
 
   #[test]
   fn latest_has_gps_fix_requires_both_numeric_keys() {
-    assert!(latest_has_gps_fix(&[latest("gps_lat", "40.0"), latest("gps_lon", "-74.0")]));
+    assert!(latest_has_gps_fix(&[
+      latest("gps_lat", "40.0"),
+      latest("gps_lon", "-74.0")
+    ]));
     assert!(!latest_has_gps_fix(&[latest("gps_lat", "40.0")]));
     assert!(!latest_has_gps_fix(&[
       latest("gps_lat", "nope"),

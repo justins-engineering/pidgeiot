@@ -438,8 +438,7 @@ pub async fn update_telemetry_endpoint_pg_db(
 ) -> worker::Result<()> {
   ensure_pigeons_telemetry_endpoint_column(&client).await?;
 
-  let endpoint_json = telemetry_endpoint
-    .map(|e| serde_json::to_string(e).unwrap_or_default());
+  let endpoint_json = telemetry_endpoint.map(|e| serde_json::to_string(e).unwrap_or_default());
 
   client
     .execute_typed(

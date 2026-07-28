@@ -1,6 +1,6 @@
 use capsules::TelemetryHistoryPoint;
-use tokio_postgres::{Client, types::Type};
 use time::OffsetDateTime;
+use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Env, Result, console_error};
 

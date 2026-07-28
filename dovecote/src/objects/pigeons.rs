@@ -185,7 +185,10 @@ impl DurableObject for Pigeons {
     // "circuitdojo_feather/nrf9160/ns"), operator-set at provisioning time
     // for now (device self-report is a later hardening phase) -- see
     // `check_firmware_board_compat` for where this is actually enforced.
-    let _ = sql.exec("ALTER TABLE pigeons ADD COLUMN board TEXT DEFAULT NULL;", None);
+    let _ = sql.exec(
+      "ALTER TABLE pigeons ADD COLUMN board TEXT DEFAULT NULL;",
+      None,
+    );
 
     sql
       .exec(
@@ -806,7 +809,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
           Response::error("Internal Server Error", 500)
         }
       }
-    },
+    }
     Err(e) => {
       console_error!("Pigeon token refresh error: {e}");
       Response::error("Internal Server Error", 500)
@@ -1905,10 +1908,10 @@ async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
 async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
-  match pigeons
-    .sql
-    .exec("SELECT key, value, reported_at FROM pigeon_telemetry;", None)
-  {
+  match pigeons.sql.exec(
+    "SELECT key, value, reported_at FROM pigeon_telemetry;",
+    None,
+  ) {
     Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
       Ok(rows) => {
         let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
@@ -1935,10 +1938,10 @@ async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Respons
 /// the `/pigeon/device/*` routes skipping `is_authorized` in favor of their
 /// own (different) proof. Otherwise identical to `get_telemetry_latest`.
 async fn get_telemetry_latest_demo(pigeons: &Pigeons, _req: Request) -> Result<Response> {
-  match pigeons
-    .sql
-    .exec("SELECT key, value, reported_at FROM pigeon_telemetry;", None)
-  {
+  match pigeons.sql.exec(
+    "SELECT key, value, reported_at FROM pigeon_telemetry;",
+    None,
+  ) {
     Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
       Ok(rows) => {
         let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
@@ -1991,10 +1994,7 @@ async fn update_telemetry_endpoint(pigeons: &Pigeons, mut req: Request) -> Resul
 
   match pigeons.sql.exec(
     "UPDATE pigeons SET telemetry_endpoint = ? WHERE id = ?;",
-    vec![
-      endpoint_json.into(),
-      pigeons.state.id().to_string().into(),
-    ],
+    vec![endpoint_json.into(), pigeons.state.id().to_string().into()],
   ) {
     Ok(_) => Response::from_json(&body.telemetry_endpoint),
     Err(e) => {
@@ -2134,7 +2134,10 @@ async fn check_firmware_board_compat(
     Ok(t) => t,
     Err(e) => {
       console_error!("Shadow UPDATE: malformed firmware target: {e}");
-      return Err(Response::error("Bad Request: Malformed firmware target", 400));
+      return Err(Response::error(
+        "Bad Request: Malformed firmware target",
+        400,
+      ));
     }
   };
 
@@ -2164,8 +2167,7 @@ async fn check_firmware_board_compat(
   };
 
   let image_board =
-    match crate::helpers::get_firmware_board(&client, &pigeon_row.flock_id, &target.sha256).await
-    {
+    match crate::helpers::get_firmware_board(&client, &pigeon_row.flock_id, &target.sha256).await {
       Ok(board) => board,
       Err(e) => {
         console_error!("Shadow UPDATE: firmware board lookup failed: {e}");

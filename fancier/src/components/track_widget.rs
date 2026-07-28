@@ -138,7 +138,8 @@ pub fn TrackWidget(
         }
       } else {
         let projector = TrackProjector::new(&bounds, plot_w, plot_h, PAD_FRAC);
-        let projected: Vec<(f64, f64)> = fx.iter().map(|f| projector.project(f.lat, f.lon)).collect();
+        let projected: Vec<(f64, f64)> =
+          fx.iter().map(|f| projector.project(f.lat, f.lon)).collect();
         let path_points = projected
           .iter()
           .map(|(x, y)| format!("{x},{y}"))

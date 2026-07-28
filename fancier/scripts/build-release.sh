@@ -6,6 +6,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Formatting gate: fail the release build on unformatted Rust rather than
+# shipping drift (rustfmt.toml: tab_spaces=2, max_width=100). Deliberately
+# `cargo fmt --check` ONLY — `dx fmt` is NOT enforced: dioxus-cli 0.7.9's
+# formatter both rewrites files even under --check and, worse, corrupts
+# valid code (mangles match arms inside rsx! — produced 8 compile errors
+# across firmware_modal.rs/alerts_panel.rs when run over this crate,
+# 2026-07-27). Revisit when a fixed dioxus-cli ships; until then rsx-body
+# style is convention, not machine-enforced.
+cargo fmt --check -p fancier -p dovecote -p capsules
+
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 
 # Regenerates the /open-source page's crate-license inventory from the

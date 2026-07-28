@@ -118,7 +118,9 @@ fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
 
   (0..=steps)
     .map(|i| {
-      state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+      state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1);
       let noise = ((state >> 33) % 1000) as f64 / 1000.0 - 0.5;
       value += noise * 4.0;
       (since + step_secs * i, value)
@@ -209,7 +211,10 @@ fn series_from_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec
     .collect()
 }
 
-fn series_from_flock_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec<ChartSeries> {
+fn series_from_flock_history(
+  keys: &[String],
+  points: &[TelemetryHistoryPoint],
+) -> Vec<ChartSeries> {
   let Some(key) = keys.first() else {
     return Vec::new();
   };

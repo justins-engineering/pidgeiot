@@ -28,8 +28,10 @@ pub fn extract_ui_messages(ui: &UiContainer) -> Vec<(AlertVariant, String)> {
 /// transition itself rather than make the user click it — see the
 /// verification view, which auto-navigates when this returns `Some`.
 pub fn continue_anchor_href(ui: &UiContainer) -> Option<String> {
-  ui.nodes.iter().find_map(|node| match node.attributes.as_ref() {
-    UiNodeAttributes::A(anchor) => Some(anchor.href.clone()),
-    _ => None,
-  })
+  ui.nodes
+    .iter()
+    .find_map(|node| match node.attributes.as_ref() {
+      UiNodeAttributes::A(anchor) => Some(anchor.href.clone()),
+      _ => None,
+    })
 }
