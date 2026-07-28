@@ -195,11 +195,23 @@ pub fn GettingStartedPage() -> Element {
           li {
             "Try the config loop: click "
             strong { "Edit Shadow" }
-            ", change a value, and save. Within one poll the simulator's console logs the new shadow, and the Shadow section's "
+            " and set "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+              "{\"telemetry_interval\": 30}"
+            }
+            ". Within one poll the simulator's console reads \"Next shadow poll in 30 s\", the reports speed up, and the Shadow section's "
             strong { "Current" }
             " version catches up to "
             strong { "Target" }
-            " -- confirmation the device fetched and applied your change."
+            " -- the full config round trip. (A device only adopts keys its firmware understands -- this sample knows "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "log" }
+            ", "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+              "telemetry_interval"
+            }
+            ", and "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "reboot" }
+            ". Anything else stays visible in Target but won't appear in Current, which is exactly how you spot a key your firmware ignored.)"
           }
           li {
             "Every numeric value the device reports becomes graphable under Telemetry Graphs. "
