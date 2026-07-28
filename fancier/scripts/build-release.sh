@@ -114,35 +114,116 @@ find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
 # that file to regenerate).
 cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
 python3 - "$PUBLIC_DIR" <<'PYEOF'
-import sys, pathlib
+import json, sys, pathlib
 root = pathlib.Path(sys.argv[1])
-TITLE = "PidgeIoT — Open-Source IoT Device Management"
-# 158 chars -- validators want og:description in the 120-160 band.
-DESC = ("Open-source IoT device management: provision devices, push config, collect "
-        "telemetry, update firmware over the air. Rust end to end. Free during early access.")
+BASE = "https://pidgeiot.com"
+BRAND_TITLE = "PidgeIoT — Open-Source IoT Device Management"
+BRAND_DESC = ("Open-source IoT device management: provision devices, push config, collect "
+              "telemetry, update firmware over the air. Rust end to end. Free during early access.")
+
+# Indexable marketing/docs pages: per-page title (<=60 chars) + description
+# (120-160 chars) so search results don't collapse into one duplicate
+# title. Anything NOT in this map gets the brand title plus a noindex
+# robots meta -- that covers the auth-gated app shells (/dashboard,
+# /flocks, ...), the Kratos flow pages, and /error//unauthorized, none of
+# which belong in an index (they prerender as placeholder shells anyway).
+PAGES = {
+    "/": (BRAND_TITLE, BRAND_DESC),
+    "/features/": ("IoT Platform Features — Shadows, Telemetry, OTA | PidgeIoT",
+        "Device shadows with report-back, telemetry with queryable history, email alerts, "
+        "OTA firmware updates, device logs, and a remote diagnostic shell."),
+    "/pricing/": ("Pricing — Free During Early Access | PidgeIoT",
+        "All of PidgeIoT is free during early access, no credit card required. Fair, "
+        "simple pricing for larger fleets will come later — one product, one price."),
+    "/documentation/": ("Documentation — Connect Your First Device | PidgeIoT",
+        "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, "
+        "tokens, shadows, telemetry, alerts, and over-the-air firmware updates."),
+    "/api-reference/": ("API Reference — Dashboard & Device HTTP APIs | PidgeIoT",
+        "The complete PidgeIoT HTTP surface: dashboard routes, device routes, Ed25519 "
+        "bearer tokens, shadows, telemetry, logs, firmware, and WebSocket frames."),
+    "/architecture/": ("Architecture — Edge-Native IoT, Rust End to End | PidgeIoT",
+        "How PidgeIoT is built: Cloudflare Workers and Durable Objects at the edge, a "
+        "WASM dashboard, managed PostgreSQL, and self-hosted Ory Kratos identity."),
+    "/getting-started/": ("Getting Started — Try It With No Hardware | PidgeIoT",
+        "Go from zero to live telemetry in about ten minutes using a simulated Zephyr "
+        "device on your own machine — no board, no radio, no hardware required."),
+    "/demo/": ("Live Demo — Real Device Data, No Signup | PidgeIoT",
+        "Watch live telemetry from a real PidgeIoT device account right now: no signup, "
+        "no mock data. Charts and latest values straight from the platform API."),
+    "/open-source/": ("Open Source — Licenses & Attribution | PidgeIoT",
+        "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license "
+        "texts for every open-source component the platform ships, auto-generated."),
+    "/about/": ("About — Justin's Engineering Services | PidgeIoT",
+        "PidgeIoT is built by Justin's Engineering Services, a small Massachusetts "
+        "engineering company that got tired of IoT platforms punishing small fleets."),
+    "/privacy/": ("Privacy Policy | PidgeIoT",
+        "What PidgeIoT collects, where it lives, and what we deliberately don't do "
+        "with it: no selling data, no ad tracking, and no tracking cookies."),
+    "/terms/": ("Terms of Service | PidgeIoT",
+        "The terms for using PidgeIoT during early access: acceptable use, account "
+        "responsibility, licensing, and how changes to the service are communicated."),
+}
+
+# JSON-LD on the landing page only: Organization + WebSite +
+# SoftwareApplication -- the structured answers engines actually consume.
+JSONLD = json.dumps({
+    "@context": "https://schema.org",
+    "@graph": [
+        {"@type": "Organization", "name": "Justin's Engineering Services LLC",
+         "url": BASE, "logo": f"{BASE}/og.png",
+         "sameAs": ["https://github.com/justins-engineering"]},
+        {"@type": "WebSite", "name": "PidgeIoT", "url": BASE},
+        {"@type": "SoftwareApplication", "name": "PidgeIoT",
+         "applicationCategory": "DeveloperApplication",
+         "operatingSystem": "Web",
+         "description": BRAND_DESC,
+         "url": BASE,
+         "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+         "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
+                    "description": "Free during early access"}},
+    ],
+})
+
+for title, desc in PAGES.values():
+    if not (len(title) <= 60 and 120 <= len(desc) <= 160):
+        print(f"WARNING seo band violation: {len(title)}/{len(desc)} {title!r}")
+
 for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
         continue
     route = "/" + str(f.parent.relative_to(root)).replace("\\", "/").lstrip(".")
     route = "/" if route in ("/", "/.") else route.rstrip("/") + "/"
+    indexable = route in PAGES
+    title, desc = PAGES.get(route, (BRAND_TITLE, BRAND_DESC))
     tags = (
-        f"<title>{TITLE}</title>"
-        f'<meta name="description" content="{DESC}">'
-        f'<meta property="og:type" content="website">'
+        f"<title>{title}</title>"
+        f'<meta name="description" content="{desc}">'
+        + ('' if indexable else '<meta name="robots" content="noindex, nofollow">')
+        + (f'<link rel="canonical" href="{BASE}{route}">' if indexable else '')
+        + f'<meta property="og:type" content="website">'
         f'<meta property="og:site_name" content="PidgeIoT">'
-        f'<meta property="og:title" content="{TITLE}">'
-        f'<meta property="og:description" content="{DESC}">'
-        f'<meta property="og:url" content="https://pidgeiot.com{route}">'
-        f'<meta property="og:image" content="https://pidgeiot.com/og.png">'
+        f'<meta property="og:title" content="{title}">'
+        f'<meta property="og:description" content="{desc}">'
+        f'<meta property="og:url" content="{BASE}{route}">'
+        f'<meta property="og:image" content="{BASE}/og.png">'
         f'<meta property="og:image:width" content="1200">'
         f'<meta property="og:image:height" content="630">'
         f'<meta name="twitter:card" content="summary_large_image">'
-        f'<meta name="twitter:title" content="{TITLE}">'
-        f'<meta name="twitter:description" content="{DESC}">'
-        f'<meta name="twitter:image" content="https://pidgeiot.com/og.png">'
+        f'<meta name="twitter:title" content="{title}">'
+        f'<meta name="twitter:description" content="{desc}">'
+        f'<meta name="twitter:image" content="{BASE}/og.png">'
+        + (f'<script type="application/ld+json">{JSONLD}</script>' if route == "/" else '')
     )
     if "<head>" in html:
         f.write_text(html.replace("<head>", "<head>" + tags, 1))
-print("og/title tags injected")
+
+# Regenerate sitemap.xml from the SAME indexable-page map, so it can never
+# drift from what's actually published (the old checked-in sitemap sat six
+# pages stale). Overwrites the public/ passthrough copy in the output.
+urls = "".join(f"<url><loc>{BASE}{r if r != '/' else '/'}</loc></url>" for r in PAGES)
+(root / "sitemap.xml").write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + urls + "</urlset>")
+print(f"seo tags injected; sitemap regenerated with {len(PAGES)} urls")
 PYEOF

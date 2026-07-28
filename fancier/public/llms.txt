@@ -1,0 +1,42 @@
+# PidgeIoT
+
+> Open-source IoT device management platform: provision devices, push
+> configuration through device shadows, collect telemetry with queryable
+> history, receive email alerts, and update firmware over the air. Built in
+> Rust end to end — the backend runs on Cloudflare Workers + Durable
+> Objects, the dashboard is a WASM single-page app. AGPL-3.0 licensed,
+> developed in the open, free during early access.
+
+Devices authenticate with per-device Ed25519 keypairs and compact binary
+bearer tokens (not JWTs); refreshing a token cryptographically revokes the
+previous one. Supported device transports today: HTTPS and WebSocket
+(CoAP-over-TLS/TCP is designed in but not yet live). The device library
+targets Zephyr RTOS (vendor-agnostic), with samples for ESP32-C6, Nordic
+nRF9160/nRF9151, and a native_sim target that runs the whole platform flow
+on a desktop with no hardware.
+
+## Docs
+
+- [Getting Started](https://pidgeiot.com/getting-started): zero-to-telemetry
+  in about ten minutes with a simulated device, no hardware required
+- [Documentation](https://pidgeiot.com/documentation): concepts — flocks,
+  pigeons, tokens, shadows, telemetry, alerts, OTA firmware
+- [API Reference](https://pidgeiot.com/api-reference): the full HTTP
+  surface — dashboard routes, device routes, auth models, WebSocket frames
+- [Architecture](https://pidgeiot.com/architecture): how the platform is
+  built, edge to database
+
+## Try it
+
+- [Live Demo](https://pidgeiot.com/demo): real device telemetry, no signup
+- [Features](https://pidgeiot.com/features) and
+  [Pricing](https://pidgeiot.com/pricing): free during early access
+
+## Source
+
+- [pidgeiot](https://github.com/justins-engineering/pidgeiot): platform —
+  backend, dashboard, shared wire types (AGPL-3.0)
+- [pigeon](https://github.com/justins-engineering/pigeon): Zephyr device
+  library (AGPL-3.0)
+- [pigeon-examples](https://github.com/justins-engineering/pigeon-examples):
+  device samples incl. the no-hardware native_sim variants (AGPL-3.0)
