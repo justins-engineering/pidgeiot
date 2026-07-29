@@ -62,6 +62,8 @@ config:
 
 ---
 flowchart TB
+  accTitle: PidgeIoT platform architecture
+  accDescr: Users and IoT devices connect through Cloudflare's edge to the dovecote Worker, which routes to per-device Durable Objects and mirrors state to PostgreSQL; telemetry rides a queue to history storage or a user-defined forwarding endpoint.
   classDef subTitle font-size:18px,font-weight: 500;
 
   subgraph Endpoints ["Endpoints"]

@@ -114,7 +114,7 @@ find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
 # that file to regenerate).
 cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
 python3 - "$PUBLIC_DIR" <<'PYEOF'
-import json, sys, pathlib
+import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
 BASE = "https://pidgeiot.com"
 BRAND_TITLE = "PidgeIoT — Open-Source IoT Device Management"
@@ -192,6 +192,14 @@ for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
         continue
+    # The prerender emits its own generic <title> (Dioxus.toml) and meta
+    # description (lib.rs document::Meta, which DOES materialize during the
+    # SSG pass, unlike at launch when it was client-only) -- leaving them in
+    # alongside the injected per-page pair means two titles/descriptions per
+    # page, and Google may pick the generic one (SEO audit F1, 2026-07-29).
+    # Strip the shell's pair before injecting ours.
+    html = re.sub(r"<title>.*?</title>", "", html, count=1)
+    html = re.sub(r'<meta name="description"[^>]*/?>', "", html, count=1)
     route = "/" + str(f.parent.relative_to(root)).replace("\\", "/").lstrip(".")
     route = "/" if route in ("/", "/.") else route.rstrip("/") + "/"
     indexable = route in PAGES
