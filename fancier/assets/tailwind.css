@@ -157,14 +157,20 @@
     }
   }
 
+  /* Deliberately no opacity fade (task #62): the landing hero (section#home,
+     the page's LCP element) starts this animation at first paint, and a
+     0%-opacity start means the text's first *visible* paint lands ~100ms
+     after FCP — by which point wasm execution has already begun, so
+     Lighthouse's Lantern simulation chains the entire wasm bundle into the
+     LCP dependency graph and reports LCP ≈ TTI (measured: 8.1s vs 1.2s FCP
+     under mobile throttling; score 0.75 → 1.00 with the fade removed).
+     A transform-only slide keeps the text painted (and LCP-counted) at FCP. */
   @keyframes slide-in {
     0% {
       transform: translateY(20px);
-      opacity: 0;
     }
     100% {
       transform: translateY(0);
-      opacity: 1;
     }
   }
 
