@@ -65,29 +65,40 @@ enum Route {
     #[route("/settings?:flow")]
     SettingsFlow { flow: Option<String> },
   #[end_layout]
+  // Public (indexable) pages use trailing-slash paths (task #63): wrangler's
+  // static hosting 307-redirects /features -> /features/ (html_handling
+  // directory-index resolution), so emitting the canonical trailing-slash
+  // form directly in every <a href> saves crawlers a redirect hop per link
+  // and matches build-release.sh's PAGES/canonical/sitemap URLs. The router
+  // still accepts both forms — dioxus-router strips trailing slashes during
+  // parsing and skips empty trailing static segments (see the
+  // public_route_trailing_slash tests below) — only Display/href output
+  // changes. Auth-gated and Kratos-flow routes are deliberately left in
+  // non-slash form: they're noindex (no SEO benefit) and the flow routes
+  // carry query-param props with known SSG-hydration sensitivity (task #43).
   #[route("/")]
   Index {},
-  #[route("/about")]
+  #[route("/about/")]
   AboutUs {},
-  #[route("/architecture")]
+  #[route("/architecture/")]
   Architecture {},
-  #[route("/features")]
+  #[route("/features/")]
   FeaturesPage {},
-  #[route("/documentation")]
+  #[route("/documentation/")]
   DocumentationPage {},
-  #[route("/getting-started")]
+  #[route("/getting-started/")]
   GettingStartedPage {},
-  #[route("/pricing")]
+  #[route("/pricing/")]
   PricingPage {},
-  #[route("/demo")]
+  #[route("/demo/")]
   DemoPage {},
-  #[route("/api-reference")]
+  #[route("/api-reference/")]
   ApiReferencePage {},
-  #[route("/privacy")]
+  #[route("/privacy/")]
   PrivacyPage {},
-  #[route("/open-source")]
+  #[route("/open-source/")]
   OpenSourcePage {},
-  #[route("/terms")]
+  #[route("/terms/")]
   TermsPage {},
   #[route("/login?:flow")]
   LoginFlow { flow: Option<String> },
@@ -288,5 +299,58 @@ mod route_query_param_parsing {
       "got {}",
       r
     );
+  }
+}
+
+// Task #63: public routes are annotated with trailing-slash paths so that
+// generated hrefs are wrangler's canonical form directly (no 307 hop for
+// crawlers). These prove the router still accepts BOTH forms — a deep load
+// of /features (no slash, e.g. a stale external link before wrangler
+// redirects) and /features/ must resolve to the same component, never fall
+// through to the PageNotFound catch-all — and that Display now emits the
+// trailing-slash canonical.
+#[cfg(test)]
+mod public_route_trailing_slash {
+  use super::Route;
+  use std::str::FromStr;
+
+  macro_rules! both_forms {
+    ($name:ident, $path:literal, $variant:ident) => {
+      #[test]
+      fn $name() {
+        let with_slash = Route::from_str(concat!($path, "/")).unwrap();
+        assert!(
+          matches!(with_slash, Route::$variant {}),
+          "got {}",
+          with_slash
+        );
+        let without_slash = Route::from_str($path).unwrap();
+        assert!(
+          matches!(without_slash, Route::$variant {}),
+          "got {}",
+          without_slash
+        );
+        // Rendered <a href> values are the canonical trailing-slash URL.
+        assert_eq!(with_slash.to_string(), concat!($path, "/"));
+      }
+    };
+  }
+
+  both_forms!(about, "/about", AboutUs);
+  both_forms!(architecture, "/architecture", Architecture);
+  both_forms!(features, "/features", FeaturesPage);
+  both_forms!(documentation, "/documentation", DocumentationPage);
+  both_forms!(getting_started, "/getting-started", GettingStartedPage);
+  both_forms!(pricing, "/pricing", PricingPage);
+  both_forms!(demo, "/demo", DemoPage);
+  both_forms!(api_reference, "/api-reference", ApiReferencePage);
+  both_forms!(privacy, "/privacy", PrivacyPage);
+  both_forms!(open_source, "/open-source", OpenSourcePage);
+  both_forms!(terms, "/terms", TermsPage);
+
+  #[test]
+  fn root_unchanged() {
+    assert!(matches!(Route::from_str("/").unwrap(), Route::Index {}));
+    assert_eq!(Route::Index {}.to_string(), "/");
   }
 }
