@@ -38,9 +38,9 @@ mod dictionary;
 mod printf;
 mod render;
 
-pub use decode::{LogEvent, LogMessage, decode_chunks};
+pub use decode::{LogEvent, decode_chunks};
 pub use dictionary::LogDictionary;
-pub use render::{level_str, render_plaintext};
+pub use render::{level_str, render_hexdump, render_plaintext};
 
 #[cfg(test)]
 mod parity {

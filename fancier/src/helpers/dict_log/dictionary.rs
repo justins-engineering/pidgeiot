@@ -58,9 +58,9 @@ struct Section {
   data: Vec<u8>,
 }
 
-/// A parsed, decode-ready v3 dictionary database.
+/// A parsed, decode-ready v3 dictionary database. (No `version` field:
+/// `parse` rejects everything but v3, so it would always be 3.)
 pub struct LogDictionary {
-  pub version: i64,
   pub build_id: Option<String>,
   pub arch: String,
   pub little_endian: bool,
@@ -140,7 +140,6 @@ impl LogDictionary {
     let ts_64bit = raw.kconfigs.contains_key("CONFIG_LOG_TIMESTAMP_64BIT");
 
     Ok(Self {
-      version: raw.version,
       build_id,
       arch: raw.arch.unwrap_or_default(),
       little_endian: raw.target.little_endianness,
@@ -227,7 +226,6 @@ mod tests {
   #[test]
   fn parses_minimal_database() {
     let d = LogDictionary::parse(&minimal("")).unwrap();
-    assert_eq!(d.version, 3);
     assert_eq!(d.build_id.as_deref(), Some("test"));
     assert_eq!(d.arch, "arm");
     assert!(!d.bits64);

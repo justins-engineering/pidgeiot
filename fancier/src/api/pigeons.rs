@@ -1,8 +1,8 @@
-use crate::api::{fetch_json, fetch_json_any_status};
+use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
-  Connector, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
-  TelemetryEndpoint,
+  Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk,
+  PigeonShadow, PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest,
+  PigeonUpdateRequest, TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -167,6 +167,63 @@ pub async fn get_logs(pigeon_id: &str) -> Option<Vec<PigeonLogChunk>> {
   let response = fetch_json("GET", &path, None).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
   serde_wasm_bindgen::from_value::<Vec<PigeonLogChunk>>(json).ok()
+}
+
+// --- Log dictionary (task #5, docs/api.md's "Log dictionary" section) ---
+// Like get_logs above, none of these touch `LocalSession`: the dictionary
+// isn't part of `Pigeon`/`PigeonDetail`, so `LogViewer` holds it in local
+// component state.
+
+/// GET /pigeons/:id/log-dictionary. Outer `None` = request failed; inner
+/// `None` = no dictionary uploaded for this pigeon (404 -- the state the
+/// viewer shows an upload affordance for, distinct from a real failure).
+/// `Some(Some(text))` is the raw `log_dictionary.json` document, handed to
+/// `helpers::dict_log::LogDictionary::parse` by the caller.
+pub async fn get_log_dictionary(pigeon_id: &str) -> Option<Option<String>> {
+  let mut path = String::with_capacity(88);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/log-dictionary");
+
+  let response = fetch_json_any_status("GET", &path, None).await?;
+  if response.status() == 404 {
+    return Some(None);
+  }
+  if !response.ok() {
+    dioxus::logger::tracing::error!(
+      "GET {path} failed with status: {}",
+      response.status()
+    );
+    return None;
+  }
+
+  let text = JsFuture::from(response.text().ok()?).await.ok()?;
+  Some(Some(text.as_string()?))
+}
+
+/// PUT /pigeons/:id/log-dictionary -- body is the raw log_dictionary.json
+/// bytes (same raw-bytes convention as the firmware upload). Returns the
+/// server's `LogDictionaryInfo` (size + the build_id/version it found).
+pub async fn put_log_dictionary(pigeon_id: &str, bytes: &[u8]) -> Option<LogDictionaryInfo> {
+  let mut path = String::with_capacity(88);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/log-dictionary");
+
+  let response = fetch_bytes("PUT", &path, bytes).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  serde_wasm_bindgen::from_value::<LogDictionaryInfo>(json).ok()
+}
+
+/// DELETE /pigeons/:id/log-dictionary (idempotent server-side).
+pub async fn delete_log_dictionary(pigeon_id: &str) -> Option<()> {
+  let mut path = String::with_capacity(88);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/log-dictionary");
+
+  fetch_json("DELETE", &path, None).await?;
+  Some(())
 }
 
 // PUT /pigeons/:id/telemetry-endpoint (task #18, landed in dovecote
