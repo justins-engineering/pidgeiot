@@ -483,6 +483,35 @@ pub struct PigeonLogChunk {
   pub received_at: OffsetDateTime,
 }
 
+// --- Device log dictionary (task #5) ---
+
+/// Size cap enforced by dovecote's `PUT /pigeons/:pigeon_id/log-dictionary`
+/// route on an uploaded `log_dictionary.json` -- a real build's database is
+/// tens-to-hundreds of KB (string mappings dominate; optional base64 ELF
+/// string sections can add more), so 4MB is generous headroom, not a tuned
+/// limit. Exported so the dashboard can pre-check a selected file without
+/// duplicating the number, same convention as `MAX_FIRMWARE_BYTES` below.
+pub const MAX_LOG_DICTIONARY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Response of `PUT /pigeons/:pigeon_id/log-dictionary` -- lightweight
+/// metadata about the dictionary just stored, extracted server-side from the
+/// uploaded JSON itself (never trusted separately from it). The dictionary
+/// body is only ever read back via the `GET` route, which returns the raw
+/// JSON document unwrapped -- Zephyr's own schema, not a capsules type, so
+/// the dashboard's decoder and Zephyr's `log_parser.py` read the same bytes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct LogDictionaryInfo {
+  /// Stored size in bytes.
+  pub size: i64,
+  /// The database's own `build_id` field, if present -- ties the dictionary
+  /// back to the firmware build that produced it (a dictionary only decodes
+  /// the build it came from; a mismatched one yields garbage strings).
+  pub build_id: Option<String>,
+  /// The database's own `version` field (Zephyr dictionary DB format
+  /// version, 3 as of Zephyr v4.x), if present.
+  pub version: Option<i64>,
+}
+
 // --- Firmware / FOTA (task #23) ---
 
 /// Size cap enforced by dovecote's `POST /flocks/:flock_id/firmware` route
