@@ -1,0 +1,17 @@
+[         0] <err> unknown<0:1>: <string@0x40dbe8>
+[         0] <dbg> unknown<0:1>: <string@0x40dbd0>
+--- 2 messages dropped ---
+[         0] <inf> unknown<0:1>: <string@0x40dbc0>
+[         0] <dbg> unknown<0:1>: <string@0x40dba0>
+[         0] <dbg> unknown<0:1>: <string@0x40db80>
+[         0] <dbg> unknown<0:1>: <string@0x40db60>
+[         0] <dbg> unknown<0:1>: <string@0x40db40>
+[         0] <dbg> unknown<0:1>: <string@0x40db30>
+[         0] <dbg> unknown<0:1>: <string@0x40db20>
+[         0] <dbg> unknown<0:1>: <string@0x40db08>
+[         0] <dbg> unknown<0:1>: <string@0x40dae0>
+[         0] <dbg> unknown<0:1>: <string@0x40dac0>
+[         0] <dbg> unknown<0:1>: <string@0x40dab0>
+[         0] <dbg> unknown<0:1>: <string@0x40daa8>
+                                 48 45 58 44 55 4d 50 21  20 48 45 58 44 55 4d 50 |HEXDUMP!  HEXDUMP
+                                 40 20 48 45 58 44 55 4d  50 23                   |@ HEXDUM P#

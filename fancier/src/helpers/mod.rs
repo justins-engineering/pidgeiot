@@ -30,6 +30,8 @@ pub use crypto::sha256_hex;
 
 pub mod connection_state;
 
+pub mod dict_log;
+
 pub mod gps_track;
 
 mod timer;
