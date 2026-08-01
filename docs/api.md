@@ -145,6 +145,7 @@ applies at the platform level). The limits that do exist are:
 | `POST /device/pigeons/:id/logs` — bytes per chunk | 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`) | `objects/pigeons.rs::report_logs_device`, `413` over the cap |
 | Stored log chunks per pigeon | 200 (oldest silently pruned, not an error) | `objects/pigeons.rs::MAX_STORED_LOG_CHUNKS` |
 | `GET .../telemetry/history` rows per query | 5000 (silently truncated, not an error) | `helpers/telemetry.rs` |
+| `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 | `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
@@ -670,6 +671,59 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/logs \
 
 (`Vec<capsules::PigeonLogChunk>`. `id` is a per-pigeon autoincrement, not globally unique.)
 
+### Log dictionary
+
+The chunks above are Zephyr `CONFIG_LOG_DICTIONARY_SUPPORT` binary records — decodable only
+against the producing firmware build's own `log_dictionary.json` (generated at build time by
+Zephyr's `database_gen.py`; a dictionary from any other build yields garbage strings). These
+routes let a dashboard user store that file **per pigeon**, so the dashboard's log viewer can
+decode the chunks in-browser instead of only offering a raw download. Per-pigeon, not
+per-flock, because pigeons in one flock may run different builds.
+
+The JSON document is stored verbatim in R2 (`log-dictionaries/<pigeon_id>.json`, under the same
+bucket as firmware images); dovecote validates it parses as JSON but otherwise treats the
+schema as opaque — Zephyr's tooling and the dashboard's decoder are the consumers, not the
+backend. All three routes are **member**-gated (any ACL row on the pigeon), same bar as
+`GET /pigeons/:pigeon_id/logs`.
+
+#### `PUT /pigeons/:pigeon_id/log-dictionary` — member
+
+Uploads (or replaces) this pigeon's dictionary. The request body **is** the
+`log_dictionary.json` document, sent as raw bytes (like the firmware upload, not wrapped in an
+outer JSON envelope).
+
+- `400` if the body is empty or not valid JSON.
+- `413 Payload Too Large` if the body exceeds 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`).
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/log-dictionary \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  --data-binary @build/zephyr/log_dictionary.json
+```
+
+Response is `capsules::LogDictionaryInfo` — size plus the `build_id`/`version` fields dovecote
+found inside the uploaded document (`null` where absent):
+
+```json
+{ "size": 11913, "build_id": "v4.4.1", "version": 3 }
+```
+
+#### `GET /pigeons/:pigeon_id/log-dictionary` — member
+
+Returns the stored dictionary verbatim (`Content-Type: application/json` — the raw Zephyr
+database document, **not** a capsules type). `404` if none has been uploaded for this pigeon.
+
+```sh
+curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/log-dictionary \
+  -H 'Cookie: ory_kratos_session=<session_token>' -o log_dictionary.json
+```
+
+#### `DELETE /pigeons/:pigeon_id/log-dictionary` — member
+
+Removes the stored dictionary. Returns `200` with an empty body; idempotent (deleting when
+none exists is still `200`). Deleting the pigeon itself also best-effort removes its stored
+dictionary.
+
 ---
 
 ## Public Demo API
@@ -966,6 +1020,7 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryQuery`,
   `TelemetryEndpoint`, `PigeonTelemetryEndpointUpdateRequest`
 - `PigeonLogChunk` / `PigeonLogChunkRow`, `MAX_LOG_CHUNK_BYTES`
+- `LogDictionaryInfo`, `MAX_LOG_DICTIONARY_BYTES`
 - `FirmwareImage`, `FirmwareTarget`, `FirmwareUploadQuery`, `MAX_FIRMWARE_BYTES`
 
 `*Row` variants (e.g. `PigeonRow`, `PigeonShadowRow`) are internal DB-deserialization shapes and

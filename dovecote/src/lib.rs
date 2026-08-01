@@ -879,6 +879,20 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
         }
 
+        // Best-effort cleanup of this pigeon's stored log dictionary (task
+        // #5) -- same fire-and-log convention as the PG sync above; a
+        // leftover R2 object is unreachable anyway once the ACL rows are
+        // gone (every log-dictionary route re-checks the ACL first).
+        match ctx.env.bucket("FIRMWARE_BUCKET") {
+          Ok(bucket) => {
+            let object_key = format!("log-dictionaries/{pigeon_id}.json");
+            if bucket.delete(&object_key).await.is_err() {
+              console_error!("R2 log dictionary cleanup failed for {object_key}");
+            }
+          }
+          Err(e) => console_error!("Cleanup skipped: FIRMWARE_BUCKET bind failed: {e}"),
+        }
+
         Response::empty()?.with_cors(&cors)
       },
     )
@@ -1418,6 +1432,217 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         Response::from_json(&images)?.with_cors(&cors)
+      },
+    )
+    // --- Log Dictionary Routes (task #5) ---
+    // Per-pigeon storage of a firmware build's log_dictionary.json so the
+    // dashboard's log viewer can decode this pigeon's dictionary-encoded
+    // ring-buffer chunks (GET /pigeons/:id/logs) client-side. Stored in R2
+    // under the existing FIRMWARE_BUCKET binding (reuse-existing-config
+    // directive; no new bucket) at `log-dictionaries/<pigeon_id>.json` --
+    // per-pigeon, not per-flock, because a dictionary only decodes the
+    // exact build that produced it, and pigeons in one flock can run
+    // different builds. Member-gated (any ACL row), same bar as the log
+    // routes it exists to serve; the ACL check runs via the DO's
+    // /pigeon/authz/check probe (check_pigeon_authz) since the data itself
+    // lives in R2, not the DO -- same pattern as the telemetry-history
+    // routes. The R2 key is derived from the PigeonAccess proof, so an
+    // unchecked pigeon_id can never name the object.
+    .put_async(
+      "/pigeons/:pigeon_id/log-dictionary",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // Cloned before the body is read below -- same rationale as
+        // POST /pigeons/:pigeon_id/alerts: the ACL probe consumes the
+        // clone's body (which it never inspects), leaving the original
+        // intact for the dictionary payload read.
+        let Ok(authz_req) = req.clone() else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let authz_result = check_pigeon_authz(authz_req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(bytes) = req.bytes().await else {
+          return Response::error("Bad Request: Failed to read body", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if bytes.is_empty() {
+          return Response::error("Bad Request: Empty log dictionary", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        if bytes.len() > capsules::MAX_LOG_DICTIONARY_BYTES {
+          return Response::error("Payload Too Large: Log dictionary exceeds size cap", 413)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        // Must be a real JSON document (Zephyr's database_gen.py output) --
+        // the viewer parses it client-side, but rejecting garbage here
+        // keeps the stored object always-parseable and lets this route
+        // report the build_id/version it found.
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+          return Response::error("Bad Request: Body is not valid JSON", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // `build_id` is a string in current Zephyr databases but has been
+        // an integer in older tooling -- stringify whatever's there.
+        let build_id = doc.get("build_id").and_then(|v| match v {
+          serde_json::Value::String(s) => Some(s.clone()),
+          serde_json::Value::Number(n) => Some(n.to_string()),
+          _ => None,
+        });
+        let version = doc.get("version").and_then(|v| v.as_i64());
+
+        let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
+          console_error!("Failed to bind FIRMWARE_BUCKET");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let object_key = format!("log-dictionaries/{}.json", access.pigeon_id());
+        if bucket.put(&object_key, bytes.clone()).execute().await.is_err() {
+          console_error!("R2 log dictionary upload failed for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let info = capsules::LogDictionaryInfo {
+          size: bytes.len() as i64,
+          build_id,
+          version,
+        };
+
+        Response::from_json(&info)?.with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/pigeons/:pigeon_id/log-dictionary",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // GET carries no body, so the original request feeds the ACL probe
+        // directly (same as GET /pigeons/:pigeon_id/alerts).
+        let authz_result = check_pigeon_authz(req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
+          console_error!("Failed to bind FIRMWARE_BUCKET");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let object_key = format!("log-dictionaries/{}.json", access.pigeon_id());
+        let Ok(Some(object)) = bucket.get(&object_key).execute().await else {
+          return Response::error("Not Found: No log dictionary uploaded for this pigeon", 404)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(body) = object.body() else {
+          console_error!("R2 object body unexpectedly absent for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(response_body) = body.response_body() else {
+          console_error!("Failed to build streamed response body for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let headers = Headers::new();
+        let mut ok = headers.set("Content-Type", "application/json").is_ok();
+        ok &= headers
+          .set("Content-Length", &object.size().to_string())
+          .is_ok();
+        if !ok {
+          console_error!("Failed to set log dictionary response headers");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let Ok(builder) = ResponseBuilder::new().with_headers(headers).with_cors(&cors) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Ok(builder.body(response_body))
+      },
+    )
+    .delete_async(
+      "/pigeons/:pigeon_id/log-dictionary",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(user_id) = require_auth(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        let authz_result = check_pigeon_authz(req, &user_id, &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
+          console_error!("Failed to bind FIRMWARE_BUCKET");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // R2 delete is idempotent -- deleting an absent key succeeds, so a
+        // double-delete (or a delete before any upload) is a clean 200, not
+        // an error worth distinguishing.
+        let object_key = format!("log-dictionaries/{}.json", access.pigeon_id());
+        if bucket.delete(&object_key).await.is_err() {
+          console_error!("R2 log dictionary delete failed for {object_key}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        Response::empty()?.with_cors(&cors)
       },
     )
     // --- Alert Routes (task #32) ---
