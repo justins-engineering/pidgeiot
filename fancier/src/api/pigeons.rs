@@ -190,10 +190,7 @@ pub async fn get_log_dictionary(pigeon_id: &str) -> Option<Option<String>> {
     return Some(None);
   }
   if !response.ok() {
-    dioxus::logger::tracing::error!(
-      "GET {path} failed with status: {}",
-      response.status()
-    );
+    dioxus::logger::tracing::error!("GET {path} failed with status: {}", response.status());
     return None;
   }
 

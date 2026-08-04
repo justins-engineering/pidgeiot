@@ -87,7 +87,9 @@ pub fn render_plaintext(events: &[LogEvent]) -> String {
         out.push_str(&format!("--- {n} messages dropped ---\n"));
       }
       LogEvent::Error { offset, reason } => {
-        out.push_str(&format!("--- decode error at byte {offset}: {reason} ---\n"));
+        out.push_str(&format!(
+          "--- decode error at byte {offset}: {reason} ---\n"
+        ));
       }
       LogEvent::Message(m) => {
         let prefix = message_prefix(m);

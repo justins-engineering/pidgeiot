@@ -22,10 +22,7 @@ pub fn decode(input: &str) -> Option<Vec<u8>> {
     }
   }
 
-  let bytes: Vec<u8> = input
-    .bytes()
-    .filter(|b| !b.is_ascii_whitespace())
-    .collect();
+  let bytes: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
   let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
   for quantum in bytes.chunks(4) {
     let pad = quantum.iter().rev().take_while(|&&b| b == b'=').count();

@@ -169,7 +169,8 @@ impl LogDictionary {
     // prefer the closest (largest) start instead, which is the more
     // specific suffix. Offsets are in characters, matching Python's
     // codepoint slicing -- mapped strings are ASCII in practice.
-    let candidates = &self.string_mappings[..self.string_mappings.partition_point(|(a, _)| *a < addr)];
+    let candidates =
+      &self.string_mappings[..self.string_mappings.partition_point(|(a, _)| *a < addr)];
     for (start, s) in candidates.iter().rev() {
       let offset = (addr - start) as usize;
       if offset < s.chars().count() {

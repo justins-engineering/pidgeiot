@@ -81,9 +81,7 @@ mod parity {
     assert!(dict.little_endian);
     let events = decode_chunks(&dict, &[M3_BIN.to_vec()]);
     assert!(
-      !events
-        .iter()
-        .any(|e| matches!(e, LogEvent::Error { .. })),
+      !events.iter().any(|e| matches!(e, LogEvent::Error { .. })),
       "no decode errors expected: {events:?}"
     );
     assert_eq!(render_plaintext(&events), M3_EXPECTED);
@@ -95,9 +93,7 @@ mod parity {
     assert!(dict.bits64);
     let events = decode_chunks(&dict, &[P64_BIN.to_vec()]);
     assert!(
-      !events
-        .iter()
-        .any(|e| matches!(e, LogEvent::Error { .. })),
+      !events.iter().any(|e| matches!(e, LogEvent::Error { .. })),
       "no decode errors expected: {events:?}"
     );
     // This stream contains a genuine type-1 dropped-messages record.
@@ -154,9 +150,7 @@ mod parity {
     let cut = M3_BIN.len() / 2;
     let events = decode_chunks(&dict, &[M3_BIN[..cut].to_vec()]);
     assert!(
-      events
-        .iter()
-        .any(|e| matches!(e, LogEvent::Message(_))),
+      events.iter().any(|e| matches!(e, LogEvent::Message(_))),
       "prefix should still decode"
     );
     assert!(

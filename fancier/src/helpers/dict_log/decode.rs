@@ -61,7 +61,10 @@ pub enum LogEvent {
   /// A region of the stream that could not be decoded -- `offset` is into
   /// the concatenated stream; decoding resumed at the next chunk boundary
   /// (or stopped, if this was the tail).
-  Error { offset: usize, reason: String },
+  Error {
+    offset: usize,
+    reason: String,
+  },
 }
 
 enum ParseFailure {
@@ -327,7 +330,11 @@ impl<'d> Decoder<'d> {
         let prev2 = idx.checked_sub(2).map(|i| fmt[i]);
         dtype = if prev == Some('l') {
           if prev2 == Some('l') {
-            if unsigned { DType::UlongLong } else { DType::LongLong }
+            if unsigned {
+              DType::UlongLong
+            } else {
+              DType::LongLong
+            }
           } else if unsigned {
             DType::Ulong
           } else {
@@ -403,7 +410,11 @@ impl<'d> Decoder<'d> {
 
   /// Port of `parse_one_normal_msg`; `offset` points just past the type
   /// byte, caller has already verified the full message is in-bounds.
-  fn parse_normal(&self, data: &[u8], mut offset: usize) -> Result<(LogMessage, usize), ParseFailure> {
+  fn parse_normal(
+    &self,
+    data: &[u8],
+    mut offset: usize,
+  ) -> Result<(LogMessage, usize), ParseFailure> {
     let domain_lvl = self.u8_at(data, offset)?;
     let pkg_len = self.u16_at(data, offset + 1)? as usize;
     let data_len = self.u16_at(data, offset + 3)? as usize;
@@ -428,8 +439,7 @@ impl<'d> Decoder<'d> {
 
     // cbprintf package header: [0] total arg-area length in 32-bit words,
     // [1] appended-string count, [2]/[3] ro/rw string index counts.
-    let mut end_of_args =
-      pkg_start + self.u8_at(data, pkg_start)? as usize * self.int_size;
+    let mut end_of_args = pkg_start + self.u8_at(data, pkg_start)? as usize * self.int_size;
     let num_packed_strings = self.u8_at(data, pkg_start + 1)? as usize;
     end_of_args += self.u8_at(data, pkg_start + 2)? as usize; // ro indexes
     end_of_args += self.u8_at(data, pkg_start + 3)? as usize; // rw indexes
@@ -565,7 +575,10 @@ pub fn decode_chunks(dict: &LogDictionary, chunks: &[Vec<u8>]) -> Vec<LogEvent> 
           None => {
             events.push(LogEvent::Error {
               offset,
-              reason: format!("{reason}; {} bytes undecoded at end of stream", data.len() - offset),
+              reason: format!(
+                "{reason}; {} bytes undecoded at end of stream",
+                data.len() - offset
+              ),
             });
             break;
           }

@@ -275,11 +275,12 @@ fn fmt_unsigned(
   };
   // '#o' means "ensure a leading 0" -- skip the extra 0 if one's already
   // there (or precision will add zeros anyway).
-  let (prefix, digits) = if prefix == "0" && (digits.starts_with('0') || precision.is_some_and(|p| p > digits.len())) {
-    ("", digits)
-  } else {
-    (prefix, digits)
-  };
+  let (prefix, digits) =
+    if prefix == "0" && (digits.starts_with('0') || precision.is_some_and(|p| p > digits.len())) {
+      ("", digits)
+    } else {
+      (prefix, digits)
+    };
   assemble_number("", prefix, digits, flags, width, precision)
 }
 
@@ -297,10 +298,18 @@ fn fmt_float(v: f64, conv: char, flags: Flags, width: usize, precision: Option<u
   let av = v.abs();
 
   if av.is_nan() {
-    return pad(&format!("{sign}{}", if upper { "NAN" } else { "nan" }), flags, width);
+    return pad(
+      &format!("{sign}{}", if upper { "NAN" } else { "nan" }),
+      flags,
+      width,
+    );
   }
   if av.is_infinite() {
-    return pad(&format!("{sign}{}", if upper { "INF" } else { "inf" }), flags, width);
+    return pad(
+      &format!("{sign}{}", if upper { "INF" } else { "inf" }),
+      flags,
+      width,
+    );
   }
 
   let body = match conv.to_ascii_lowercase() {
@@ -320,7 +329,11 @@ fn fmt_float(v: f64, conv: char, flags: Flags, width: usize, precision: Option<u
       } else {
         let prec = (p as i32 - 1 - exp).max(0) as usize;
         let s = fmt_fixed(av, prec, flags.alt);
-        if flags.alt { s } else { strip_g_zeros_fixed(&s) }
+        if flags.alt {
+          s
+        } else {
+          strip_g_zeros_fixed(&s)
+        }
       }
     }
     _ => unreachable!(),
@@ -450,7 +463,13 @@ mod tests {
     assert_eq!(f("%.4d", &[Arg::Int(42)]), "0042");
     assert_eq!(f("%8.4d", &[Arg::Int(42)]), "    0042");
     // Length modifiers parsed + ignored.
-    assert_eq!(f("%ld %lld %hd %hhd", &[Arg::Int(1), Arg::Int(2), Arg::Int(3), Arg::Int(4)]), "1 2 3 4");
+    assert_eq!(
+      f(
+        "%ld %lld %hd %hhd",
+        &[Arg::Int(1), Arg::Int(2), Arg::Int(3), Arg::Int(4)]
+      ),
+      "1 2 3 4"
+    );
     assert_eq!(f("%d", &[Arg::Int(i64::MIN)]), "-9223372036854775808");
   }
 
