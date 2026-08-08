@@ -11,9 +11,9 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DocumentationPage, FeaturesPage,
-  Flocks, GettingStartedPage, Index, LoginFlow, OpenSourcePage, PageNotFound, PigeonView, Pigeons,
-  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow,
-  TermsPage, Unauthorized, VerificationFlow, Wrapper,
+  Flocks, GettingStartedPage, Index, InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs,
+  PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow,
+  ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -60,6 +60,10 @@ enum Route {
     Pigeons { flock_id: Uuid },
     #[route("/flocks/:flock_id/pigeons/:pigeon_id")]
     PigeonView { flock_id: Uuid, pigeon_id: String },
+    #[route("/orgs")]
+    Orgs {},
+    #[route("/orgs/:org_id")]
+    OrgView { org_id: Uuid },
     #[route("/session")]
     SessionInfo {},
     #[route("/settings?:flow")]
@@ -100,6 +104,12 @@ enum Route {
   OpenSourcePage {},
   #[route("/terms/")]
   TermsPage {},
+  // Org invite landing page (task #12) -- public (NOT AuthGuard'd, see
+  // views/invite.rs's module comment) and non-trailing-slash like the
+  // Kratos flow routes, since it carries a query-param prop with the known
+  // SSG-hydration sensitivity (task #43; read via url_query_param).
+  #[route("/invite?:token")]
+  InviteAccept { token: Option<String> },
   #[route("/login?:flow")]
   LoginFlow { flow: Option<String> },
   #[route("/registration?:flow")]

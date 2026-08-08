@@ -3,8 +3,8 @@ use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdBookOpen, LdLayoutGrid, LdLogIn, LdMenu, LdMessageSquare, LdRadio, LdRocket,
-  LdSettings, LdSparkles, LdTag, LdUser, LdX,
+  LdBird, LdBookOpen, LdBuilding2, LdLayoutGrid, LdLogIn, LdMenu, LdMessageSquare, LdRadio,
+  LdRocket, LdSettings, LdSparkles, LdTag, LdUser, LdX,
 };
 
 #[component]
@@ -112,6 +112,13 @@ pub fn Navbar() -> Element {
                       to: Route::Flocks {},
                       class: "justify-between",
                       "Flocks"
+                    }
+                  }
+                  li {
+                    Link {
+                      to: Route::Orgs {},
+                      class: "justify-between",
+                      "Organizations"
                     }
                   }
                   li {
@@ -256,6 +263,17 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Flocks"
+                }
+              }
+              li {
+                Link {
+                  to: Route::Orgs {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdBuilding2,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Organizations"
                 }
               }
               li {

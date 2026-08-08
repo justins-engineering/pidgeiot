@@ -26,6 +26,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // (pigeon_id, token) — the id rides alongside the token so dismissing
   // the reveal can navigate to the pigeon it belongs to.
   let mut new_token = use_signal(|| None::<(String, String)>);
+  // Conditional-render gate for the flock->org transfer modal (task #12)
+  // -- remounts fresh each open, same reasoning as TokenReveal/
+  // DeletePigeonModal (it loads the caller's org list on mount and holds
+  // reset-sensitive submit state).
+  let mut show_transfer = use_signal(|| false);
   let nav = use_navigator();
   let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
     use_signal(HashMap::new);
@@ -127,6 +132,27 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               }
             }
           }
+          // Org affordance (task #12): a personal flock offers transfer
+          // into an org the caller manages; an org-owned one just shows
+          // the marker (no org->org re-transfer today, see docs/api.md).
+          {
+              let is_org_owned = binding
+                  .flocks
+                  .read()
+                  .get(&flock_id)
+                  .is_some_and(|f| f.org_id.is_some());
+              rsx! {
+                if is_org_owned {
+                  span { class: "badge badge-outline badge-secondary self-center", "Org" }
+                } else {
+                  button {
+                    class: "btn btn-outline btn-secondary btn-sm self-center",
+                    onclick: move |_| show_transfer.set(true),
+                    "Transfer to org"
+                  }
+                }
+              }
+          }
           button {
             class: "btn btn-outline btn-primary sm:px-6",
             onclick: move |_| {
@@ -227,6 +253,89 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         CreatePigeonModal {
           flock_id,
           on_created: move |(pigeon_id, token)| new_token.set(Some((pigeon_id, token))),
+        }
+
+        if show_transfer() {
+          TransferFlockModal {
+            flock_id,
+            on_close: move |_| show_transfer.set(false),
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Flock -> org transfer (task #12). Conditional-render modal (see the
+/// `show_transfer` gate above). Only orgs where the caller is owner/admin
+/// are offered -- the backend enforces the same rule, this just avoids
+/// offering choices that would 403.
+#[component]
+fn TransferFlockModal(flock_id: uuid::Uuid, on_close: EventHandler<()>) -> Element {
+  let orgs_resource = use_resource(move || async move { api::orgs::list().await });
+  let mut selected = use_signal(String::new);
+  let mut is_saving = use_signal(|| false);
+  let mut submit_error = use_signal(|| Option::<String>::None);
+
+  let manager_orgs: Vec<capsules::OrganizationMembership> = orgs_resource
+    .read()
+    .clone()
+    .flatten()
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|m| m.role.is_manager())
+    .collect();
+
+  rsx! {
+    div { class: "modal modal-open",
+      div { class: "modal-box max-w-md",
+        h3 { class: "text-lg font-bold", "Transfer flock to an organization" }
+        p { class: "py-2 text-sm text-base-content/70",
+          "The organization's members get shared, role-based access to every pigeon in this flock. This can't be undone from the dashboard yet."
+        }
+        if manager_orgs.is_empty() {
+          p { class: "text-sm text-base-content/60 py-2",
+            "You aren't an owner/admin of any organization. Create one under Organizations first."
+          }
+        } else {
+          select {
+            class: "select select-bordered w-full",
+            onchange: move |evt| selected.set(evt.value()),
+            option { value: "", selected: true, disabled: true, "Choose an organization" }
+            for m in manager_orgs {
+              option { value: "{m.organization.id}", "{m.organization.name}" }
+            }
+          }
+        }
+        if let Some(err) = submit_error.read().as_ref() {
+          p { class: "text-error text-xs mt-2", "⚠️ {err}" }
+        }
+        div { class: "modal-action",
+          button { class: "btn btn-ghost", onclick: move |_| on_close.call(()), "Cancel" }
+          button {
+            class: "btn btn-secondary",
+            disabled: is_saving() || selected.read().is_empty(),
+            onclick: move |_| async move {
+                let Ok(org_id) = selected.read().parse::<uuid::Uuid>() else { return };
+                is_saving.set(true);
+                submit_error.set(None);
+                match api::orgs::transfer_flock(flock_id, org_id).await {
+                    Ok(_) => {
+                        is_saving.set(false);
+                        on_close.call(());
+                    }
+                    Err(msg) => {
+                        is_saving.set(false);
+                        submit_error.set(Some(msg));
+                    }
+                }
+            },
+            if is_saving() {
+              span { class: "loading loading-spinner loading-sm" }
+            } else {
+              "Transfer"
+            }
+          }
         }
       }
     }
