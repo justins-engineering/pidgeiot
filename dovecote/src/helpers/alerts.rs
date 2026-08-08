@@ -37,11 +37,14 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// documented simplification, not an oversight.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
-/// `From:` address for alert emails sent via Resend (design doc §3.2/§3.3)
+/// `From:` address for alert emails sent via useSend (design doc §3.2/§3.3)
 /// -- shares the platform's one verified sending domain with task #33's
-/// Kratos courier setup, but never the credential (separate
-/// `RESEND_API_KEY` secret, see `resend_api_key` below).
-const RESEND_FROM_ADDRESS: &str = "alerts@pidgeiot.com";
+/// Kratos courier setup, but never the credential. The Worker secret is
+/// still NAMED `RESEND_API_KEY` for historical reasons but holds a useSend
+/// API key (useSend speaks the Resend-shaped payload; the prod key was
+/// always a useSend key, which is why every send 401'd against
+/// api.resend.com until 2026-08-08 -- see `send_via_usesend` below).
+const USESEND_FROM_ADDRESS: &str = "alerts@pidgeiot.com";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
 /// indexes) exist -- mirrors `ensure_telemetry_history_table`/
@@ -958,7 +961,7 @@ async fn send_alert_email(
     def.severity.as_str(),
   );
 
-  if let Err(e) = send_via_resend(env, &recipient, &subject, &text).await {
+  if let Err(e) = send_via_usesend(env, &recipient, &subject, &text).await {
     console_error!("Alert email send failed for definition {}: {e}", def.id);
   }
 }
@@ -968,7 +971,7 @@ async fn send_alert_email(
 /// (design doc §3.2). Never set via `[vars]`, same rule this codebase
 /// already enforces for every credential (`wrangler secret put
 /// RESEND_API_KEY --env <env>`).
-fn resend_api_key(env: &Env) -> Option<String> {
+fn usesend_api_key(env: &Env) -> Option<String> {
   env
     .secret("RESEND_API_KEY")
     .ok()
@@ -977,30 +980,30 @@ fn resend_api_key(env: &Env) -> Option<String> {
 }
 
 #[derive(serde::Serialize)]
-struct ResendEmailRequest<'a> {
+struct UsesendEmailRequest<'a> {
   from: &'a str,
   to: [&'a str; 1],
   subject: &'a str,
   text: &'a str,
 }
 
-/// POSTs one transactional email via Resend's HTTP API
-/// (`https://api.resend.com/emails`) -- mirrors
+/// POSTs one transactional email via useSend's Resend-compatible HTTP API
+/// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
 /// shape exactly (design doc §3.2). `RESEND_API_KEY` unset (expected until
 /// an operator runs `wrangler secret put`) is treated the same way
 /// `greptime_auth_token` being absent is treated elsewhere -- logged,
 /// never a hard failure, since alert delivery is always best-effort.
-pub(crate) async fn send_via_resend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
-  let Some(api_key) = resend_api_key(env) else {
+pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+  let Some(api_key) = usesend_api_key(env) else {
     console_error!(
       "RESEND_API_KEY not configured -- cannot send alert email to {to} (subject: {subject})"
     );
     return Ok(());
   };
 
-  let body = ResendEmailRequest {
-    from: RESEND_FROM_ADDRESS,
+  let body = UsesendEmailRequest {
+    from: USESEND_FROM_ADDRESS,
     to: [to],
     subject,
     text,
@@ -1018,7 +1021,7 @@ pub(crate) async fn send_via_resend(env: &Env, to: &str, subject: &str, text: &s
     .headers
     .set("Authorization", &format!("Bearer {api_key}"))?;
 
-  let req = Request::new_with_init("https://api.resend.com/emails", &init)?;
+  let req = Request::new_with_init("https://app.usesend.com/api/v1/emails", &init)?;
   let resp = Fetch::Request(req).send().await?;
 
   if resp.status_code() >= 400 {

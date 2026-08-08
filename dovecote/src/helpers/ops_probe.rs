@@ -2,7 +2,7 @@ use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Delay, Env, Fetch, Method, Request, Result, console_error, console_log};
 
-use super::alerts::send_via_resend;
+use super::alerts::send_via_usesend;
 use super::hyperdrive::get_db_client;
 
 /// Which row in `ops_health_state` this probe owns. A constant rather than a
@@ -182,5 +182,5 @@ async fn record_and_notify(
   };
 
   console_log!("ops probe: kratos transition -> healthy={healthy}, notifying");
-  send_via_resend(env, recipient, &subject, &text).await
+  send_via_usesend(env, recipient, &subject, &text).await
 }
