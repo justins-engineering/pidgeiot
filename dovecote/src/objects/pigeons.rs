@@ -625,12 +625,24 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
     return Response::error("Request missing 'X-User-Id'", 400);
   };
 
-  let acl = match pigeons.sql.exec(
-    "SELECT entity_id, role FROM pigeon_acl WHERE entity_id = ?;",
-    vec![requesting_user.into()],
-  ) {
-    Ok(cursor) => match one_row::<PigeonAcl>(&cursor) {
-      Ok(a) => a,
+  // The caller's "own" ACL row: their per-user row when one exists, else
+  // the ORG row their access came through (task #12 -- an org-granted
+  // caller has no per-user row at all; before this fallback the lookup
+  // below found zero rows and 500'd, caught by the live org test matrix).
+  let org_roles: Vec<capsules::OrgRoleEntry> = req
+    .headers()
+    .get("X-Org-Roles")
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str(&raw).ok())
+    .unwrap_or_default();
+
+  let rows = match pigeons
+    .sql
+    .exec("SELECT entity_id, role FROM pigeon_acl;", None)
+  {
+    Ok(cursor) => match cursor.to_array::<PigeonAcl>() {
+      Ok(rows) => rows,
       Err(e) => {
         console_error!("PigeonAcl deserialization error: {e}");
         return Response::error("Internal Server Error", 500);
@@ -640,6 +652,24 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
       console_error!("PigeonAcl READ error: {e}");
       return Response::error("Internal Server Error", 500);
     }
+  };
+
+  let user_uuid = uuid::Uuid::parse_str(&requesting_user).ok();
+  let acl = rows
+    .iter()
+    .find(|r| Some(r.entity_id) == user_uuid)
+    .or_else(|| {
+      rows
+        .iter()
+        .find(|r| org_roles.iter().any(|e| e.id == r.entity_id))
+    })
+    .cloned();
+
+  let Some(acl) = acl else {
+    // Unreachable in practice: is_authorized above already matched one of
+    // these same rows for this same principal set.
+    console_error!("PigeonAcl lookup found no row for an authorized caller");
+    return Response::error("Internal Server Error", 500);
   };
 
   Response::from_json(&PigeonDetail {
