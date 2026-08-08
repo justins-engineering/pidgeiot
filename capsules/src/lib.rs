@@ -7,6 +7,17 @@ use uuid::Uuid;
 // evaluator. See that module's own doc comment for the full rationale.
 pub mod connection_state;
 
+// User-feedback form (task #13) -- request/category types shared with
+// fancier's feedback modal, plus the (host-testable) notification-email
+// formatter dovecote's `POST /feedback` route uses. Re-exported at the
+// crate root so consumers name them like every other capsules type.
+pub mod feedback;
+pub use feedback::{
+  FeedbackCategory, FeedbackRequest, FeedbackSubmitter, MAX_FEEDBACK_BODY_BYTES,
+  MAX_FEEDBACK_CONTACT_EMAIL_BYTES, MAX_FEEDBACK_MESSAGE_BYTES, MAX_FEEDBACK_PAGE_CONTEXT_BYTES,
+  format_feedback_email,
+};
+
 #[macro_export]
 macro_rules! unwrap_or_return_response {
   ($expr:expr) => {
