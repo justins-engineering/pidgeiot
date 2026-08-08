@@ -149,6 +149,9 @@ applies at the platform level). The limits that do exist are:
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 | `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
+| `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
+| `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
+| `POST /feedback` — `contact_email` / `page_context` length | 254 / 512 bytes (`capsules::MAX_FEEDBACK_CONTACT_EMAIL_BYTES`/`MAX_FEEDBACK_PAGE_CONTEXT_BYTES`) | `lib.rs`, `400` over the cap |
 
 ---
 
@@ -724,6 +727,42 @@ Removes the stored dictionary. Returns `200` with an empty body; idempotent (del
 none exists is still `200`). Deleting the pigeon itself also best-effort removes its stored
 dictionary.
 
+### Feedback
+
+#### `POST /feedback` — **no auth required** (optionally authenticated)
+
+The dashboard's feedback form. Unlike every other Dashboard route, this one does **not**
+require a Kratos session — public marketing pages link the same form. If a valid session cookie
+*is* present, dovecote resolves it server-side and includes the submitter's identity id/email in
+the notification email; the submitter is never trusted from the request body.
+
+Body: `capsules::FeedbackRequest`. Only `message` is required; `category` is one of `"bug"`,
+`"feature_request"`, `"general"` (treated as general when omitted).
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"The shadow editor loses my edits.","category":"bug","contact_email":"me@example.com","page_context":"/flocks/abc/pigeons/def"}'
+```
+
+Returns `202` with an empty JSON object. `202`, not `200`/`201`, because nothing is persisted —
+the submission is formatted (`capsules::format_feedback_email`) and delivered best-effort as one
+email to the `OPS_ALERT_EMAIL` var via the existing Resend transport
+(`helpers/feedback.rs::send_feedback_email`). `OPS_ALERT_EMAIL` is set in production's `[vars]`
+block only (same single-knob convention as the ops health probe), so staging/dev accept the
+request and log the formatted email instead of sending — the `202` never depends on delivery.
+
+Rejections:
+
+- `400` if `Content-Type` is not `application/json`, the JSON is invalid, `message` is empty,
+  `category` is an unknown value, or `contact_email`/`page_context` exceed their length caps.
+- `413` if the raw body exceeds `capsules::MAX_FEEDBACK_BODY_BYTES` or `message` exceeds
+  `capsules::MAX_FEEDBACK_MESSAGE_BYTES` (see the size-limits table above).
+
+There is no per-IP rate limiting in-route (none exists anywhere in dovecote — see
+"Rate & size limits" above); platform-level protection (a Cloudflare WAF rate rule on
+`POST /feedback`, or Turnstile) is the intended follow-up if abuse appears.
+
 ---
 
 ## Public Demo API
@@ -1022,6 +1061,8 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `PigeonLogChunk` / `PigeonLogChunkRow`, `MAX_LOG_CHUNK_BYTES`
 - `LogDictionaryInfo`, `MAX_LOG_DICTIONARY_BYTES`
 - `FirmwareImage`, `FirmwareTarget`, `FirmwareUploadQuery`, `MAX_FIRMWARE_BYTES`
+- `FeedbackRequest`, `FeedbackCategory`, `format_feedback_email` (+ the `MAX_FEEDBACK_*` caps) —
+  `capsules/src/feedback.rs`
 
 `*Row` variants (e.g. `PigeonRow`, `PigeonShadowRow`) are internal DB-deserialization shapes and
 never appear over the wire — only their non-`Row` counterparts do.

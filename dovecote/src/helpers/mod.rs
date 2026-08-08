@@ -57,6 +57,9 @@ pub use firmware::upsert_flock_firmware;
 mod ops_probe;
 pub use ops_probe::probe_kratos_health;
 
+mod feedback;
+pub use feedback::send_feedback_email;
+
 mod alerts;
 pub use alerts::check_telemetry_alerts;
 pub use alerts::create_flock_alert;

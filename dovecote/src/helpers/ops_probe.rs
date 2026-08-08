@@ -17,7 +17,7 @@ const SERVICE: &str = "kratos";
 /// (scheduled)]` handler every 5 minutes) never probe, never write state,
 /// and never email. One knob, not a separate "enabled" flag that could
 /// drift out of sync with the recipient.
-fn ops_alert_email(env: &Env) -> Option<String> {
+pub(crate) fn ops_alert_email(env: &Env) -> Option<String> {
   env
     .var("OPS_ALERT_EMAIL")
     .ok()
