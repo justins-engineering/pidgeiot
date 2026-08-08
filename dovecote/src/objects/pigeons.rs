@@ -104,11 +104,6 @@ struct ShellOutputPayload {
   truncated: bool,
 }
 
-#[derive(serde::Deserialize)]
-struct ExistsResult {
-  exists_flag: i64,
-}
-
 /// `SqlCursor::one()` throws an uncaught JS exception (crashing the DO)
 /// on zero rows instead of returning a catchable `Result::Err` —
 /// `to_array()` never throws, so route "no rows" through the same
@@ -285,6 +280,7 @@ impl DurableObject for Pigeons {
       "/pigeon/acl/get" => get_acl(self, req).await,
       "/pigeon/acl/list" => list_acl(self, req).await,
       "/pigeon/acl/update" => update_acl(self, req).await,
+      "/pigeon/acl/grant" => grant_acl_internal(self, req).await,
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
@@ -439,54 +435,101 @@ fn clear_shell_waiters(pigeons: &Pigeons, reason: &str) {
   }
 }
 
-fn is_authorized(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, worker::Error>> {
+/// The two access levels a dashboard-facing DO route can require -- the
+/// literal role string `"owner"` on a matching `pigeon_acl` row is still
+/// the only special-cased value, exactly as before task #12.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AclLevel {
+  Member,
+  Owner,
+}
+
+/// THE DO-side authorization helper (task #12's hard requirement: every
+/// dashboard-facing check in this Durable Object funnels through here, so
+/// a future central-authz swap is contained to this one function; the
+/// gateway-side counterpart is `helpers/orgs.rs::authorize_flock`).
+///
+/// Principal set: the caller is `X-User-Id` (the Kratos identity the
+/// gateway resolved) PLUS every org id in the gateway-injected
+/// `X-Org-Roles` header (`[{"id":"<uuid>","role":"owner"}]`, see
+/// `Principal::org_roles_header`). A `pigeon_acl` row matches when its
+/// `entity_id` equals ANY principal in that set -- org-shared pigeons
+/// simply carry an ACL row whose `entity_id` IS the org id.
+///
+/// Role mapping for org-matched rows (docs/api.md's matrix): the caller's
+/// role IN THE ORG gates what the org's ACL row lets them exercise --
+/// `owner`/`admin` may exercise up to the row's own role (owner-level
+/// rights when the row says `owner`), while `member` is capped at
+/// member-level regardless of the row's role. A user-matched row behaves
+/// exactly as it always has.
+///
+/// Both headers are internal, gateway-set values (this DO is never
+/// internet-reachable; `proxy_to_pigeon_do` builds them from the validated
+/// session) -- a device or demo request never reaches this function.
+fn authorize_dashboard(
+  pigeons: &Pigeons,
+  req: &Request,
+  level: AclLevel,
+) -> Result<(), Result<Response, worker::Error>> {
   let Ok(Some(requesting_user)) = req.headers().get("X-User-Id") else {
     return Err(Response::error("Request missing 'X-User-Id'", 400));
   };
 
-  let result = pigeons
+  let org_roles: Vec<capsules::OrgRoleEntry> = req
+    .headers()
+    .get("X-Org-Roles")
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str(&raw).ok())
+    .unwrap_or_default();
+
+  let rows = pigeons
     .sql
-    .exec(
-      "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1) AS exists_flag",
-      vec![requesting_user.into()],
-    )
+    .exec("SELECT entity_id, role FROM pigeon_acl;", None)
     .map_err(Err)?
-    .one::<ExistsResult>()
+    .to_array::<PigeonAcl>()
     .map_err(Err)?;
 
-  if result.exists_flag != 0 {
+  let user_uuid = uuid::Uuid::parse_str(&requesting_user).ok();
+
+  let allowed = rows.iter().any(|row| {
+    if Some(row.entity_id) == user_uuid {
+      // Direct per-user grant -- pre-org behavior, unchanged.
+      return match level {
+        AclLevel::Member => true,
+        AclLevel::Owner => row.role == "owner",
+      };
+    }
+    // Org grant: the row's entity_id must be an org the caller belongs
+    // to, and the caller's role in that org caps what the row confers.
+    let Some(entry) = org_roles.iter().find(|e| e.id == row.entity_id) else {
+      return false;
+    };
+    match level {
+      AclLevel::Member => true,
+      AclLevel::Owner => row.role == "owner" && entry.role.is_manager(),
+    }
+  });
+
+  if allowed {
     Ok(())
   } else {
-    Err(Response::error(
-      "Forbidden: You do not have access to this Pigeon",
-      403,
-    ))
+    Err(match level {
+      AclLevel::Member => Response::error("Forbidden: You do not have access to this Pigeon", 403),
+      AclLevel::Owner => Response::error("Forbidden: Only owners can modify ACL", 403),
+    })
   }
 }
 
+/// Thin wrappers keeping the ~20 pre-org call sites (and their historical
+/// error strings) unchanged -- all real logic lives in
+/// `authorize_dashboard` above.
+fn is_authorized(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, worker::Error>> {
+  authorize_dashboard(pigeons, req, AclLevel::Member)
+}
+
 fn is_owner(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, worker::Error>> {
-  let Ok(Some(requesting_user)) = req.headers().get("X-User-Id") else {
-    return Err(Response::error("Request missing 'X-User-Id'", 400));
-  };
-
-  let result = pigeons
-  .sql
-  .exec(
-    "SELECT EXISTS(SELECT 1 FROM pigeon_acl WHERE entity_id = ?1 AND role = 'owner') AS exists_flag",
-    vec![requesting_user.into()],
-  )
-  .map_err(Err)?
-  .one::<ExistsResult>()
-  .map_err(Err)?;
-
-  if result.exists_flag != 0 {
-    Ok(())
-  } else {
-    Err(Response::error(
-      "Forbidden: Only owners can modify ACL",
-      403,
-    ))
-  }
+  authorize_dashboard(pigeons, req, AclLevel::Owner)
 }
 
 /// Strips every secret from a `Pigeon` before it leaves the DO via a GET
@@ -959,6 +1002,42 @@ async fn update_acl(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }),
     Err(e) => {
       console_error!("PigeonAcl UPDATE execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Trusted-internal ACL upsert (task #12) -- same write as `update_acl`
+/// but with NO `is_owner` gate of its own. Safe for the same reason as
+/// `write_telemetry_device`/`read_telemetry_endpoint_device`: Durable
+/// Objects have no public internet-facing address, and the only dispatcher
+/// of this path is this Worker's own gateway
+/// (`helpers/pigeons.rs::grant_org_acl_via_do`), which fully authorizes
+/// the operation first (flock-transfer: flock owner + org owner/admin;
+/// org-flock pigeon create: org owner/admin). Exists because the
+/// authorizing user may hold no ACL row on this pigeon at all (their right
+/// comes from the FLOCK/org side), so the owner-gated `update_acl` route
+/// can't serve these flows.
+async fn grant_acl_internal(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  let acl = match req.json::<PigeonAclUpdateRequest>().await {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("ACL GRANT json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  match pigeons.sql.exec(
+    "INSERT INTO pigeon_acl (entity_id, role) VALUES (?, ?)
+     ON CONFLICT(entity_id) DO UPDATE SET role = excluded.role;",
+    vec![acl.entity_id.to_string().into(), acl.role.clone().into()],
+  ) {
+    Ok(_) => Response::from_json(&PigeonAcl {
+      entity_id: acl.entity_id,
+      role: acl.role,
+    }),
+    Err(e) => {
+      console_error!("ACL GRANT execution error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }

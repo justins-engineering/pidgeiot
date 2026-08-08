@@ -22,18 +22,30 @@ async fn ensure_flocks_owner_email_column(client: &Client) -> Result<()> {
     })
 }
 
+/// Every flock the caller can see (task #12): personal flocks they own
+/// (`org_id IS NULL AND user_id = caller`) plus every flock owned by an
+/// org they belong to (any role -- `member` is view-level, which listing
+/// is). Note the two arms are mutually exclusive on purpose: once a flock
+/// is org-owned, `user_id` is provenance, not an access grant (see
+/// `helpers/orgs.rs::authorize_flock`).
 pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<Flock>> {
+  // Org tables/column must exist before this query references
+  // flocks.org_id -- same per-request idempotent-bootstrap convention as
+  // ensure_flocks_owner_email_column below.
+  crate::helpers::ensure_org_tables(client).await?;
+
   let parsed_uuid = Uuid::parse_str(user_id_str)
     .map_err(|e| Error::RustError(format!("Invalid UUID format: {e}")))?;
 
   let rows = client
     .query_typed(
       "SELECT
-        flocks.id, flocks.user_id, flocks.name, flocks.service_plan, flocks.created_at, flocks.updated_at,
+        flocks.id, flocks.user_id, flocks.org_id, flocks.name, flocks.service_plan, flocks.created_at, flocks.updated_at,
         COALESCE(array_agg(pigeons.id) FILTER (WHERE pigeons.id IS NOT NULL), '{}') AS pigeon_ids
         FROM flocks
         LEFT JOIN pigeons ON pigeons.flock_id = flocks.id
-        WHERE flocks.user_id = $1
+        WHERE (flocks.org_id IS NULL AND flocks.user_id = $1)
+           OR flocks.org_id IN (SELECT org_id FROM organization_members WHERE user_id = $1)
         GROUP BY flocks.id",
       &[(&parsed_uuid, Type::UUID)],
     )
@@ -45,6 +57,7 @@ pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<F
   for row in rows {
     let id: Uuid = row.get("id");
     let user_id: Uuid = row.get("user_id");
+    let org_id: Option<Uuid> = row.get("org_id");
     let name: String = row.get("name");
     let service_plan: String = row.get("service_plan");
     let pigeon_ids: Vec<String> = row.get("pigeon_ids");
@@ -54,9 +67,7 @@ pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<F
     flocks.push(Flock {
       id,
       user_id,
-      // Wired to the real column by the org helpers commit (task #12) --
-      // see ensure_org_tables/get_user_flocks in helpers/orgs.rs.
-      org_id: None,
+      org_id,
       name,
       service_plan,
       pigeon_ids,

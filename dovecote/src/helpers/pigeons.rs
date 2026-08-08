@@ -49,10 +49,12 @@ impl PigeonAccess {
 pub async fn check_pigeon_authz(
   req: Request,
   user_id_str: &str,
+  org_roles_json: Option<&str>,
   stub: &worker::ObjectId<'_>,
   pigeon_id: &str,
 ) -> worker::Result<std::result::Result<PigeonAccess, Response>> {
-  let authz_resp = proxy_to_pigeon_do(req, user_id_str, stub, "/authz/check").await?;
+  let authz_resp =
+    proxy_to_pigeon_do(req, user_id_str, org_roles_json, stub, "/authz/check").await?;
   if authz_resp.status_code() >= 400 {
     return Ok(Err(authz_resp));
   }
@@ -61,9 +63,16 @@ pub async fn check_pigeon_authz(
   }))
 }
 
+/// `org_roles_json` (task #12) is the caller's org-membership set as
+/// compact JSON (`Principal::org_roles_header`, `helpers/orgs.rs`),
+/// forwarded as the internal `X-Org-Roles` header so the DO's centralized
+/// ACL check (`objects/pigeons.rs::authorize_dashboard`) can match
+/// org-granted `pigeon_acl` rows. `None` (device routes, org-less users)
+/// adds no header at all.
 pub async fn proxy_to_pigeon_do(
   mut req: Request,
   user_id_str: &str,
+  org_roles_json: Option<&str>,
   stub: &worker::ObjectId<'_>,
   do_path: &str,
 ) -> worker::Result<Response> {
@@ -78,6 +87,13 @@ pub async fn proxy_to_pigeon_do(
     console_error!("Failed to set X-User-Id: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
+
+  if let Some(org_roles) = org_roles_json {
+    init.headers.set("X-Org-Roles", org_roles).map_err(|e| {
+      console_error!("Failed to set X-Org-Roles: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+  }
 
   // Device-facing routes carry no Kratos session — their Authorization
   // header is the credential the DO itself verifies (see
@@ -105,6 +121,42 @@ pub async fn proxy_to_pigeon_do(
       console_error!("Failed to create DO request: {e}");
       worker::Error::RustError("Internal Server Error".into())
     })?;
+
+  stub.fetch_with_request(do_req).await
+}
+
+/// Writes an ORG-granted `pigeon_acl` row (`entity_id` = the org id, role
+/// `owner` -- each member's effective rights are then derived from their
+/// own role in that org, see `objects/pigeons.rs::authorize_dashboard`)
+/// into one pigeon's Durable Object via the trusted-internal
+/// `/pigeon/acl/grant` route. Dispatched by the flock-transfer route and
+/// by pigeon-create inside an org-owned flock (task #12) -- both AFTER the
+/// gateway has fully authorized the operation, which is exactly the same
+/// trust argument `write_telemetry_device` already relies on (DOs are
+/// never internet-reachable; only this Worker can dispatch here).
+///
+/// NOT best-effort: callers treat a non-2xx here as a hard failure of the
+/// primary operation -- the DO's ACL table is the authoritative
+/// authorization store, unlike its best-effort Postgres mirror.
+pub async fn grant_org_acl_via_do(
+  stub: &worker::ObjectId<'_>,
+  org_id: &str,
+) -> worker::Result<Response> {
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let body = serde_json::json!({ "entity_id": org_id, "role": "owner" });
+
+  let mut init = RequestInit::default();
+  init.with_method(worker::Method::Post);
+  init.body = Some(body.to_string().into());
+
+  let do_req = Request::new_with_init("https://internal/pigeon/acl/grant", &init).map_err(|e| {
+    console_error!("Failed to create DO request: {e}");
+    worker::Error::RustError("Internal Server Error".into())
+  })?;
 
   stub.fetch_with_request(do_req).await
 }
@@ -455,7 +507,7 @@ pub async fn update_telemetry_endpoint_pg_db(
 }
 
 pub async fn upsert_acl_pg_db(
-  client: Client,
+  client: &Client,
   pigeon_id: &str,
   acl: &PigeonAcl,
 ) -> worker::Result<()> {

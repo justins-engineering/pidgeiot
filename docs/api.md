@@ -46,8 +46,27 @@ on creation. Routes below are marked **owner** (must hold the `"owner"` role) or
 A request with no valid session cookie gets `401 Unauthorized`. A valid session with no ACL row
 for the target pigeon gets `403 Forbidden`.
 
-Flocks have no separate ACL table — a flock's owner is just `flocks.user_id`, checked directly
-against the caller's Kratos ID. There is no flock-sharing mechanism today.
+**Organizations (task #12).** Alongside the per-user ACL rows, a pigeon may carry an ACL row
+whose `entity_id` is an **organization id** — that's how org-shared access works (no new
+table). After validating the session, the gateway loads the caller's org memberships in one
+Postgres query (`require_principal`, `dovecote/src/lib.rs`) and forwards them to the Durable
+Object as an internal `X-Org-Roles` header (compact JSON, `[{"id":"<org uuid>","role":"owner"}]`)
+alongside `X-User-Id`. The DO's single authorization helper
+(`objects/pigeons.rs::authorize_dashboard`) then treats the caller as the principal set
+`{user_id} ∪ {org ids}`: a per-user ACL row behaves exactly as before, and an org ACL row
+grants rights capped by the caller's role *in that org* — see the
+[permission matrix](#organizations) below. If the org-membership load fails (Postgres blip),
+the request degrades to personal-only access rather than failing.
+
+Flocks have no separate ACL table. A flock is **exactly one** of:
+
+- **personal** (`org_id` null): governed by `flocks.user_id` alone, as before; or
+- **org-owned** (`org_id` set): governed by the caller's role in that org —
+  `flocks.user_id` becomes provenance (who created/transferred it), not an access grant.
+
+Every gateway flock check funnels through one helper (`helpers/orgs.rs::authorize_flock`), so
+routes below are marked **flock: view** (personal owner, or any org role) or **flock: manage**
+(personal owner, or org owner/admin).
 
 ### Device authentication (bearer token)
 
@@ -164,7 +183,9 @@ client whose origin matches `ROOT_URL`) unless noted otherwise.
 
 #### `GET /flocks`
 
-Lists every flock owned by the caller, each with its member pigeon IDs.
+Lists every flock the caller can see — personal flocks they own, plus every org-owned flock
+of an org they belong to (any role) — each with its member pigeon IDs. `org_id` is `null`
+for personal flocks.
 
 ```sh
 curl -s https://api.pidgeiot.com/flocks \
@@ -197,16 +218,162 @@ curl -s -X POST https://api.pidgeiot.com/flocks \
 ```
 
 Response is `capsules::Flock` JSON (empty `pigeon_ids`) with status `201` and a
-`Location: /flocks/<flock_id>` header. `400` if `name` is empty.
+`Location: /flocks/<flock_id>` header. `400` if `name` is empty. A freshly-created flock is
+always **personal** (`org_id: null`) — see the transfer route below for moving it into an org.
 
 There is no `PUT`/`DELETE /flocks/:id` route today, even though `capsules::FlockUpdateRequest`
 exists as a type — it isn't wired to anything yet.
 
+#### `POST /flocks/:flock_id/transfer`
+
+Moves a **personal** flock into an organization (task #12). Body:
+`capsules::FlockTransferRequest` (`{ org_id }`). Requirements, all enforced server-side:
+
+- the caller is the flock's owner (`flocks.user_id`);
+- the flock is not already org-owned (`409` otherwise — no org→org re-transfer today);
+- the caller is an **owner or admin** of the target org.
+
+On success, every pigeon currently in the flock gets an ACL row `{ entity_id: <org_id>, role:
+"owner" }` written into its own Durable Object **first** — this is the authoritative
+authorization write and is *not* best-effort: any per-pigeon failure aborts the transfer with
+`500` before the flock is marked org-owned. The DO grant is an idempotent upsert, so retrying
+a failed transfer is safe. Only after every DO write lands does `flocks.org_id` flip; the
+Postgres `pigeon_acl` mirror is then synced best-effort per the usual convention. Returns the
+updated `capsules::Flock` (now carrying `org_id`).
+
+Note the flock's pre-existing per-user ACL rows are untouched — the transferring owner keeps
+any direct pigeon access they already had. Org-granted access, by contrast, lives and dies
+with the membership row (remove a member and their org-derived access is gone on their next
+request).
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/transfer \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"org_id":"<org_id>"}'
+```
+
+### Organizations
+
+Shared-org management (task #12): individual Kratos accounts, one `organizations` row per
+team, membership rows carrying per-user roles, app-level invites (self-hosted Kratos has no
+B2B invite flow), and org-owned flocks. **No literal shared accounts; no Ory Keto** — the
+model is rolled onto the existing per-pigeon ACL + flock tables.
+
+**Roles and the permission matrix.** `capsules::OrgRole` is `owner | admin | member`:
+
+| Capability | owner | admin | member |
+|---|---|---|---|
+| List/read org, members (`GET /orgs`, `GET /orgs/:id`) | yes | yes | yes |
+| Rename org (`PUT /orgs/:id`) | yes | yes | no |
+| Delete org (`DELETE /orgs/:id`, only when it owns no flocks) | yes | no | no |
+| Invite members (`POST /orgs/:id/invites`), view/revoke invites | yes | yes (but cannot invite an `owner`) | no |
+| Change member roles (`PUT /orgs/:id/members/:user_id`) | yes | no | no |
+| Remove members (`DELETE /orgs/:id/members/:user_id`) | yes | yes (but never an `owner`) | self-removal (leave) only |
+| Org-owned flocks: view (list, pigeons list, telemetry history, firmware list, alerts list) | yes | yes | yes |
+| Org-owned flocks: manage (create pigeons, upload firmware, create alerts, be a transfer target) | yes | yes | no |
+| Org-shared pigeons: member-level routes (read, shadow get/put, telemetry, logs) | yes | yes | yes |
+| Org-shared pigeons: owner-level routes (delete, token refresh, ACL changes, shell) | yes | yes | no |
+
+Last-owner protection: an org must always retain at least one `owner` — demoting or removing
+the only owner is refused with `409`, regardless of who asks.
+
+The pigeon-side mapping, precisely: an org-shared pigeon carries a `pigeon_acl` row
+`{ entity_id: <org id>, role: "owner" }`. A caller's effective rights through that row are
+capped by their role in the org — `owner`/`admin` may exercise the row's full (owner-level)
+rights; `member` is capped at member-level. Per-user ACL rows are unaffected.
+
+#### `POST /orgs`
+
+Creates an organization; the caller becomes its founding `owner` (an org can never exist
+without one). Body: `capsules::OrganizationCreateRequest` (`{ name }`). Returns
+`capsules::Organization` with `201` and a `Location: /orgs/<org_id>` header.
+
+#### `GET /orgs`
+
+Lists every org the caller belongs to, with the caller's own role —
+`Vec<capsules::OrganizationMembership>` (`{ organization, role }`).
+
+#### `GET /orgs/:org_id` — any member
+
+Returns `capsules::OrganizationDetail`: the org, the caller's role, the full member list
+(each `capsules::OrganizationMember` carries `email` — denormalized at join time — and
+`invited_by`, the per-person audit trail), and pending invites (`invites` is only populated
+for owner/admin callers; plain members get an empty list).
+
+#### `PUT /orgs/:org_id` — owner/admin
+
+Rename. Body: `capsules::OrganizationRenameRequest` (`{ name }`). Returns the updated
+`capsules::Organization`.
+
+#### `DELETE /orgs/:org_id` — owner
+
+Deletes the org **only when it owns no flocks** (`409` otherwise — transfer or delete them
+first). Membership and invite rows cascade. Returns `200` with an empty body.
+
+#### `PUT /orgs/:org_id/members/:user_id` — owner
+
+Changes a member's role. Body: `capsules::OrganizationMemberRoleUpdateRequest`
+(`{ role }`). `409` if it would leave the org ownerless. Returns the updated
+`capsules::OrganizationMember`.
+
+#### `DELETE /orgs/:org_id/members/:user_id` — owner/admin, or self
+
+Removes a membership row — **the revocation mechanism**: the removed user loses every
+org-granted flock/pigeon right on their next request (the principal set is loaded
+per-request; no ACL rows need rewriting). Admins can never remove owners; anyone may remove
+themselves (leave); `409` if it would leave the org ownerless.
+
+#### `POST /orgs/:org_id/invites` — owner/admin
+
+Invites an email address at a given role. Body: `capsules::OrganizationInviteCreateRequest`
+(`{ email, role }`); inviting at role `owner` is itself owner-only. Mints a random 128-bit+
+token, stores **only its sha256 hash** (`organization_invites.token_hash`), and emails the
+invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's existing Resend
+transport. In an environment with no `RESEND_API_KEY` configured (dev), the link is logged to
+the Worker console instead — grab it from `wrangler dev` output. Returns `201` with
+`capsules::OrganizationInviteCreated` (`{ invite, token, invite_url }`) — **the only place
+the cleartext token ever appears** (write-once, same convention as device connector tokens);
+`GET` reads return only hash-backed metadata.
+
+Invites expire after **7 days** and are **single-use** (consumed atomically on accept).
+
+#### `GET /orgs/:org_id/invites` — owner/admin
+
+Pending (unconsumed, unexpired) invites — `Vec<capsules::OrganizationInvite>`.
+
+#### `DELETE /orgs/:org_id/invites/:invite_id` — owner/admin
+
+Revokes a pending invite. Idempotent (`200` even if already gone).
+
+#### `POST /invites/accept`
+
+Consumes an invite token for the **calling session** (requires an authenticated Kratos
+session; the frontend's `/invite?token=` page routes unauthenticated visitors through
+login/registration first). Body: `capsules::OrganizationInviteAcceptRequest` (`{ token }`).
+Returns `201` with the new `capsules::OrganizationMember`; `404` for an invalid/expired/used
+token; `409` if the caller is already a member (the invite is left unconsumed in that case).
+
+**Token-alone acceptance — a documented tradeoff.** The token is a bearer credential:
+whichever authenticated account presents it first joins, *regardless of which email that
+account registered under*. This is deliberate — invitees routinely register under a different
+address than the one the invite was sent to, and an email-match requirement would strand them
+— and is compensated by the short (7-day) expiry, single-use consumption, hash-only storage,
+and the inviter's ability to revoke pending invites and remove members. The alternative
+(require `session email == invited email`) is stricter against forwarded/leaked invite
+emails; if that ever matters more than invitee flexibility, the accept handler is the single
+place to add the check.
+
 ### Pigeons
 
-#### `POST /flock/pigeons`
+#### `POST /flock/pigeons` — flock: manage
 
-Creates a pigeon inside a flock. Body: `capsules::PigeonCreateRequest`
+Creates a pigeon inside a flock. Since task #12 this is gated on the **target flock**: a
+personal flock's owner, or an org owner/admin for an org-owned flock (pre-org behavior never
+checked flock ownership at all — a latent gap this closed). A pigeon created inside an
+org-owned flock is seeded with **both** ACL rows: the creator's own `owner` row and the org's
+`owner` row (so every org member gets role-mapped access immediately, and the org's access
+survives the creator leaving). Body: `capsules::PigeonCreateRequest`
 (`{ flock_id, serial?, name?, tags?, connector, board? }`) — `connector` is either
 `{"Https": {"endpoint": "", "token": ""}}` or `{"Coap": {"endpoint": "", "token": ""}}`; the
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
@@ -476,7 +643,7 @@ duplicated per-pigeon. The binary itself lives in R2, content-addressed by `sha2
 (`firmware/<sha256>.bin`); only metadata lives in Postgres. A pigeon's *assigned* firmware is a
 separate, per-pigeon concern set via its own shadow (see above), not here.
 
-#### `POST /flocks/:flock_id/firmware?version=<string>&board=<string>` — flock owner
+#### `POST /flocks/:flock_id/firmware?version=<string>&board=<string>` — flock: manage
 
 Uploads a firmware image. The request body **is** the image, sent as raw bytes (like
 `POST /device/pigeons/:pigeon_id/logs`, not wrapped in JSON). `size` and `sha256` are always
@@ -518,7 +685,7 @@ curl -s -X POST 'https://api.pidgeiot.com/flocks/<flock_id>/firmware?version=0.1
 
 (`capsules::FirmwareImage`.)
 
-#### `GET /flocks/:flock_id/firmware` — flock owner
+#### `GET /flocks/:flock_id/firmware` — flock: view
 
 Lists every firmware image uploaded for this flock, newest first. Same per-item shape as the
 `POST` response above.
@@ -596,12 +763,13 @@ way. **Only populated for reports made while the pigeon had no `telemetry_endpoi
 platform default in both directions (write and, indirectly, read: an overridden pigeon's data
 never lands in the platform's own history store at all, only at the URL you configured).
 
-#### `GET /flocks/:flock_id/telemetry/history` — flock owner
+#### `GET /flocks/:flock_id/telemetry/history` — flock: view
 
 Same shape and query params as above, across every pigeon in the flock. Unlike the pigeon-scoped
-route, this checks *flock* ownership (`flocks.user_id`), not any pigeon's ACL — so a pigeon
-shared with you via its own ACL, but living in a flock you don't own, won't show up here even
-though `GET /pigeons/:pigeon_id/telemetry/history` would work for it directly.
+route, this checks *flock*-level access (`authorize_flock` — personal owner, or any org role
+on an org-owned flock), not any pigeon's ACL — so a pigeon shared with you via its own ACL,
+but living in a flock you have no flock-level access to, won't show up here even though
+`GET /pigeons/:pigeon_id/telemetry/history` would work for it directly.
 
 ```sh
 curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026-07-17T00:00:00Z" \
@@ -1050,7 +1218,12 @@ rely on the `shadow_update` push for the shadow side.
 
 Every request/response shape above is defined in `capsules/src/lib.rs`:
 
-- `Flock`, `FlockCreateRequest`
+- `Flock`, `FlockCreateRequest`, `FlockTransferRequest`
+- `OrgRole`, `Organization`, `OrganizationMembership`, `OrganizationMember`,
+  `OrganizationDetail`, `OrganizationInvite`, `OrganizationInviteCreated`,
+  `OrganizationCreateRequest`, `OrganizationRenameRequest`,
+  `OrganizationMemberRoleUpdateRequest`, `OrganizationInviteCreateRequest`,
+  `OrganizationInviteAcceptRequest`, `OrgRoleEntry` (internal `X-Org-Roles` header entry)
 - `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`, `PigeonDetail`
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,

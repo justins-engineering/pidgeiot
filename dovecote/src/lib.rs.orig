@@ -9,9 +9,9 @@ use crate::helpers::{
   mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
-  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do,
+  send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -2277,113 +2277,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::empty()?.with_cors(&cors)
       },
     )
-    // --- Feedback Route (task #13) ---
-    // Public, optionally-authenticated: the feedback form is linked from
-    // marketing pages too, so no session is required -- but when a valid
-    // Kratos session IS present it's resolved server-side and included in
-    // the notification email (never trusted from the body). Abuse
-    // protection is deliberately existing-pattern-only: Content-Type must
-    // be JSON, the raw body and each field are size-capped
-    // (capsules::MAX_FEEDBACK_* -- 400/413, same shape as the firmware/
-    // log-dictionary caps), and delivery reuses the prod-only
-    // OPS_ALERT_EMAIL + RESEND_API_KEY pair, so staging/dev degrade to a
-    // logged no-op (see helpers/feedback.rs). There is no per-IP rate
-    // limiter here because no in-Worker per-IP pattern exists anywhere in
-    // this codebase yet (docs/api.md's "Rate & size limits" is explicit
-    // about that) -- platform-level protection (a Cloudflare WAF
-    // rate-limiting rule on POST /feedback, or Turnstile) is the flagged
-    // follow-up, not something to hand-roll in-route.
-    .post_async("/feedback", |mut req, ctx: RouteContext<()>| async move {
-      let cors = build_cors(&ctx.env, &req);
-
-      let is_json = req
-        .headers()
-        .get("Content-Type")
-        .ok()
-        .flatten()
-        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
-      if !is_json {
-        return Response::error("Bad Request: Content-Type must be application/json", 400)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      // Optional session -- anonymous feedback is allowed, so a failed
-      // session check just means "no submitter context", never a 401.
-      let submitter = require_auth_session(&req, &ctx.env)
-        .await
-        .ok()
-        .map(|auth| capsules::FeedbackSubmitter {
-          user_id: auth.user_id,
-          email: auth.email,
-        });
-
-      // Raw-body cap checked before JSON parsing even starts, so oversized
-      // garbage is rejected without being deserialized.
-      let Ok(body_text) = req.text().await else {
-        return Response::error("Bad Request: Failed to read body", 400)
-          .unwrap()
-          .with_cors(&cors);
-      };
-
-      if body_text.len() > capsules::MAX_FEEDBACK_BODY_BYTES {
-        return Response::error("Payload Too Large: Feedback body exceeds size cap", 413)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      let Ok(payload) = serde_json::from_str::<capsules::FeedbackRequest>(&body_text) else {
-        return Response::error("Bad Request: Invalid JSON payload", 400)
-          .unwrap()
-          .with_cors(&cors);
-      };
-
-      if payload.message.trim().is_empty() {
-        return Response::error("Bad Request: 'message' cannot be empty", 400)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      if payload.message.len() > capsules::MAX_FEEDBACK_MESSAGE_BYTES {
-        return Response::error("Payload Too Large: 'message' exceeds size cap", 413)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      if payload
-        .contact_email
-        .as_ref()
-        .is_some_and(|e| e.len() > capsules::MAX_FEEDBACK_CONTACT_EMAIL_BYTES)
-      {
-        return Response::error("Bad Request: 'contact_email' is too long", 400)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      if payload
-        .page_context
-        .as_ref()
-        .is_some_and(|p| p.len() > capsules::MAX_FEEDBACK_PAGE_CONTEXT_BYTES)
-      {
-        return Response::error("Bad Request: 'page_context' is too long", 400)
-          .unwrap()
-          .with_cors(&cors);
-      }
-
-      let (subject, text) = capsules::format_feedback_email(
-        &payload,
-        submitter.as_ref(),
-        time::OffsetDateTime::now_utc(),
-      );
-
-      // Fire-and-log, same convention as every other notification path --
-      // the submitter's 202 never depends on delivery succeeding (and in
-      // staging/dev, where OPS_ALERT_EMAIL is unset by design, delivery is
-      // a logged no-op).
-      send_feedback_email(&ctx.env, &subject, &text).await;
-
-      Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
-    })
     // --- Organization Routes (task #12) ---
     // Shared-org access for teams (the PVTA case): individual Kratos
     // accounts, org-level RBAC, membership-row revocation. Org-management

@@ -49,10 +49,12 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     })
 }
 
-/// Proof that `is_flock_owner` already confirmed the requesting user owns
-/// this flock. Constructible only via `is_flock_owner`'s `Some` case below
-/// -- same "caller must have already checked" guard as `PigeonAccess`
-/// (`helpers/pigeons.rs`), applied to the flock-ownership side (see
+/// Proof that the org-aware flock authorization check
+/// (`helpers/orgs.rs::authorize_flock`, task #12 -- previously the
+/// user-only `is_flock_owner` that lived here) has already run and passed
+/// for the current request. Constructible only via that helper's passing
+/// case -- same "caller must have already checked" guard as `PigeonAccess`
+/// (`helpers/pigeons.rs`), applied to the flock side (see
 /// docs/design/tenancy-isolation.md §2.1).
 pub struct FlockAccess {
   flock_id: String,
@@ -62,42 +64,15 @@ impl FlockAccess {
   pub fn flock_id(&self) -> &str {
     &self.flock_id
   }
-}
 
-/// Firmware images are shared across every pigeon in a flock (the same
-/// hardware fleet), not scoped per-pigeon, so ownership is checked
-/// directly against `flocks.user_id` — the same "fold ownership into the
-/// query" model `query_telemetry_history_for_flock` (`helpers/telemetry.rs`)
-/// uses. Returns `Some(FlockAccess)` on a passing check and `None`
-/// otherwise, rather than a bare `bool`, so a caller that wants to reach
-/// `list_flock_firmware` has to have unwrapped a real "yes" from this
-/// function first -- callers that only need the 403/200 split (e.g. the
-/// upload route) can still match on `Some`/`None` exactly as they matched
-/// on `true`/`false` before.
-pub async fn is_flock_owner(
-  client: &Client,
-  flock_id_str: &str,
-  user_id_str: &str,
-) -> Result<Option<FlockAccess>> {
-  let flock_uuid = Uuid::parse_str(flock_id_str)
-    .map_err(|e| Error::RustError(format!("Invalid flock_id format: {e}")))?;
-  let user_uuid = Uuid::parse_str(user_id_str)
-    .map_err(|e| Error::RustError(format!("Invalid X-User-Id format: {e}")))?;
-
-  let row = client
-    .query_typed_one(
-      "SELECT EXISTS(SELECT 1 FROM flocks WHERE id = $1 AND user_id = $2) AS exists_flag",
-      &[(&flock_uuid, Type::UUID), (&user_uuid, Type::UUID)],
-    )
-    .await
-    .map_err(|e| {
-      console_error!("Flock ownership check query error: {e}");
-      Error::RustError("Internal Server Error".into())
-    })?;
-
-  Ok(row.get::<_, bool>("exists_flag").then(|| FlockAccess {
-    flock_id: flock_id_str.to_string(),
-  }))
+  /// Constructible only from `helpers/orgs.rs::authorize_flock`'s passing
+  /// case. Crate-private so no route can mint a proof without going
+  /// through the real check.
+  pub(crate) fn assert_checked(flock_id: &str) -> Self {
+    Self {
+      flock_id: flock_id.to_string(),
+    }
+  }
 }
 
 /// Content-addressed by `(flock_id, sha256)`: re-uploading the same binary

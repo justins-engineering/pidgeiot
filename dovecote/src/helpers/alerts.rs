@@ -971,6 +971,14 @@ async fn send_alert_email(
 /// (design doc §3.2). Never set via `[vars]`, same rule this codebase
 /// already enforces for every credential (`wrangler secret put
 /// RESEND_API_KEY --env <env>`).
+/// Whether the useSend transport is configured for this environment --
+/// lets callers with a graceful no-op path (org invites, task #12) decide
+/// to log a link instead of "sending" into the void, without duplicating
+/// the secret-read logic.
+pub(crate) fn usesend_configured(env: &Env) -> bool {
+  usesend_api_key(env).is_some()
+}
+
 fn usesend_api_key(env: &Env) -> Option<String> {
   env
     .secret("RESEND_API_KEY")

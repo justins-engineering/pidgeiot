@@ -5,6 +5,7 @@ use uuid::Uuid;
 use worker::{Env, Result, console_error};
 
 use crate::helpers::PigeonAccess;
+use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
 
 /// Idempotently ensures the PG telemetry-history table + indexes exist —
@@ -130,35 +131,26 @@ pub async fn query_telemetry_history_for_pigeon(
   )
 }
 
-/// Pigeon-ID list for one flock, scoped by ownership (task #26) -- the
-/// Postgres round-trip `query_greptime_history_for_pigeons`
-/// (`helpers/greptime.rs`) needs before it can query Greptime's
-/// SQL-over-HTTP API: Greptime has no `pigeons`/`flocks` tables of its own
-/// (relational entity data, not time-series), so "which pigeon IDs belong
-/// to this flock, and does this user actually own it" can only be answered
-/// from Postgres. Same "fold ownership into the query" pattern as
-/// `query_telemetry_history_for_flock` below -- a flock this user doesn't
-/// own returns an empty list, not a 403.
-pub async fn get_flock_pigeon_ids(
-  client: &Client,
-  flock_id_str: &str,
-  user_id_str: &str,
-) -> Result<Vec<String>> {
+/// Pigeon-ID list for one flock (task #26) -- the Postgres round-trip
+/// `query_greptime_history_for_pigeons` (`helpers/greptime.rs`) needs
+/// before it can query Greptime's SQL-over-HTTP API: Greptime has no
+/// `pigeons`/`flocks` tables of its own (relational entity data, not
+/// time-series). Takes a `FlockAccess` proof (task #12) rather than the
+/// old fold-ownership-into-the-query `user_id` pattern -- the proof is
+/// only constructible via `authorize_flock` (`helpers/orgs.rs`), which is
+/// org-aware, so this query no longer needs (and must not keep) its own
+/// user_id filter that org members would always fail.
+pub async fn get_flock_pigeon_ids(client: &Client, access: &FlockAccess) -> Result<Vec<String>> {
+  let flock_id_str = access.flock_id();
   let flock_uuid = Uuid::parse_str(flock_id_str).map_err(|e| {
     console_error!("Invalid flock_id format: {e}");
     worker::Error::RustError("Bad Request: Invalid flock_id".into())
   })?;
-  let user_uuid = Uuid::parse_str(user_id_str).map_err(|e| {
-    console_error!("Invalid X-User-Id format: {e}");
-    worker::Error::RustError("Bad Request: Invalid X-User-Id".into())
-  })?;
 
   let rows = client
     .query_typed(
-      "SELECT p.id FROM pigeons p
-       JOIN flocks f ON f.id = p.flock_id
-       WHERE f.id = $1 AND f.user_id = $2;",
-      &[(&flock_uuid, Type::UUID), (&user_uuid, Type::UUID)],
+      "SELECT p.id FROM pigeons p WHERE p.flock_id = $1;",
+      &[(&flock_uuid, Type::UUID)],
     )
     .await
     .map_err(|e| {
@@ -170,28 +162,24 @@ pub async fn get_flock_pigeon_ids(
 }
 
 /// Backs `GET /flocks/:id/telemetry/history`. Flocks have no per-entity ACL
-/// table (unlike pigeons' `pigeon_acl`) -- ownership is the single
-/// `flocks.user_id` column (see `helpers/flocks.rs::get_user_flocks`), so
-/// authorization is folded directly into the query's WHERE clause: a flock
-/// that isn't owned by `user_id_str` simply yields zero rows rather than a
-/// separate 403 path.
+/// table (unlike pigeons' `pigeon_acl`) -- authorization now happens in
+/// `authorize_flock` (`helpers/orgs.rs`, org-aware since task #12), whose
+/// passing case is the only source of the `FlockAccess` proof this
+/// function requires; the old `f.user_id = $2` WHERE-clause fold is gone
+/// for the same reason as `get_flock_pigeon_ids` above.
 pub async fn query_telemetry_history_for_flock(
   client: &Client,
-  flock_id_str: &str,
-  user_id_str: &str,
+  access: &FlockAccess,
   key: Option<&str>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
 ) -> Result<Vec<TelemetryHistoryPoint>> {
   ensure_telemetry_history_table(client).await?;
 
+  let flock_id_str = access.flock_id();
   let flock_uuid = Uuid::parse_str(flock_id_str).map_err(|e| {
     console_error!("Invalid flock_id format: {e}");
     worker::Error::RustError("Bad Request: Invalid flock_id".into())
-  })?;
-  let user_uuid = Uuid::parse_str(user_id_str).map_err(|e| {
-    console_error!("Invalid X-User-Id format: {e}");
-    worker::Error::RustError("Bad Request: Invalid X-User-Id".into())
   })?;
 
   let rows = client
@@ -199,16 +187,14 @@ pub async fn query_telemetry_history_for_flock(
       "SELECT h.pigeon_id, h.key, h.value, h.value_num, h.reported_at
        FROM pigeon_telemetry_history h
        JOIN pigeons p ON p.id = h.pigeon_id
-       JOIN flocks f ON f.id = p.flock_id
-       WHERE f.id = $1 AND f.user_id = $2
-         AND ($3::TEXT IS NULL OR h.key = $3)
-         AND ($4::TIMESTAMPTZ IS NULL OR h.reported_at >= $4)
-         AND ($5::TIMESTAMPTZ IS NULL OR h.reported_at <= $5)
+       WHERE p.flock_id = $1
+         AND ($2::TEXT IS NULL OR h.key = $2)
+         AND ($3::TIMESTAMPTZ IS NULL OR h.reported_at >= $3)
+         AND ($4::TIMESTAMPTZ IS NULL OR h.reported_at <= $4)
        ORDER BY h.reported_at ASC
        LIMIT 5000;",
       &[
         (&flock_uuid, Type::UUID),
-        (&user_uuid, Type::UUID),
         (&key, Type::TEXT),
         (&since, Type::TIMESTAMPTZ),
         (&until, Type::TIMESTAMPTZ),
