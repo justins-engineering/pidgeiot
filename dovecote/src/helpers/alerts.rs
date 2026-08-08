@@ -44,7 +44,7 @@ const ALERT_DEBOUNCE_SECS: i64 = 60;
 /// API key (useSend speaks the Resend-shaped payload; the prod key was
 /// always a useSend key, which is why every send 401'd against
 /// api.resend.com until 2026-08-08 -- see `send_via_usesend` below).
-const USESEND_FROM_ADDRESS: &str = "alerts@pidgeiot.com";
+const USESEND_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
 /// indexes) exist -- mirrors `ensure_telemetry_history_table`/
