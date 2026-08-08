@@ -194,6 +194,54 @@ CREATE TABLE IF NOT EXISTS alert_state (
   PRIMARY KEY (alert_definition_id, pigeon_id)
 );
 
+-- ORGANIZATIONS (task #12) -- shared-org access for teams (individual
+-- Kratos accounts, org-level RBAC, membership-row revocation; no literal
+-- shared accounts, no Ory Keto). See capsules::Organization/OrgRole and
+-- dovecote's helpers/orgs.rs. A flock is EXACTLY one of user-owned
+-- (org_id NULL) or org-owned (org_id set); org-owned flocks' pigeons also
+-- carry a pigeon_acl row whose entity_id IS the org id.
+CREATE TABLE IF NOT EXISTS organizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS organization_members (
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+  -- Denormalized at join time (same convention as flocks.owner_email) so
+  -- the dashboard can show who a member is without a Kratos admin-API call
+  -- from the edge.
+  email TEXT,
+  -- Inviting user's Kratos id (NULL for the founding owner) -- the
+  -- per-person audit trail.
+  invited_by UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, user_id)
+);
+
+-- App-level invites (self-hosted Kratos has no B2B invite flow). Only the
+-- sha256 hex hash of the invite token is ever stored -- the cleartext
+-- token appears exactly once, in the create response / invite email.
+-- Single-use (accepted_at set on consumption), short expiry.
+CREATE TABLE IF NOT EXISTS organization_invites (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_by UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  accepted_at TIMESTAMPTZ
+);
+
+-- Org-owned flock marker (task #12). ON DELETE SET NULL is a safety net
+-- only -- org deletion is refused while any org-owned flock exists.
+ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE SET NULL;
+
 -- Denormalized flock-owner email (task #32, design doc §3.4) -- needed to
 -- resolve an alert notification's recipient without a Kratos admin-API call
 -- from the edge (none is reachable from staging/prod today). NULL until a
@@ -207,6 +255,9 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
+CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_organization_members_user_id ON organization_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_organization_invites_org_id ON organization_invites(org_id);
 CREATE INDEX IF NOT EXISTS idx_alert_definitions_pigeon ON alert_definitions(pigeon_id) WHERE pigeon_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_alert_definitions_flock ON alert_definitions(flock_id) WHERE flock_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_alert_definitions_user_id ON alert_definitions(user_id);

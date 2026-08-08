@@ -54,6 +54,9 @@ pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<F
     flocks.push(Flock {
       id,
       user_id,
+      // Wired to the real column by the org helpers commit (task #12) --
+      // see ensure_org_tables/get_user_flocks in helpers/orgs.rs.
+      org_id: None,
       name,
       service_plan,
       pigeon_ids,
@@ -111,6 +114,9 @@ pub async fn create_user_flock(
   Ok(Flock {
     id,
     user_id,
+    // A freshly-created flock is always personal (org adoption happens via
+    // the transfer route, task #12).
+    org_id: None,
     name,
     service_plan,
     pigeon_ids: Vec::new(),

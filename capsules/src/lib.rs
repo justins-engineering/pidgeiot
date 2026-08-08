@@ -40,6 +40,14 @@ where
 pub struct Flock {
   pub id: Uuid,
   pub user_id: Uuid,
+  /// Owning organization (task #12) -- `Some` makes this an org-owned
+  /// flock governed by `organization_members` roles; `None` keeps it a
+  /// personal flock governed by `user_id` alone. Exactly one of the two
+  /// models applies at a time: once `org_id` is set, `user_id` is
+  /// historical provenance (who created/transferred it), not an access
+  /// grant -- see dovecote's `helpers/orgs.rs::authorize_flock`.
+  #[serde(default)]
+  pub org_id: Option<Uuid>,
   pub name: String,
   pub service_plan: String,
   pub pigeon_ids: Vec<String>,
@@ -54,6 +62,7 @@ impl Default for Flock {
     Flock {
       id: Uuid::default(),
       user_id: Uuid::default(),
+      org_id: None,
       name: String::with_capacity(64),
       service_plan: "free".to_string(),
       pigeon_ids: Vec::default(),
@@ -951,4 +960,190 @@ pub struct AlertState {
   pub first_true_at: Option<OffsetDateTime>,
   #[serde(default, with = "time::serde::rfc3339::option")]
   pub last_notified_at: Option<OffsetDateTime>,
+}
+
+// --- Organizations & RBAC (task #12) ---
+//
+// Shared-org access for teams (the PVTA departure-board case): individual
+// Kratos accounts, one `organizations` row per team, membership rows in
+// `organization_members` carrying a per-user role. A flock is EXACTLY one
+// of user-owned (`Flock::org_id == None`) or org-owned (`Some`); an
+// org-owned flock's pigeons additionally carry a `pigeon_acl` row whose
+// `entity_id` IS the org id, so the existing per-pigeon ACL model extends
+// to orgs without a new table -- see dovecote's `helpers/orgs.rs` (gateway
+// side) and `objects/pigeons.rs::authorize_dashboard` (DO side) for the
+// two centralized authorization helpers, and `docs/api.md`'s
+// "Organizations" section for the full permission matrix.
+
+/// A member's role within an organization. Stored as lowercase TEXT in
+/// Postgres (`organization_members.role`, CHECK-constrained), serialized
+/// lowercase on the wire.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgRole {
+  Owner,
+  Admin,
+  Member,
+}
+
+impl OrgRole {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      OrgRole::Owner => "owner",
+      OrgRole::Admin => "admin",
+      OrgRole::Member => "member",
+    }
+  }
+
+  /// Whether this role carries org-management rights (rename, invites,
+  /// member removal, flock transfer target, owner-level pigeon rights on
+  /// org-shared pigeons). `Member` is read/telemetry-level only -- see the
+  /// permission matrix in `docs/api.md`.
+  pub fn is_manager(&self) -> bool {
+    matches!(self, OrgRole::Owner | OrgRole::Admin)
+  }
+}
+
+impl std::str::FromStr for OrgRole {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "owner" => Ok(OrgRole::Owner),
+      "admin" => Ok(OrgRole::Admin),
+      "member" => Ok(OrgRole::Member),
+      other => Err(format!("invalid org role '{other}'")),
+    }
+  }
+}
+
+impl std::fmt::Display for OrgRole {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// One org. Postgres hands back native `OffsetDateTime`s directly (same as
+/// `Flock`/`FirmwareImage`), so no `*Row` variant is needed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Organization {
+  pub id: Uuid,
+  pub name: String,
+  #[serde(with = "time::serde::rfc3339")]
+  pub created_at: OffsetDateTime,
+  #[serde(with = "time::serde::rfc3339")]
+  pub updated_at: OffsetDateTime,
+}
+
+/// `GET /orgs` list item: an org plus the CALLER's own role in it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationMembership {
+  pub organization: Organization,
+  pub role: OrgRole,
+}
+
+/// One membership row (`organization_members`). `email` is denormalized at
+/// join time (same convention as `flocks.owner_email`) so the dashboard can
+/// show who a member is without a Kratos admin-API call from the edge;
+/// `invited_by` is the inviting user's id (`None` for the founding owner),
+/// giving the per-person audit trail the org model exists for.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationMember {
+  pub org_id: Uuid,
+  pub user_id: Uuid,
+  pub role: OrgRole,
+  pub email: Option<String>,
+  pub invited_by: Option<Uuid>,
+  #[serde(with = "time::serde::rfc3339")]
+  pub created_at: OffsetDateTime,
+}
+
+/// One pending invite (`organization_invites`). The invite token itself is
+/// NEVER stored or returned here -- only its sha256 hash is persisted, and
+/// the cleartext token appears exactly once, in
+/// `OrganizationInviteCreated::token` (write-once, same convention as
+/// device connector tokens).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationInvite {
+  pub id: Uuid,
+  pub org_id: Uuid,
+  pub email: String,
+  pub role: OrgRole,
+  #[serde(with = "time::serde::rfc3339")]
+  pub expires_at: OffsetDateTime,
+  pub created_by: Uuid,
+  #[serde(with = "time::serde::rfc3339")]
+  pub created_at: OffsetDateTime,
+}
+
+/// Response of `POST /orgs/:org_id/invites` -- the ONLY place the cleartext
+/// invite token (and the ready-made accept URL built from it) is ever
+/// returned; every later read (`GET /orgs/:org_id/invites`) carries only
+/// the hash-backed `OrganizationInvite` metadata.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationInviteCreated {
+  pub invite: OrganizationInvite,
+  pub token: String,
+  pub invite_url: String,
+}
+
+/// `GET /orgs/:org_id` -- members are visible to every member; `invites` is
+/// populated only for owner/admin callers (empty vec otherwise).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationDetail {
+  pub organization: Organization,
+  pub caller_role: OrgRole,
+  pub members: Vec<OrganizationMember>,
+  pub invites: Vec<OrganizationInvite>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OrganizationCreateRequest {
+  pub name: String,
+}
+
+/// Body for `PUT /orgs/:org_id` (rename -- the only mutable org field).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OrganizationRenameRequest {
+  pub name: String,
+}
+
+/// Body for `PUT /orgs/:org_id/members/:user_id`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OrganizationMemberRoleUpdateRequest {
+  pub role: OrgRole,
+}
+
+/// Body for `POST /orgs/:org_id/invites`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OrganizationInviteCreateRequest {
+  pub email: String,
+  pub role: OrgRole,
+}
+
+/// Body for `POST /orgs/invites/accept` -- token-alone (bearer) acceptance:
+/// any authenticated session presenting a live, unconsumed token joins,
+/// regardless of which email it registered under. Tradeoff vs. requiring
+/// an email match is documented on the route in `docs/api.md`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OrganizationInviteAcceptRequest {
+  pub token: String,
+}
+
+/// Body for `POST /flocks/:flock_id/transfer` -- moves a personal flock
+/// into an org the caller manages (see `docs/api.md`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FlockTransferRequest {
+  pub org_id: Uuid,
+}
+
+/// One entry of the internal `X-Org-Roles` header (gateway -> Durable
+/// Object): the caller's org memberships as compact JSON
+/// (`[{"id":"<uuid>","role":"owner"}]`), forwarded alongside `X-User-Id` so
+/// the DO's ACL check can match org-granted `pigeon_acl` rows without its
+/// own Postgres round trip. Internal wire shape, never exposed to clients.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct OrgRoleEntry {
+  pub id: Uuid,
+  pub role: OrgRole,
 }
