@@ -181,7 +181,11 @@ bucket_name = "pidgeiot-firmware-staging"
 
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
-id = "f2c59dfa75114889815fd453ac0db62a"
+# dovecote-db-staging (task #11, 2026-08-08): staging's OWN database
+# (dovecote_staging on the same Crunchy cluster, dedicated role locked out
+# of the prod DB) -- prod and staging no longer share a data plane, so
+# staging-created flocks/pigeons can't ghost into prod dashboard lists.
+id = "853acbf7f59246bd89d38faaf01ff58e"
 
 # Staging telemetry queue (task #14; see the production block above for
 # the shared design rationale and why each environment has its own queue).
