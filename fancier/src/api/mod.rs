@@ -1,5 +1,6 @@
 pub mod alerts;
 pub mod demo;
+pub mod feedback;
 pub mod firmware;
 pub mod flocks;
 mod helpers;

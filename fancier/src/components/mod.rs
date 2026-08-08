@@ -56,3 +56,6 @@ pub use maturity_badge::{Maturity, MaturityBadge};
 
 mod alerts_panel;
 pub use alerts_panel::{FlockAlerts, PigeonAlerts};
+
+mod feedback_modal;
+pub use feedback_modal::{FeedbackForm, FeedbackModal};

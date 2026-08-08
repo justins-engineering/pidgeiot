@@ -1,3 +1,4 @@
+use crate::components::FeedbackForm;
 use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -7,6 +8,7 @@ use dioxus_free_icons::icons::ld_icons::{LdBird, LdChevronRight};
 #[component]
 pub fn Footer() -> Element {
   let is_logged_in = use_context::<Session>().state.read().is_authenticated();
+  let mut feedback = use_context::<FeedbackForm>();
   rsx! {
     footer { class: "footer footer-horizontal bg-neutral border-t border-neutral-content/10 pt-2",
       div { class: "w-full px-4 sm:px-6",
@@ -233,6 +235,15 @@ pub fn Footer() -> Element {
             }
           }
           div { class: "flex items-center space-x-6",
+            // Opens the app-chrome feedback modal (task #13) -- a button,
+            // not a route, and present in both logged-in and logged-out
+            // footers since this aside row is the one part shared by both.
+            button {
+              class: "hover:text-primary transition-colors duration-300 text-sm cursor-pointer",
+              r#type: "button",
+              onclick: move |_| feedback.0.set(true),
+              "Send Feedback"
+            }
             Link {
               class: "hover:text-primary transition-colors duration-300 text-sm",
               to: Route::OpenSourcePage {},

@@ -1,16 +1,17 @@
-use crate::components::{OryLogOut, ThemeController};
+use crate::components::{FeedbackForm, OryLogOut, ThemeController};
 use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdBookOpen, LdLayoutGrid, LdLogIn, LdMenu, LdRadio, LdRocket, LdSettings, LdSparkles,
-  LdTag, LdUser, LdX,
+  LdBird, LdBookOpen, LdLayoutGrid, LdLogIn, LdMenu, LdMessageSquare, LdRadio, LdRocket,
+  LdSettings, LdSparkles, LdTag, LdUser, LdX,
 };
 
 #[component]
 pub fn Navbar() -> Element {
   let mut is_menu_open: Signal<bool> = use_signal(|| false);
   let is_logged_in = use_context::<Session>().state.read().is_authenticated();
+  let mut feedback = use_context::<FeedbackForm>();
 
   rsx! {
     header { class: "w-full sticky top-0 z-50 backdrop-blur-md bg-base-200/90 border-b border-base-300 shadow-sm",
@@ -121,6 +122,13 @@ pub fn Navbar() -> Element {
                   li {
                     Link { to: Route::DocumentationPage {},
                       "Docs"
+                    }
+                  }
+                  li {
+                    button {
+                      r#type: "button",
+                      onclick: move |_| feedback.0.set(true),
+                      "Send Feedback"
                     }
                   }
                   div { class: "divider my-0" } // Visual separator for logout
@@ -270,6 +278,20 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Docs"
+                }
+              }
+              li {
+                button {
+                  r#type: "button",
+                  onclick: move |_| {
+                      is_menu_open.set(false);
+                      feedback.0.set(true);
+                  },
+                  Icon {
+                    icon: LdMessageSquare,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Send Feedback"
                 }
               }
               li {
