@@ -204,6 +204,16 @@ for title, desc in PAGES.values():
 # stay OFF in the Cloudflare dashboard or pages get a second beacon.
 RUM = """<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "16f747723d074609936627f7f7daf1cf"}'></script><!-- End Cloudflare Web Analytics -->"""
 
+# NOTE (tried and rejected, 2026-08-09): do NOT add a <link rel="preload">
+# for the wasm bundle here. It was measured to CRATER the Lighthouse mobile
+# score on every page (landing 1.00 -> 0.74, LCP 1.5s -> 8.7s locally):
+# preloading makes the wasm arrive early enough that hydration begins
+# before the hero's first paint in the observed trace, so Lighthouse's
+# Lantern simulation chains the LCP element into the full wasm
+# fetch+execute dependency graph -- the exact task #62 failure mode
+# (LCP must never depend on the wasm bundle), reintroduced from the
+# network side instead of the CSS side.
+
 for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
