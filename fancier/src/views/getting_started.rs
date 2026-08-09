@@ -36,13 +36,17 @@ pub fn GettingStartedPage() -> Element {
         p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
           "The whole flow in under a minute"
         }
-        img {
-          class: "w-full max-w-full rounded-2xl border border-base-content/10 shadow-lg mx-auto",
-          src: asset!("/assets/images/getting-started-demo.gif"),
-          alt: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
-          width: "796",
-          height: "564",
-        }
+        // Click-to-play <video> instead of the old 1.48MB autoplaying GIF.
+        // Two Lighthouse-mobile findings drove this exact shape (both
+        // measured, 2026-08-09): (1) as an <img>, the GIF was this page's
+        // LCP element and gated LCP on its full download (~9s simulated
+        // slow-4G, page score 0.73); (2) an AUTOPLAYING <video> doesn't fix
+        // that -- for autoplay, Chrome takes the first video frame (not the
+        // poster paint) as the LCP candidate, so LCP still waited on the
+        // whole stream. With click-to-play, the LCP candidate is the still
+        // image below (paints with the page), and the ~830KB webm is only
+        // fetched at all for visitors who actually press play.
+        GettingStartedRecording {}
       }
     }
 
@@ -259,6 +263,65 @@ pub fn GettingStartedPage() -> Element {
             body: "Every dashboard and device route this walkthrough touched, and everything it didn't.",
             href: None,
             route: Some(Route::ApiReferencePage {}),
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The terminal recording, click-to-play. Renders as a still frame (the
+/// prerendered/SSG state too) with a play-button overlay; the actual video
+/// element -- and its ~830KB webm -- only exists after the visitor presses
+/// play. `autoplay` on the swapped-in element is fine LCP-wise: LCP
+/// candidates stop at the first user interaction, and mounting it fresh
+/// from a click means playback starts immediately without a second tap.
+#[component]
+fn GettingStartedRecording() -> Element {
+  let mut playing = use_signal(|| false);
+  rsx! {
+    div { class: "relative w-full max-w-full rounded-2xl border border-base-content/10 shadow-lg mx-auto overflow-hidden",
+      if playing() {
+        video {
+          class: "w-full block",
+          autoplay: true,
+          muted: true,
+          r#loop: true,
+          playsinline: true,
+          controls: true,
+          width: 796,
+          height: 564,
+          aria_label: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
+          source {
+            src: asset!("/assets/images/getting-started-demo.webm"),
+            r#type: "video/webm",
+          }
+          source {
+            src: asset!("/assets/images/getting-started-demo.mp4"),
+            r#type: "video/mp4",
+          }
+        }
+      } else {
+        img {
+          class: "w-full block",
+          // Deliberately NOT asset!(): dx's image pipeline re-encodes webp
+          // assets and bloated this 60KB still to 218KB (measured against
+          // dioxus-cli 0.7.10; ImageFormat::Unknown didn't bypass it
+          // either). Served verbatim from fancier/public/ instead, the
+          // same passthrough og.png and favicon.ico already use. This
+          // still is likely the page's LCP element, so its size directly
+          // moves mobile LCP -- keep it small.
+          src: "/getting-started-poster.webp",
+          alt: "Terminal recording still: building and running the wifi_init sample for Zephyr's native_sim target from pigeon-examples.",
+          width: "796",
+          height: "564",
+        }
+        button {
+          class: "absolute inset-0 flex items-center justify-center bg-base-300/20 hover:bg-base-300/30 transition-colors cursor-pointer",
+          aria_label: "Play the recording",
+          onclick: move |_| playing.set(true),
+          span { class: "btn btn-circle btn-primary btn-lg shadow-lg",
+            Icon { icon: LdPlay, class: "size-7", title: "Play" }
           }
         }
       }

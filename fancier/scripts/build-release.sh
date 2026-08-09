@@ -113,6 +113,13 @@ find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
 # from assets/images/og.png (rendered from og.svg via rsvg-convert -- see
 # that file to regenerate).
 cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
+# The getting-started click-to-play still frame, same verbatim-copy route as
+# og.png and for the same reason: dx's image pipeline re-encodes webp assets
+# (60KB -> 218KB measured, dioxus-cli 0.7.10 -- both via asset!() and via
+# the public/ passthrough dir, which it also runs the optimizer over). This
+# image is that page's LCP element, so its byte size directly moves mobile
+# LCP. getting_started.rs references the literal path.
+cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started-poster.webp"
 python3 - "$PUBLIC_DIR" <<'PYEOF'
 import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
