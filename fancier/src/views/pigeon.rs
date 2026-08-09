@@ -246,8 +246,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
     .format(&time_format)
     .unwrap_or_else(|_| "Invalid Format".to_string());
 
-  let mut copied = use_signal(|| false);
-
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
       div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
@@ -278,7 +276,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                       #[cfg(feature = "web")]
                       if let Some(window) = web_sys::window() {
                           let _ = window.navigator().clipboard().write_text(&pigeon.id);
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -302,7 +299,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                               .navigator()
                               .clipboard()
                               .write_text(&pigeon.flock_id.to_string());
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -326,7 +322,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                               .navigator()
                               .clipboard()
                               .write_text(pigeon.serial.as_deref().unwrap_or("--"));
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -361,7 +356,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                               .navigator()
                               .clipboard()
                               .write_text(pigeon.name.as_deref().unwrap_or("--"));
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -382,7 +376,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                       #[cfg(feature = "web")]
                       if let Some(window) = web_sys::window() {
                           let _ = window.navigator().clipboard().write_text(&updated_at);
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -403,7 +396,6 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                       #[cfg(feature = "web")]
                       if let Some(window) = web_sys::window() {
                           let _ = window.navigator().clipboard().write_text(&created_at);
-                          copied.set(true);
                       }
                   },
                   Icon { icon: LdCopy }
@@ -432,7 +424,6 @@ fn ConnectorInfo(
     .format(&time_format)
     .unwrap_or_else(|_| "Invalid Format".to_string());
 
-  let mut copied = use_signal(|| false);
   let mut refreshed_token = use_signal(|| None::<String>);
   let mut is_refreshing = use_signal(|| false);
   let mut refresh_error = use_signal(|| Option::<String>::None);
@@ -468,7 +459,6 @@ fn ConnectorInfo(
                                 #[cfg(feature = "web")]
                                 if let Some(window) = web_sys::window() {
                                     let _ = window.navigator().clipboard().write_text(&endpoint);
-                                    copied.set(true);
                                 }
                             },
                             Icon { icon: LdCopy }
@@ -498,7 +488,6 @@ fn ConnectorInfo(
                                 #[cfg(feature = "web")]
                                 if let Some(window) = web_sys::window() {
                                     let _ = window.navigator().clipboard().write_text(&endpoint);
-                                    copied.set(true);
                                 }
                             },
                             Icon { icon: LdCopy }
@@ -518,7 +507,6 @@ fn ConnectorInfo(
                                   #[cfg(feature = "web")]
                                   if let Some(window) = web_sys::window() {
                                       let _ = window.navigator().clipboard().write_text(&identity);
-                                      copied.set(true);
                                   }
                               },
                               Icon { icon: LdCopy }
@@ -548,14 +536,13 @@ fn ConnectorInfo(
                 }
               }
               td {
-                if let Some(token) = refreshed_token() {
+                if let Some(_token) = refreshed_token() {
                   button {
                     class: "btn btn-success btn-sm",
                     onclick: move |_| {
                         #[cfg(feature = "web")]
                         if let Some(window) = web_sys::window() {
-                            let _ = window.navigator().clipboard().write_text(&token);
-                            copied.set(true);
+                            let _ = window.navigator().clipboard().write_text(&_token);
                         }
                     },
                     "Copy"

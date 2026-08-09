@@ -4,9 +4,10 @@ use dioxus_free_icons::icons::ld_icons::LdCopy;
 
 #[component]
 pub fn JsonViewer(json: capsules::JsonString, title: Option<String>) -> Element {
-  let mut copied = use_signal(|| false);
+  let copied = use_signal(|| false);
 
   // Formatting target for copy-to-clipboard functionality
+  #[cfg(feature = "web")]
   let raw_json_str = json.to_string();
   let pretty_json = json.to_pretty();
 
@@ -22,6 +23,7 @@ pub fn JsonViewer(json: capsules::JsonString, title: Option<String>) -> Element 
           onclick: move |_| {
               #[cfg(feature = "web")]
               if let Some(window) = web_sys::window() {
+                  let mut copied = copied;
                   let clipboard = window.navigator().clipboard();
                   let _ = clipboard.write_text(&raw_json_str);
                   copied.set(true);

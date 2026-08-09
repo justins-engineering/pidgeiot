@@ -8,6 +8,7 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
 use std::collections::HashMap;
+#[cfg(feature = "web")]
 use wasm_bindgen_futures::JsFuture;
 
 /// How far back the flock pigeon-list looks for a per-pigeon "last seen"
@@ -362,8 +363,8 @@ fn EmptyPigeonsState() -> Element {
 
 #[component]
 fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
-  let mut copied = use_signal(|| false);
-  let mut copy_failed = use_signal(|| false);
+  let copied = use_signal(|| false);
+  let copy_failed = use_signal(|| false);
 
   rsx! {
     div {
@@ -396,10 +397,13 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
           button {
             class: "btn btn-square btn-ghost btn-sm shrink-0",
             onclick: move |_| {
+                #[cfg(feature = "web")]
                 let token = token.clone();
                 async move {
                     #[cfg(feature = "web")]
                     if let Some(window) = web_sys::window() {
+                        let mut copied = copied;
+                        let mut copy_failed = copy_failed;
                         let result = JsFuture::from(window.navigator().clipboard().write_text(&token))
                             .await;
                         copied.set(result.is_ok());
