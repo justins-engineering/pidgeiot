@@ -71,6 +71,12 @@ cp ./assets/images/icon-light.ico ./public/favicon.ico
 # never resolves during the synchronous SSG render, so nothing private ever
 # lands in the static HTML. Confirmed empirically (2026-07-23): no crash,
 # no panic, real prerendered text for /, /features, /pricing, etc.
+# Wipe the previous output first: dx never cleans stale hashed assets out
+# of the output dir, so successive builds accumulate dead multi-MB wasm
+# bundles that every deploy then uploads (found during the mobile-perf
+# pass, 2026-08-09 -- three generations of fancier_bg-*.wasm were riding
+# along). The path is recreated by dx below.
+rm -rf ../target/dx/fancier/release/web/public
 dx build --web --ssg --force-sequential --release --debug-symbols=false
 
 # Second, unrelated dx-cli defect in the same [web.resource] tag writer
