@@ -191,11 +191,7 @@ fn DemoContent() -> Element {
           }
         }
 
-        if !loaded_once() {
-          div { class: "flex justify-center py-8",
-            span { class: "loading loading-spinner loading-md text-primary" }
-          }
-        } else if latest_vals.is_empty() {
+        if loaded_once() && latest_vals.is_empty() {
           p { class: "text-sm text-base-content/50 italic text-center py-8",
             "No telemetry reported yet -- check back shortly."
           }
@@ -203,15 +199,29 @@ fn DemoContent() -> Element {
       }
     }
 
-    if loaded_once() {
-      section { class: "pb-16 md:pb-20",
-        div { class: "max-w-4xl mx-auto px-4 md:px-8 flex flex-col gap-6",
-          for (key , title , _unit) in CHART_KEYS {
-            div {
-              key: "{key}",
-              class: "border border-base-content/10 rounded-box p-4 flex flex-col gap-3 bg-base-100",
-              h3 { class: "font-semibold text-lg", "{title}" }
+    // Always render the chart cards, with fixed-height skeletons until the
+    // first fetch lands. The old version inserted this whole section only
+    // after `loaded_once()`, which pushed everything below it down once data
+    // arrived -- Lighthouse mobile flagged it as a 0.078 CLS on /demo/ (the
+    // "Start Your Own, Free" section was the shifted element). Since this
+    // now also renders during the SSG prerender pass, the static HTML
+    // carries the full page layout too. The skeleton mirrors TelemetryChart's
+    // real footprint (a ~24px toolbar row + the 220px CANVAS_H svg) so the
+    // swap-in is not itself a shift.
+    section { class: "pb-16 md:pb-20",
+      div { class: "max-w-4xl mx-auto px-4 md:px-8 flex flex-col gap-6",
+        for (key , title , _unit) in CHART_KEYS {
+          div {
+            key: "{key}",
+            class: "border border-base-content/10 rounded-box p-4 flex flex-col gap-3 bg-base-100",
+            h3 { class: "font-semibold text-lg", "{title}" }
+            if loaded_once() {
               TelemetryChart { series: vec![series_for_key(key, &history())] }
+            } else {
+              div { class: "w-full flex flex-col gap-2",
+                div { class: "h-6" }
+                div { class: "skeleton w-full h-[220px]" }
+              }
             }
           }
         }
