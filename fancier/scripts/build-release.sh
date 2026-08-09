@@ -188,6 +188,15 @@ for title, desc in PAGES.values():
     if not (len(title) <= 60 and 120 <= len(desc) <= 160):
         print(f"WARNING seo band violation: {len(title)}/{len(desc)} {title!r}")
 
+# Cloudflare Web Analytics (RUM), MANUAL install by decision 2026-08-09:
+# baked into the artifact instead of edge auto-injection so served HTML is
+# byte-identical to what the Playwright hydration checks verify, and local
+# Lighthouse runs measure the same page composition as prod. The token is a
+# public beacon identifier (always visible in page source), not a secret.
+# type=module defers execution; non-render-blocking. Auto-injection must
+# stay OFF in the Cloudflare dashboard or pages get a second beacon.
+RUM = """<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "16f747723d074609936627f7f7daf1cf"}'></script><!-- End Cloudflare Web Analytics -->"""
+
 for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
@@ -222,6 +231,7 @@ for f in root.rglob("index.html"):
         f'<meta name="twitter:description" content="{desc}">'
         f'<meta name="twitter:image" content="{BASE}/og.png">'
         + (f'<script type="application/ld+json">{JSONLD}</script>' if route == "/" else '')
+        + RUM
     )
     if "<head>" in html:
         f.write_text(html.replace("<head>", "<head>" + tags, 1))
