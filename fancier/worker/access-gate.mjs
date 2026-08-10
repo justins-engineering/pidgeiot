@@ -1,4 +1,8 @@
-// Cloudflare Access gate for the fancier staging deployment.
+// Worker entrypoint for the fancier script: Cloudflare Access gate
+// (staging only, var-gated) in front of markdown content negotiation +
+// static asset serving (markdown.mjs). Since the markdown-negotiation
+// change this IS production's `main` too (wrangler.toml), scoped by
+// `run_worker_first` to just the negotiable page routes.
 //
 // Staging here means a Workers *version preview* of the same "fancier"
 // script that serves production (see wrangler.staging.toml), not a separate
@@ -9,8 +13,8 @@
 // (supplied per-upload via `wrangler versions upload --var`) — so a plain
 // `wrangler deploy`, or even an accidental future promotion of a preview
 // version to production, can't brick production traffic: without those vars
-// this handler is just `return env.ASSETS.fetch(request)`. Mirrors the same
-// var-gated pattern as dovecote/src/helpers/access.rs.
+// this handler is just the markdown-negotiating asset server. Mirrors the
+// same var-gated pattern as dovecote/src/helpers/access.rs.
 //
 // It validates the `Cf-Access-Jwt-Assertion` header that Cloudflare Access
 // attaches to authenticated requests, then either hands off to the ASSETS
@@ -20,6 +24,8 @@
 // fetched from env.CF_ACCESS_CERTS_URL and cached in memory per-isolate for
 // a short TTL, keyed by `kid` so a rotation is picked up within one request
 // (cache miss on the new kid forces a re-fetch).
+
+import { serveWithMarkdownNegotiation } from "./markdown.mjs";
 
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
 const CLOCK_SKEW_LEEWAY_SECONDS = 60;
@@ -129,7 +135,7 @@ export default {
     // See the file header: this is what keeps production (and an
     // accidental promotion) safe even with this handler wired in as `main`.
     if (!env.CF_ACCESS_AUD || !env.CF_ACCESS_CERTS_URL) {
-      return env.ASSETS.fetch(request);
+      return serveWithMarkdownNegotiation(request, env);
     }
 
     const assertion = request.headers.get("Cf-Access-Jwt-Assertion");
@@ -150,6 +156,6 @@ export default {
       return new Response("Forbidden", { status: 403 });
     }
 
-    return env.ASSETS.fetch(request);
+    return serveWithMarkdownNegotiation(request, env);
   },
 };

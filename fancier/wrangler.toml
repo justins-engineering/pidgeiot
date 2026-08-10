@@ -9,6 +9,14 @@ send_metrics = false
 # account-side by hand). workers_dev stays off: pidgeiot.com only.
 preview_urls = true
 workers_dev = false
+# Markdown content negotiation (Cloudflare Agent Readiness: Markdown):
+# worker/access-gate.mjs (Access vars unset in prod, so the gate is inert
+# — see its header) delegates to worker/markdown.mjs, which serves the
+# build-generated <route>/index.md variant to any request whose Accept
+# header prefers text/markdown, and passes everything else through to
+# ASSETS untouched (plus `Vary: Accept` on page routes). Which paths pay
+# the worker hop at all is scoped by [assets].run_worker_first below.
+main = "worker/access-gate.mjs"
 
 [observability]
 enabled = false
@@ -20,8 +28,30 @@ zone_name = "pidgeiot.com"
 
 [assets]
 directory = "../target/dx/fancier/release/web/public"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
+# Only the negotiable page routes invoke the worker; every other path
+# (/assets/*, /wasm/*, robots.txt, the .md files themselves, SPA
+# fallbacks for unknown routes, ...) keeps wrangler's zero-worker direct
+# asset serving. Both slash forms are listed so a no-trailing-slash agent
+# request negotiates immediately instead of only after the 307 redirect.
+# KEEP IN SYNC with build-release.sh's PAGES map (which decides which
+# routes get an index.md variant + Link header advertisement).
+run_worker_first = [
+  "/",
+  "/features", "/features/",
+  "/pricing", "/pricing/",
+  "/documentation", "/documentation/",
+  "/api-reference", "/api-reference/",
+  "/architecture", "/architecture/",
+  "/getting-started", "/getting-started/",
+  "/demo", "/demo/",
+  "/open-source", "/open-source/",
+  "/about", "/about/",
+  "/privacy", "/privacy/",
+  "/terms", "/terms/",
+]
 
 [build]
 command = "./scripts/build-release.sh"
-watch_dir = ["./src"]
+watch_dir = ["./src", "./worker"]
