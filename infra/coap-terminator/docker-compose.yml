@@ -1,0 +1,24 @@
+# CoAP terminator (loft) -- VPS deployment fragment, self-contained on
+# purpose (the Kratos stack's compose lives in the gitignored .migration/
+# on the VPS; this one is committed instead so bring-up is reproducible).
+# Full runbook: docs/infra/coap-terminator.md
+#
+#   cp loft.env.example loft.env   # then fill in COAP_SERVICE_SECRET
+#   docker compose up -d --build
+services:
+  loft:
+    build:
+      context: ../..
+      dockerfile: loft/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5684:5684/udp"
+      - "5684:5684/tcp"
+    environment:
+      LOFT_DOVECOTE_URL: https://api.pidgeiot.com
+      LOFT_UDP_LISTEN: 0.0.0.0:5684
+      LOFT_TCP_LISTEN: 0.0.0.0:5684
+      LOFT_LOG: info
+    # COAP_SERVICE_SECRET lives in the gitignored loft.env, never here.
+    env_file:
+      - loft.env

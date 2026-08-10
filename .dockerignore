@@ -1,0 +1,7 @@
+# loft/Dockerfile builds from the repo root context; keep it to sources.
+target/
+**/target/
+.git/
+fancier/node_modules/
+fancier/public/
+.claude/
