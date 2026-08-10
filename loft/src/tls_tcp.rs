@@ -121,7 +121,7 @@ fn connection_thread(
     }
   };
 
-  let Some((identity, secret)) = authenticated_session(stream.ssl()) else {
+  let Some((identity, token)) = authenticated_session(stream.ssl()) else {
     tracing::error!(%peer, "handshake completed without an authenticated identity");
     return;
   };
@@ -131,7 +131,7 @@ fn connection_thread(
 
   let session = DeviceSession {
     pigeon_id: identity,
-    secret,
+    token,
     peer,
   };
 

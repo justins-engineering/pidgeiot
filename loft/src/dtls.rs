@@ -18,13 +18,15 @@
 //! dovecote. The PSK resolver itself is additionally rate-shaped by its
 //! negative cache.
 //!
-//! Known gap: the safe `openssl` crate doesn't expose
-//! `DTLSv1_get_timeout`/`DTLSv1_handle_timeout`, so this server does not
-//! proactively retransmit its own handshake flights on a quiet timer.
-//! DTLS clients retransmit their flights on timeout and OpenSSL re-sends
-//! ours in response, which converges for every real client; an
-//! `SSL_ctrl`-based shim (both are macros over it) could drive proper
-//! server-side timers from the `WouldBlock` arm of `complete_handshake`.
+//! Handshake retransmission: OpenSSL checks its own DTLS retransmission
+//! timer on every re-entry into a pending handshake and re-sends the last
+//! flight itself once the timer has elapsed -- `complete_handshake`'s
+//! 1s-tick `WouldBlock` loop provides exactly that re-entry cadence, so
+//! lost server flights are retransmitted without driving
+//! `DTLSv1_handle_timeout` by hand (DTLS's initial RTO is 1s, so the tick
+//! adds no meaningful latency). A poll-driven single-loop listener would
+//! lose that free re-entry and need the `dtls-ffi-shim` crate's
+//! `SSL_ctrl`-based timeout wrappers instead.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -241,7 +243,7 @@ fn connection_thread(
     return;
   };
 
-  let Some((identity, secret)) = authenticated_session(stream.ssl()) else {
+  let Some((identity, token)) = authenticated_session(stream.ssl()) else {
     // Unreachable with PSK-only ciphersuites, but never serve a session
     // whose identity we can't name.
     tracing::error!(%peer, "handshake completed without an authenticated identity");
@@ -251,7 +253,7 @@ fn connection_thread(
 
   let session = DeviceSession {
     pigeon_id: identity,
-    secret,
+    token,
     peer: peer.to_string(),
   };
 

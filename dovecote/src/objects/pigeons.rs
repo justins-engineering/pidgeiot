@@ -1,7 +1,7 @@
 use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
 };
-use crate::objects::{mint_device_credential, verify_device_token};
+use crate::objects::{mint_coap_psk, mint_device_credential, verify_device_token};
 use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
@@ -672,12 +672,24 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       endpoint: build_http_endpoint(&pigeons.env, &do_id),
       token: device_token,
     }),
-    Connector::Coap(_) => Connector::Coap(CoapConfig {
-      endpoint: build_coap_endpoint(&pigeons.env, &do_id),
-      token: device_token.clone(),
-      tls_psk_identity: Some(do_id.clone()),
-      tls_psk_secret: Some(device_token),
-    }),
+    Connector::Coap(_) => {
+      // Separate short PSK: the bearer token is too long to be a PSK on
+      // constrained stacks (see mint_coap_psk). Minted here so one create/
+      // refresh rotates both credentials together.
+      let psk = match mint_coap_psk() {
+        Ok(p) => p,
+        Err(e) => {
+          console_error!("CoAP PSK mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
+      Connector::Coap(CoapConfig {
+        endpoint: build_coap_endpoint(&pigeons.env, &do_id),
+        token: device_token,
+        tls_psk_identity: Some(do_id.clone()),
+        tls_psk_secret: Some(psk),
+      })
+    }
   };
 
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
@@ -793,12 +805,18 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       })
     }
     Connector::Coap(_) => {
-      let endpoint = build_coap_endpoint(&pigeons.env, &do_id);
+      let psk = match mint_coap_psk() {
+        Ok(p) => p,
+        Err(e) => {
+          console_error!("CoAP PSK mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
       Connector::Coap(CoapConfig {
-        endpoint,
-        token: device_token.clone(),
+        endpoint: build_coap_endpoint(&pigeons.env, &do_id),
+        token: device_token,
         tls_psk_identity: Some(do_id.clone()),
-        tls_psk_secret: Some(device_token),
+        tls_psk_secret: Some(psk),
       })
     }
   };
@@ -851,15 +869,14 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
 /// is never internet-reachable, same trust argument as
 /// `grant_acl_internal` above; the gateway has already verified the
 /// terminator's shared service secret before dispatching here). Returns
-/// this pigeon's `tls_psk_identity`/`tls_psk_secret` pair -- the ONE
-/// deliberate exception to the strip-on-read rule for connector secrets,
-/// because a PSK terminator cannot complete a handshake without the key.
-/// The secret is by construction the pigeon's own device bearer token
-/// (`create`/`refresh_token` mint both from one `mint_device_credential`
-/// call), so possession grants exactly "act as this one device", which the
-/// device routes' own `verify_device_token` check still enforces
-/// end-to-end. 404 for an Https-connector pigeon (nothing to hand out) and
-/// for a deleted/never-created pigeon's empty DO (via `one_row`).
+/// this pigeon's PSK pair plus its bearer token -- the ONE deliberate
+/// exception to the strip-on-read rule for connector secrets, because a
+/// PSK terminator can neither complete a handshake without the key nor act
+/// upstream for the device without the token. Possession grants exactly
+/// "act as this one device": every proxied request still passes the device
+/// routes' own `verify_device_token` check end-to-end. 404 for an
+/// Https-connector pigeon (nothing to hand out) and for a deleted/
+/// never-created pigeon's empty DO (via `one_row`).
 async fn get_coap_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Response> {
   let pigeon = match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
@@ -883,8 +900,13 @@ async fn get_coap_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Respo
     Connector::Coap(CoapConfig {
       tls_psk_identity: Some(identity),
       tls_psk_secret: Some(secret),
+      token,
       ..
-    }) => Response::from_json(&capsules::CoapPskLookup { identity, secret }),
+    }) => Response::from_json(&capsules::CoapPskLookup {
+      identity,
+      secret,
+      token,
+    }),
     _ => Response::error("Not Found", 404),
   }
 }

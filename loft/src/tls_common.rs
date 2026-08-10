@@ -23,7 +23,7 @@ use crate::psk::PskResolver;
 pub const PSK_CIPHER_LIST: &str = "PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES128-CBC-SHA256";
 
 /// After a successful PSK exchange the callback stashes
-/// (identity, secret) here so the post-handshake code can build its
+/// (identity, bearer token) here so the post-handshake code can build its
 /// `DeviceSession` from what was actually authenticated.
 pub static SESSION_EX_INDEX: LazyLock<Index<Ssl, (String, String)>> =
   LazyLock::new(|| Ssl::new_ex_index().expect("ssl ex index"));
@@ -75,7 +75,7 @@ fn psk_callback(
 
   // Cached (60s positive TTL) blocking lookup against dovecote. Runs on
   // the connection's own OS thread -- never on the tokio runtime.
-  let Some(secret) = resolver.resolve(identity) else {
+  let Some(entry) = resolver.resolve(identity) else {
     tracing::info!(identity, "PSK identity rejected");
     return Ok(0);
   };
@@ -83,18 +83,18 @@ fn psk_callback(
   // PSK bytes convention: the raw UTF-8 bytes of the secret string,
   // matching the device side (Zephyr `tls_credential_add(...,
   // TLS_CREDENTIAL_PSK, secret, strlen(secret))` in ~/pigeon).
-  let len = secret.len();
+  let len = entry.psk.len();
   if len > psk_out.len() {
     tracing::error!(identity, "PSK secret longer than OpenSSL's PSK buffer");
     return Ok(0);
   }
-  psk_out[..len].copy_from_slice(secret.as_bytes());
+  psk_out[..len].copy_from_slice(entry.psk.as_bytes());
 
-  ssl.set_ex_data(*SESSION_EX_INDEX, (identity.to_string(), secret));
+  ssl.set_ex_data(*SESSION_EX_INDEX, (identity.to_string(), entry.token));
   Ok(len)
 }
 
-/// Pulls the handshake-authenticated (identity, secret) pair off a
+/// Pulls the handshake-authenticated (identity, bearer token) pair off a
 /// completed connection.
 pub fn authenticated_session(ssl: &openssl::ssl::SslRef) -> Option<(String, String)> {
   ssl.ex_data(*SESSION_EX_INDEX).cloned()

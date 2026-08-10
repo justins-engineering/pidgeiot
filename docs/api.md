@@ -384,8 +384,8 @@ device endpoint URL and credential).
 
 > **CoAP is terminated by a dedicated service (`loft`), not by the edge Worker.** The `Coap`
 > connector variant mints PSK credentials (`tls_psk_identity` = the pigeon's own id,
-> `tls_psk_secret` = the same string as the device bearer token — one mint/refresh rotates
-> both), and the minted `coaps+tcp://` endpoint points at the CoAP terminator's own host
+> `tls_psk_secret` = a 32-char hex PSK minted alongside the bearer token — one mint/refresh
+> rotates both), and the minted `coaps+tcp://` endpoint points at the CoAP terminator's own host
 > (`COAP_DEVICE_HOST`, `coap.pidgeiot.com` in production — the Workers runtime is HTTP-based
 > and cannot terminate raw CoAP framing itself). The terminator serves BOTH transports on port
 > 5684: CoAP-over-DTLS/UDP (`coaps://`, the primary transport for constrained cellular
@@ -1280,13 +1280,15 @@ Worker. Two transports, same port, same resources:
 **Authentication is the PSK handshake itself.** Both listeners accept only PSK ciphersuites
 (`TLS_PSK_WITH_AES_128_CCM_8` preferred, GCM/CBC-SHA256 fallbacks; TLS 1.2 — no certificates
 anywhere). The PSK identity is the pigeon's id, and the PSK key is the raw UTF-8 bytes of
-`connector.Coap.tls_psk_secret` — which is, by construction, the same string as the device
-bearer token. `loft` resolves identity → secret at handshake time through
-[`GET /internal/coap-psk/:pigeon_id`](#service-internal-api) (below), then proxies each CoAP
-request to the matching HTTP device route with `Authorization: Bearer <psk_secret>` — so the
-pigeon's own Durable Object still cryptographically verifies every request, exactly as for
-direct HTTPS devices, and a `token/refresh` revokes CoAP access and HTTPS access together.
-There is no separate CoAP credential to manage.
+`connector.Coap.tls_psk_secret` — a 32-char hex string minted alongside the bearer token,
+deliberately NOT the token itself: RFC 4279 only obliges TLS stacks to support PSKs up to 64
+bytes (mbedTLS defaults to 32, libcoap's client caps at 64), so the 92-char token can't serve
+as a PSK on the constrained stacks CoAP targets. `loft` resolves identity → (PSK, token) at
+handshake time through [`GET /internal/coap-psk/:pigeon_id`](#service-internal-api) (below),
+then proxies each CoAP request to the matching HTTP device route with
+`Authorization: Bearer <token>` — so the pigeon's own Durable Object still cryptographically
+verifies every request, exactly as for direct HTTPS devices, and a `token/refresh` rotates the
+PSK and the token together, revoking CoAP access and HTTPS access at once.
 
 **The Uri-Path pigeon id must equal the handshake identity.** A request whose path names any
 other pigeon gets 4.03 Forbidden without ever reaching dovecote, regardless of the path's
@@ -1357,11 +1359,14 @@ CORS-usable from a browser in any meaningful way; never called by devices or the
 `capsules::CoapPskLookup`:
 
 ```json
-{"identity": "<pigeon_id>", "secret": "<tls_psk_secret>"}
+{"identity": "<pigeon_id>", "secret": "<tls_psk_secret>", "token": "<device_bearer_token>"}
 ```
 
 - `401` missing bearer, `403` wrong/unconfigured secret.
 - `404` for an unknown identity or an `Https`-connector pigeon (no PSK exists).
+- `400` for a string that cannot be a pigeon id at all (Durable Object ids embed a namespace
+  check, so a malformed/foreign id fails before any lookup). `loft` treats `400` and `404`
+  identically: authoritatively unknown, negative-cached.
 
 **This is the one deliberate exception to the strip-on-read rule for connector secrets** — a
 PSK terminator cannot complete a handshake without the key. Scope of what the secret's holder

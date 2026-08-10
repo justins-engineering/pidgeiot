@@ -367,10 +367,14 @@ pub struct HttpsConfig {
   pub token: String,
 }
 
-// CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://), not CoAP-over-DTLS/UDP — matches the sibling
-// ~/pigeon Zephyr device library, which has no on-device UDP support. tls_psk_secret currently
-// mirrors `token` (both come from the same mint_device_credential() call), letting one refresh
-// rotate both the bearer credential and the TLS-PSK secret together.
+// CoAP connector, terminated by `loft` on both transports: DTLS/UDP (coaps://) and TLS/TCP
+// (RFC 8323, coaps+tcp:// -- what the sibling ~/pigeon Zephyr library speaks). tls_psk_secret
+// is a 32-char hex PSK minted alongside `token` (one refresh rotates both together), NOT the
+// token itself: RFC 4279 only requires stacks to support PSKs up to 64 bytes, mbedTLS's
+// default MBEDTLS_PSK_MAX_LEN is 32, and libcoap's client caps at 64 -- the 92-char token
+// would be unusable as a PSK on exactly the constrained stacks CoAP exists for. The PSK
+// authenticates the DTLS/TLS handshake; `token` remains what authorizes every proxied device
+// request upstream.
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct CoapConfig {
   pub endpoint: String,
@@ -1136,17 +1140,17 @@ pub struct OrgRoleEntry {
 /// Internal wire shape for the CoAP terminator's PSK resolution call --
 /// dovecote's `GET /internal/coap-psk/:identity` (service-secret gated,
 /// never CORS-exposed to browsers) returns this to `loft` (and only to
-/// `loft`) so its DTLS/TLS PSK callback can finish a handshake. `identity`
-/// is the pigeon's DO id (`CoapConfig::tls_psk_identity`); `secret` is the
-/// pigeon's `tls_psk_secret`, which by construction is the same string as
-/// the device bearer token (see `CoapConfig`'s doc comment) -- possession
-/// lets the terminator both complete the handshake AND act upstream as
-/// exactly this one device via the ordinary `/device/pigeons/:id/*`
-/// routes, which the owning DO still verifies cryptographically. Never
-/// returned by any dashboard/device route; strip-on-read conventions for
-/// `Pigeon` responses are unaffected.
+/// `loft`). `identity` is the pigeon's DO id
+/// (`CoapConfig::tls_psk_identity`); `secret` is the short PSK its
+/// DTLS/TLS handshake is keyed with; `token` is the pigeon's device bearer
+/// token, which `loft` presents on every proxied `/device/pigeons/:id/*`
+/// request -- the owning DO still verifies it cryptographically, so
+/// possession grants exactly "act as this one device". Never returned by
+/// any dashboard/device route; strip-on-read conventions for `Pigeon`
+/// responses are unaffected.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CoapPskLookup {
   pub identity: String,
   pub secret: String,
+  pub token: String,
 }

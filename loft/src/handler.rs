@@ -5,7 +5,7 @@
 //! Authorization model: by the time a request reaches this handler the
 //! DTLS/TLS PSK handshake has already authenticated the peer as exactly one
 //! pigeon (`DeviceSession.pigeon_id` = the PSK identity), and the session's
-//! `secret` is that pigeon's own bearer token (see src/psk.rs). Every
+//! `token` is that pigeon's own bearer token (see src/psk.rs). Every
 //! upstream call presents that bearer token, which the pigeon's Durable
 //! Object verifies cryptographically -- this process adds exactly one check
 //! of its own: the pigeon id embedded in the request's Uri-Path MUST equal
@@ -62,8 +62,8 @@ pub enum Transport {
 pub struct DeviceSession {
   /// PSK identity == the pigeon's id (its Durable Object id).
   pub pigeon_id: String,
-  /// PSK secret == this pigeon's device bearer token.
-  pub secret: String,
+  /// This pigeon's device bearer token, presented on every upstream call.
+  pub token: String,
   /// Peer address string; Block1 reassembly key component.
   pub peer: String,
 }
@@ -204,7 +204,7 @@ impl<U: Upstream> Handler<U> {
         method,
         &session.pigeon_id,
         leaf,
-        &session.secret,
+        &session.token,
         range,
         body,
       )
@@ -350,16 +350,18 @@ impl<U: Upstream> Handler<U> {
     );
     if block.num == 0 {
       out.set_option_uint(option::SIZE2, total as u32);
-      // RFC 7959 recommends an ETag so a client can detect the image
-      // changing mid-transfer; the image sha256's first 8 bytes is stable
-      // and content-addressed.
-      if let Some(etag) = resp
-        .firmware_sha256
-        .as_deref()
-        .and_then(|hex| hex_prefix_bytes(hex, 8))
-      {
-        out.push_option(option::ETAG, etag);
-      }
+    }
+    // ETag on EVERY block, not just the first: RFC 7959 keys
+    // representation consistency on it, and libcoap aborts a transfer
+    // whose later blocks drop the ETag the first block carried ("Not all
+    // blocks have ETag option"). The image sha256's first 8 bytes is
+    // stable and content-addressed.
+    if let Some(etag) = resp
+      .firmware_sha256
+      .as_deref()
+      .and_then(|hex| hex_prefix_bytes(hex, 8))
+    {
+      out.push_option(option::ETAG, etag);
     }
     out.payload = payload;
     out
@@ -543,7 +545,7 @@ mod tests {
   fn session() -> DeviceSession {
     DeviceSession {
       pigeon_id: "pigeon-1".into(),
-      secret: "tok-1".into(),
+      token: "tok-1".into(),
       peer: "10.0.0.1:1234".into(),
     }
   }
@@ -781,8 +783,10 @@ mod tests {
     assert_eq!(out.payload.len(), 2500 - 2048);
     let b = Block::decode(out.option_uint(option::BLOCK2).unwrap()).unwrap();
     assert!(!b.more);
-    // Size2/ETag only ride on block 0.
+    // Size2 only rides on block 0; ETag rides on every block (libcoap
+    // aborts a transfer whose later blocks drop it).
     assert_eq!(out.option_uint(option::SIZE2), None);
+    assert!(out.first_option(option::ETAG).is_some());
 
     // Upstream saw exactly the two mapped ranges.
     let calls = mock.calls.lock().unwrap();
