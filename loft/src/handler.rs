@@ -255,7 +255,9 @@ impl<U: Upstream> Handler<U> {
       }
       Some(b) => {
         let start = b.offset() as usize;
-        if start >= full.len() && !full.is_empty() {
+        // num > 0 past the end is a client error; num == 0 against an
+        // empty body legitimately yields an empty final block.
+        if start >= full.len() && b.num > 0 {
           return diagnostic(req, code::BAD_REQUEST, "block out of range");
         }
         let end = (start + b.size()).min(full.len());
@@ -272,7 +274,7 @@ impl<U: Upstream> Handler<U> {
         if b.num == 0 {
           out.set_option_uint(option::SIZE2, full.len() as u32);
         }
-        out.payload = full[start..end].to_vec();
+        out.payload = full.get(start..end).unwrap_or_default().to_vec();
       }
     }
     out
@@ -325,11 +327,13 @@ impl<U: Upstream> Handler<U> {
     }
 
     // A 200 means the whole image came back (no Range honored) -- slice
-    // the requested block out locally rather than shipping it all.
+    // the requested block out locally rather than shipping it all. Safe
+    // slicing: an upstream whose body is shorter than its own declared
+    // total must not be able to panic this connection's thread.
     let payload = if resp.status == 200 && resp.body.len() as u64 > (end - start + 1) {
-      let s = start as usize;
+      let s = (start as usize).min(resp.body.len());
       let e = ((end + 1) as usize).min(resp.body.len());
-      resp.body[s..e].to_vec()
+      resp.body.get(s..e).unwrap_or_default().to_vec()
     } else {
       resp.body
     };
@@ -933,6 +937,48 @@ mod tests {
     assert_eq!(&body[..256], &[0xAA; 256]);
     assert_eq!(&body[512..], &[0xCC; 100]);
     assert_eq!(ct, "application/octet-stream");
+  }
+
+  #[tokio::test]
+  async fn block2_past_end_of_short_body_is_rejected_not_a_panic() {
+    let mock = MockUpstream::new(|_| Ok(json_ok("{}")));
+    let handler = Handler::new(&mock);
+
+    // Block num 5 against a 2-byte body: must be a clean 4.00.
+    let mut req = request(code::GET, "pigeon-1", "shadow");
+    req.set_option_uint(
+      option::BLOCK2,
+      Block {
+        num: 5,
+        more: false,
+        szx: 6,
+      }
+      .encode(),
+    );
+    let out = handler.handle(&req, &session(), Transport::Udp).await;
+    assert_eq!(out.code, code::BAD_REQUEST);
+
+    // Block 0 against an empty body: legitimate empty final block.
+    let empty = MockUpstream::new(|_| {
+      Ok(UpstreamResponse {
+        status: 200,
+        ..Default::default()
+      })
+    });
+    let handler = Handler::new(&empty);
+    let mut req = request(code::GET, "pigeon-1", "shadow");
+    req.set_option_uint(
+      option::BLOCK2,
+      Block {
+        num: 0,
+        more: false,
+        szx: 6,
+      }
+      .encode(),
+    );
+    let out = handler.handle(&req, &session(), Transport::Udp).await;
+    assert_eq!(out.code, code::CONTENT);
+    assert!(out.payload.is_empty());
   }
 
   #[tokio::test]
