@@ -1132,3 +1132,21 @@ pub struct OrgRoleEntry {
   pub id: Uuid,
   pub role: OrgRole,
 }
+
+/// Internal wire shape for the CoAP terminator's PSK resolution call --
+/// dovecote's `GET /internal/coap-psk/:identity` (service-secret gated,
+/// never CORS-exposed to browsers) returns this to `loft` (and only to
+/// `loft`) so its DTLS/TLS PSK callback can finish a handshake. `identity`
+/// is the pigeon's DO id (`CoapConfig::tls_psk_identity`); `secret` is the
+/// pigeon's `tls_psk_secret`, which by construction is the same string as
+/// the device bearer token (see `CoapConfig`'s doc comment) -- possession
+/// lets the terminator both complete the handshake AND act upstream as
+/// exactly this one device via the ordinary `/device/pigeons/:id/*`
+/// routes, which the owning DO still verifies cryptographically. Never
+/// returned by any dashboard/device route; strip-on-read conventions for
+/// `Pigeon` responses are unaffected.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CoapPskLookup {
+  pub identity: String,
+  pub secret: String,
+}
