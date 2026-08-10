@@ -1,4 +1,9 @@
 User-agent: *
 Allow: /
+# Cloudflare-reserved endpoint. Cloudflare injects hidden, expiring
+# /cdn-cgi/content?id=... honeypot links (AI Labyrinth) into served HTML;
+# without this rule crawlers fetch them after the id expires and log 404s
+# in Search Console. Cloudflare's own docs recommend disallowing /cdn-cgi/.
+Disallow: /cdn-cgi/
 
 Sitemap: https://pidgeiot.com/sitemap.xml

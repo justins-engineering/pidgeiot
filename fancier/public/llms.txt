@@ -17,20 +17,20 @@ on a desktop with no hardware.
 
 ## Docs
 
-- [Getting Started](https://pidgeiot.com/getting-started): zero-to-telemetry
+- [Getting Started](https://pidgeiot.com/getting-started/): zero-to-telemetry
   in about ten minutes with a simulated device, no hardware required
-- [Documentation](https://pidgeiot.com/documentation): concepts — flocks,
+- [Documentation](https://pidgeiot.com/documentation/): concepts — flocks,
   pigeons, tokens, shadows, telemetry, alerts, OTA firmware
-- [API Reference](https://pidgeiot.com/api-reference): the full HTTP
+- [API Reference](https://pidgeiot.com/api-reference/): the full HTTP
   surface — dashboard routes, device routes, auth models, WebSocket frames
-- [Architecture](https://pidgeiot.com/architecture): how the platform is
+- [Architecture](https://pidgeiot.com/architecture/): how the platform is
   built, edge to database
 
 ## Try it
 
-- [Live Demo](https://pidgeiot.com/demo): real device telemetry, no signup
-- [Features](https://pidgeiot.com/features) and
-  [Pricing](https://pidgeiot.com/pricing): free during early access
+- [Live Demo](https://pidgeiot.com/demo/): real device telemetry, no signup
+- [Features](https://pidgeiot.com/features/) and
+  [Pricing](https://pidgeiot.com/pricing/): free during early access
 
 ## Source
 
