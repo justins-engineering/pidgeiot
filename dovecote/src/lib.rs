@@ -7,7 +7,7 @@ use crate::helpers::{
   insert_pigeon_pg_db, is_alert_owner, is_demo_pigeon, list_flock_alerts, list_flock_firmware,
   list_org_invites, list_org_members, list_pigeon_alerts, list_user_organizations, load_org_roles,
   mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, query_telemetry_history_for_flock,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
   send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
   update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
@@ -65,6 +65,18 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
     .with_allowed_headers(vec!["Content-Type", "Accept", "Authorization"])
     .with_exposed_headers(vec!["Location"])
     .with_credentials(true)
+}
+
+/// Constant-time byte comparison for the internal service-secret gate
+/// (`GET /internal/coap-psk/:pigeon_id`) -- a plain `==` short-circuits on
+/// the first differing byte, which leaks prefix-match timing to a caller
+/// probing the secret. Length still leaks (unavoidable without padding)
+/// but reveals nothing useful on its own.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+  if a.len() != b.len() {
+    return false;
+  }
+  a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// RFC 9727 API catalog handler for `/.well-known/api-catalog`, shared by
@@ -707,6 +719,47 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/logs/get")
         .await?
         .with_cors(&cors)
+    })
+    // Service-internal PSK resolution for the CoAP terminator (`loft`,
+    // docs/infra/coap-terminator.md). NOT a device or dashboard route: the
+    // only legitimate caller is the terminator itself, authenticated by
+    // the COAP_SERVICE_SECRET Worker secret (set via `wrangler secret put`
+    // per env, never [vars] -- same convention as RESEND_API_KEY; local
+    // dev reads it from dovecote/.dev.vars). The `:pigeon_id` path param
+    // IS the PSK identity -- `create`/`refresh_token` mint
+    // `tls_psk_identity` as the pigeon's own DO id. An environment without
+    // the secret configured refuses every call (fail closed), so this
+    // route is inert until the terminator is actually provisioned.
+    .get_async("/internal/coap-psk/:pigeon_id", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let Ok(expected) = ctx.env.secret("COAP_SERVICE_SECRET") else {
+        console_error!("COAP_SERVICE_SECRET not configured; refusing internal PSK lookup");
+        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+      };
+
+      let presented = req
+        .headers()
+        .get("Authorization")
+        .ok()
+        .flatten()
+        .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string));
+      let Some(presented) = presented else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if !constant_time_eq(presented.as_bytes(), expected.to_string().as_bytes()) {
+        console_error!("Internal PSK lookup with wrong service secret");
+        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+      }
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // 200 with capsules::CoapPskLookup, or the DO's own 404 for an
+      // unknown identity / Https-connector pigeon -- passed through
+      // unchanged so the terminator's negative cache keys off a real 404.
+      psk_lookup_via_do(&obj_id).await?.with_cors(&cors)
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);

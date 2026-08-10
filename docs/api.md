@@ -27,6 +27,9 @@ All examples below use placeholder IDs and credentials — `<pigeon_id>`, `<floc
 | Sent as | `Cookie` header (`credentials: include` in `fetch`) | `Authorization: Bearer <token>` header |
 | Identity granularity | One Kratos identity, scoped per-pigeon by an ACL | One keypair per pigeon; the token proves control of *that* pigeon and nothing else |
 
+(There is also exactly one [service-internal route](#service-internal-api) — the CoAP
+terminator's PSK lookup — authenticated by a shared service secret, fitting neither column.)
+
 ### Dashboard authentication (Kratos session cookie)
 
 Dashboard routes call `require_auth` (`dovecote/src/lib.rs`), which validates the request's
@@ -379,11 +382,16 @@ survives the creator leaving). Body: `capsules::PigeonCreateRequest`
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
 device endpoint URL and credential).
 
-> **CoAP is not yet live network-side.** The `Coap` connector variant is accepted, stored, and
-> mints PSK credentials, but no CoAP-over-TLS/TCP terminator is deployed yet — a
-> `coaps+tcp://` endpoint has nothing listening behind it (the edge runtime is HTTP-based and
-> cannot terminate raw CoAP framing; a dedicated terminator is a tracked roadmap item).
-> Provision `Https` connectors; the dashboard's connector picker enforces this. `board` (task #20, phase 1) is optional — the pigeon's own
+> **CoAP is terminated by a dedicated service (`loft`), not by the edge Worker.** The `Coap`
+> connector variant mints PSK credentials (`tls_psk_identity` = the pigeon's own id,
+> `tls_psk_secret` = the same string as the device bearer token — one mint/refresh rotates
+> both), and the minted `coaps+tcp://` endpoint points at the CoAP terminator's own host
+> (`COAP_DEVICE_HOST`, `coap.pidgeiot.com` in production — the Workers runtime is HTTP-based
+> and cannot terminate raw CoAP framing itself). The terminator serves BOTH transports on port
+> 5684: CoAP-over-DTLS/UDP (`coaps://`, the primary transport for constrained cellular
+> devices) and CoAP-over-TLS/TCP (`coaps+tcp://`, RFC 8323). See
+> [CoAP device surface](#coap-device-surface-via-the-loft-terminator) below and
+> `docs/infra/coap-terminator.md` for deployment. `board` (task #20, phase 1) is optional — the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
 never be assigned firmware over the shadow route (see [Shadow](#shadow) above's fail-closed
 board-compatibility check) until it's tagged, either here or via a later `PUT`.
@@ -1258,6 +1266,113 @@ rely on the `shadow_update` push for the shadow side.
 
 ---
 
+## CoAP device surface (via the `loft` terminator)
+
+The five HTTP device routes above are also reachable over CoAP, terminated by `loft` (the
+workspace's native CoAP terminator crate) at `coap.pidgeiot.com:5684` — **not** by the edge
+Worker. Two transports, same port, same resources:
+
+| Transport | Scheme | Notes |
+|---|---|---|
+| DTLS 1.2 / UDP (RFC 7252) | `coaps://` | The **primary** device transport — cheapest secure wake-and-send for PSM'd cellular devices. CON and NON both supported; piggybacked ACK responses; duplicate CONs get the original response replayed, not re-executed. |
+| TLS 1.2 / TCP (RFC 8323) | `coaps+tcp://` | What the `~/pigeon` Zephyr client speaks today. The terminator sends its CSM (7.01) after the handshake and answers Ping (7.02) with Pong (7.03), but tolerates minimal clients that never send a CSM of their own. |
+
+**Authentication is the PSK handshake itself.** Both listeners accept only PSK ciphersuites
+(`TLS_PSK_WITH_AES_128_CCM_8` preferred, GCM/CBC-SHA256 fallbacks; TLS 1.2 — no certificates
+anywhere). The PSK identity is the pigeon's id, and the PSK key is the raw UTF-8 bytes of
+`connector.Coap.tls_psk_secret` — which is, by construction, the same string as the device
+bearer token. `loft` resolves identity → secret at handshake time through
+[`GET /internal/coap-psk/:pigeon_id`](#service-internal-api) (below), then proxies each CoAP
+request to the matching HTTP device route with `Authorization: Bearer <psk_secret>` — so the
+pigeon's own Durable Object still cryptographically verifies every request, exactly as for
+direct HTTPS devices, and a `token/refresh` revokes CoAP access and HTTPS access together.
+There is no separate CoAP credential to manage.
+
+**The Uri-Path pigeon id must equal the handshake identity.** A request whose path names any
+other pigeon gets 4.03 Forbidden without ever reaching dovecote, regardless of the path's
+validity. The device bearer token may additionally appear in a `Uri-Query` option
+(`auth=<token>`, the `~/pigeon` client's current shape) — it's ignored; the
+handshake-authenticated secret is what's forwarded upstream.
+
+**Resource map** (Uri-Path mirrors the HTTP paths 1:1):
+
+| CoAP request | HTTP route behind it | Response |
+|---|---|---|
+| `GET device/pigeons/:id/shadow` | `GET /device/pigeons/:id/shadow` | 2.05 Content, JSON payload |
+| `POST device/pigeons/:id/shadow` | `POST /device/pigeons/:id/shadow` | 2.04 Changed, JSON payload (updated shadow) |
+| `POST device/pigeons/:id/telemetry` | `POST /device/pigeons/:id/telemetry` | 2.04 Changed |
+| `POST device/pigeons/:id/logs` | `POST /device/pigeons/:id/logs` | 2.04 Changed, empty payload |
+| `GET device/pigeons/:id/firmware` | `GET /device/pigeons/:id/firmware` | 2.05 Content, always Block2 (below) |
+
+Status mapping for errors: HTTP 400/401/403/404/405/413 → CoAP 4.00/4.01/4.03/4.04/4.05/4.13;
+upstream 5xx → 5.02 Bad Gateway; dovecote unreachable → 5.04 Gateway Timeout. Error payloads
+carry the upstream diagnostic text (capped).
+
+**Block-wise transfer (RFC 7959).** Firmware downloads are always served Block2-wise (1024-byte
+blocks max, szx ≤ 6; BERT szx 7 is down-negotiated to 6): each Block2 request maps directly to
+an HTTP `Range` request against dovecote — block N = `bytes=N*size-(N*size+size-1)` — so the
+image never transits the terminator as a whole. Block 0's response carries `Size2` (total image
+bytes) and an `ETag` (first 8 bytes of the image's sha256) for mid-transfer change detection. A
+firmware GET without a Block2 option gets block 0 with the more-bit set (spontaneous Block2).
+Large JSON responses are spontaneously Block2'd over UDP only (>1024 bytes; TCP frames are sent
+whole, matching the minimal `~/pigeon` client). POST bodies may be sent Block1-wise (2.31
+Continue per intermediate block; 64 KiB reassembly cap; 4.08 on a broken sequence).
+
+```sh
+# libcoap client, DTLS PSK over UDP — note -k takes the RAW secret string
+coap-client -m get -u <pigeon_id> -k '<tls_psk_secret>' \
+  "coaps://coap.pidgeiot.com/device/pigeons/<pigeon_id>/shadow"
+
+# Same resource over TLS/TCP (RFC 8323)
+coap-client -m get -u <pigeon_id> -k '<tls_psk_secret>' \
+  "coaps+tcp://coap.pidgeiot.com/device/pigeons/<pigeon_id>/shadow"
+
+# Telemetry report
+coap-client -m post -u <pigeon_id> -k '<tls_psk_secret>' \
+  -t application/json -e '{"temp":"21.5"}' \
+  "coaps://coap.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry"
+```
+
+**No Connection ID (RFC 9146) yet.** No production Rust DTLS stack exposes CID today (OpenSSL
+itself never implemented it for DTLS 1.2). Practical consequence for PSM/NAT'd cellular
+devices: when the NAT mapping dies during sleep, the next wake needs a fresh DTLS handshake
+(~2 RTT with these PSK suites) rather than resuming the old association. The upgrade path and
+current posture are documented in `docs/infra/coap-terminator.md`.
+
+---
+
+## Service-internal API
+
+### `GET /internal/coap-psk/:pigeon_id` — **service secret required**
+
+PSK resolution for the CoAP terminator — the only route in this API authenticated by a shared
+service secret rather than a Kratos session or device token:
+`Authorization: Bearer <COAP_SERVICE_SECRET>` (a Worker secret, set per environment via
+`wrangler secret put COAP_SERVICE_SECRET`, never a `[vars]` entry; `loft` holds the same value
+in its own `COAP_SERVICE_SECRET` env var). The secret is compared in constant time; an
+environment where the secret is unconfigured refuses every call (fail closed). Not
+CORS-usable from a browser in any meaningful way; never called by devices or the dashboard.
+
+`:pigeon_id` is the PSK identity (identical to the pigeon's id). Response is
+`capsules::CoapPskLookup`:
+
+```json
+{"identity": "<pigeon_id>", "secret": "<tls_psk_secret>"}
+```
+
+- `401` missing bearer, `403` wrong/unconfigured secret.
+- `404` for an unknown identity or an `Https`-connector pigeon (no PSK exists).
+
+**This is the one deliberate exception to the strip-on-read rule for connector secrets** — a
+PSK terminator cannot complete a handshake without the key. Scope of what the secret's holder
+gains: per-identity device credentials (each still verified per-request by the owning Durable
+Object), no dashboard/org/flock access of any kind. `loft` caches positives for 60s — after a
+`token/refresh`, the OLD PSK can therefore still complete a *handshake* for up to 60s, but
+every request on such a session presents the revoked bearer token and 401s at the DO, so no
+data access outlives the refresh.
+
+---
+
 ## Type reference
 
 Every request/response shape above is defined in `capsules/src/lib.rs`:
@@ -1272,7 +1387,8 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
   `JsonString`
-- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)`)
+- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)`), `CoapPskLookup` (service-internal,
+  the `/internal/coap-psk/:pigeon_id` response)
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryQuery`,
   `TelemetryEndpoint`, `PigeonTelemetryEndpointUpdateRequest`
 - `PigeonLogChunk` / `PigeonLogChunkRow`, `MAX_LOG_CHUNK_BYTES`

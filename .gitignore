@@ -1,5 +1,8 @@
 /target
 secrets.env
+# wrangler local secrets (e.g. dovecote's COAP_SERVICE_SECRET for dev)
+.dev.vars
+.dev.vars.*
 .migration/
 kratos.yml
 

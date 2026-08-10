@@ -55,10 +55,26 @@ head_sampling_rate = 0
 # -- only meaningful once staging/prod's tunnel exists; irrelevant in dev,
 # which reaches the local docker instance directly with no Access gate).
 # Set via `wrangler secret put <NAME> --env <env>`.
+# COAP_DEVICE_HOST (all three [vars]/[env.*.vars] blocks) -- the host
+# minted into a Coap-connector pigeon's `coaps+tcp://` endpoint
+# (objects/pigeons.rs::coap_device_host). The CoAP terminator (`loft`,
+# docs/infra/coap-terminator.md) is a separate deployment from this
+# Worker: coap.pidgeiot.com must be a DNS-only (grey-cloud) record --
+# Cloudflare's proxy carries neither raw UDP nor port 5684. Empty/unset
+# falls back to DEVICE_API_HOST (the pre-terminator behavior; staging
+# keeps that until a staging terminator exists). Port is implied: 5684 is
+# the registered coaps port and the device client's default.
+#
+# Companion Worker SECRET (never here): COAP_SERVICE_SECRET -- the shared
+# secret the terminator presents on GET /internal/coap-psk/:pigeon_id
+# (same never-[vars] convention as RESEND_API_KEY; `wrangler secret put
+# COAP_SERVICE_SECRET` per env, dovecote/.dev.vars for local dev). The
+# route fails closed while it's unset.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
 DEVICE_API_HOST = "api.pidgeiot.com"
+COAP_DEVICE_HOST = "coap.pidgeiot.com"
 # Recipient for platform-ops notifications (helpers/ops_probe.rs -- the
 # 5-minute cron's Kratos readiness probe emails state TRANSITIONS here via
 # Resend). Doubles as the probe's only enable switch: set in production
@@ -152,6 +168,9 @@ crons = ["*/5 * * * *"]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
 DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
+# No staging terminator yet -- empty falls back to DEVICE_API_HOST (see
+# the COAP_DEVICE_HOST note above the production [vars] block).
+COAP_DEVICE_HOST = ""
 # Staging's own demo pigeon (see the DEMO_PIGEON_IDS note above) -- lives in
 # the "Demo Flock" flock, created for this purpose; NOT the prod demo id.
 DEMO_PIGEON_IDS = "0ec346b8c062431d0bada55f93ffa6089c6fd35eda5d64c75aff0381c4ea12a3"
@@ -203,6 +222,9 @@ crons = ["*/5 * * * *"]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
 DEVICE_API_HOST = "127.0.0.1:8787"
+# Local `cargo run -p loft` terminator (defaults to 0.0.0.0:5684; the coaps
+# port 5684 is implied by the scheme, so no port suffix here).
+COAP_DEVICE_HOST = "127.0.0.1"
 # No demo pigeon in dev -- empty, not unset, matching the other per-env
 # vars' pattern of every environment declaring the key explicitly.
 DEMO_PIGEON_IDS = ""

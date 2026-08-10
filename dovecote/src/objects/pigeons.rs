@@ -52,9 +52,24 @@ pub fn build_http_endpoint(env: &Env, do_id: &str) -> String {
   endpoint
 }
 
+/// Host minted into `coaps+tcp://` endpoints. `COAP_DEVICE_HOST`
+/// ([vars]/[env.*.vars], wrangler.toml) when set and non-empty -- the CoAP
+/// terminator (`loft`) is a separate deployment from the HTTP edge, on its
+/// own DNS-only hostname (docs/infra/coap-terminator.md) -- with the
+/// pre-terminator fallback to `DEVICE_API_HOST` for any env that leaves it
+/// empty (e.g. staging until a staging terminator exists).
+fn coap_device_host(env: &Env) -> String {
+  env
+    .var("COAP_DEVICE_HOST")
+    .map(|v| v.to_string())
+    .ok()
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| device_api_host(env))
+}
+
 #[inline]
 pub fn build_coap_endpoint(env: &Env, do_id: &str) -> String {
-  let host = device_api_host(env);
+  let host = coap_device_host(env);
   let mut endpoint = String::with_capacity(12 + host.len() + DEVICE_PIGEONS_PATH.len() + 64);
   endpoint.push_str("coaps+tcp://");
   endpoint.push_str(&host);
@@ -265,6 +280,7 @@ impl DurableObject for Pigeons {
       "/pigeon/logs/get" => get_logs(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
+      "/pigeon/internal/psk" => get_coap_psk_internal(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
       "/pigeon/shell/execute" => execute_shell_command(self, req).await,
       _ => Response::error("Not Found", 404),
@@ -826,6 +842,50 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       console_error!("Pigeon token refresh error: {e}");
       Response::error("Internal Server Error", 500)
     }
+  }
+}
+
+/// Trusted-internal PSK lookup for the CoAP terminator (`loft`) --
+/// dispatched at `/pigeon/internal/psk`, reached only from the gateway's
+/// service-secret-gated `GET /internal/coap-psk/:pigeon_id` route (this DO
+/// is never internet-reachable, same trust argument as
+/// `grant_acl_internal` above; the gateway has already verified the
+/// terminator's shared service secret before dispatching here). Returns
+/// this pigeon's `tls_psk_identity`/`tls_psk_secret` pair -- the ONE
+/// deliberate exception to the strip-on-read rule for connector secrets,
+/// because a PSK terminator cannot complete a handshake without the key.
+/// The secret is by construction the pigeon's own device bearer token
+/// (`create`/`refresh_token` mint both from one `mint_device_credential`
+/// call), so possession grants exactly "act as this one device", which the
+/// device routes' own `verify_device_token` check still enforces
+/// end-to-end. 404 for an Https-connector pigeon (nothing to hand out) and
+/// for a deleted/never-created pigeon's empty DO (via `one_row`).
+async fn get_coap_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Response> {
+  let pigeon = match pigeons.sql.exec(
+    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    None,
+  ) {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
+      Ok(p) => Pigeon::from(p),
+      Err(_) => {
+        // Empty DO: unknown identity. No console_error -- this is the
+        // expected outcome for a probe of a nonexistent pigeon id.
+        return Response::error("Not Found", 404);
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeons READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+
+  match pigeon.connector {
+    Connector::Coap(CoapConfig {
+      tls_psk_identity: Some(identity),
+      tls_psk_secret: Some(secret),
+      ..
+    }) => Response::from_json(&capsules::CoapPskLookup { identity, secret }),
+    _ => Response::error("Not Found", 404),
   }
 }
 

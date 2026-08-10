@@ -118,6 +118,30 @@ pub async fn proxy_to_pigeon_do(
   stub.fetch_with_request(do_req).await
 }
 
+/// Bare internal GET against one pigeon's DO for the CoAP terminator's
+/// PSK lookup (`/pigeon/internal/psk`). Deliberately NOT
+/// `proxy_to_pigeon_do`: that forwards the caller's `Authorization` header
+/// into the DO, which here would smuggle the terminator's service secret a
+/// hop further than it needs to travel. No `X-User-Id`, no body -- the
+/// gateway route has already authenticated the terminator before calling
+/// this (same "gateway fully authorized first" trust argument as
+/// `grant_org_acl_via_do` below).
+pub async fn psk_lookup_via_do(stub: &worker::ObjectId<'_>) -> worker::Result<Response> {
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let init = RequestInit::default();
+  let do_req =
+    Request::new_with_init("https://internal/pigeon/internal/psk", &init).map_err(|e| {
+      console_error!("Failed to create DO request: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  stub.fetch_with_request(do_req).await
+}
+
 /// Writes an ORG-granted `pigeon_acl` row (`entity_id` = the org id, role
 /// `owner` -- each member's effective rights are then derived from their
 /// own role in that org, see `objects/pigeons.rs::authorize_dashboard`)
