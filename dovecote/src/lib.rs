@@ -75,6 +75,68 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
     .with_credentials(true)
 }
 
+/// RFC 9727 API catalog handler, shared by the GET and HEAD registrations
+/// on `/.well-known/api-catalog` (see the router). The API origins come
+/// from the request's own URL so prod/staging/dev each describe
+/// themselves; the human-facing doc links reuse `ROOT_URL` (the frontend
+/// origin) rather than introducing a new config var.
+async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+  let cors = build_cors(&ctx.env, &req);
+  let Ok(url) = req.url() else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  let api_origin = url.origin().ascii_serialization();
+  let root_url = ctx
+    .env
+    .var("ROOT_URL")
+    .map(|v| v.to_string())
+    .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
+
+  let catalog = serde_json::json!({
+    "linkset": [
+      {
+        "anchor": format!("{api_origin}/.well-known/api-catalog"),
+        "item": [{ "href": format!("{api_origin}/") }]
+      },
+      {
+        "anchor": format!("{api_origin}/"),
+        "service-doc": [
+          { "href": format!("{root_url}/api-reference/"), "type": "text/html" },
+          { "href": format!("{root_url}/api-reference/index.md"), "type": "text/markdown" }
+        ],
+        "service-meta": [
+          { "href": format!("{root_url}/auth.md"), "type": "text/markdown" },
+          { "href": format!("{root_url}/llms.txt"), "type": "text/plain" }
+        ]
+      }
+    ]
+  });
+
+  let headers = Headers::new();
+  if headers
+    .set(
+      "Content-Type",
+      "application/linkset+json; profile=\"https://www.rfc-editor.org/info/rfc9727\"",
+    )
+    .is_err()
+  {
+    console_error!("Failed to set api-catalog response headers");
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(&cors);
+  }
+
+  let Ok(response) = Response::from_json(&catalog) else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(&cors);
+  };
+
+  response.with_headers(headers).with_cors(&cors)
+}
+
 /// A validated Kratos session's user id plus (if resolvable) the
 /// identity's own email trait -- see `require_auth_session` below. Named
 /// rather than a bare tuple to match this codebase's existing
@@ -347,69 +409,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // RFC 9727 API catalog: a machine-readable linkset describing this API
     // host at the standard well-known path (Cloudflare Agent Readiness
     // checklist). Unauthenticated by design -- discovery metadata only,
-    // links to the public docs; no data, no secrets. The API origins come
-    // from the request's own URL so prod/staging/dev each describe
-    // themselves; the human-facing doc links reuse ROOT_URL (the frontend
-    // origin) rather than introducing a new config var.
-    .get_async(
-      "/.well-known/api-catalog",
-      |req, ctx: RouteContext<()>| async move {
-        let cors = build_cors(&ctx.env, &req);
-        let Ok(url) = req.url() else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        };
-        let api_origin = url.origin().ascii_serialization();
-        let root_url = ctx
-          .env
-          .var("ROOT_URL")
-          .map(|v| v.to_string())
-          .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
-
-        let catalog = serde_json::json!({
-          "linkset": [
-            {
-              "anchor": format!("{api_origin}/.well-known/api-catalog"),
-              "item": [{ "href": format!("{api_origin}/") }]
-            },
-            {
-              "anchor": format!("{api_origin}/"),
-              "service-doc": [
-                { "href": format!("{root_url}/api-reference/"), "type": "text/html" },
-                { "href": format!("{root_url}/api-reference/index.md"), "type": "text/markdown" }
-              ],
-              "service-meta": [
-                { "href": format!("{root_url}/auth.md"), "type": "text/markdown" },
-                { "href": format!("{root_url}/llms.txt"), "type": "text/plain" }
-              ]
-            }
-          ]
-        });
-
-        let headers = Headers::new();
-        if headers
-          .set(
-            "Content-Type",
-            "application/linkset+json; profile=\"https://www.rfc-editor.org/info/rfc9727\"",
-          )
-          .is_err()
-        {
-          console_error!("Failed to set api-catalog response headers");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        }
-
-        let Ok(response) = Response::from_json(&catalog) else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        };
-
-        response.with_headers(headers).with_cors(&cors)
-      },
-    )
+    // links to the public docs; no data, no secrets. Registered for both
+    // GET and HEAD (RFC 9727 §3 requires HEAD to resolve; worker::Router
+    // has no automatic HEAD->GET fallback -- the runtime strips the body
+    // from the HEAD variant's response itself).
+    .get_async("/.well-known/api-catalog", |req, ctx| async move {
+      api_catalog(req, ctx).await
+    })
+    .head_async("/.well-known/api-catalog", |req, ctx| async move {
+      api_catalog(req, ctx).await
+    })
     .post_async("/pigeons/:pigeon_id/token/refresh", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(principal) = require_principal(&req, &ctx.env).await else {

@@ -974,7 +974,7 @@ curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/histor
 
 ## Discovery
 
-### `GET /.well-known/api-catalog` — **no auth required**
+### `GET|HEAD /.well-known/api-catalog` — **no auth required**
 
 An [RFC 9727](https://www.rfc-editor.org/info/rfc9727) API catalog: a machine-readable
 linkset describing this API host, for agents and crawlers doing capability discovery
