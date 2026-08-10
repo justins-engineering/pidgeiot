@@ -182,8 +182,9 @@ mod raw {
 #[derive(Debug)]
 pub enum DtlsShimError {
   /// The linked OpenSSL is older than [`MIN_SUPPORTED_OPENSSL_VERSION`]; see
-  /// module SAFETY note #5. Contains the packed version numbers actually
-  /// linked and the minimum this shim supports, for logging.
+  /// the module notes on the runtime version gate. Contains the packed
+  /// version numbers actually linked and the minimum this shim supports,
+  /// for logging.
   UnsupportedOpenSslVersion { linked: i64, minimum: i64 },
   /// A genuine OpenSSL-level failure (allocation failure, malformed input
   /// rejected internally, etc.), passed through from `ErrorStack::get()`.
