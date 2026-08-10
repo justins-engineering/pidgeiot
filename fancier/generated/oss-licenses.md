@@ -985,7 +985,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [serde_with 3.21.0](https://github.com/jonasbb/serde_with/)
+**Used by:** [serde_with 3.22.0](https://github.com/jonasbb/serde_with/)
 
 
 ````text

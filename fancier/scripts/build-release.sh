@@ -127,6 +127,18 @@ cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
 # LCP. getting_started.rs references the literal path.
 cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started-poster.webp"
 
+# Belt-and-suspenders re-copy of the public/ passthrough files: dx's
+# asset_dir copying proved NON-DETERMINISTIC against a warm target/dx
+# cache after the output-dir wipe above (observed 2026-08-10: a build
+# emitted all prerendered HTML but silently dropped EVERY loose public/
+# file -- robots.txt, llms.txt, auth.md, _headers, .well-known/ -- while
+# the same commits built fine in a cold-target worktree). The prerendered
+# pages don't depend on this, but these files are correctness-critical
+# (robots directives, Link headers, agent surfaces), so copy them
+# explicitly and deterministically; identical content when dx also copied
+# them, a repair when it didn't. `/. ` form includes dot-directories.
+cp -r ./public/. "$PUBLIC_DIR/"
+
 # Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
 # Markdown). True `Accept: text/markdown` content negotiation would need
 # either Cloudflare's zone-level "Markdown for Agents" feature or a worker
