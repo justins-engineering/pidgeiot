@@ -1,0 +1,21 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://pidgeiot.com/.well-known/api-catalog",
+      "item": [
+        { "href": "https://api.pidgeiot.com/" }
+      ]
+    },
+    {
+      "anchor": "https://api.pidgeiot.com/",
+      "service-doc": [
+        { "href": "https://pidgeiot.com/api-reference/", "type": "text/html" },
+        { "href": "https://pidgeiot.com/api-reference/index.md", "type": "text/markdown" }
+      ],
+      "service-meta": [
+        { "href": "https://pidgeiot.com/auth.md", "type": "text/markdown" },
+        { "href": "https://pidgeiot.com/llms.txt", "type": "text/plain" }
+      ]
+    }
+  ]
+}

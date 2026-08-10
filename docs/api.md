@@ -972,6 +972,50 @@ curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/histor
 
 ---
 
+## Discovery
+
+### `GET /.well-known/api-catalog` — **no auth required**
+
+An [RFC 9727](https://www.rfc-editor.org/info/rfc9727) API catalog: a machine-readable
+linkset describing this API host, for agents and crawlers doing capability discovery
+(Cloudflare's Agent Readiness checklist probes this exact path). Pure metadata — it links to
+the public documentation and carries no data about any account, flock, or pigeon.
+
+Response `Content-Type` is `application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"`.
+The API origins in the body are derived from the request URL (so staging/dev describe
+themselves); the documentation links point at the frontend origin (`ROOT_URL`).
+
+```sh
+curl -s https://api.pidgeiot.com/.well-known/api-catalog
+```
+
+```json
+{
+  "linkset": [
+    {
+      "anchor": "https://api.pidgeiot.com/.well-known/api-catalog",
+      "item": [{ "href": "https://api.pidgeiot.com/" }]
+    },
+    {
+      "anchor": "https://api.pidgeiot.com/",
+      "service-doc": [
+        { "href": "https://pidgeiot.com/api-reference/", "type": "text/html" },
+        { "href": "https://pidgeiot.com/api-reference/index.md", "type": "text/markdown" }
+      ],
+      "service-meta": [
+        { "href": "https://pidgeiot.com/auth.md", "type": "text/markdown" },
+        { "href": "https://pidgeiot.com/llms.txt", "type": "text/plain" }
+      ]
+    }
+  ]
+}
+```
+
+A copy of this catalog (anchored at the frontend origin) is also served statically at
+`https://pidgeiot.com/.well-known/api-catalog` by `fancier` (`fancier/public/.well-known/`).
+
+---
+
 ## Device API
 
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
