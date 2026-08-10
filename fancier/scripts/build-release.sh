@@ -140,17 +140,19 @@ cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started
 cp -r ./public/. "$PUBLIC_DIR/"
 
 # Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
-# Markdown). True `Accept: text/markdown` content negotiation would need
-# either Cloudflare's zone-level "Markdown for Agents" feature or a worker
-# script in front of the static assets -- this deployment is [assets]-only
-# (no [build].main, wrangler.toml), so ship the static approximation
-# instead: stable .md paths alongside the prerendered HTML, advertised via
-# `Link: rel="alternate"; type="text/markdown"` response headers
-# (public/_headers) and llms.txt. Reuses existing prose rather than
-# authoring parallel copies that could drift: llms.txt IS the site
-# overview (-> /index.md), and docs/api.md IS the API reference -- the
-# exact file /api-reference/ renders via pulldown-cmark (->
-# /api-reference/index.md).
+# Markdown). These stable .md paths are BOTH directly fetchable AND the
+# backing store for real `Accept: text/markdown` content negotiation:
+# worker/markdown.mjs (wired as [build].main in wrangler.toml, scoped via
+# run_worker_first to the PAGES routes below) rewrites a
+# markdown-preferring request for <route>/ to <route>/index.md. They're
+# also advertised via `Link: rel="alternate"; type="text/markdown"`
+# response headers (public/_headers) and llms.txt. Reuses existing prose
+# rather than authoring parallel copies that could drift: llms.txt IS the
+# site overview (-> /index.md), and docs/api.md IS the API reference --
+# the exact file /api-reference/ renders via pulldown-cmark (->
+# /api-reference/index.md). Every other PAGES route gets a minimal
+# generated variant (title/description/links, python block below) from
+# the same map that drives titles and the sitemap, so it can't drift.
 cp ./public/llms.txt "$PUBLIC_DIR/index.md"
 mkdir -p "$PUBLIC_DIR/api-reference"
 cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
@@ -294,5 +296,29 @@ urls = "".join(f"<url><loc>{BASE}{r if r != '/' else '/'}</loc></url>" for r in 
 (root / "sitemap.xml").write_text(
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + urls + "</urlset>")
-print(f"seo tags injected; sitemap regenerated with {len(PAGES)} urls")
+
+# Markdown variants for `Accept: text/markdown` negotiation (see the shell
+# comment above the / and /api-reference/ copies): every PAGES route gets
+# a <route>/index.md. The two routes whose variants were already copied in
+# from real prose (/ <- llms.txt, /api-reference/ <- docs/api.md) are left
+# alone; the rest get a deliberately minimal generated representation --
+# title, description, canonical, and pointers to the full HTML and the
+# richer agent surfaces -- from this same map, never hand-authored prose
+# that would drift from the real pages.
+generated_md = 0
+for route, (title, desc) in PAGES.items():
+    md_path = root / route.lstrip("/") / "index.md"
+    if md_path.exists():
+        continue
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(
+        f"# {title}\n\n"
+        f"{desc}\n\n"
+        f"- Canonical (full HTML): {BASE}{route}\n"
+        f"- Site overview for agents: {BASE}/llms.txt\n"
+        f"- API reference (markdown): {BASE}/api-reference/index.md\n"
+        f"- API catalog (RFC 9727): {BASE}/.well-known/api-catalog\n")
+    generated_md += 1
+print(f"seo tags injected; sitemap regenerated with {len(PAGES)} urls; "
+      f"{generated_md} markdown variants generated")
 PYEOF

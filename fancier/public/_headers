@@ -22,18 +22,41 @@
 
 # Agent-discovery Link headers (RFC 8288; Cloudflare Agent Readiness:
 # Link Headers). Every response advertises the RFC 9727 API catalog so
-# an agent can find the API surface without parsing HTML; the two pages
-# with pre-generated markdown variants (see build-release.sh) also
-# advertise them as rel="alternate" type="text/markdown", plus llms.txt
-# on the root. "llms-txt" is not an IANA-registered rel, so it rides as
-# an extension token alongside the registered ones.
+# an agent can find the API surface without parsing HTML; every page
+# with a build-generated markdown variant (build-release.sh's PAGES map
+# — KEEP THESE ROUTES IN SYNC with it and with wrangler.toml's
+# run_worker_first list) also advertises it as rel="alternate"
+# type="text/markdown", plus llms.txt on the root. The same .md is also
+# served in-place to `Accept: text/markdown` requests by
+# worker/markdown.mjs. "llms-txt" is not an IANA-registered rel, so it
+# rides as an extension token alongside the registered ones.
 /*
   Link: </.well-known/api-catalog>; rel="api-catalog"
 /
   Link: </index.md>; rel="alternate"; type="text/markdown"
   Link: </llms.txt>; rel="llms-txt"; type="text/plain"
+/features/
+  Link: </features/index.md>; rel="alternate"; type="text/markdown"
+/pricing/
+  Link: </pricing/index.md>; rel="alternate"; type="text/markdown"
+/documentation/
+  Link: </documentation/index.md>; rel="alternate"; type="text/markdown"
 /api-reference/
   Link: </api-reference/index.md>; rel="alternate"; type="text/markdown"
+/architecture/
+  Link: </architecture/index.md>; rel="alternate"; type="text/markdown"
+/getting-started/
+  Link: </getting-started/index.md>; rel="alternate"; type="text/markdown"
+/demo/
+  Link: </demo/index.md>; rel="alternate"; type="text/markdown"
+/open-source/
+  Link: </open-source/index.md>; rel="alternate"; type="text/markdown"
+/about/
+  Link: </about/index.md>; rel="alternate"; type="text/markdown"
+/privacy/
+  Link: </privacy/index.md>; rel="alternate"; type="text/markdown"
+/terms/
+  Link: </terms/index.md>; rel="alternate"; type="text/markdown"
 
 # RFC 9727 wants application/linkset+json (with its profile parameter)
 # on the api-catalog document; the file is extensionless, so wrangler's
