@@ -126,6 +126,22 @@ cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
 # image is that page's LCP element, so its byte size directly moves mobile
 # LCP. getting_started.rs references the literal path.
 cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started-poster.webp"
+
+# Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
+# Markdown). True `Accept: text/markdown` content negotiation would need
+# either Cloudflare's zone-level "Markdown for Agents" feature or a worker
+# script in front of the static assets -- this deployment is [assets]-only
+# (no [build].main, wrangler.toml), so ship the static approximation
+# instead: stable .md paths alongside the prerendered HTML, advertised via
+# `Link: rel="alternate"; type="text/markdown"` response headers
+# (public/_headers) and llms.txt. Reuses existing prose rather than
+# authoring parallel copies that could drift: llms.txt IS the site
+# overview (-> /index.md), and docs/api.md IS the API reference -- the
+# exact file /api-reference/ renders via pulldown-cmark (->
+# /api-reference/index.md).
+cp ./public/llms.txt "$PUBLIC_DIR/index.md"
+mkdir -p "$PUBLIC_DIR/api-reference"
+cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
 python3 - "$PUBLIC_DIR" <<'PYEOF'
 import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])

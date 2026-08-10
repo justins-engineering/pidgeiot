@@ -23,6 +23,7 @@ on a desktop with no hardware.
   pigeons, tokens, shadows, telemetry, alerts, OTA firmware
 - [API Reference](https://pidgeiot.com/api-reference/): the full HTTP
   surface — dashboard routes, device routes, auth models, WebSocket frames
+  (markdown variant: https://pidgeiot.com/api-reference/index.md)
 - [Architecture](https://pidgeiot.com/architecture/): how the platform is
   built, edge to database
 
