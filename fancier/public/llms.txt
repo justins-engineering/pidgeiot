@@ -33,6 +33,14 @@ on a desktop with no hardware.
 - [Features](https://pidgeiot.com/features/) and
   [Pricing](https://pidgeiot.com/pricing/): free during early access
 
+## For agents
+
+- [auth.md](https://pidgeiot.com/auth.md): how an agent authenticates —
+  Kratos account flows, session cookies, device bearer tokens
+- [API catalog](https://api.pidgeiot.com/.well-known/api-catalog): RFC 9727
+  linkset for the API host (also mirrored at
+  https://pidgeiot.com/.well-known/api-catalog)
+
 ## Source
 
 - [pidgeiot](https://github.com/justins-engineering/pidgeiot): platform —
