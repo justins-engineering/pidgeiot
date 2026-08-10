@@ -1,0 +1,12 @@
+[package]
+name = "dtls-ffi-shim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Safe wrappers for the OpenSSL DTLS primitives rust-openssl does not expose (DTLSv1_get_timeout / DTLSv1_handle_timeout / DTLSv1_listen)"
+
+[dependencies]
+openssl = "0.10"
+openssl-sys = "0.9"
+libc = "0.2"
+foreign-types = "0.3"

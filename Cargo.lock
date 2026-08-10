@@ -1452,6 +1452,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtls-ffi-shim"
+version = "0.1.0"
+dependencies = [
+ "foreign-types",
+ "libc",
+ "openssl",
+ "openssl-sys",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
