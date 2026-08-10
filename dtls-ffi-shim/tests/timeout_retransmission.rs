@@ -93,15 +93,16 @@ fn dropped_flight_forces_real_retransmission_via_handle_timeout() {
   let mut iterations = 0u32;
   let deadline = Instant::now() + Duration::from_secs(30);
   loop {
-    let wait = dtls_ffi::dtls_get_timeout(stream.ssl()).unwrap_or(Duration::from_millis(200));
+    let wait = dtls_ffi::dtls_get_timeout(dtls_ffi::ssl_mut(&mut stream))
+      .unwrap_or(Duration::from_millis(200));
     if !stream.get_ref().poll_readable(wait) {
       // Nothing arrived within `wait`. Only this shim's explicit call
       // -- never `stream.connect()`, which hasn't been touched since
       // the last iteration -- can be responsible for any bytes that go
       // out as a result of the next few lines.
-      if let Some(d) = dtls_ffi::dtls_get_timeout(stream.ssl()) {
+      if let Some(d) = dtls_ffi::dtls_get_timeout(dtls_ffi::ssl_mut(&mut stream)) {
         if d.is_zero() {
-          match dtls_ffi::dtls_handle_timeout(stream.ssl())
+          match dtls_ffi::dtls_handle_timeout(dtls_ffi::ssl_mut(&mut stream))
             .expect("handle_timeout should not fail in this scenario")
           {
             HandleTimeoutOutcome::Retransmitted => saw_retransmit = true,

@@ -38,7 +38,7 @@ fn cookie_exchange_via_dtlsv1_listen_then_completes_handshake() {
     // is the actual pre-handshake, pre-allocation path -- no per-client
     // state exists yet while we're in this loop.
     let peer = loop {
-      match dtls_ffi::dtlsv1_listen(stream.ssl()) {
+      match dtls_ffi::dtlsv1_listen(dtls_ffi::ssl_mut(&mut stream)) {
         Ok(ListenOutcome::Accepted { peer }) => break peer,
         Ok(ListenOutcome::Retry) => {
           assert!(Instant::now() < deadline, "listen deadline exceeded");
@@ -51,8 +51,9 @@ fn cookie_exchange_via_dtlsv1_listen_then_completes_handshake() {
     // Documented (and now empirically pinned-down) behavior: rust-openssl's
     // generic Read+Write transport bridge cannot report a peer address
     // back through BIO_ADDR, unlike a native BIO_s_datagram. See the
-    // module SAFETY notes. If this ever starts returning `Some`, the
-    // module docs describing today's real behavior need updating.
+    // peer-address discovery notes in dtls_ffi.rs. If this ever starts
+    // returning `Some`, the module docs describing today's real behavior
+    // need updating.
     assert_eq!(
       peer, None,
       "peer discovery through the Read+Write bridge is expected to be unavailable; \

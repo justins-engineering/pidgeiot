@@ -61,8 +61,8 @@ fn try_listen_once(input: Vec<u8>) -> Result<ListenOutcome, dtls_ffi::DtlsShimEr
   let ctx = common::server_ctx(true);
   let mut ssl = common::new_ssl(&ctx);
   ssl.set_accept_state();
-  let stream = SslStream::new(ssl, OneShotInput::new(input)).expect("SslStream::new");
-  dtls_ffi::dtlsv1_listen(stream.ssl())
+  let mut stream = SslStream::new(ssl, OneShotInput::new(input)).expect("SslStream::new");
+  dtls_ffi::dtlsv1_listen(dtls_ffi::ssl_mut(&mut stream))
 }
 
 #[test]
