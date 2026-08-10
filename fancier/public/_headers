@@ -19,3 +19,27 @@
 /assets/theme-init.js
   ! Cache-Control
   Cache-Control: public, max-age=300, must-revalidate
+
+# Agent-discovery Link headers (RFC 8288; Cloudflare Agent Readiness:
+# Link Headers). Every response advertises the RFC 9727 API catalog so
+# an agent can find the API surface without parsing HTML; the two pages
+# with pre-generated markdown variants (see build-release.sh) also
+# advertise them as rel="alternate" type="text/markdown", plus llms.txt
+# on the root. "llms-txt" is not an IANA-registered rel, so it rides as
+# an extension token alongside the registered ones.
+/*
+  Link: </.well-known/api-catalog>; rel="api-catalog"
+/
+  Link: </index.md>; rel="alternate"; type="text/markdown"
+  Link: </llms.txt>; rel="llms-txt"; type="text/plain"
+/api-reference/
+  Link: </api-reference/index.md>; rel="alternate"; type="text/markdown"
+
+# RFC 9727 wants application/linkset+json (with its profile parameter)
+# on the api-catalog document; the file is extensionless, so wrangler's
+# extension-based type guess needs replacing (`!` detaches whatever it
+# picked before re-adding, same pattern as the Cache-Control rules
+# above).
+/.well-known/api-catalog
+  ! Content-Type
+  Content-Type: application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"
