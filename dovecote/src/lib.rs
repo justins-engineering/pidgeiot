@@ -737,6 +737,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         console_error!("COAP_SERVICE_SECRET not configured; refusing internal PSK lookup");
         return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
       };
+      // An empty or whitespace-only secret counts as unconfigured -- the
+      // same definition loft's config guard applies on its side -- because
+      // a bare "Bearer " header would otherwise satisfy the constant-time
+      // compare below and open every pigeon's PSK to anyone.
+      let expected = expected.to_string();
+      if expected.trim().is_empty() {
+        console_error!("COAP_SERVICE_SECRET is empty; refusing internal PSK lookup");
+        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+      }
 
       let presented = req
         .headers()
@@ -749,7 +758,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .unwrap()
           .with_cors(&cors);
       };
-      if !constant_time_eq(presented.as_bytes(), expected.to_string().as_bytes()) {
+      if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
         console_error!("Internal PSK lookup with wrong service secret");
         return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
       }
