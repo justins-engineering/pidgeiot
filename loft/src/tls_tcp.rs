@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openssl::ssl::{HandshakeError, Ssl, SslContext, SslMethod, SslStream};
 
@@ -30,7 +30,14 @@ use crate::upstream::Dovecote;
 const MAX_CONNECTIONS: usize = 4096;
 /// One blocking read tick; idle handling rides on TCP read timeouts.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wall-clock bound on the WHOLE handshake, same figure as the DTLS
+/// listener's. A per-recv timeout alone is not a bound: each byte the peer
+/// dribbles in restarts it, so a slow-trickle client could sit inside
+/// accept() forever holding a pre-auth connection slot.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
+/// Socket-timeout tick during the handshake -- how often a stalled accept()
+/// surfaces WouldBlock so the deadline above can be checked.
+const HANDSHAKE_TICK: Duration = Duration::from_secs(1);
 
 pub fn run(
   config: &Config,
@@ -97,7 +104,13 @@ fn connection_thread(
     Ok(a) => a.to_string(),
     Err(_) => "unknown".to_string(),
   };
-  if tcp.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() || tcp.set_nodelay(true).is_err() {
+  // Tick-length timeouts on both directions while the handshake runs: a
+  // peer that trickles bytes (or never drains our flight) must keep
+  // surfacing WouldBlock so the wall-clock deadline gets checked.
+  if tcp.set_read_timeout(Some(HANDSHAKE_TICK)).is_err()
+    || tcp.set_write_timeout(Some(HANDSHAKE_TICK)).is_err()
+    || tcp.set_nodelay(true).is_err()
+  {
     return;
   }
 
@@ -109,15 +122,26 @@ fn connection_thread(
     }
   };
 
-  let mut stream = match ssl.accept(tcp) {
-    Ok(s) => s,
-    Err(HandshakeError::Failure(mid)) => {
-      tracing::info!(%peer, error = %mid.error(), "TLS handshake failed");
-      return;
-    }
-    Err(e) => {
-      tracing::info!(%peer, error = %e, "TLS handshake failed");
-      return;
+  let started = Instant::now();
+  let mut attempt = ssl.accept(tcp);
+  let mut stream = loop {
+    match attempt {
+      Ok(s) => break s,
+      Err(HandshakeError::WouldBlock(mid)) => {
+        if started.elapsed() > HANDSHAKE_DEADLINE {
+          tracing::info!(%peer, "TLS handshake deadline exceeded");
+          return;
+        }
+        attempt = mid.handshake();
+      }
+      Err(HandshakeError::Failure(mid)) => {
+        tracing::info!(%peer, error = %mid.error(), "TLS handshake failed");
+        return;
+      }
+      Err(e) => {
+        tracing::info!(%peer, error = %e, "TLS handshake failed");
+        return;
+      }
     }
   };
 
@@ -128,6 +152,9 @@ fn connection_thread(
   tracing::info!(%peer, identity, "coaps+tcp session established");
 
   let _ = stream.get_ref().set_read_timeout(Some(IDLE_TIMEOUT));
+  // Established sessions write firmware blocks to devices that can stall
+  // far longer than a handshake tick; let the OS pace those writes again.
+  let _ = stream.get_ref().set_write_timeout(None);
 
   let session = DeviceSession {
     pigeon_id: identity,
