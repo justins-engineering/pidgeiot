@@ -150,8 +150,8 @@ import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
 BASE = "https://pidgeiot.com"
 BRAND_TITLE = "PidgeIoT — Open-Source IoT Device Management"
-BRAND_DESC = ("Open-source IoT device management: provision devices, push config, collect "
-              "telemetry, update firmware over the air. Rust end to end. Free during early access.")
+BRAND_DESC = ("Open-source IoT device management: config push, OTA updates, telemetry graphs, "
+              "GPS tracks, and email alerts for ESP32 and nRF91 fleets. Free while in beta.")
 
 # Indexable marketing/docs pages: per-page title (<=60 chars) + description
 # (120-160 chars) so search results don't collapse into one duplicate
