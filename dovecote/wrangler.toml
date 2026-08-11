@@ -56,7 +56,7 @@ head_sampling_rate = 0
 # which reaches the local docker instance directly with no Access gate).
 # Set via `wrangler secret put <NAME> --env <env>`.
 # COAP_DEVICE_HOST (all three [vars]/[env.*.vars] blocks) -- the host
-# minted into a Coap-connector pigeon's `coaps+tcp://` endpoint
+# minted into a Coap-connector pigeon's `coaps://` endpoint
 # (objects/pigeons.rs::coap_device_host). The CoAP terminator (`loft`,
 # docs/infra/coap-terminator.md) is a separate deployment from this
 # Worker: coap.pidgeiot.com must be a DNS-only (grey-cloud) record --

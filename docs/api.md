@@ -385,11 +385,14 @@ device endpoint URL and credential).
 > **CoAP is terminated by a dedicated service (`loft`), not by the edge Worker.** The `Coap`
 > connector variant mints PSK credentials (`tls_psk_identity` = the pigeon's own id,
 > `tls_psk_secret` = a 32-char hex PSK minted alongside the bearer token — one mint/refresh
-> rotates both), and the minted `coaps+tcp://` endpoint points at the CoAP terminator's own host
+> rotates both), and the minted `coaps://` endpoint points at the CoAP terminator's own host
 > (`COAP_DEVICE_HOST`, `coap.pidgeiot.com` in production — the Workers runtime is HTTP-based
 > and cannot terminate raw CoAP framing itself). The terminator serves BOTH transports on port
 > 5684: CoAP-over-DTLS/UDP (`coaps://`, the primary transport for constrained cellular
-> devices) and CoAP-over-TLS/TCP (`coaps+tcp://`, RFC 8323). See
+> devices) and CoAP-over-TLS/TCP (`coaps+tcp://`, RFC 8323). The endpoint is minted in the
+> RFC 7252 `coaps://` (DTLS/UDP) form because the device validates the scheme against its
+> compiled transport and fails loudly on a mismatch — a TLS/TCP device build uses the same
+> authority and substitutes the `coaps+tcp://` scheme. See
 > [CoAP device surface](#coap-device-surface-via-the-loft-terminator) below and
 > `docs/infra/coap-terminator.md` for deployment. `board` (task #20, phase 1) is optional — the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
@@ -1275,7 +1278,7 @@ Worker. Two transports, same port, same resources:
 | Transport | Scheme | Notes |
 |---|---|---|
 | DTLS 1.2 / UDP (RFC 7252) | `coaps://` | The **primary** device transport — cheapest secure wake-and-send for PSM'd cellular devices. CON and NON both supported; piggybacked ACK responses; duplicate CONs get the original response replayed, not re-executed. |
-| TLS 1.2 / TCP (RFC 8323) | `coaps+tcp://` | What the `~/pigeon` Zephyr client speaks today. The terminator sends its CSM (7.01) after the handshake and answers Ping (7.02) with Pong (7.03), but tolerates minimal clients that never send a CSM of their own. |
+| TLS 1.2 / TCP (RFC 8323) | `coaps+tcp://` | For device builds compiled with the TCP transport — same authority as the minted `coaps://` endpoint, scheme substituted. The terminator sends its CSM (7.01) after the handshake and answers Ping (7.02) with Pong (7.03), but tolerates minimal clients that never send a CSM of their own. |
 
 **Authentication is the PSK handshake itself.** Both listeners accept only PSK ciphersuites
 (`TLS_PSK_WITH_AES_128_CCM_8` preferred, GCM/CBC-SHA256 fallbacks; TLS 1.2 — no certificates

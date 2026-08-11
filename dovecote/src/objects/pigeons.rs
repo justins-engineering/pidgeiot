@@ -52,7 +52,7 @@ pub fn build_http_endpoint(env: &Env, do_id: &str) -> String {
   endpoint
 }
 
-/// Host minted into `coaps+tcp://` endpoints. `COAP_DEVICE_HOST`
+/// Host minted into `coaps://` endpoints. `COAP_DEVICE_HOST`
 /// ([vars]/[env.*.vars], wrangler.toml) when set and non-empty -- the CoAP
 /// terminator (`loft`) is a separate deployment from the HTTP edge, on its
 /// own DNS-only hostname (docs/infra/coap-terminator.md) -- with the
@@ -67,11 +67,18 @@ fn coap_device_host(env: &Env) -> String {
     .unwrap_or_else(|| device_api_host(env))
 }
 
+/// Mints the endpoint in the RFC 7252 `coaps://` (DTLS/UDP) form -- the
+/// primary device transport. The terminator (`loft`) serves DTLS/UDP and
+/// TLS/TCP on the same authority (one host, port 5684), and the device
+/// client validates the endpoint scheme against its compiled transport,
+/// failing loudly on a mismatch -- so the stored default must name the
+/// primary transport; a TLS/TCP build keeps the authority and swaps the
+/// scheme to `coaps+tcp://` (RFC 8323).
 #[inline]
 pub fn build_coap_endpoint(env: &Env, do_id: &str) -> String {
   let host = coap_device_host(env);
-  let mut endpoint = String::with_capacity(12 + host.len() + DEVICE_PIGEONS_PATH.len() + 64);
-  endpoint.push_str("coaps+tcp://");
+  let mut endpoint = String::with_capacity(8 + host.len() + DEVICE_PIGEONS_PATH.len() + 64);
+  endpoint.push_str("coaps://");
   endpoint.push_str(&host);
   endpoint.push_str(DEVICE_PIGEONS_PATH);
   endpoint.push_str(do_id);
