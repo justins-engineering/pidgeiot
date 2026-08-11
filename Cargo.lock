@@ -2521,6 +2521,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "capsules",
+ "dtls-ffi-shim",
  "openssl",
  "reqwest",
  "serde",

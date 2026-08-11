@@ -34,3 +34,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 openssl = "0.10"
+# DTLSv1_listen for the DTLS listener's stateless cookie exchange -- the
+# safe openssl crate does not expose it. See loft/src/dtls.rs module docs.
+dtls-ffi-shim = { path = "../dtls-ffi-shim" }
