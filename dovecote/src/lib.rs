@@ -5,14 +5,14 @@ use crate::helpers::{
   delete_organization_if_empty, delete_pigeon_pg_db, get_db_client, get_flock_with_pigeons,
   get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
   insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
-  list_flock_alerts, list_flock_firmware,
-  list_org_invites, list_org_members, list_pigeon_alerts, list_user_organizations, load_org_roles,
-  mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
-  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do,
+  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alerts,
+  list_user_organizations, load_org_roles, mint_invite_token, org_role_of,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
+  rename_organization, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
+  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
