@@ -52,6 +52,8 @@ Standard Cargo workflows apply per-crate (`cargo check -p dovecote`, `cargo chec
 
 Formatting: `tab_spaces = 2` (see `rustfmt.toml` in root, `dovecote/`, and `fancier/`) — this repo uses 2-space indentation everywhere, not the Rust default of 4.
 
+Stale agent worktrees under `.claude/worktrees/` accumulate across sessions and shouldn't be removed by hand — `.claude/prune-worktrees.sh` checks for a still-running Docker stack and unmerged commits (by patch-id, not hash) before touching anything, and only deletes on an explicit `--apply`.
+
 ## Architecture
 
 ### `dovecote` — edge router + Durable Objects
