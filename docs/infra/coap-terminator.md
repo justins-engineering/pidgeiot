@@ -211,6 +211,14 @@ ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
 ip6tables -P INPUT DROP
 ```
 
+The `recent`-module throttle above (both families) counts connections, not
+authentication failures, so a burst of legitimate SSH sessions can trip it
+same as a credential-guessing script. A fail2ban-based replacement is
+prepared in [`ssh-hardening.md`](./ssh-hardening.md) — SSH hardening is
+host-wide, not CoAP-specific, so it lives in its own doc rather than here;
+the rules above are still what's actually live on the host until that
+cutover runs.
+
 Never blanket-drop `ipv6-icmp` the way v4 ICMP sometimes gets treated — on v6 it isn't just
 diagnostics. Neighbor Discovery (address resolution) and Router Advertisements (the default
 route under SLAAC) both ride on it, so filtering it doesn't just break pings; it produces a

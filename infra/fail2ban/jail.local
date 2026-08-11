@@ -1,0 +1,72 @@
+# fail2ban sshd jail for the JES LLC production VPS (Debian 13 trixie,
+# WAN iface ens3). Deployed by hand — nothing in this repo pushes files to
+# the host — copy this to /etc/fail2ban/jail.local. Full cutover procedure,
+# reasoning, and verification steps: docs/infra/ssh-hardening.md.
+#
+# What this replaces: a hand-rolled iptables/ip6tables xt_recent throttle
+# on port 22 that counts TCP CONNECTIONS, not authentication failures — a
+# burst of legitimate SSH sessions (several automation connections inside
+# a minute) trips it exactly like a credential-guessing script would.
+# fail2ban instead parses sshd's own auth-failure log lines, so it only
+# acts on requests that actually failed to authenticate.
+
+[DEFAULT]
+# Never ban loopback. Add the operator's real management source below
+# before this jail is trusted for real — left as just loopback, fail2ban
+# has no special case for the operator and bans their address on a bad
+# login exactly like anyone else's.
+ignoreip = 127.0.0.1/8 ::1
+# TODO(owner): append your management source address/CIDR to the line
+# above, e.g.:
+#   ignoreip = 127.0.0.1/8 ::1 203.0.113.7/32
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+
+# Log source (backend): this host logs sshd to the systemd journal — a
+# stock Debian 13 install has no rsyslog, so /var/log/auth.log doesn't
+# exist and fail2ban's backend = auto would find no log to tail and stay
+# silently harmless (jail reports healthy, matches nothing, bans nothing).
+# Read the journal directly instead. If this particular host DOES have
+# rsyslog + /var/log/auth.log, backend = systemd still works fine — this
+# setting is safe either way, but confirm which applies before trusting it
+# (see the runbook's verification step; if the live sshd unit isn't named
+# ssh.service, also add an explicit `journalmatch` override here).
+backend = systemd
+
+# Ban action: Debian 13's fail2ban packaging can default to an
+# nftables-based ban action, but this host's firewall is authored and
+# persisted entirely through iptables/ip6tables + iptables-persistent
+# (rules.v4/rules.v6, netfilter-persistent save). A ban landing in a
+# separate native nftables table would be invisible to `iptables -L -v -n`
+# and to `netfilter-persistent save` — functionally disconnected from the
+# ruleset this host's operators actually audit and persist by hand.
+# iptables-multiport shells out to the same `iptables`/`ip6tables`
+# commands already in use here, so bans land in and are removed from the
+# same INPUT chain regardless of whether that binary happens to be the
+# iptables-legacy implementation or the iptables-nft compatibility shim
+# (both accept the same CLI syntax this action uses) — confirm which is
+# active with `iptables --version` as a sanity check, not because it
+# changes this choice.
+banaction = iptables-multiport
+
+# findtime/maxretry: five failed authentication attempts inside a
+# ten-minute window is enough headroom that a mistyped password or a
+# misconfigured client key doesn't trip a ban, while still catching any
+# credential-guessing attempt, which needs far more than five tries in
+# ten minutes to be worth running at all.
+findtime = 10m
+maxretry = 5
+
+# bantime: start at an hour — long enough to meaningfully slow down
+# scripted guessing, short enough that a false positive (e.g. a
+# shared/dynamic address that later belongs to someone legitimate) isn't
+# punished forever. Repeat offenders escalate instead of getting the same
+# fixed hour every time, capped at a day so no single ban is effectively
+# permanent.
+bantime = 1h
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 1d
