@@ -49,6 +49,48 @@ doesn't hinge on which one the host has. Confirm which is active with
 `iptables --version` anyway, as a sanity check, not because it changes
 anything.
 
+## The operator has no static address
+
+Most fail2ban write-ups tell you to put your own address in `ignoreip` and
+move on. That option isn't available here: the admin network's IPv4 address
+is dynamic, and fail2ban gives the operator no special treatment — five
+failed authentications from the admin workstation get banned exactly like
+five from a scanner. So the design assumes a self-ban will eventually
+happen and makes it cheap, rather than assuming it can't.
+
+Three things carry that weight, in place of an exemption.
+
+The **first ban is ten minutes**, not an hour. Escalation still doubles per
+repeat, so a real guessing attempt is quickly into hours, but a single
+operator mistake costs a coffee break instead of an afternoon.
+
+**Offer exactly one key.** With key-based auth the likely self-ban isn't a
+mistyped password, it's an SSH agent holding several keys: the client
+offers each in turn and each rejection is a separate authentication failure
+in the log, so one connection attempt can burn most of `maxretry` on its
+own. Pin the host to a single identity in `~/.ssh/config`:
+
+```
+Host <vps>
+  IdentityFile ~/.ssh/<the_right_key>
+  IdentitiesOnly yes
+```
+
+`IdentitiesOnly yes` is the load-bearing half — without it, ssh still
+offers agent keys ahead of the configured one.
+
+**Know the break-glass path before you need it.** A ban blocks port 22 and
+nothing else, so recovery is the provider's out-of-band console (OVH KVM),
+not another SSH attempt. Confirm that console access actually works *before*
+applying any of this. From the console you can `fail2ban-client unban
+--all`, or `systemctl stop fail2ban` to drop every ban at once.
+
+If a dynamic-DNS hostname for the admin network ever exists, `ignoreip`
+accepts hostnames and re-resolves them, which removes this whole problem.
+Don't reach for the ISP's netblock as a substitute — it would exempt every
+other customer on that ISP, and residential ranges are a meaningful share
+of the traffic this jail exists to stop.
+
 ## Cutover procedure
 
 Ordered so nothing can lock anyone out: fail2ban goes in and gets proven

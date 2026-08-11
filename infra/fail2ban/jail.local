@@ -11,14 +11,21 @@
 # acts on requests that actually failed to authenticate.
 
 [DEFAULT]
-# Never ban loopback. Add the operator's real management source below
-# before this jail is trusted for real — left as just loopback, fail2ban
-# has no special case for the operator and bans their address on a bad
-# login exactly like anyone else's.
+# Loopback only. The operator's own network has no static IPv4 address, so
+# there is no address worth pinning here — and fail2ban has no special case
+# for the operator, meaning a bad login from the admin workstation is banned
+# exactly like anyone else's. The mitigation is therefore not an exemption
+# but a short first ban (see bantime below) plus out-of-band console access,
+# rather than pretending a lockout can't happen.
+#
+# If a dynamic-DNS hostname for the admin network ever exists, fail2ban does
+# accept hostnames here and re-resolves them, so appending one is a real
+# improvement over a hardcoded address:
+#   ignoreip = 127.0.0.1/8 ::1 admin.example.dyndns.org
+# Do NOT substitute the ISP's whole netblock — that exempts every other
+# customer on the same ISP, which is a meaningful share of the scanning
+# traffic this jail exists to stop.
 ignoreip = 127.0.0.1/8 ::1
-# TODO(owner): append your management source address/CIDR to the line
-# above, e.g.:
-#   ignoreip = 127.0.0.1/8 ::1 203.0.113.7/32
 
 [sshd]
 enabled = true
@@ -60,13 +67,16 @@ banaction = iptables-multiport
 findtime = 10m
 maxretry = 5
 
-# bantime: start at an hour — long enough to meaningfully slow down
-# scripted guessing, short enough that a false positive (e.g. a
-# shared/dynamic address that later belongs to someone legitimate) isn't
-# punished forever. Repeat offenders escalate instead of getting the same
-# fixed hour every time, capped at a day so no single ban is effectively
-# permanent.
-bantime = 1h
+# bantime: start at ten minutes, not an hour. The operator's address is
+# dynamic and therefore cannot be exempted, so the first ban is the one
+# they are most likely to eat themselves — ten minutes is a wait, an hour
+# is a support ticket. It costs nothing against real scanners because the
+# escalation below doubles every repeat: an actual guessing attempt is at
+# 20m, 40m, 80m... within the hour anyway, while a one-off operator
+# fat-finger never gets past the first step. The cap keeps any single ban
+# from being effectively permanent, which matters more than usual here
+# because a dynamic address can later be reassigned to someone innocent.
+bantime = 10m
 bantime.increment = true
 bantime.factor = 2
 bantime.maxtime = 1d
