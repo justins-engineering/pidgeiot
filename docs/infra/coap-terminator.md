@@ -78,7 +78,8 @@ In order:
    Cloudflare's proxy carries neither raw UDP nor port 5684, so an orange-clouded record
    would silently break both transports. (This also means no CF DDoS shielding on 5684 —
    the DTLS cookie exchange and connection caps below are the mitigation.)
-3. **Firewall**: open `5684/udp` and `5684/tcp` inbound on the VPS.
+3. **Firewall**: do this before step 4 — `docker compose up` publishes the CoAP ports the
+   moment the container starts, regardless of host firewall policy. See "Firewall" below.
 4. **Run it** (from a checkout on the VPS):
    ```sh
    cd infra/coap-terminator
@@ -98,6 +99,131 @@ In order:
    ```
    A JSON shadow document back over DTLS is the whole chain working. `coaps+tcp://` same
    command, TCP transport.
+
+### Firewall
+
+Docker's own port publishing bypasses whatever host firewall policy you'd expect to gate it.
+`infra/coap-terminator/docker-compose.yml` publishes `5684:5684/udp` and `5684:5684/tcp` for
+`loft`; those get installed as DNAT rules in `iptables`'s `PREROUTING` chain, and the resulting
+traffic transits `FORWARD`, never `INPUT`. A `-P INPUT DROP` policy — however tight — has no
+opinion on it: the port is world-reachable the instant the container starts, independent of any
+INPUT-chain rule. The chain that actually governs container-published ports is `DOCKER-USER`,
+which Docker consults ahead of its own generated rules and, unlike a hand-added `FORWARD` rule,
+survives a `dockerd` restart (`dockerd` flushes and regenerates its own chains on every restart
+but leaves `DOCKER-USER` alone).
+
+Match on the WAN interface the traffic actually arrives on (`ens3`), not `docker0` — `docker0`
+is wrong twice over: wrong direction (`DOCKER-USER` sees the packet already routed toward the
+container, i.e. entering on `ens3` and headed for the bridge, not the reverse) and wrong bridge
+(Compose creates its own per-project `br-<hash>`, not the daemon's default `docker0`, so a
+`docker0`-scoped rule wouldn't even match this container's traffic).
+
+CoAP itself has to stay world-open on both `5684/udp` and `5684/tcp` — devices roam across
+carrier NAT, and DTLS/TLS-PSK is the access control, so there's no source-IP allowlist to layer
+on top the way there is for SSH below. Explicit `RETURN`s make that intent visible, followed by
+a backstop drop for anything else that reaches the WAN interface:
+
+```sh
+iptables -I DOCKER-USER -p udp --dport 5684 -j RETURN
+iptables -I DOCKER-USER -p tcp --dport 5684 -j RETURN
+iptables -A DOCKER-USER -i ens3 -m conntrack --ctstate NEW -j DROP
+```
+
+The trailing `DROP` matters beyond the two CoAP ports: it's the backstop against a future
+compose edit publishing something that was never meant to be reachable. The case worth keeping
+in mind is Kratos's admin API — it has no authentication by design (only trusted internal
+callers are supposed to reach it) and is bound to loopback today. A compose edit that turned
+that binding into a published host port would silently hand full identity control — create,
+delete, or impersonate any user — to the internet, with no error at bring-up: the container
+would start clean, Kratos would work, and the exposure would only surface in a network scan. A
+default-DROP `DOCKER-USER` chain is what turns that mistake into "connection refused" instead
+of a live incident.
+
+Host baseline (`INPUT` chain) is the usual shape, nothing CoAP-specific:
+
+```sh
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 1/s -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name ssh --set
+iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW \
+  -m recent --name ssh --update --seconds 60 --hitcount 6 -j DROP
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -P INPUT DROP
+```
+
+Destination-unreachable stays open for Path MTU discovery — dropping it turns a clean "needs
+fragmentation" signal into connections that just hang. Echo-request stays open but rate-limited
+(ping keeps working; it can't be turned into a reflection flood). SSH gets an `xt_recent`
+brute-force throttle ahead of its accept rule.
+
+Postgres needs no rule here at all: prod and staging both point Hyperdrive at managed Crunchy
+Bridge (`dovecote/wrangler.toml` — only `[env.dev]`'s Hyperdrive binding uses a
+`localConnectionString`, i.e. an actual local Postgres), so the access control that matters is
+Crunchy Bridge's own allowlist — Hyperdrive's egress ranges plus this VPS's own address — not an
+inbound rule on this box. Kratos is published outbound-only through a Cloudflare Tunnel, so it
+needs no inbound 80/443 rule either. This VPS has no direct-inbound HTTP surface at all: just 22
+and 5684.
+
+#### IPv6
+
+Leave `5684` closed on IPv6 for now. `loft` binds `0.0.0.0` by default on both listeners
+(`LOFT_UDP_LISTEN`/`LOFT_TCP_LISTEN`, `loft/src/config.rs`) — there's no v6 listener behind the
+port, so opening a v6 firewall hole ahead of one existing would just advertise a black hole. The
+DNS step above already provisions an AAAA record alongside the A record; that only means a
+client *can* route to this host over v6, not that anything here is listening for CoAP on it —
+leave the v6 hole out until `loft` actually binds one.
+
+SSH does listen on `[::]:22`, though, so it needs the same treatment as v4 — but as its own
+rules, not shared ones: `xt_recent` keeps its hit lists keyed by `--name`, and that table is
+shared across address families, so reusing the v4 rule's name for v6 would let an attacker's v4
+attempts count against (or clear) the v6 rate limit and vice versa.
+
+```sh
+ip6tables -A INPUT -i lo -j ACCEPT
+ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+ip6tables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name ssh6 --set
+ip6tables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW \
+  -m recent --name ssh6 --update --seconds 60 --hitcount 6 -j DROP
+ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
+ip6tables -P INPUT DROP
+```
+
+Never blanket-drop `ipv6-icmp` the way v4 ICMP sometimes gets treated — on v6 it isn't just
+diagnostics. Neighbor Discovery (address resolution) and Router Advertisements (the default
+route under SLAAC) both ride on it, so filtering it doesn't just break pings; it produces a
+delayed loss of connectivity as neighbor and route state expires, which looks exactly like a
+random, unexplained lockout. Allow UDP 546 as well only if DHCPv6 is actually in use on this
+host.
+
+#### Operational notes
+
+None of the above survives a reboot by itself — `iptables`/`ip6tables` rules are runtime state.
+Install `iptables-persistent` and run `netfilter-persistent save` once the rules are correct, or
+they're gone on the next reboot or kernel update.
+
+Apply a `-P INPUT DROP` (or any policy change) over SSH carefully — a typo here turns into a
+lockout whose only fix is the provider's console, i.e. a support ticket, not another `ssh`
+attempt. Use `iptables-apply` (auto-rolls-back if the new rules aren't confirmed within a
+timeout) or stage the change as a script with a delayed self-revert, rather than typing the
+policy line directly into an interactive session.
+
+conntrack is a separate resource budget from anything `loft` tracks itself. `loft`'s own
+connection caps (4096 concurrent per listener, 256 per source /64 — see "Security posture"
+above) bound what `loft` will admit, but every UDP DTLS session also occupies a kernel conntrack
+entry independently of that cap. A large device fleet can exhaust `nf_conntrack_max` before it
+comes close to `loft`'s own limits, and the failure is invisible from `loft`'s side — the kernel
+drops the packet before `loft` ever sees it, so there's nothing in `loft`'s logs to explain the
+loss. Check `nf_conntrack_max` before scaling the fleet, not after sessions start dropping.
+
+Worth cleaning up while auditing this host, unrelated to CoAP specifically:
+`systemd-resolved`'s LLMNR listener is on by default (`0.0.0.0:5355` and `[::]:5355`, both TCP
+and UDP) and serves no purpose on a public VPS. Either disable it directly (`LLMNR=no` in
+`/etc/systemd/resolved.conf`) or rely on the default-DROP `INPUT`/`ip6tables` policies above,
+which already cover port 5355 on both families — disabling the listener is still the tidier fix,
+since it means a future permissive rule change can't accidentally re-expose it.
 
 Local dev loop: `docker-compose` stack + `wrangler dev --env dev` as usual, plus
 `COAP_SERVICE_SECRET` in `dovecote/.dev.vars` (gitignored), then
