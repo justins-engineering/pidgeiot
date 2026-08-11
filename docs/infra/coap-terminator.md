@@ -111,10 +111,11 @@ COAP_SERVICE_SECRET=<same value> LOFT_DOVECOTE_URL=http://127.0.0.1:8787 \
 
 ## Security posture (DTLS/UDP specifics)
 
-- **Anti-amplification**: `SSL_OP_COOKIE_EXCHANGE` with a per-connection random cookie —
-  OpenSSL answers the initial ClientHello with a small HelloVerifyRequest and does nothing
-  further (no PSK lookup, no dovecote call) until the client echoes the cookie from its
-  claimed source address. A spoofed source costs one small reply.
+- **Anti-amplification**: `DTLSv1_listen` driven statelessly on the listener thread, with a
+  cookie that is an HMAC over the claimed source address keyed by a process-lifetime random
+  key — the initial ClientHello gets a small HelloVerifyRequest and nothing else (no
+  connection state, no PSK lookup, no dovecote call) until a client echoes a valid cookie
+  from that source address. A spoofed source costs one small reply.
 - **Unknown identities** are negative-cached (10s), so a garbage-identity flood cannot be
   amplified into a dovecote request flood.
 - **Connection caps**: 4096 concurrent per listener, and a 256-connection fair share per

@@ -1,6 +1,7 @@
 //! CoAP-over-TLS/TCP listener (coaps+tcp, 5684/tcp, RFC 8323) -- the
-//! secondary transport; what the `~/pigeon` Zephyr client speaks today.
-//! Same PSK story and thread-per-connection model as the DTLS listener.
+//! secondary transport, for `~/pigeon` builds that pick TCP over the
+//! primary DTLS/UDP. Same PSK story and thread-per-connection model as
+//! the DTLS listener.
 //!
 //! RFC 8323 messaging notes:
 //! - We send our CSM (7.01) immediately after the handshake, per section

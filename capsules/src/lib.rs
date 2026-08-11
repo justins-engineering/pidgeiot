@@ -367,8 +367,9 @@ pub struct HttpsConfig {
   pub token: String,
 }
 
-// CoAP connector, terminated by `loft` on both transports: DTLS/UDP (coaps://) and TLS/TCP
-// (RFC 8323, coaps+tcp:// -- what the sibling ~/pigeon Zephyr library speaks). tls_psk_secret
+// CoAP connector, terminated by `loft` on both transports: DTLS/UDP (coaps://, the primary --
+// the scheme minted endpoints carry) and TLS/TCP (RFC 8323, coaps+tcp://); the sibling
+// ~/pigeon Zephyr library speaks both, chosen at build time. tls_psk_secret
 // is a 32-char hex PSK minted alongside `token` (one refresh rotates both together), NOT the
 // token itself: RFC 4279 only requires stacks to support PSKs up to 64 bytes, mbedTLS's
 // default MBEDTLS_PSK_MAX_LEN is 32, and libcoap's client caps at 64 -- the 92-char token
