@@ -93,20 +93,25 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# Outbound to dovecote and inbound from devices are both plain IPv4/IPv6
-# sockets -- nothing here needs AF_UNIX, AF_NETLINK, AF_PACKET, etc.
-# CAVEAT, not yet verified against this specific host: if glibc's resolver
-# is configured via nsswitch.conf's `resolve` module (systemd-resolved's
-# NSS plugin, which talks to resolved over an AF_UNIX/varlink socket
-# rather than querying 127.0.0.53:53 as a plain UDP nameserver), DNS
-# lookups for LOFT_DOVECOTE_URL's hostname would need AF_UNIX too and
-# this would break outbound resolution with everything else working. The
-# confirmed host facts don't establish which nsswitch config is active.
-# If loft logs upstream connection failures after deploy but the same
-# hostname resolves fine with `getent hosts`/`resolvectl query` run as a
-# normal (unsandboxed) process, this is the first thing to suspect --
-# add AF_UNIX here as the fix, don't disable the directive outright.
-RestrictAddressFamilies=AF_INET AF_INET6
+# Inbound from devices and outbound to dovecote are plain IPv4/IPv6
+# sockets. AF_UNIX is here for name resolution, not for anything loft
+# opens itself: this host's nsswitch `hosts` line is
+# `files myhostname resolve [!UNAVAIL=return] dns`, and the `resolve`
+# module reaches systemd-resolved over an AF_UNIX socket rather than
+# querying 127.0.0.53:53 as an ordinary UDP nameserver.
+#
+# Without AF_UNIX the service still resolves, but only by accident of the
+# fallback chain: the blocked socket() returns EAFNOSUPPORT, nss-resolve
+# reports UNAVAIL, and `[!UNAVAIL=return]` lets it fall through to `dns`,
+# which does reach the stub listener over IPv4. That means every single
+# lookup pays a guaranteed-failing syscall first, and the whole thing
+# rests on a fallback that a future nsswitch edit could remove without
+# anyone connecting the change to CoAP breaking. Granting a local-only
+# address family is the cheaper side of that trade.
+#
+# Everything genuinely unnecessary stays blocked -- AF_NETLINK, AF_PACKET,
+# and the rest are not listed.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 RestrictNamespaces=yes
 LockPersonality=yes
