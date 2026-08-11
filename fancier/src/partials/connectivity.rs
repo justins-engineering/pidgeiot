@@ -36,9 +36,9 @@ pub fn Connectivity() -> Element {
                   title: "Shield icon",
                 }
                 div {
-                  h3 { class: "font-bold text-lg mb-2", "CoAP-over-TLS/TCP (planned)" }
+                  h3 { class: "font-bold text-lg mb-2", "CoAP-over-DTLS/TLS" }
                   p { class: "text-sm",
-                    "RFC 8323 CoAP for devices too constrained for a full HTTPS stack — still fully encrypted, no bare UDP. Designed in; terminator not yet live."
+                    "For devices too constrained for a full HTTPS stack — DTLS/UDP or RFC 8323 CoAP-over-TLS/TCP, still fully encrypted, no bare UDP path."
                   }
                 }
               }

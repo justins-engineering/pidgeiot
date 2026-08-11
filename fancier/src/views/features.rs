@@ -112,9 +112,9 @@ pub fn FeaturesPage() -> Element {
             Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
           },
           eyebrow: "For anyone whose hardware can't afford a full HTTPS stack",
-          title: "CoAP-over-TLS for Constrained Hardware",
-          body: "For hardware too constrained for a full HTTPS stack, RFC 8323 CoAP-over-TLS/TCP is designed into the platform — per-device PSK credentials on the connector, the same ingestion API, and no bare unencrypted UDP path, ever. The network-side CoAP terminator isn't deployed yet, so today devices connect over HTTPS or WebSocket; CoAP-provisioned credentials will light up when it ships.",
-          maturity: Some(Maturity::Planned),
+          title: "CoAP-over-DTLS for Constrained Hardware",
+          body: "For hardware too constrained for a full HTTPS stack, devices can connect over CoAP instead — a dedicated terminator handles both DTLS/UDP (the primary, cheapest-to-wake transport for cellular devices) and RFC 8323 CoAP-over-TLS/TCP, each authenticated by its own per-device PSK on the connector, proxied into the same ingestion API HTTPS and WebSocket devices use. No bare unencrypted UDP path, ever.",
+          maturity: None,
         }
 
         // Connection state

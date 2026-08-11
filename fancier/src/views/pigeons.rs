@@ -537,10 +537,7 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
                     }
                 },
                 option { value: "Https", selected: true, "HTTPS (REST API)" }
-                // Disabled until the network-side CoAP terminator exists --
-                // letting users provision a connector that can never
-                // connect is a trap, not a feature.
-                option { value: "Coap", disabled: true, "CoAP (coming soon)" }
+                option { value: "Coap", "CoAP (DTLS/TLS)" }
               }
             }
             div {

@@ -1354,14 +1354,10 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                   selected: selected_connector() == "Https",
                   "HTTPS (REST API)"
                 }
-                // Disabled (not hidden): an existing CoAP-connector pigeon
-                // still renders its current selection, but nothing new can
-                // switch onto a transport with no live terminator.
                 option {
                   value: "Coap",
                   selected: selected_connector() == "Coap",
-                  disabled: true,
-                  "CoAP (coming soon)"
+                  "CoAP (DTLS/TLS)"
                 }
               }
             }
