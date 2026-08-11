@@ -220,7 +220,7 @@ pub fn App() -> Element {
   rsx! {
     document::Meta {
       name: "description",
-      content: "PidgeIoT is an edge-native IoT device management platform: provision devices, push configuration, and collect telemetry from a Cloudflare Workers + Durable Objects backend.",
+      content: "Open-source IoT device management for your own hardware: config push, OTA firmware updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Built in Rust, plain Zephyr on the device, free while in beta.",
     }
     // Release builds get main.css from a static <link> in index.html instead
     // (Dioxus.toml's [web.resource], populated by scripts/build-release.sh) —
