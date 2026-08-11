@@ -331,6 +331,33 @@ Same pattern for `ip6tables` with `SSH6`, anchored on its own
 `grep 'tcp dpt:22'`. Then stop fail2ban and `netfilter-persistent save`
 again.
 
+## fail2ban is noise reduction, not the control
+
+Worth keeping in proportion. A `fail2ban-regex` run over this host's journal
+matched roughly 253,000 genuine authentication failures against 96
+successful logins — continuous, automated credential guessing, which is
+simply the ambient condition for any VPS with port 22 reachable.
+
+Against that, fail2ban's value is that it stops those attempts from
+consuming resources and burying real events in log noise. It is not what
+keeps the attacker out. What keeps them out is having nothing to guess:
+
+```sh
+sshd -T | grep -iE 'passwordauthentication|kbdinteractiveauthentication|permitrootlogin'
+```
+
+If password or keyboard-interactive authentication is enabled, the large
+majority of those attempts are aimed at something that could in principle
+succeed, and turning both off removes that entire class outright — no
+amount of rate limiting is equivalent. `PermitRootLogin` should be `no` or
+`prohibit-password` for the same reason. Once key-only auth is enforced,
+the remaining guessing traffic is failing against a door with no keyhole,
+and fail2ban is purely there to stop it wasting cycles.
+
+Do this as its own change, after the cutover below is finished and
+verified — locking down authentication and swapping the ban mechanism at
+the same time makes it ambiguous which one caused any resulting lockout.
+
 ## Automation hygiene, independent of which throttle is in front
 
 Whatever tripped the old connection-count throttle — several short-lived
