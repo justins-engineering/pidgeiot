@@ -2,7 +2,7 @@ use crate::Route;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdCloud, LdLock, LdLockOpen, LdNetwork, LdUsers, LdWrench,
+  LdCircuitBoard, LdCode, LdKeyRound, LdLock, LdNetwork, LdScale,
 };
 
 #[component]
@@ -23,36 +23,36 @@ pub fn AboutUs() -> Element {
           "Infrastructure Should Empower. Not Restrict."
         }
         p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-3xl mx-auto text-balance",
-          "We started PidgeIoT because we were tired of walled gardens. When you build something, you should truly own it."
+          "PidgeIoT is built so owning your fleet doesn't mean trusting a platform with it -- the backend, the dashboard, and the device firmware are all source you can read, fork, and run yourself."
         }
       }
     }
 
-    // The Origin Story (The "Why")
+    // What This Actually Is
     section {
-      aria_label: "Our origin story",
+      aria_label: "What PidgeIoT actually is",
       class: "py-24 md:py-32 bg-base-200/50",
 
       div { class: "max-w-7xl mx-auto px-4 md:px-8 flex flex-col lg:flex-row gap-20 items-center",
-        // Left: Narrative
+        // Left: Plain facts, not narrative
         div { class: "lg:w-1/2",
           h2 { class: "text-3xl md:text-4xl font-bold mb-8 tracking-tight",
-            "Born from Real-World Friction"
+            "What PidgeIoT Actually Is"
           }
           div { class: "space-y-6 text-lg text-base-content/70 leading-relaxed",
             p {
-              "This project wasn't dreamed up in a vacuum. It was forged out of sheer necessity. We were in the trenches, tasked with deploying and maintaining complex digital signage networks across sprawling public transit systems."
+              "PidgeIoT is built and run by Justin's Engineering Services, LLC -- a small, independent shop, not a venture-backed platform company. There's no enterprise tier gating the parts that matter; what's on this site is what exists."
             }
             p {
-              "We hit the same walls every hardware team hits: platforms were too rigid, scaling was prohibitively expensive, and we were forced into proprietary connectivity boxes. We spent more time fighting our infrastructure than improving our product."
+              "The stack is Rust end to end: the edge backend runs on Cloudflare Workers and Durable Objects, this dashboard compiles to WebAssembly, and both share the same Rust types so they can't quietly drift apart. Dashboard sign-in runs on a self-hosted Ory Kratos instance we operate ourselves, not a third-party identity vendor with our logo on it."
             }
             p { class: "font-semibold text-base-content text-xl pt-4",
-              "We realized the industry didn't need another platform. It needed an open foundation."
+              "It's in beta, it's free during beta, and it's licensed AGPL-3.0 from the backend to the device firmware -- none of that is something you have to take on faith."
             }
           }
         }
 
-        // Right: Minimalist Visual Stacking
+        // Right: A real design tradeoff, not a mood board
         div { class: "lg:w-1/2 w-full flex flex-col gap-6",
           article { class: "p-8 rounded-2xl bg-base-100 flex gap-6 items-start opacity-70",
             div { class: "mt-1",
@@ -64,10 +64,10 @@ pub fn AboutUs() -> Element {
             }
             div {
               h3 { class: "text-xl font-bold line-through decoration-2 mb-2",
-                "Vendor Lock-in"
+                "One Key For The Whole Fleet"
               }
               p { class: "text-base-content",
-                "Trapped in ecosystems that dictated how and where we could scale."
+                "The failure mode this platform was designed around: a single shared credential baked into every device, impossible to revoke for just one."
               }
             }
           }
@@ -75,15 +75,15 @@ pub fn AboutUs() -> Element {
           article { class: "p-8 rounded-2xl bg-primary/10 flex gap-6 items-start transform transition hover:scale-[1.02]",
             div { class: "mt-1",
               Icon {
-                icon: LdLockOpen,
+                icon: LdKeyRound,
                 class: "w-6 h-6 text-primary",
-                title: "Unlocked padlock",
+                title: "Key",
               }
             }
             div {
-              h3 { class: "text-xl font-bold text-primary mb-2", "Open Control" }
+              h3 { class: "text-xl font-bold text-primary mb-2", "A Keypair Per Device" }
               p { class: "text-base-content/70",
-                "The catalyst for PidgeIoT: reclaiming ownership of our own deployments and hardware."
+                "Every pigeon mints its own Ed25519 keypair in its own Durable Object. Refreshing one device's token can't touch any other device's, because there's no shared secret to leak in the first place."
               }
             }
           }
@@ -91,64 +91,60 @@ pub fn AboutUs() -> Element {
       }
     }
 
-    // Who We Are (The "Who")
-    section { aria_label: "The team archetypes", class: "py-32 bg-base-100/50",
+    // Three Things We Can Prove
+    section { aria_label: "What backs this platform's claims", class: "py-32 bg-base-100/50",
 
       div { class: "max-w-7xl mx-auto px-4 md:px-8",
         div { class: "mb-20 max-w-2xl",
           h2 { class: "text-3xl md:text-4xl font-bold mb-6 tracking-tight",
-            "The Minds Behind the Mission"
+            "Three Things We Can Prove"
           }
           p { class: "text-xl text-base-content/70 leading-relaxed",
-            "Building a unified layer for both software and cellular connectivity requires a village. Our team brings together deep, complementary expertise."
+            "A fleet-management platform is asking you to trust it with real devices. Here's what backs that up -- not copy, just what's true right now."
           }
         }
 
-        // Minimalist Grid Layout
         div { class: "grid grid-cols-1 md:grid-cols-3 gap-12",
 
-          // Persona 1
           article { class: "group flex flex-col",
             div { class: "mb-6 p-4 rounded-xl bg-base-200/50 inline-flex w-fit group-hover:bg-base-300/50 transition-colors",
               Icon {
-                icon: LdWrench,
+                icon: LdCircuitBoard,
                 class: "w-8 h-8 text-base-content",
-                title: "Wrench tool",
+                title: "Circuit board",
               }
             }
-            h3 { class: "text-2xl font-bold mb-4", "The Field Engineers" }
+            h3 { class: "text-2xl font-bold mb-4", "Verified on Real Hardware" }
             p { class: "text-base-content/70 leading-relaxed",
-              "The ones who actually deploy the hardware. We know what it takes to keep a fleet online when it's subjected to the elements, power cycles, and the chaos of the real world."
+              "Provisioning, shadow sync, firmware updates, and WebSocket push have all been exercised on real boards -- ESP32-C6, and Nordic nRF9160 and nRF9151 -- not just in simulation."
             }
           }
 
-          // Persona 2
           article { class: "group flex flex-col",
             div { class: "mb-6 p-4 rounded-xl bg-base-200/50 inline-flex w-fit group-hover:bg-base-300/50 transition-colors",
               Icon {
-                icon: LdCloud,
+                icon: LdCode,
                 class: "w-8 h-8 text-base-content",
-                title: "Cloud infrastructure",
+                title: "Code brackets",
               }
             }
-            h3 { class: "text-2xl font-bold mb-4", "The Cloud Architects" }
+            h3 { class: "text-2xl font-bold mb-4", "No Proprietary Firmware" }
             p { class: "text-base-content/70 leading-relaxed",
-              "Veterans of massive enterprise scaling. We bring the rigorous security, routing, and architectural standards expected by the world's largest tech companies directly into our open-source ecosystem."
+              "The device library, pigeon, is a plain Zephyr RTOS module. There's no closed vendor blob between your firmware and the platform -- it's a dependency you can read like any other."
             }
           }
 
-          // Persona 3
           article { class: "group flex flex-col",
             div { class: "mb-6 p-4 rounded-xl bg-base-200/50 inline-flex w-fit group-hover:bg-base-300/50 transition-colors",
               Icon {
-                icon: LdUsers,
+                icon: LdScale,
                 class: "w-8 h-8 text-base-content",
-                title: "Group of users",
+                title: "Balance scale",
               }
             }
-            h3 { class: "text-2xl font-bold mb-4", "The Ecosystem Builders" }
+            h3 { class: "text-2xl font-bold mb-4", "AGPL-3.0, Not \"Open-ish\"" }
             p { class: "text-base-content/70 leading-relaxed",
-              "Hardware is only as good as the community around it. We are deeply embedded in the open-source hardware space to ensure our tools play nicely with the boards you already love."
+              "The backend, the dashboard, and the device library are all licensed AGPL-3.0 and developed in the open on GitHub. If a claim on this site doesn't check out, the source is right there to prove it."
             }
           }
         }
@@ -163,18 +159,18 @@ pub fn AboutUs() -> Element {
       div { class: "max-w-3xl mx-auto px-4 md:px-8",
         h2 { class: "text-4xl md:text-5xl font-bold mb-8 tracking-tight", "Build With Us" }
         p { class: "text-xl text-base-content/70 mb-12 leading-relaxed text-balance",
-          "We are building PidgeIoT in the open because infrastructure of this scale belongs to the community. We aren't just looking for users; we are looking for collaborators who share our vision."
+          "PidgeIoT is free during beta and the source is public. The fastest way to evaluate it is to provision a pigeon or read the code -- not to read another page like this one."
         }
         div { class: "flex flex-col sm:flex-row justify-center gap-6",
           Link {
             class: "btn btn-primary btn-lg px-10 rounded-full",
             to: Route::RegisterFlow { flow: None },
-            "View the Platform"
+            "Start Building, Free"
           }
           a {
             class: "btn btn-ghost btn-lg px-10 rounded-full border border-base-content/20 hover:border-base-content/40 hover:bg-transparent",
             href: "https://discord.gg/W2vjtpeP",
-            "Connect with the Team"
+            "Join the Discord"
           }
         }
       }
