@@ -2,7 +2,11 @@ services:
   postgresd:
     image: postgres:18-alpine
     ports:
-      - "5432:5432"
+      # Loopback only -- Kratos reaches this over the compose network by
+      # service name; the only off-container consumer is a developer's own
+      # psql/client on the same machine (dovecote's dev Hyperdrive config
+      # also points at 127.0.0.1).
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=kratos
       - POSTGRES_PASSWORD=secret
@@ -32,8 +36,13 @@ services:
       - kratos-migrate
     image: oryd/kratos:v26.2
     ports:
-      - '4433:4433' # public
-      - '4434:4434' # admin
+      # Loopback only -- both are dashboard-user auth endpoints (fancier's
+      # KRATOS_BROWSER_URL points at 127.0.0.1:4433), never device-facing;
+      # devices auth via dovecote's own Ed25519 token scheme, not Kratos.
+      # The admin API is unauthenticated by design, so a wide bind here
+      # would hand full identity control to anything else on the network.
+      - '127.0.0.1:4433:4433' # public
+      - '127.0.0.1:4434:4434' # admin
     restart: unless-stopped
     environment:
       - DSN=postgres://kratos:secret@postgresd:5432/kratos?sslmode=disable&max_conns=20&max_idle_conns=4
@@ -56,7 +65,9 @@ services:
       - kratos
     image: dhiagharsallaoui/kratos-admin-ui:latest
     ports:
-      - '3000:3000'
+      # Loopback only -- a developer-facing debug UI, browsed straight from
+      # the host.
+      - '127.0.0.1:3000:3000'
     environment:
       - KRATOS_PUBLIC_URL=http://kratos:4433
       - KRATOS_ADMIN_URL=http://kratos:4434
@@ -66,8 +77,11 @@ services:
   mailslurper:
     image: oryd/mailslurper:latest-smtps
     ports:
-      - '4436:4436'
-      - '4437:4437'
+      # Loopback only -- Kratos's courier reaches SMTP capture over the
+      # compose network by service name; the web UI is browsed straight
+      # from the host. Nothing off-host has a reason to see captured mail.
+      - '127.0.0.1:4436:4436'
+      - '127.0.0.1:4437:4437'
     networks:
       - intranet
 
@@ -77,10 +91,14 @@ services:
   greptimedb:
     image: greptime/greptimedb:v1.1.2
     ports:
-      - '4000:4000' # HTTP (line-protocol write + SQL-over-HTTP read, both used by dovecote)
-      - '4001:4001' # gRPC
-      - '4002:4002' # MySQL wire
-      - '4003:4003' # Postgres wire
+      # Loopback only -- dovecote's dev GREPTIMEDB_ENDPOINT points at
+      # 127.0.0.1:4000 because `wrangler dev` runs on the host, not in
+      # docker, same as the other ports below (kept for direct SQL/gRPC
+      # debugging from the host, never used by any in-container consumer).
+      - '127.0.0.1:4000:4000' # HTTP (line-protocol write + SQL-over-HTTP read, both used by dovecote)
+      - '127.0.0.1:4001:4001' # gRPC
+      - '127.0.0.1:4002:4002' # MySQL wire
+      - '127.0.0.1:4003:4003' # Postgres wire
     command: standalone start --http-addr 0.0.0.0:4000 --rpc-bind-addr 0.0.0.0:4001 --mysql-addr 0.0.0.0:4002 --postgres-addr 0.0.0.0:4003
     volumes:
       # Named volume — without it, all telemetry data is lost on every
