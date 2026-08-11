@@ -85,6 +85,11 @@ In order:
    cp loft.env.example loft.env   # paste the same secret
    docker compose up -d --build
    ```
+   The build context is the repo root; `.dockerignore` keeps `loft.env`, `secrets.env`,
+   and the other credential files out of it. If a `--build` ever ran on this host before
+   those exclusions existed, the secret is sitting in a cached build layer — run
+   `docker builder prune --all` there and rotate `COAP_SERVICE_SECRET` (both owner-gated
+   operations) before trusting that host's cache again.
 5. **Verify** (libcoap's `coap-client`; needs a build with `MAX_KEY >= 32`, any stock one):
    ```sh
    # Create a Coap-connector pigeon in the dashboard, note id + tls_psk_secret, then:

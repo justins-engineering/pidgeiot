@@ -5,3 +5,11 @@ target/
 fancier/node_modules/
 fancier/public/
 .claude/
+# Credential files must never enter the build context: COPY . . would bake
+# them into a persistent layer and the BuildKit cache on whatever host runs
+# the build. Runtime secrets reach the container via compose env_file only.
+secrets.env
+**/loft.env
+**/.dev.vars*
+app/keys/
+.migration/
