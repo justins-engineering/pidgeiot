@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::coap::block::{self, Block, MAX_SZX};
 use crate::coap::message::{Message, code, content_format, option};
+use crate::quota::MAX_CONNECTIONS;
 use crate::upstream::{Method, Upstream, UpstreamResponse};
 
 /// Options we understand; any *critical* option outside this list gets a
@@ -50,6 +51,14 @@ const MAX_BLOCK1_BODY: usize = 64 * 1024;
 
 /// A Block1 reassembly that saw no new block for this long is dropped.
 const BLOCK1_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Hard ceiling on concurrent Block1 reassemblies, independent of how many
+/// distinct peers or leaves ever start one. Tied to MAX_CONNECTIONS (the
+/// same ceiling the listeners already enforce) so the worst case stays
+/// easy to reason about: MAX_BLOCK1_ENTRIES * MAX_BLOCK1_BODY tops out
+/// around 256MiB rather than growing with however many peer addresses or
+/// leaf paths a connection's lifetime has touched.
+const MAX_BLOCK1_ENTRIES: usize = MAX_CONNECTIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -95,6 +104,12 @@ impl<U: Upstream> Handler<U> {
     session: &DeviceSession,
     transport: Transport,
   ) -> Message {
+    // Reclaim idle Block1 reassemblies on every request, not only ones
+    // that themselves carry Block1 -- otherwise a terminator that stops
+    // seeing Block1 traffic (the common case once uploads finish) never
+    // drains its own leftovers.
+    self.sweep_block1();
+
     if !code::is_request(req.code) {
       return diagnostic(req, code::BAD_REQUEST, "not a request");
     }
@@ -371,6 +386,18 @@ impl<U: Upstream> Handler<U> {
     out
   }
 
+  /// Drops Block1 reassemblies that have seen no new block in
+  /// `BLOCK1_IDLE_TIMEOUT`. Called on every request so this runs whether
+  /// or not the request itself carries Block1.
+  fn sweep_block1(&self) {
+    let now = Instant::now();
+    self
+      .block1
+      .lock()
+      .expect("block1 lock")
+      .retain(|_, r| now.duration_since(r.touched) < BLOCK1_IDLE_TIMEOUT);
+  }
+
   /// Block1 (request-body) reassembly. Returns the complete body (the
   /// common no-Block1 case is just the request payload), or the interim
   /// 2.31 Continue / error response to send instead.
@@ -382,9 +409,19 @@ impl<U: Upstream> Handler<U> {
     let key = (session.peer.clone(), leaf.to_string());
     let mut map = self.block1.lock().expect("block1 lock");
     let now = Instant::now();
-    map.retain(|_, r| now.duration_since(r.touched) < BLOCK1_IDLE_TIMEOUT);
 
     if b.num == 0 {
+      // A restart of an already-tracked upload (same peer+leaf) just
+      // overwrites its entry, so only a genuinely new key needs to clear
+      // the cap -- otherwise a peer retrying its own upload could be
+      // starved by unrelated entries that filled the table after it.
+      if !map.contains_key(&key) && map.len() >= MAX_BLOCK1_ENTRIES {
+        return BodyState::Interim(diagnostic(
+          req,
+          code::SERVICE_UNAVAILABLE,
+          "block1 reassembly table full",
+        ));
+      }
       map.insert(
         key.clone(),
         Reassembly {
@@ -937,6 +974,68 @@ mod tests {
     assert_eq!(&body[..256], &[0xAA; 256]);
     assert_eq!(&body[512..], &[0xCC; 100]);
     assert_eq!(ct, "application/octet-stream");
+  }
+
+  #[tokio::test]
+  async fn block1_table_full_refuses_a_new_peer_but_not_one_already_admitted() {
+    let mock = MockUpstream::new(|_| {
+      Ok(UpstreamResponse {
+        status: 200,
+        ..Default::default()
+      })
+    });
+    let handler = Handler::new(&mock);
+
+    let block1_start = || {
+      let mut req = request(code::POST, "pigeon-1", "logs");
+      req.set_option_uint(
+        option::BLOCK1,
+        Block {
+          num: 0,
+          more: true,
+          szx: 4,
+        }
+        .encode(),
+      );
+      req.payload = vec![0xAA; 16];
+      req
+    };
+    let peer = |i: usize| DeviceSession {
+      pigeon_id: "pigeon-1".into(),
+      token: "tok-1".into(),
+      peer: format!("10.0.0.1:{i}"),
+    };
+
+    // Fill the table: one in-progress reassembly per distinct peer.
+    for i in 0..MAX_BLOCK1_ENTRIES {
+      let out = handler
+        .handle(&block1_start(), &peer(i), Transport::Udp)
+        .await;
+      assert_eq!(out.code, code::CONTINUE, "entry {i} should be admitted");
+    }
+
+    // A never-seen peer starting a new reassembly is refused -- the table
+    // is at capacity, not because of anything wrong with this request.
+    let out = handler
+      .handle(&block1_start(), &peer(MAX_BLOCK1_ENTRIES), Transport::Udp)
+      .await;
+    assert_eq!(out.code, code::SERVICE_UNAVAILABLE);
+
+    // A peer already holding a slot can still finish its own upload --
+    // the cap only blocks new entries, not progress on admitted ones.
+    let mut req = request(code::POST, "pigeon-1", "logs");
+    req.set_option_uint(
+      option::BLOCK1,
+      Block {
+        num: 1,
+        more: false,
+        szx: 4,
+      }
+      .encode(),
+    );
+    req.payload = vec![0xBB; 16];
+    let out = handler.handle(&req, &peer(0), Transport::Udp).await;
+    assert_eq!(out.code, code::CHANGED);
   }
 
   #[tokio::test]
