@@ -130,14 +130,21 @@ iptables -A DOCKER-USER -i ens3 -m conntrack --ctstate NEW -j DROP
 ```
 
 The trailing `DROP` matters beyond the two CoAP ports: it's the backstop against a future
-compose edit publishing something that was never meant to be reachable. The case worth keeping
-in mind is Kratos's admin API — it has no authentication by design (only trusted internal
-callers are supposed to reach it) and is bound to loopback today. A compose edit that turned
-that binding into a published host port would silently hand full identity control — create,
-delete, or impersonate any user — to the internet, with no error at bring-up: the container
-would start clean, Kratos would work, and the exposure would only surface in a network scan. A
-default-DROP `DOCKER-USER` chain is what turns that mistake into "connection refused" instead
-of a live incident.
+compose edit publishing something that was never meant to be reachable. `loft` is the first
+workload on this host to use Docker's bridge networking and port publishing at all, so this
+chain has no prior traffic on it — Kratos's container runs with `network_mode: host`, which
+bypasses Docker's NAT and forward path entirely and binds its own sockets straight onto the
+host.
+
+That distinction decides which chain protects what, so don't generalize one to the other.
+Kratos's admin API has no authentication by design (only trusted internal callers are supposed
+to reach it) and binds `127.0.0.1:4434` directly. Because it never traverses `DOCKER-USER`,
+that chain would not save you if its bind address were ever widened to `0.0.0.0` — the host
+`INPUT` policy below is the only thing standing there, which is one more reason the default
+`DROP` at the end of it is not optional. Conversely, anything published by a bridge-networked
+container is governed by `DOCKER-USER` and is invisible to `INPUT`. Either mistake fails the
+same quiet way: the service starts clean, works normally, and the exposure only surfaces in a
+network scan.
 
 Host baseline (`INPUT` chain) is the usual shape, nothing CoAP-specific:
 
