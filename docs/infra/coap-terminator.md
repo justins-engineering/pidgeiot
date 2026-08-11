@@ -117,8 +117,11 @@ COAP_SERVICE_SECRET=<same value> LOFT_DOVECOTE_URL=http://127.0.0.1:8787 \
   claimed source address. A spoofed source costs one small reply.
 - **Unknown identities** are negative-cached (10s), so a garbage-identity flood cannot be
   amplified into a dovecote request flood.
-- **Connection caps**: 4096 concurrent per listener; per-connection channel backpressure
-  drops excess UDP datagrams; 30s handshake deadline; 300s idle teardown.
+- **Connection caps**: 4096 concurrent per listener, and a 256-connection fair share per
+  source address (IPv6 counted per /64, so rotating interface identifiers doesn't dodge it);
+  per-connection channel backpressure drops excess UDP datagrams; 30s wall-clock handshake
+  deadline enforced inside the IO layer, so neither silence nor a paced byte-trickle can
+  stretch it; 300s idle teardown.
 - Threat model note: loft terminates TLS for devices, so it is trusted infrastructure in the
   same class as dovecote itself. It never holds dashboard credentials, and every device-side
   request it makes is still independently verified by the owning Durable Object.

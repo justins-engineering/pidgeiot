@@ -6,7 +6,7 @@
 //! books without each path having to remember to.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
 /// Ceiling on concurrent connections per listener, comfortably inside the
@@ -47,8 +47,10 @@ impl ConnQuota {
   }
 
   /// Admits `ip` unless the table or the address's fair share is
-  /// exhausted. Dropping the permit is the only release path.
+  /// exhausted. The share is counted per [`bucket`], not per literal
+  /// address. Dropping the permit is the only release path.
   pub fn try_acquire(&self, ip: IpAddr) -> Option<ConnPermit> {
+    let ip = bucket(ip);
     let mut counts = self.counts.lock().expect("quota lock");
     if counts.total >= self.max_total {
       return None;
@@ -67,6 +69,22 @@ impl ConnQuota {
       counts: Arc::clone(&self.counts),
       ip,
     })
+  }
+}
+
+/// Fair-share bucket for a source address. IPv4 counts per address; IPv6
+/// counts per /64, since a v6 endpoint typically controls at least its
+/// whole /64 and per-/128 counting would let one host dodge the share by
+/// rotating interface identifiers. V4-mapped v6 sources (a v4 peer seen
+/// through a dual-stack socket) count with their embedded v4 address, so
+/// the same host lands in the same bucket whichever family observed it.
+fn bucket(ip: IpAddr) -> IpAddr {
+  match ip {
+    IpAddr::V4(_) => ip,
+    IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+      Some(v4) => IpAddr::V4(v4),
+      None => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (!0u128 << 64))),
+    },
   }
 }
 
@@ -132,6 +150,35 @@ mod tests {
     assert!(
       quota.try_acquire(ip(1)).is_some(),
       "released slots are reusable"
+    );
+  }
+
+  #[test]
+  fn ipv6_sources_share_their_slash64_bucket() {
+    let quota = ConnQuota::new(8, 1);
+    let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().expect("addr");
+    let same_prefix: IpAddr = "2001:db8:1:2::bbbb".parse().expect("addr");
+    let other_prefix: IpAddr = "2001:db8:1:3::1".parse().expect("addr");
+    let _held = quota.try_acquire(a).expect("first in /64");
+    assert!(
+      quota.try_acquire(same_prefix).is_none(),
+      "rotating interface ids must not dodge the share"
+    );
+    assert!(
+      quota.try_acquire(other_prefix).is_some(),
+      "a different /64 is a different bucket"
+    );
+  }
+
+  #[test]
+  fn v4_mapped_sources_count_with_their_v4_address() {
+    let quota = ConnQuota::new(8, 1);
+    let v4: IpAddr = "203.0.113.7".parse().expect("addr");
+    let mapped: IpAddr = "::ffff:203.0.113.7".parse().expect("addr");
+    let _held = quota.try_acquire(v4).expect("v4");
+    assert!(
+      quota.try_acquire(mapped).is_none(),
+      "the mapped form is the same host"
     );
   }
 
