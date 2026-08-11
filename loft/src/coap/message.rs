@@ -271,9 +271,12 @@ pub fn decode_options_and_payload(mut buf: &[u8], msg: &mut Message) -> Result<(
       return Err(DecodeError::Truncated);
     }
 
-    number = number
-      .checked_add(delta as u16)
-      .ok_or(DecodeError::BadOptionEncoding)?;
+    // Add in u32 before narrowing back to u16: casting `delta` down first
+    // would wrap an out-of-range extended delta (up to 269 + 0xFFFF) into
+    // an in-bounds one instead of rejecting it, letting a bogus option
+    // number alias a real one.
+    let extended = u32::from(number) + delta;
+    number = u16::try_from(extended).map_err(|_| DecodeError::BadOptionEncoding)?;
     msg.options.push((number, buf[..len].to_vec()));
     buf = &buf[len..];
   }
@@ -389,6 +392,20 @@ mod tests {
     assert_eq!(
       decode_options_and_payload(&[0x45, 1, 2], &mut msg),
       Err(DecodeError::Truncated)
+    );
+  }
+
+  #[test]
+  fn extended_delta_past_u16_max_is_rejected_not_wrapped() {
+    // Nibble 14 (2-byte extended delta) with extension 0xFFFF encodes a
+    // delta of 269 + 65535 = 65804, which does not fit in the option
+    // number's u16. A prior bug narrowed the delta to u16 before adding,
+    // which wrapped 65804 down to 268 and silently accepted it as a real
+    // (but wrong) option number instead of rejecting the input.
+    let mut msg = Message::default();
+    assert_eq!(
+      decode_options_and_payload(&[0xE0, 0xFF, 0xFF], &mut msg),
+      Err(DecodeError::BadOptionEncoding)
     );
   }
 
