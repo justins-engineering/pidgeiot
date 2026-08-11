@@ -8,7 +8,6 @@ pub async fn get_hyperdrive_conn(
 )> {
   let map_err = |e: String| -> worker::Error {
     console_error!("Failed to connect to hyperdrive, Error: {e}");
-    // We construct a worker::Error representing the HTTP 500 response
     worker::Error::RustError("Internal Server Error".to_string())
   };
 
@@ -34,11 +33,11 @@ pub async fn get_hyperdrive_conn(
   Ok((client, connection))
 }
 
-/// Establishes a Hyperdrive connection, spawns the background driver, and hands back a ready-to-use Client.
+/// Opens a Hyperdrive connection, spawns the background driver, and hands
+/// back a ready-to-use client.
 pub async fn get_db_client(env: &Env) -> worker::Result<tokio_postgres::Client> {
   let (client, connection) = crate::get_hyperdrive_conn(env).await?;
 
-  // Abstract the Wasm background task away from the route handlers
   worker::wasm_bindgen_futures::spawn_local(async move {
     if let Err(e) = connection.await {
       console_error!("Postgres connection error: {}", e);

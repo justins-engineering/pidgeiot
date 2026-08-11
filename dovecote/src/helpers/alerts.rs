@@ -12,38 +12,30 @@ use uuid::Uuid;
 use worker::{Env, Error, Fetch, Method, Request, RequestInit, Result, console_error};
 
 /// Column list shared by every `alert_definitions` read/RETURNING statement
-/// -- `condition`/`channel` are cast to `::text` here rather than read as
-/// native JSONB because this workspace's `tokio-postgres` dependency isn't
-/// built with the `with-serde_json-1` feature (see `Cargo.toml`); every
-/// other JSONB column in this codebase is only ever written, never read
-/// back through `tokio-postgres` directly (shadow/connector state is always
-/// read via the DO's SQLite, which stores it as plain `TEXT`), so this cast
-/// is new but mirrors exactly how those columns are written ($N::jsonb) --
-/// just the read-side mirror of that pattern.
+/// -- `condition`/`channel` are cast to `::text` rather than read as native
+/// JSONB because this workspace's `tokio-postgres` isn't built with the
+/// `with-serde_json-1` feature (see `Cargo.toml`). Every other JSONB
+/// column in this codebase is only ever written, never read back through
+/// `tokio-postgres` directly, so this cast is the read-side mirror of the
+/// `$N::jsonb` write pattern those columns already use.
 const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, \
   condition::text AS condition, severity, channel::text AS channel, enabled, \
   created_at, updated_at";
 
 /// Fixed debounce window before a continuously-true condition transitions
-/// `Ok -> Firing` (design doc §2.3). The doc's own recommendation is to
-/// scale this per-pigeon off `telemetry_interval` the same way
-/// `connection_state::classify` already does -- `classify` moved into this
-/// workspace's shared `capsules` crate as of task #38 (see
-/// `capsules::connection_state`), which removes the blocker the original
-/// version of this comment called out, but making the debounce itself
-/// interval-adaptive is still a separate, not-yet-done follow-up -- task
-/// #38's own scope was the scheduled evaluator + `MissingReport`, not
-/// reworking this constant. A single fixed window remains a deliberate,
-/// documented simplification, not an oversight.
+/// `Ok -> Firing`. Scaling this per-pigeon off `telemetry_interval` the
+/// way `connection_state::classify` (`capsules::connection_state`) already
+/// does is a reasonable follow-up, not yet done -- a single fixed window
+/// is a deliberate simplification, not an oversight.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
-/// `From:` address for alert emails sent via useSend (design doc §3.2/§3.3)
-/// -- shares the platform's one verified sending domain with task #33's
-/// Kratos courier setup, but never the credential. The Worker secret is
-/// still NAMED `RESEND_API_KEY` for historical reasons but holds a useSend
-/// API key (useSend speaks the Resend-shaped payload; the prod key was
-/// always a useSend key, which is why every send 401'd against
-/// api.resend.com until 2026-08-08 -- see `send_via_usesend` below).
+/// `From:` address for alert emails sent via useSend -- shares the
+/// platform's one verified sending domain with Kratos's courier setup, but
+/// never the credential. The Worker secret is still NAMED
+/// `RESEND_API_KEY` for historical reasons but holds a useSend API key --
+/// useSend speaks the Resend-shaped payload, so sends 401 against
+/// api.resend.com if this ever gets swapped for a real Resend key (see
+/// `send_via_usesend` below).
 const USESEND_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
@@ -115,9 +107,8 @@ fn row_to_alert_definition_row(row: &Row) -> AlertDefinitionRow {
 
 /// Proof that `is_alert_owner` already confirmed the requesting user owns
 /// this alert definition (`alert_definitions.user_id`) -- same
-/// "caller must have already checked" guard as `PigeonAccess`/`FlockAccess`
-/// (task #36 pattern -- see docs/design/tenancy-isolation.md §2.1), applied
-/// to alert ownership.
+/// "caller must have already checked" guard as `PigeonAccess`/`FlockAccess`,
+/// applied to alert ownership.
 pub struct AlertAccess {
   alert_id: Uuid,
 }
@@ -162,9 +153,8 @@ pub async fn is_alert_owner(
 
 /// Creates a pigeon-scoped alert definition. Takes a `PigeonAccess` proof
 /// (not a bare `pigeon_id`) -- only constructible via `check_pigeon_authz`,
-/// which is what actually confirmed this user can act on this pigeon (see
-/// docs/design/tenancy-isolation.md §2.1) -- same guard
-/// `query_telemetry_history_for_pigeon` already requires.
+/// which is what actually confirmed this user can act on this pigeon, same
+/// guard `query_telemetry_history_for_pigeon` already requires.
 pub async fn create_pigeon_alert(
   client: &Client,
   access: &PigeonAccess,
@@ -251,9 +241,8 @@ pub async fn create_flock_alert(
 
 /// Backs `GET /pigeons/:pigeon_id/alerts`. Only returns alerts scoped
 /// directly to this pigeon -- flock-scoped alerts covering this pigeon are
-/// not inlined here (kept simple for this backend-foundation slice; the
-/// dashboard's flock-level alerts tab, design doc §4, is the place a
-/// flock-scoped alert is expected to show up).
+/// not inlined here; the dashboard's flock-level alerts tab is where a
+/// flock-scoped alert is expected to show up instead.
 pub async fn list_pigeon_alerts(
   client: &Client,
   access: &PigeonAccess,
@@ -385,24 +374,21 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
   Ok(())
 }
 
-/// Evaluation hook (design doc §2.2) -- called alongside
-/// `write_telemetry_default` at each of its three call sites
-/// (`queue.rs::dispatch_to_do`, `objects/pigeons.rs::handle_ws_telemetry`/
-/// `report_telemetry_device`), NOT only from `queue.rs` -- the design doc's
-/// own audit found `queue.rs` alone misses dev entirely (no queue bound)
-/// and always misses WS-telemetry. Best-effort: every failure is logged,
-/// never propagated to fail the caller's own (already-succeeded) primary
-/// write, matching this codebase's universal cross-store-sync convention.
+/// Evaluation hook -- called alongside `write_telemetry_default` at each
+/// of its three call sites (`queue.rs::dispatch_to_do`,
+/// `objects/pigeons.rs::handle_ws_telemetry`/`report_telemetry_device`),
+/// NOT only from `queue.rs`: `queue.rs` alone misses dev entirely (no
+/// queue bound) and always misses WS-telemetry. Best-effort: every
+/// failure is logged, never propagated to fail the caller's own
+/// (already-succeeded) primary write.
 ///
 /// Resolves every enabled alert definition scoped either directly to this
-/// pigeon or to the flock it belongs to (one query, via a LEFT JOIN against
-/// `pigeons` rather than a second round trip to resolve `flock_id`
-/// first -- this DO already has Hyperdrive access at this exact point in
-/// the request lifecycle, per the design doc's own confirmation). `Threshold`
-/// and `RateOfChange` (task #39) conditions are evaluated here -- see
-/// `AlertCondition`'s doc comment in `capsules` for why `DeviceState`/
-/// `MissingReport` are no-ops in this hook (they're evaluated instead by
-/// `evaluate_scheduled_alerts` below, task #38's Cron-Trigger-driven
+/// pigeon or to the flock it belongs to (one query, via a LEFT JOIN
+/// against `pigeons` rather than a second round trip to resolve
+/// `flock_id` first). `Threshold` and `RateOfChange` conditions are
+/// evaluated here -- see `AlertCondition`'s doc comment in `capsules` for
+/// why `DeviceState`/`MissingReport` are no-ops in this hook (evaluated
+/// instead by `evaluate_scheduled_alerts` below, the Cron-Trigger-driven
 /// sweep). `previous` is each reported key's prior value + timestamp,
 /// captured by the caller (`objects/pigeons.rs::read_previous_telemetry`)
 /// before its own UPSERT overwrote it -- the only input `RateOfChange`
@@ -509,37 +495,33 @@ pub async fn check_telemetry_alerts(
   Ok(())
 }
 
-/// Cron-Trigger-driven scheduled evaluator (design doc §2.4, task #38) --
-/// the counterpart to `check_telemetry_alerts` above for the two condition
-/// types that can't be decided at ingest time: an ingest event arriving is
-/// itself proof the pigeon is online, so "went offline/stale"
-/// (`DeviceState`) and "nothing has arrived in N seconds"
-/// (`MissingReport`) both have to be polled on a timer instead. Wired up
-/// via `wrangler.toml`'s `[triggers] crons` and `src/scheduled.rs`'s
-/// `#[event(scheduled)]` handler, which just calls this and logs whatever
-/// it returns -- best-effort/logged throughout, same convention as every
-/// other cross-store sync in this codebase; a failure here must never
-/// panic the scheduled invocation.
+/// Cron-Trigger-driven scheduled evaluator -- the counterpart to
+/// `check_telemetry_alerts` above for the two condition types that can't
+/// be decided at ingest time: an ingest event arriving is itself proof
+/// the pigeon is online, so "went offline/stale" (`DeviceState`) and
+/// "nothing has arrived in N seconds" (`MissingReport`) both have to be
+/// polled on a timer instead. Wired up via `wrangler.toml`'s `[triggers]
+/// crons` and `src/scheduled.rs`'s `#[event(scheduled)]` handler, which
+/// just calls this and logs whatever it returns -- best-effort/logged
+/// throughout; a failure here must never panic the scheduled invocation.
 ///
 /// Deliberately does NOT fan out to every matching pigeon's own Durable
-/// Object -- same reasoning the design doc gives for avoiding a per-DO
-/// sweep at fleet scale (§2.4, echoing `docs/design/tenancy-isolation.md`'s
-/// existing case against per-DO fan-out for cross-pigeon queries). "Last
-/// seen" here is resolved entirely from Postgres, via
-/// `resolve_pigeon_last_seen` below: `pigeon_shadow.updated_at` (filtered
-/// through `connection_state::has_never_reported`, same rule `fancier`'s
+/// Object -- same reasoning against per-DO fan-out for cross-pigeon
+/// queries as `docs/design/tenancy-isolation.md`. "Last seen" here is
+/// resolved entirely from Postgres, via `resolve_pigeon_last_seen` below:
+/// `pigeon_shadow.updated_at` (filtered through
+/// `connection_state::has_never_reported`, same rule `fancier`'s
 /// `PigeonView` already applies) merged with the newest
 /// `pigeon_telemetry_history` row, through the same
-/// `connection_state::classify`/`latest_of` this crate now shares with
-/// `fancier`'s connection badge (task #38's other half -- see
-/// `capsules::connection_state`).
+/// `connection_state::classify`/`latest_of` this crate shares with
+/// `fancier`'s connection badge (`capsules::connection_state`).
 ///
 /// Known gap, documented rather than silently accepted: a pigeon with a
-/// user-configured `telemetry_endpoint` (CLAUDE.md's telemetry-forwarding
-/// note) never gets a row in `pigeon_telemetry_history` -- its reports go
-/// to that endpoint's target instead of Postgres/Greptime history, so this
-/// sweep can only see its shadow signal. Good enough for a v1 scheduled
-/// evaluator; a future iteration could also consult Greptime the way
+/// user-configured `telemetry_endpoint` never gets a row in
+/// `pigeon_telemetry_history` -- its reports go to that endpoint's target
+/// instead of Postgres/Greptime history, so this sweep can only see its
+/// shadow signal. Good enough for a v1 scheduled evaluator; a future
+/// iteration could also consult Greptime the way
 /// `query_greptime_history_for_pigeons` already does for the dashboard's
 /// own history routes.
 pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
@@ -648,17 +630,16 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
 }
 
 /// Every pigeon_id a `DeviceState`/`MissingReport` definition's scope
-/// resolves to (design doc §1.2) -- `Pigeon` is trivially itself; `Flock`
-/// needs a lookup since a flock-scoped alert fires/clears independently
-/// per pigeon currently in it (`capsules::AlertScope`'s own doc comment).
-/// No ownership re-check here, unlike `helpers::telemetry::get_flock_pigeon_ids`
-/// (which exists to gate a *user's* dashboard request) -- this runs from
-/// the scheduled sweep, not on behalf of any one user, and the definition
-/// itself was already created through an owner-gated route
+/// resolves to -- `Pigeon` is trivially itself; `Flock` needs a lookup
+/// since a flock-scoped alert fires/clears independently per pigeon
+/// currently in it (`capsules::AlertScope`'s own doc comment). No
+/// ownership re-check here, unlike `helpers::telemetry::get_flock_pigeon_ids`
+/// (which gates a *user's* dashboard request) -- this runs from the
+/// scheduled sweep, not on behalf of any one user, and the definition was
+/// already created through an owner-gated route
 /// (`create_flock_alert`/`create_pigeon_alert`, both take an
 /// already-checked `FlockAccess`/`PigeonAccess`), so re-deriving ownership
-/// here would just be re-answering a question already settled at
-/// creation time.
+/// here would just re-answer a question already settled at creation time.
 async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result<Vec<String>> {
   match scope {
     AlertScope::Pigeon(pigeon_id) => Ok(vec![pigeon_id.clone()]),
@@ -749,13 +730,13 @@ async fn resolve_pigeon_last_seen(
   }))
 }
 
-/// One alert definition's `Ok`/`Firing` state machine for one pigeon
-/// (design doc §2.3). Upserts a fresh `alert_state` row on first sight,
-/// then applies the transition table described on `capsules::AlertState`'s
-/// doc comment. Sends at most one email per transition (fired or cleared);
-/// staying `Firing` while still true is intentionally a no-op here --
-/// periodic re-notify is an explicitly-deferred, off-by-default extension
-/// per the design doc, not implemented in this foundation.
+/// One alert definition's `Ok`/`Firing` state machine for one pigeon.
+/// Upserts a fresh `alert_state` row on first sight, then applies the
+/// transition table described on `capsules::AlertState`'s doc comment.
+/// Sends at most one email per transition (fired or cleared); staying
+/// `Firing` while still true is intentionally a no-op -- periodic
+/// re-notify is a deferred, off-by-default extension, not implemented
+/// here.
 async fn apply_alert_transition(
   client: &Client,
   env: &Env,
@@ -859,27 +840,25 @@ async fn apply_alert_transition(
       send_alert_email(env, client, def, pigeon_id, false).await;
     }
     (AlertStatus::Firing, true) => {
-      // Already firing -- no periodic re-notify in this v1 (design doc
-      // §2.3: "optional periodic re-notify after a configurable cooldown,
-      // off by default" -- not implemented here).
+      // Already firing -- no periodic re-notify implemented (would be an
+      // optional cooldown-gated re-send, off by default).
     }
   }
 
   Ok(())
 }
 
-/// Resolves who an alert's notification email should go to (design doc
-/// §3.4): the channel's own explicit override if set, otherwise the owning
-/// flock's stored `owner_email` -- resolved via this definition's own
-/// `flock_id` if flock-scoped, or via its pigeon's `flock_id` if
-/// pigeon-scoped. `owner_email` is populated by `lib.rs`'s
+/// Resolves who an alert's notification email should go to: the channel's
+/// own explicit override if set, otherwise the owning flock's stored
+/// `owner_email` -- resolved via this definition's own `flock_id` if
+/// flock-scoped, or via its pigeon's `flock_id` if pigeon-scoped.
+/// `owner_email` is populated by `lib.rs`'s
 /// `require_auth_session`/`helpers/flocks.rs` (`create_user_flock` on
-/// create, `backfill_owner_email` opportunistically on `GET /flocks` for
-/// flocks that predate this) from the session's own `identity.traits.email`
-/// -- a flock created (or listed by its owner) before that landed, or one
-/// whose owner has never authenticated since, can still resolve to `None`
-/// here, and `send_alert_email` logs that clearly rather than silently
-/// dropping the notification.
+/// create, `backfill_owner_email` opportunistically on `GET /flocks`) from
+/// the session's own `identity.traits.email` -- a flock whose owner has
+/// never authenticated since can still resolve to `None` here, and
+/// `send_alert_email` logs that clearly rather than silently dropping the
+/// notification.
 async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Option<String> {
   let AlertChannel::Email { to } = &def.channel;
 
@@ -903,15 +882,13 @@ async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Opti
 
   let owner_email: Option<String> = result.ok().and_then(|row| row.get("owner_email"));
 
-  // Task #48 defense-in-depth: the create/update routes already reject an
-  // override that isn't the caller's own verified address, but definitions
-  // that predate that validation (or rows written outside the API) could
-  // still carry an arbitrary `to`. At send time an override is honored only
-  // if it matches the flock's owner_email -- anything else falls back to
-  // the owner with a log line, so alert delivery can never be aimed at an
-  // address the platform hasn't tied to this account. Once a
-  // verify-extra-address flow exists, this is where its allowlist check
-  // replaces the strict owner_email equality.
+  // Defense-in-depth: the create/update routes already reject an override
+  // that isn't the caller's own verified address, but definitions that
+  // predate that validation (or rows written outside the API) could still
+  // carry an arbitrary `to`. At send time an override is honored only if
+  // it matches the flock's owner_email -- anything else falls back to the
+  // owner with a log line, so alert delivery can never be aimed at an
+  // address the platform hasn't tied to this account.
   if let Some(explicit) = to {
     match &owner_email {
       Some(owner) if owner.eq_ignore_ascii_case(explicit.trim()) => {
@@ -966,19 +943,18 @@ async fn send_alert_email(
   }
 }
 
-/// `RESEND_API_KEY` Worker secret, if configured -- mirrors
-/// `helpers/greptime.rs::greptime_auth_token`'s secret-read shape verbatim
-/// (design doc §3.2). Never set via `[vars]`, same rule this codebase
-/// already enforces for every credential (`wrangler secret put
-/// RESEND_API_KEY --env <env>`).
 /// Whether the useSend transport is configured for this environment --
-/// lets callers with a graceful no-op path (org invites, task #12) decide
-/// to log a link instead of "sending" into the void, without duplicating
-/// the secret-read logic.
+/// lets callers with a graceful no-op path (e.g. org invites) log a link
+/// instead of "sending" into the void, without duplicating the
+/// secret-read logic.
 pub(crate) fn usesend_configured(env: &Env) -> bool {
   usesend_api_key(env).is_some()
 }
 
+/// `RESEND_API_KEY` Worker secret, if configured -- mirrors
+/// `helpers/greptime.rs::greptime_auth_token`'s secret-read shape. Never
+/// set via `[vars]`, same rule this codebase enforces for every credential
+/// (`wrangler secret put RESEND_API_KEY --env <env>`).
 fn usesend_api_key(env: &Env) -> Option<String> {
   env
     .secret("RESEND_API_KEY")
@@ -998,10 +974,10 @@ struct UsesendEmailRequest<'a> {
 /// POSTs one transactional email via useSend's Resend-compatible HTTP API
 /// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
-/// shape exactly (design doc §3.2). `RESEND_API_KEY` unset (expected until
-/// an operator runs `wrangler secret put`) is treated the same way
-/// `greptime_auth_token` being absent is treated elsewhere -- logged,
-/// never a hard failure, since alert delivery is always best-effort.
+/// shape. `RESEND_API_KEY` unset (expected until an operator runs
+/// `wrangler secret put`) is treated the same way `greptime_auth_token`
+/// being absent is treated elsewhere -- logged, never a hard failure,
+/// since alert delivery is always best-effort.
 pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
   let Some(api_key) = usesend_api_key(env) else {
     console_error!(

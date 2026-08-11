@@ -76,13 +76,10 @@ pub async fn write_telemetry_history(
 }
 
 /// Backs `GET /pigeons/:id/telemetry/history`. Takes a `PigeonAccess` proof
-/// rather than a bare `pigeon_id` -- that proof is only constructible via
-/// `check_pigeon_authz` (`helpers/pigeons.rs`), which is the thing that
-/// actually ACL-gates against the DO's `/pigeon/authz/check` route, so a
-/// caller can no longer reach this query without having run that check
-/// first (see docs/design/tenancy-isolation.md §2.1). Previously this
-/// function's doc comment just asserted the caller was responsible for
-/// gating; now the compiler does.
+/// rather than a bare `pigeon_id` -- only constructible via
+/// `check_pigeon_authz` (`helpers/pigeons.rs`), which ACL-gates against
+/// the DO's `/pigeon/authz/check` route, so a caller can't reach this
+/// query without that check having already run.
 pub async fn query_telemetry_history_for_pigeon(
   client: &Client,
   access: &PigeonAccess,
@@ -131,15 +128,14 @@ pub async fn query_telemetry_history_for_pigeon(
   )
 }
 
-/// Pigeon-ID list for one flock (task #26) -- the Postgres round-trip
+/// Pigeon-ID list for one flock -- the Postgres round-trip
 /// `query_greptime_history_for_pigeons` (`helpers/greptime.rs`) needs
-/// before it can query Greptime's SQL-over-HTTP API: Greptime has no
+/// before it can query Greptime's SQL-over-HTTP API, since Greptime has no
 /// `pigeons`/`flocks` tables of its own (relational entity data, not
-/// time-series). Takes a `FlockAccess` proof (task #12) rather than the
-/// old fold-ownership-into-the-query `user_id` pattern -- the proof is
-/// only constructible via `authorize_flock` (`helpers/orgs.rs`), which is
-/// org-aware, so this query no longer needs (and must not keep) its own
-/// user_id filter that org members would always fail.
+/// time-series). Takes a `FlockAccess` proof, constructible only via the
+/// org-aware `authorize_flock` (`helpers/orgs.rs`) -- must not gain its
+/// own `user_id` filter, which would reject org members who aren't the
+/// flock's original owner.
 pub async fn get_flock_pigeon_ids(client: &Client, access: &FlockAccess) -> Result<Vec<String>> {
   let flock_id_str = access.flock_id();
   let flock_uuid = Uuid::parse_str(flock_id_str).map_err(|e| {
@@ -162,11 +158,9 @@ pub async fn get_flock_pigeon_ids(client: &Client, access: &FlockAccess) -> Resu
 }
 
 /// Backs `GET /flocks/:id/telemetry/history`. Flocks have no per-entity ACL
-/// table (unlike pigeons' `pigeon_acl`) -- authorization now happens in
-/// `authorize_flock` (`helpers/orgs.rs`, org-aware since task #12), whose
-/// passing case is the only source of the `FlockAccess` proof this
-/// function requires; the old `f.user_id = $2` WHERE-clause fold is gone
-/// for the same reason as `get_flock_pigeon_ids` above.
+/// table (unlike pigeons' `pigeon_acl`) -- authorization happens in
+/// `authorize_flock` (`helpers/orgs.rs`), whose passing case is the only
+/// source of the `FlockAccess` proof this function requires.
 pub async fn query_telemetry_history_for_flock(
   client: &Client,
   access: &FlockAccess,

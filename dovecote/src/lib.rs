@@ -32,21 +32,13 @@ mod objects;
 mod queue;
 mod scheduled;
 
-/// `worker::Cors::apply_headers` joins every configured origin into the
-/// `Access-Control-Allow-Origin` header with commas (see
-/// `worker-0.8.5/src/cors.rs`) — it does not match against the request's
-/// `Origin` header at all. A comma-joined value is invalid per the CORS
-/// spec (the header may only ever be a single origin or `*`), so browsers
-/// silently reject it the moment more than one origin is configured. We
-/// therefore do the matching ourselves here and always hand
-/// `Cors::with_origins` exactly one value: `ROOT_URL` if the request's
-/// `Origin` matches it, otherwise `ROOT_URL` anyway as an inert default —
-/// it simply won't match whatever the disallowed request's Origin was.
-///
-/// `ROOT_URL` (`[vars]`/`[env.dev.vars]`, wrangler.toml) is the frontend's
-/// own origin in both environments — `https://pidgeiot.com` in production,
-/// the local `dx serve` address in dev — so there's nothing else to
-/// configure here.
+/// `worker::Cors` comma-joins every configured origin into
+/// `Access-Control-Allow-Origin` instead of matching per-request — invalid
+/// per the CORS spec, so browsers reject it once more than one origin is
+/// configured. Match `Origin` against `ROOT_URL` ourselves and hand
+/// `Cors::with_origins` exactly one value; can't be computed once and
+/// shared by reference since each route is a separate `async move` closure
+/// and `Cors` isn't `Copy`.
 fn build_cors(env: &Env, req: &Request) -> worker::Cors {
   let root_origin = env
     .var("ROOT_URL")
@@ -75,11 +67,11 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
     .with_credentials(true)
 }
 
-/// RFC 9727 API catalog handler, shared by the GET and HEAD registrations
-/// on `/.well-known/api-catalog` (see the router). The API origins come
-/// from the request's own URL so prod/staging/dev each describe
-/// themselves; the human-facing doc links reuse `ROOT_URL` (the frontend
-/// origin) rather than introducing a new config var.
+/// RFC 9727 API catalog handler for `/.well-known/api-catalog`, shared by
+/// the GET and HEAD registrations below. API origin comes from the
+/// request's own URL so prod/staging/dev each describe themselves; doc
+/// links reuse `ROOT_URL` (the frontend origin) instead of a new config
+/// var.
 async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   let cors = build_cors(&ctx.env, &req);
   let Ok(url) = req.url() else {
@@ -137,43 +129,30 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
   response.with_headers(headers).with_cors(&cors)
 }
 
-/// A validated Kratos session's user id plus (if resolvable) the
-/// identity's own email trait -- see `require_auth_session` below. Named
-/// rather than a bare tuple to match this codebase's existing
-/// proof-of-check style (`PigeonAccess`/`FlockAccess`/`AlertAccess`, task
-/// #36's pattern, `docs/design/tenancy-isolation.md` §2.1), even though
-/// this isn't itself an authorization proof -- just a small, named bundle
-/// of what `require_auth` already extracts from the session.
+/// A validated Kratos session's user id plus (if resolvable) email trait.
+/// Named rather than a bare tuple to match this codebase's proof-of-check
+/// style (`PigeonAccess`/`FlockAccess`/`AlertAccess`), though this isn't
+/// itself an authorization proof.
 pub struct AuthSession {
   pub user_id: String,
   pub email: Option<String>,
-  /// The identity's VERIFIED addresses (lowercased), from
-  /// `identity.verifiable_addresses` -- the only recipients an alert's
-  /// per-alert email override may name (task #48: with open signup, an
-  /// unrestricted override lets any account use alert delivery to spam an
-  /// address it doesn't own; a verify-extra-address flow can widen this
-  /// later). Distinct from `email` above, which is the raw trait and says
-  /// nothing about verification.
+  /// Identity's VERIFIED addresses (lowercased), from
+  /// `identity.verifiable_addresses` -- the only addresses an alert's
+  /// per-alert email override may name (open signup means an unrestricted
+  /// override could turn alert delivery into a spam relay). Distinct from
+  /// `email` above, which is unverified.
   pub verified_emails: Vec<String>,
 }
 
-/// Validates the Kratos cookie and returns the full session identity
-/// (`AuthSession`: user id + the identity's `traits.email`, if present).
+/// Validates the Kratos cookie and returns the full session identity.
 ///
-/// `identity.traits` (`ory_kratos_client_wasm::models::Identity`) is
-/// `Option<serde_json::Value>` -- loosely typed coming off the wire, not a
-/// generated struct -- so the email is read via `.get("email")` against
-/// whatever shape it deserializes to. The trait's actual path is verified
-/// against this deployment's own identity schema
-/// (`schemas/kratos/identity.user.schema.json`): `traits.email` is a
-/// top-level, `required` string trait there, so `identity.traits.email` is
-/// the correct (and only) path -- not `identity.traits.identity.email` or
-/// similar. A session that's active but somehow can't resolve an email
-/// (malformed/missing trait) still yields `Ok` with `email: None` rather
-/// than failing the whole request -- most callers of `require_auth` (the
-/// thin wrapper below) never needed the email in the first place, and the
-/// two flock routes that do (`lib.rs`) treat a missing email as "nothing to
-/// write yet," not an authentication failure.
+/// `identity.traits` is a loosely-typed `Option<Value>`, not a generated
+/// struct, so email is read via `.get("email")` -- matches
+/// `schemas/kratos/identity.user.schema.json`'s top-level `traits.email`
+/// trait, not `traits.identity.email`. A session that can't resolve an
+/// email still yields `Ok` with `email: None` rather than failing -- most
+/// callers never need it, and the routes that do treat a missing email as
+/// "nothing to write yet."
 pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<AuthSession> {
   let session = crate::authenticate_browser(req, env)
     .await
@@ -205,14 +184,13 @@ pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<Au
   })
 }
 
-/// Task #48: an alert's per-alert email override may only name an address
-/// the caller's own identity has VERIFIED -- otherwise open free signup
-/// turns alert delivery into a spam relay (create account, point an alert's
-/// `channel.Email.to` at any stranger, feed it telemetry). `None` (deliver
-/// to flock owner_email, the default) is always fine. Returns the
-/// user-facing rejection message so both create routes and the update route
-/// emit the same 400 body. Case-insensitive; `verified_emails` is already
-/// lowercased at construction.
+/// An alert's per-alert email override may only name an address the
+/// caller's identity has VERIFIED -- otherwise open signup turns alert
+/// delivery into a spam relay (point `channel.Email.to` at any stranger,
+/// feed it telemetry). `None` (deliver to flock owner_email) is always
+/// fine. Returns the user-facing rejection message so both create routes
+/// and the update route emit the same 400 body. Case-insensitive;
+/// `verified_emails` is already lowercased at construction.
 fn validate_alert_channel(
   channel: &capsules::AlertChannel,
   verified_emails: &[String],
@@ -230,26 +208,23 @@ fn validate_alert_channel(
   }
 }
 
-/// Validates the Kratos cookie and returns the User ID as a String. Thin
-/// wrapper over `require_auth_session` -- kept so the ~25 existing call
-/// sites that only ever needed the user id (every route but the two flock
-/// ones, `lib.rs`) don't need to change shape for this addition.
+/// Validates the Kratos cookie and returns just the user id. Thin wrapper
+/// over `require_auth_session` for the many call sites that only need the
+/// id.
 pub async fn require_auth(req: &Request, env: &Env) -> worker::Result<String> {
   require_auth_session(req, env).await.map(|s| s.user_id)
 }
 
 /// Validates the Kratos cookie AND loads the caller's org-membership set
-/// (task #12) in ONE Postgres query (`load_org_roles`), producing the
-/// `Principal` (`helpers/orgs.rs`) every org-aware route forwards to
-/// Durable Objects as `X-User-Id` + `X-Org-Roles` and hands to
-/// `authorize_flock`.
+/// in one Postgres query (`load_org_roles`), producing the `Principal`
+/// every org-aware route forwards to Durable Objects as `X-User-Id` +
+/// `X-Org-Roles` and hands to `authorize_flock`.
 ///
-/// Availability decision, deliberate: a failed org-membership load (PG
-/// blip, tables not yet migrated) DEGRADES to an empty org set -- i.e.
-/// fail-closed for org-granted access, fail-open for nothing -- rather
-/// than failing the whole request. Before task #12 the pure-DO pigeon
-/// routes had no Postgres dependency at all; a Hyperdrive outage must not
-/// start 500ing a personal pigeon read that never needed Postgres.
+/// A failed org-membership load (PG blip, tables not migrated) degrades to
+/// an empty org set -- fail-closed for org-granted access, fail-open for
+/// personal access -- rather than failing the whole request. Pure-DO
+/// pigeon routes have no Postgres dependency otherwise; a Hyperdrive
+/// outage must not 500 a personal pigeon read that never needed Postgres.
 pub async fn require_principal(req: &Request, env: &Env) -> worker::Result<Principal> {
   let auth = require_auth_session(req, env).await?;
 
@@ -326,15 +301,13 @@ async fn parse_do_response<T: serde::de::DeserializeOwned>(
 }
 
 /// Parses a standard HTTP `Range` header (`bytes=<start>-<end>`,
-/// `bytes=<start>-` for open-ended, or `bytes=-<suffix>` for a trailing
-/// slice) into an R2 [`Range`] for `GET /device/pigeons/:id/firmware`
-/// (task #23) — the nRF9160 downloads a firmware image in small chunks
-/// straight to flash rather than buffering the whole ~300KB-1MB image in
-/// its ~256KB of RAM, so ranged reads aren't an optimization here, they're
-/// required. Only a single range is supported (a comma-separated multi-range
-/// request just uses the first one) — the device downloads sequentially,
-/// never in parallel/multi-range. Returns `None` on anything malformed,
-/// letting the caller fall back to serving the whole object.
+/// `bytes=<start>-` open-ended, or `bytes=-<suffix>` trailing slice) into
+/// an R2 [`Range`]. The nRF9160 downloads firmware in small chunks straight
+/// to flash rather than buffering ~300KB-1MB in its ~256KB of RAM, so
+/// ranged reads are required, not an optimization. Only a single range is
+/// supported (multi-range requests just use the first) since the device
+/// downloads sequentially. Returns `None` on anything malformed so the
+/// caller falls back to serving the whole object.
 fn parse_range_header(header: &str) -> Option<Range> {
   let spec = header.strip_prefix("bytes=")?;
   let spec = spec.split(',').next()?.trim();
@@ -360,15 +333,13 @@ fn parse_range_header(header: &str) -> Option<Range> {
   })
 }
 
-/// Computes the inclusive `(start, end)` byte range actually being served
-/// for `Content-Range`/`Content-Length`, given the request's parsed `Range`
-/// (if any) and the firmware's total size (from the shadow-assigned
-/// `FirmwareTarget`, treated as the authoritative total rather than
-/// whatever R2's own `Object::size()`/`Object::range()` report for a
-/// ranged fetch, which is ambiguous in the `worker` crate's own docs).
-/// Clamps an out-of-bounds request down to the object's actual end rather
-/// than erroring — a device racing a shrinking/reassigned image is a rare
-/// edge case, not worth a hard 416 here.
+/// Computes the inclusive `(start, end)` byte range actually served for
+/// `Content-Range`/`Content-Length`, using the shadow-assigned
+/// `FirmwareTarget`'s size as authoritative rather than R2's own
+/// `Object::size()`/`Object::range()` (ambiguous for a ranged fetch per the
+/// `worker` crate's docs). Clamps an out-of-bounds request to the object's
+/// end instead of a hard 416 -- a device racing a shrinking/reassigned
+/// image is a rare edge case.
 fn resolve_serve_range(range: &Range, total: u64) -> (u64, u64) {
   let last = total.saturating_sub(1);
   match *range {
@@ -485,12 +456,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       Response::from_json(&shadow)?.with_cors(&cors)
     })
-    // Real-time channel for non-cellular (WiFi/mains-powered) devices
-    // (task #32) -- a persistent, hibernation-backed WebSocket in place of
-    // the poll (GET .../shadow) + report (POST .../shadow,
-    // POST .../telemetry) pattern above. `GET`, matching the standard
-    // WebSocket-upgrade convention (the upgrade itself is a GET request
-    // with an `Upgrade: websocket` header, not a distinct HTTP method).
+    // Real-time channel for non-cellular (WiFi/mains-powered) devices -- a
+    // persistent, hibernation-backed WebSocket in place of the poll/report
+    // pattern above. `GET` matches the standard WebSocket-upgrade
+    // convention (the upgrade is a GET with an `Upgrade: websocket`
+    // header, not a distinct HTTP method).
     .get_async("/device/pigeons/:pigeon_id/ws", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
 
@@ -524,13 +494,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let cors = build_cors(&ctx.env, &req);
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
-        // Telemetry queue (task #14) — bound in both env.staging.queues and
-        // the default/production [[queues.*]] blocks of wrangler.toml
-        // (promoted to production 2026-07-17; an earlier version of this
-        // comment claimed prod fell through to the no-queue path below,
-        // which was wrong — see task #41). Only dev has no TELEMETRY_QUEUE
-        // binding and falls through to the original synchronous
-        // direct-DO-write path unchanged.
+        // Telemetry queue -- bound in both env.staging.queues and the
+        // default/production [[queues.*]] blocks of wrangler.toml. Only
+        // dev has no TELEMETRY_QUEUE binding and falls through to the
+        // synchronous direct-DO-write path below.
         let Ok(telemetry_queue) = ctx.env.queue("TELEMETRY_QUEUE") else {
           // Same device-auth model as the shadow device routes above.
           return proxy_to_pigeon_do(req, "", None, &obj_id, "/device/telemetry")
@@ -583,12 +550,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           pigeon_id: pigeon_id.clone(),
           metrics_json,
           reported_at_ms: Date::now().as_millis(),
-          // This route enqueues right after a bare auth check (verify_resp
-          // above) -- no DO round trip has happened yet that could capture
-          // a previous value, so there's nothing to carry here.
-          // write_telemetry_device (queue.rs::dispatch_http_sourced) does
-          // that capture itself, unchanged from before task #41. See
-          // TelemetryMessage::previous_values_json's doc comment.
+          // This route enqueues right after a bare auth check -- no DO
+          // round trip has happened yet that could capture a previous
+          // value, so there's nothing to carry here. write_telemetry_device
+          // (queue.rs::dispatch_http_sourced) does that capture itself.
           previous_values_json: None,
         };
 
@@ -755,11 +720,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let user_flocks = get_user_flocks(&client, &auth.user_id).await?;
 
-      // Best-effort backfill of `owner_email` (alerts recipient, task #32
-      // design doc §3.4) for any of this user's flocks created before that
-      // column was populated on create -- never fails this request, same
-      // fire-and-log convention as every other PG-sync side effect in this
-      // codebase.
+      // Best-effort backfill of `owner_email` (alerts recipient) for flocks
+      // created before that column was populated on create -- never fails
+      // this request, same fire-and-log convention as every PG-sync side
+      // effect in this codebase.
       if let Some(email) = &auth.email
         && let Err(e) = backfill_owner_email(&client, &auth.user_id, email).await
       {
@@ -896,11 +860,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       get_db!(ctx.env, client, &cors);
 
-      // Task #12: pigeon creation is gated on the TARGET FLOCK now --
-      // personal flock: its owner only; org-owned flock: org owner/admin
-      // (plain members are read/telemetry-level, see docs/api.md's
-      // matrix). Pre-org behavior never checked flock ownership at all,
-      // which was a latent gap this closes.
+      // Pigeon creation is gated on the TARGET FLOCK -- personal flock: its
+      // owner only; org-owned flock: org owner/admin (plain members are
+      // read/telemetry-level, see docs/api.md's matrix).
       let Ok(flock_row) = get_flock_with_pigeons(&client, &payload.flock_id).await else {
         return Response::error("Internal Server Error", 500)
           .unwrap()
@@ -943,11 +905,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let pcr = parse_do_response::<PigeonDetail>(do_response).await?;
 
-      // Org-owned flock: seed the ORG's own ACL row alongside the
-      // creator's (task #12). The DO write is the authoritative
-      // authorization store -- NOT best-effort: a failed grant fails the
-      // request loudly (the pigeon exists with the creator as owner; the
-      // creator can retry the grant via POST /pigeons/:id/acl).
+      // Org-owned flock: seed the org's own ACL row alongside the
+      // creator's. The DO write is authoritative, not best-effort -- a
+      // failed grant fails the request loudly (the pigeon exists with the
+      // creator as owner; retry via POST /pigeons/:id/acl).
       let org_acl = match flock.org_id {
         Some(org) => {
           let org_id_str = org.to_string();
@@ -1015,7 +976,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .with_headers(headers)
         .with_cors(&cors)
     })
-    // --- Flock transfer (task #12) ---
+    // --- Flock transfer ---
     // Moves a PERSONAL flock into an org the caller manages. The org ACL
     // row is propagated into every member pigeon's Durable Object FIRST
     // (authoritative, not best-effort -- any failure aborts before the
@@ -1332,7 +1293,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       Response::from_json(&acl)?.with_cors(&cors)
     })
-    // --- Telemetry Routes (task #18) ---
+    // --- Telemetry Routes ---
     .get_async("/pigeons/:pigeon_id/telemetry", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(principal) = require_principal(&req, &ctx.env).await else {
@@ -1381,10 +1342,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&endpoint)?.with_cors(&cors)
       },
     )
-    // --- Shell Route (task #34, v1 -- request/response diagnostic shell
-    // over the device WebSocket channel, not a new persistent connection
-    // of its own; see the design doc and objects/pigeons.rs::execute_shell_command
-    // for the relay/timeout/owner-gate details) ---
+    // --- Shell Route ---
+    // v1: request/response diagnostic shell over the device WebSocket
+    // channel, not a new persistent connection of its own. See
+    // objects/pigeons.rs::execute_shell_command for relay/timeout/owner-gate
+    // details.
     .post_async("/pigeons/:pigeon_id/shell", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(principal) = require_principal(&req, &ctx.env).await else {
@@ -1425,11 +1387,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         // Authorization lives in the DO's pigeon_acl table, but the data
         // itself is in Postgres/Greptime -- check the DO first via the ACL
-        // probe route before ever touching either. `check_pigeon_authz`
-        // returns a `PigeonAccess` proof on success, which is what makes
-        // `query_telemetry_history_for_pigeon` below callable at all (its
-        // signature requires the proof, not a bare pigeon_id) -- see
-        // docs/design/tenancy-isolation.md §2.1.
+        // probe. `check_pigeon_authz` returns a `PigeonAccess` proof on
+        // success, which is what makes `query_telemetry_history_for_pigeon`
+        // below callable at all (its signature requires the proof, not a
+        // bare pigeon_id).
         let authz_result =
           check_pigeon_authz(req, &principal.user_id, principal.org_roles_header(), &obj_id, &pigeon_id).await?;
         let access = match authz_result {
@@ -1437,11 +1398,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(resp) => return resp.with_cors(&cors),
         };
 
-        // Greptime-first, PG-fallback-on-error (task #26) -- see
-        // helpers/greptime.rs's doc comments for the full reasoning.
-        // `greptime_origin` returning `None` (unconfigured for this
-        // environment, e.g. staging/prod before the tunnel exists) skips
-        // straight to the PG path below without attempting a request.
+        // Greptime-first, PG-fallback-on-error -- see helpers/greptime.rs
+        // for the full reasoning. `greptime_origin` returning `None`
+        // (unconfigured for this env) skips straight to the PG path below.
         if crate::helpers::greptime_origin(&ctx.env).is_some() {
           match crate::helpers::query_greptime_history_for_pigeon(
             &ctx.env,
@@ -1496,12 +1455,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         // Flocks have no per-entity ACL table (unlike pigeons) --
-        // authorization goes through the centralized org-aware flock
-        // helper (task #12: authorize_flock, helpers/orgs.rs), which
-        // returns the FlockAccess proof the query helpers below require.
-        // This PG round-trip is needed regardless of whether Greptime is
-        // configured (task #26) -- Greptime has no pigeons/flocks tables
-        // of its own to resolve membership/ownership from.
+        // authorization goes through `authorize_flock` (helpers/orgs.rs),
+        // which returns the FlockAccess proof the query helpers below
+        // require. This PG round-trip is needed regardless of whether
+        // Greptime is configured -- Greptime has no pigeons/flocks tables
+        // to resolve membership/ownership from.
         get_db!(ctx.env, client, &cors);
 
         let Ok(access) = crate::helpers::authorize_flock(
@@ -1558,14 +1516,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&points)?.with_cors(&cors)
       },
     )
-    // --- Public Demo Routes (launch-eve, no ticket number) ---
-    // Deliberately unauthenticated -- read-only, and gated by exact
-    // membership in DEMO_PIGEON_IDS (helpers::is_demo_pigeon) rather than
-    // any session/ACL/device-token check, since a demo visitor has none of
-    // those. A pigeon_id that isn't allowlisted 404s, matching how the
-    // authenticated pigeon routes 404 rather than 403 on an unknown id --
-    // this route surface must not leak which ids exist. Nothing else about
-    // a pigeon (shadow, logs, listing) is reachable here.
+    // --- Public Demo Routes ---
+    // Deliberately unauthenticated -- read-only, gated by exact membership
+    // in DEMO_PIGEON_IDS (helpers::is_demo_pigeon) rather than any
+    // session/ACL/device-token check. An unallowlisted pigeon_id 404s,
+    // matching how authenticated pigeon routes 404 rather than 403 on an
+    // unknown id -- this surface must not leak which ids exist.
     .get_async("/demo/pigeons/:pigeon_id/telemetry", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
 
@@ -1642,7 +1598,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&points)?.with_cors(&cors)
       },
     )
-    // --- Firmware Routes (task #23) ---
+    // --- Firmware Routes ---
     .post_async(
       "/flocks/:flock_id/firmware",
       |mut req, ctx: RouteContext<()>| async move {
@@ -1659,10 +1615,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        // `board` (task #20, phase 1) is required, same as `version` --
-        // every new upload must declare the Zephyr `CONFIG_BOARD_TARGET`
-        // it was built for, so `objects/pigeons.rs::
-        // check_firmware_board_compat` has something to enforce against.
+        // `board` is required, same as `version` -- every new upload must
+        // declare the Zephyr `CONFIG_BOARD_TARGET` it was built for, so
+        // `objects/pigeons.rs::check_firmware_board_compat` has something
+        // to enforce against.
         let Ok(query) = req.query::<FirmwareUploadQuery>() else {
           return Response::error(
             "Bad Request: Missing 'version' or 'board' query parameter",
@@ -1704,12 +1660,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         get_db!(ctx.env, client, &cors);
 
-        // Org-aware since task #12: authorize_flock (helpers/orgs.rs) is
-        // the single flock-authz helper -- Manage = personal-flock owner,
-        // or org owner/admin on an org-owned flock. The upload route
-        // doesn't need the returned proof itself (`upsert_flock_firmware`
-        // isn't one of the "trusts the caller" helpers), so it's discarded,
-        // matching the pre-org shape.
+        // authorize_flock (helpers/orgs.rs) is the single flock-authz
+        // helper -- Manage = personal-flock owner, or org owner/admin on
+        // an org-owned flock. `upsert_flock_firmware` doesn't need the
+        // returned proof itself, so it's discarded here.
         let Ok(owner) = crate::helpers::authorize_flock(
           &client,
           &flock_id,
@@ -1790,9 +1744,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         get_db!(ctx.env, client, &cors);
 
-        // View-level (task #12): any org member may browse an org flock's
-        // firmware catalog (metadata only); a personal flock stays
-        // owner-only as before.
+        // View-level: any org member may browse an org flock's firmware
+        // catalog (metadata only); a personal flock stays owner-only.
         let Ok(owner) = crate::helpers::authorize_flock(
           &client,
           &flock_id,
@@ -1806,10 +1759,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        // `list_flock_firmware` requires a `FlockAccess` proof rather than a
-        // bare `flock_id` (see docs/design/tenancy-isolation.md §2.1), so
-        // the check's `Some` case is threaded straight through instead of
-        // being collapsed back into a `bool` first.
+        // `list_flock_firmware` requires a `FlockAccess` proof rather than
+        // a bare `flock_id`, so the check's `Some` case is threaded
+        // straight through instead of being collapsed back into a `bool`
+        // first.
         let Some(flock_access) = owner else {
           return Response::error("Forbidden: You do not have access to this flock", 403)
             .unwrap()
@@ -1825,20 +1778,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&images)?.with_cors(&cors)
       },
     )
-    // --- Log Dictionary Routes (task #5) ---
+    // --- Log Dictionary Routes ---
     // Per-pigeon storage of a firmware build's log_dictionary.json so the
     // dashboard's log viewer can decode this pigeon's dictionary-encoded
     // ring-buffer chunks (GET /pigeons/:id/logs) client-side. Stored in R2
-    // under the existing FIRMWARE_BUCKET binding (reuse-existing-config
-    // directive; no new bucket) at `log-dictionaries/<pigeon_id>.json` --
-    // per-pigeon, not per-flock, because a dictionary only decodes the
-    // exact build that produced it, and pigeons in one flock can run
-    // different builds. Member-gated (any ACL row), same bar as the log
-    // routes it exists to serve; the ACL check runs via the DO's
-    // /pigeon/authz/check probe (check_pigeon_authz) since the data itself
-    // lives in R2, not the DO -- same pattern as the telemetry-history
-    // routes. The R2 key is derived from the PigeonAccess proof, so an
-    // unchecked pigeon_id can never name the object.
+    // under the existing FIRMWARE_BUCKET binding at
+    // `log-dictionaries/<pigeon_id>.json` -- per-pigeon, not per-flock,
+    // because a dictionary only decodes the exact build that produced it,
+    // and pigeons in one flock can run different builds. Member-gated (any
+    // ACL row); the check runs via the DO's /pigeon/authz/check probe
+    // (check_pigeon_authz) since the data itself lives in R2, not the DO.
+    // The R2 key is derived from the PigeonAccess proof, so an unchecked
+    // pigeon_id can never name the object.
     .put_async(
       "/pigeons/:pigeon_id/log-dictionary",
       |mut req, ctx: RouteContext<()>| async move {
@@ -2039,21 +1990,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::empty()?.with_cors(&cors)
       },
     )
-    // --- Alert Routes (task #32) ---
-    // Owner-gated CRUD for user-defined alert definitions
-    // (docs/design/alerts-triggers.md). Scope (pigeon vs. flock) is implied
-    // by which of the two create/list route pairs was hit, never trusted
-    // from the request body -- see capsules::AlertDefinitionCreateRequest's
-    // doc comment. Update/delete are flat `/alerts/:alert_id` routes gated
-    // by `is_alert_owner` (a direct `alert_definitions.user_id` check),
-    // since an alert's owner is unambiguous regardless of its scope.
+    // --- Alert Routes ---
+    // Owner-gated CRUD for user-defined alert definitions. Scope (pigeon
+    // vs. flock) is implied by which of the two create/list route pairs
+    // was hit, never trusted from the request body -- see
+    // capsules::AlertDefinitionCreateRequest's doc comment. Update/delete
+    // are flat `/alerts/:alert_id` routes gated by `is_alert_owner` (a
+    // direct `alert_definitions.user_id` check), since an alert's owner is
+    // unambiguous regardless of its scope.
     .post_async(
       "/pigeons/:pigeon_id/alerts",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        // Full principal: the ACL probe needs the org-membership set
-        // (task #12) and channel validation below needs the identity's
-        // verified addresses (task #48).
+        // Full principal: the ACL probe needs the org-membership set, and
+        // channel validation below needs the identity's verified
+        // addresses.
         let Ok(principal) = require_principal(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
@@ -2065,11 +2016,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         // Cloned before the body is read below -- `check_pigeon_authz`
         // proxies to the DO's bare ACL probe route, which forwards
-        // whatever body the request carries even though that route never
-        // inspects it; cloning here (rather than reading the body twice
-        // off the same `Request`) means the clone's body can be consumed
-        // by that proxy without disturbing the original `req`, which still
-        // needs to be read as the create payload below.
+        // whatever body the request carries even though it never inspects
+        // it. Cloning lets the probe consume that copy's body without
+        // disturbing the original `req`, still needed for the create
+        // payload below.
         let Ok(authz_req) = req.clone() else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
@@ -2148,8 +2098,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/flocks/:flock_id/alerts",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        // Full principal for org-aware flock authz (task #12) +
-        // verified-address channel validation (task #48).
+        // Full principal for org-aware flock authz + verified-address
+        // channel validation.
         let Ok(principal) = require_principal(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
@@ -2262,7 +2212,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/alerts/:alert_id",
       |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
-        // Full session for verified-address channel validation (task #48).
+        // Full session for verified-address channel validation.
         let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
             .unwrap()
@@ -2352,22 +2302,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::empty()?.with_cors(&cors)
       },
     )
-    // --- Feedback Route (task #13) ---
+    // --- Feedback Route ---
     // Public, optionally-authenticated: the feedback form is linked from
-    // marketing pages too, so no session is required -- but when a valid
-    // Kratos session IS present it's resolved server-side and included in
-    // the notification email (never trusted from the body). Abuse
-    // protection is deliberately existing-pattern-only: Content-Type must
-    // be JSON, the raw body and each field are size-capped
-    // (capsules::MAX_FEEDBACK_* -- 400/413, same shape as the firmware/
-    // log-dictionary caps), and delivery reuses the prod-only
-    // OPS_ALERT_EMAIL + RESEND_API_KEY pair, so staging/dev degrade to a
-    // logged no-op (see helpers/feedback.rs). There is no per-IP rate
-    // limiter here because no in-Worker per-IP pattern exists anywhere in
-    // this codebase yet (docs/api.md's "Rate & size limits" is explicit
-    // about that) -- platform-level protection (a Cloudflare WAF
-    // rate-limiting rule on POST /feedback, or Turnstile) is the flagged
-    // follow-up, not something to hand-roll in-route.
+    // marketing pages too, so no session is required, but a present Kratos
+    // session is resolved server-side and included in the notification
+    // email (never trusted from the body). Abuse protection is
+    // deliberately existing-pattern-only: Content-Type must be JSON, body
+    // and each field are size-capped (capsules::MAX_FEEDBACK_*), and
+    // delivery reuses the prod-only OPS_ALERT_EMAIL + RESEND_API_KEY pair,
+    // so staging/dev degrade to a logged no-op. No per-IP rate limiter
+    // here -- that's platform-level (a Cloudflare WAF rule or Turnstile),
+    // not something to hand-roll in-route.
     .post_async("/feedback", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
 
@@ -2459,13 +2404,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
     })
-    // --- Organization Routes (task #12) ---
-    // Shared-org access for teams (the PVTA case): individual Kratos
-    // accounts, org-level RBAC, membership-row revocation. Org-management
-    // authorization funnels through helpers/orgs.rs::org_role_of + the
-    // per-route minimum-role rules below; the full permission matrix lives
-    // in docs/api.md's "Organizations" section. Member listing is part of
-    // GET /orgs/:org_id (no separate members GET).
+    // --- Organization Routes ---
+    // Shared-org access for teams: individual Kratos accounts, org-level
+    // RBAC, membership-row revocation. Authorization funnels through
+    // helpers/orgs.rs::org_role_of + the per-route minimum-role rules
+    // below; the full permission matrix lives in docs/api.md's
+    // "Organizations" section. Member listing is part of GET /orgs/:org_id
+    // (no separate members GET).
     .post_async("/orgs", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
@@ -3017,9 +2962,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       },
     )
     // Deliberately NOT under /orgs/:org_id -- the accepting user knows only
-    // the token, not the org id (and must not need to). Token-alone
-    // acceptance; see helpers/orgs.rs::accept_invite for the tradeoff
-    // rationale and docs/api.md for the documented decision.
+    // the token, not the org id (and must not need to). See
+    // helpers/orgs.rs::accept_invite for the tradeoff.
     .post_async("/invites/accept", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(auth) = require_auth_session(&req, &ctx.env).await else {

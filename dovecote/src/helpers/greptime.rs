@@ -4,13 +4,11 @@ use time::OffsetDateTime;
 use worker::{Env, Fetch, Method, Request, RequestInit, Result, console_error};
 
 /// Bare origin (scheme + host + port, e.g. `http://127.0.0.1:4000` in dev)
-/// of the platform's own default GreptimeDB instance (task #26) — `None`
-/// means "not configured for this environment," which is the expected
-/// state for staging/prod until the user stands up the self-hosted
-/// instance behind a Cloudflare Tunnel and sets this var (see
-/// `wrangler.toml`'s comments). Every caller in this module treats an
-/// unset origin as "fall back to Postgres," never as an error — this is
-/// the grace-period design the task's design doc settled on.
+/// of the platform's own default GreptimeDB instance — `None` means "not
+/// configured for this environment," the expected state until a
+/// self-hosted instance is stood up behind a Cloudflare Tunnel (see
+/// `wrangler.toml`'s comments). Every caller here treats an unset origin
+/// as "fall back to Postgres," never as an error.
 pub fn greptime_origin(env: &Env) -> Option<String> {
   env
     .var("GREPTIMEDB_ENDPOINT")
@@ -21,16 +19,15 @@ pub fn greptime_origin(env: &Env) -> Option<String> {
 
 /// Optional GreptimeDB **database name** (`GREPTIMEDB_DB` var, per-env) the
 /// platform-default read/write paths target. `None` → GreptimeDB's built-in
-/// `public` database (dev and prod both use it as-is). Staging sets this to
-/// its own name (e.g. `"staging"`) so it can share prod's single self-hosted
-/// instance without its telemetry landing in prod's `public` db — the
-/// isolation the task #26 design doc (§1.4) and `wrangler.toml` call for.
-/// Only ever applied to our own `GREPTIMEDB_ENDPOINT` origin, never a
-/// per-pigeon `telemetry_endpoint`. NOTE: GreptimeDB's InfluxDB write does
-/// NOT auto-create a missing database (it 400s "Failed to find schema"), so
-/// a non-`public` name here must be `CREATE DATABASE`'d once at setup — see
-/// `wrangler.toml`. Until it is, `write_telemetry_default` just falls back to
-/// Postgres history, so telemetry is never lost, only un-isolated.
+/// `public` database. Staging sets its own name (e.g. `"staging"`) so it
+/// can share prod's single self-hosted instance without its telemetry
+/// landing in prod's `public` db. Only ever applied to our own
+/// `GREPTIMEDB_ENDPOINT` origin, never a per-pigeon `telemetry_endpoint`.
+/// GreptimeDB's InfluxDB write does NOT auto-create a missing database (it
+/// 400s "Failed to find schema"), so a non-`public` name must be `CREATE
+/// DATABASE`'d once at setup — see `wrangler.toml`. Until it is,
+/// `write_telemetry_default` falls back to Postgres history, so telemetry
+/// is never lost, only un-isolated.
 fn greptime_db(env: &Env) -> Option<String> {
   env
     .var("GREPTIMEDB_DB")
@@ -87,11 +84,10 @@ fn greptime_access_headers(env: &Env) -> Vec<(String, String)> {
 
 /// Line protocol escaping for measurement/tag/field keys and tag values:
 /// commas, spaces, and equals signs must be backslash-escaped outside of
-/// quoted string field values (order matters -- backslash itself first, so
-/// the later replacements' own backslashes aren't re-escaped). Shared by
-/// both line-protocol write paths (`queue.rs`'s per-pigeon forward and
-/// `write_greptime_default` below) -- moved here from `queue.rs` (task
-/// #26) so the two don't duplicate this escaping logic.
+/// quoted string field values (order matters -- backslash first, so later
+/// replacements' own backslashes aren't re-escaped). Shared by both
+/// line-protocol write paths (`queue.rs`'s per-pigeon forward and
+/// `write_greptime_default` below).
 pub fn escape_key_or_tag(value: &str) -> String {
   value
     .replace('\\', "\\\\")
@@ -126,8 +122,7 @@ pub fn url_encode_component(value: &str) -> String {
 /// report -- one line, one point in time: every key in `metrics` becomes a
 /// field on a single `pigeon_telemetry` measurement, tagged by `pigeon_id`.
 /// Shared by `queue.rs`'s per-pigeon forward and `write_greptime_default`
-/// below (task #26) -- previously duplicated inline in `queue.rs` before
-/// this platform-default write path existed.
+/// below.
 pub fn build_line_protocol(
   pigeon_id: &str,
   metrics: &HashMap<String, String>,
@@ -199,11 +194,11 @@ pub async fn post_line_protocol(
 }
 
 /// Forwards one device telemetry report to the platform's own default
-/// GreptimeDB instance (task #26) -- the new default write path, used
-/// whenever `GREPTIMEDB_ENDPOINT` is configured for this environment.
-/// Errors (including "not configured") are returned to the caller rather
-/// than swallowed here, since `write_telemetry_default` below is what
-/// decides whether to fall back to Postgres.
+/// GreptimeDB instance, the default write path used whenever
+/// `GREPTIMEDB_ENDPOINT` is configured for this environment. Errors
+/// (including "not configured") are returned to the caller rather than
+/// swallowed here, since `write_telemetry_default` below is what decides
+/// whether to fall back to Postgres.
 async fn write_greptime_default(
   env: &Env,
   pigeon_id: &str,
@@ -230,21 +225,20 @@ async fn write_greptime_default(
   post_line_protocol(&url, &line, token.as_deref(), &extra_headers).await
 }
 
-/// Grace-period default telemetry write (task #26): tries the platform's
-/// own GreptimeDB instance first (if `GREPTIMEDB_ENDPOINT` is configured
-/// for this environment), falling back to the Postgres
-/// `pigeon_telemetry_history` table on either an unset endpoint OR a
-/// forward error -- see the task's design doc (`## 3`) for why this
-/// fallback exists (a brand-new self-hosted single instance has no uptime
-/// track record yet) and why it's a temporary grace-period measure, not a
+/// Grace-period default telemetry write: tries the platform's own
+/// GreptimeDB instance first (if `GREPTIMEDB_ENDPOINT` is configured for
+/// this environment), falling back to the Postgres
+/// `pigeon_telemetry_history` table on either an unset endpoint or a
+/// forward error -- a brand-new self-hosted single instance has no uptime
+/// track record yet, so this is a temporary grace-period measure, not a
 /// permanent dual-write architecture: once Greptime forwarding succeeds,
 /// this returns without touching Postgres at all.
 ///
 /// Shared by all three "no per-pigeon `telemetry_endpoint` override" write
-/// sites -- the queue consumer (`queue.rs`), and the two no-queue-bound
-/// fallbacks task #17 closed the gap on (`objects/pigeons.rs`'s
-/// `handle_ws_telemetry`/`report_telemetry_device`) -- so all three keep
-/// behaving identically, which was the whole point of task #17.
+/// sites -- the queue consumer (`queue.rs`) and the two no-queue-bound
+/// fallbacks in `objects/pigeons.rs`
+/// (`handle_ws_telemetry`/`report_telemetry_device`) -- so all three keep
+/// behaving identically.
 pub async fn write_telemetry_default(
   env: &Env,
   pigeon_id: &str,
@@ -301,18 +295,16 @@ fn is_valid_pigeon_id(id: &str) -> bool {
 }
 
 /// `pigeon_telemetry` is a GreptimeDB **auto-schema wide table**, not a
-/// row-per-key log like Postgres's `pigeon_telemetry_history` -- confirmed
-/// empirically against a real local instance while building this (not
-/// assumed from docs): every distinct metric key a device has ever
-/// reported becomes its own `FIELD` column (`pigeon_id` is the tag/`PRI`
-/// key, `greptime_timestamp` the `TIMESTAMP`/`PRI` key), auto-added on
-/// first appearance via `write_greptime_default`'s line-protocol writes,
-/// `NULL` for any row/timestamp that didn't report that particular key.
-/// `SELECT *` fetches every column; `key`/`since`/`until` filtering and
-/// the 5000-point cap are applied Rust-side after pivoting each wide row
-/// back into one `TelemetryHistoryPoint` per non-null field -- there is no
-/// SQL-level way to filter by "key" here since a key is a column, not a
-/// value.
+/// row-per-key log like Postgres's `pigeon_telemetry_history`: every
+/// distinct metric key a device has ever reported becomes its own `FIELD`
+/// column (`pigeon_id` is the tag/`PRI` key, `greptime_timestamp` the
+/// `TIMESTAMP`/`PRI` key), auto-added on first appearance via
+/// `write_greptime_default`'s line-protocol writes, `NULL` for any row
+/// that didn't report that particular key. `SELECT *` fetches every
+/// column; `key`/`since`/`until` filtering and the 5000-point cap are
+/// applied Rust-side after pivoting each wide row back into one
+/// `TelemetryHistoryPoint` per non-null field -- there is no SQL-level way
+/// to filter by "key" here since a key is a column, not a value.
 fn build_history_sql(
   pigeon_ids: &[String],
   since: Option<OffsetDateTime>,
@@ -347,9 +339,9 @@ fn build_history_sql(
 
 /// Runs one SQL-over-HTTP query (`POST {origin}/v1/sql`) against the
 /// platform's default GreptimeDB and pivots the wide-table response into
-/// `TelemetryHistoryPoint`s. "Table not found" (confirmed empirically: a
-/// `400` with `{"code":4001,"error":"...Table not found..."}`) is treated
-/// as an empty result, not an error -- it's the expected shape for any
+/// `TelemetryHistoryPoint`s. "Table not found" (a `400` with
+/// `{"code":4001,"error":"...Table not found..."}`) is treated as an empty
+/// result, not an error -- it's the expected shape for any
 /// environment/pigeon before its first-ever telemetry write has landed,
 /// and treating it as a hard error would spuriously trigger the
 /// fallback-to-PG path (in `query_greptime_history_for_pigeon(s)` below)
@@ -466,7 +458,7 @@ async fn query_greptime_sql(env: &Env, sql: &str) -> Result<Vec<TelemetryHistory
 }
 
 /// Backs `GET /pigeons/:id/telemetry/history` when `GREPTIMEDB_ENDPOINT`
-/// is configured (task #26) -- the Greptime-first counterpart to
+/// is configured -- the Greptime-first counterpart to
 /// `helpers::query_telemetry_history_for_pigeon` (Postgres), which the
 /// gateway route falls back to on `Err` here (or skips this entirely if
 /// unconfigured). Caller is responsible for ACL-gating before this runs,
@@ -492,10 +484,8 @@ pub async fn query_greptime_history_for_pigeon(
 /// configured -- takes an explicit, already-ownership-checked pigeon-ID
 /// list (see `helpers::get_flock_pigeon_ids`, a Postgres round-trip that
 /// still has to happen first: Greptime has no `pigeons`/`flocks` tables of
-/// its own to resolve flock membership or ownership from -- see the task's
-/// design doc, `## 2`, for the full reasoning on why this is a
-/// two-round-trip design either way, same shape as the Postgres path's own
-/// `JOIN`).
+/// its own to resolve flock membership or ownership from), same
+/// two-round-trip shape as the Postgres path's own `JOIN`.
 pub async fn query_greptime_history_for_pigeons(
   env: &Env,
   pigeon_ids: &[String],

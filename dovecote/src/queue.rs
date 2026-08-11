@@ -13,25 +13,21 @@ use crate::objects::pigeons::{
 };
 
 /// Message enqueued by two producers: the `POST /device/pigeons/:id/telemetry`
-/// gateway route (`lib.rs`) once it has verified the device's bearer token
-/// against the owning DO -- see `verify_device_via_do` (`helpers/pigeons.rs`)
-/// and `verify_telemetry_device`/`write_telemetry_device`
-/// (`objects/pigeons.rs`) -- and the WebSocket `telemetry` frame handler,
-/// `handle_ws_telemetry` (`objects/pigeons.rs`, task #32/#41). `reported_at_ms`
-/// is when the report was accepted; it's informational only for now -- the
-/// DO's own `pigeon_telemetry` rows still stamp `reported_at` at write time
-/// via SQLite's `unixepoch()` default, unchanged from the pre-queue
-/// direct-write path.
+/// gateway route once it verifies the device's bearer token against the
+/// owning DO, and the WebSocket `telemetry` frame handler
+/// (`handle_ws_telemetry`, `objects/pigeons.rs`). `reported_at_ms` is when
+/// the report was accepted -- informational only, the DO's own
+/// `pigeon_telemetry` rows still stamp `reported_at` at write time via
+/// SQLite's `unixepoch()` default.
 ///
 /// `metrics_json` carries the device's flat `{"key":"val"}` report as a
 /// pre-serialized JSON string, NOT a `HashMap`: `Queue::send` serializes
 /// through serde-wasm-bindgen, which turns a Rust map into a JS `Map`, and
-/// the queue's default JSON content type then `JSON.stringify`s that `Map`
-/// into `{}` -- silently emptying every report (observed live: the DO write
-/// 400'd "Empty telemetry report" on every consumed message). Strings
-/// survive every serializer identically. `#[serde(default)]` lets messages
-/// from before this fix decode as empty and be ack-dropped instead of
-/// wedging the whole batch.
+/// the queue's JSON content type then `JSON.stringify`s that `Map` into
+/// `{}` -- silently emptying every report. Strings survive every
+/// serializer identically. `#[serde(default)]` lets messages from before
+/// this fix decode as empty and get ack-dropped instead of wedging the
+/// batch.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct TelemetryMessage {
   pub pigeon_id: String,
@@ -40,34 +36,27 @@ pub struct TelemetryMessage {
   pub reported_at_ms: u64,
   /// Pre-serialized JSON of this report's `PreviousTelemetryValue` map (same
   /// "must be a string, not a raw `HashMap`" reasoning as `metrics_json`
-  /// above -- it would hit the identical serde-wasm-bindgen -> JS `Map` ->
-  /// `JSON.stringify` == `{}` bug otherwise), captured by `handle_ws_telemetry`
-  /// (`objects/pigeons.rs`) at WS-ingest time, BEFORE its own upsert
-  /// overwrote `pigeon_telemetry` (task #41).
+  /// above), captured by `handle_ws_telemetry` (`objects/pigeons.rs`) at
+  /// WS-ingest time, before its own upsert overwrote `pigeon_telemetry`.
   ///
-  /// `None` for HTTP-sourced messages (`report_telemetry_device`'s
-  /// queue-producer route in `lib.rs`): that route enqueues right after a
+  /// `None` for HTTP-sourced messages: that route enqueues right after a
   /// bare auth check, with no DO round trip that could capture a previous
   /// value, so there is nothing to carry -- `write_telemetry_device`
-  /// (dispatched below) does that capture itself, same as before task #41.
-  /// `dispatch_to_do` uses this field's presence (not the environment) to
-  /// decide which DO route a message goes to. `#[serde(default)]` so
-  /// messages enqueued before this field existed decode as `None` rather
-  /// than failing to deserialize.
+  /// (dispatched below) does that capture itself. `dispatch_to_do` uses
+  /// this field's presence, not the environment, to decide which DO route
+  /// a message goes to. `#[serde(default)]` so messages enqueued before
+  /// this field existed decode as `None` rather than failing to
+  /// deserialize.
   #[serde(default)]
   pub previous_values_json: Option<String>,
 }
 
 /// Queue consumer for `pidgeiot-telemetry` (bound as `TELEMETRY_QUEUE` in
 /// both `[env.staging.queues]` and the default/production `[[queues.*]]`
-/// blocks of `wrangler.toml` -- promoted to production 2026-07-17,
-/// contrary to an earlier claim in this codebase's history that only
-/// staging bound it; see task #41). Dispatches each message to its owning
+/// blocks of `wrangler.toml`). Dispatches each message to its owning
 /// pigeon's DO, keeping the DO's SQLite `pigeon_telemetry` table as the
-/// store, unchanged from the pre-queue direct-write path. Acks/retries
-/// per-message rather than failing the whole batch on one bad message, so a
-/// single malformed pigeon_id doesn't hold up every other device's report
-/// in the batch.
+/// store. Acks/retries per-message rather than failing the whole batch, so
+/// one malformed pigeon_id doesn't hold up every other device's report.
 #[event(queue)]
 pub async fn queue_consumer(
   message_batch: MessageBatch<TelemetryMessage>,
@@ -134,11 +123,10 @@ async fn dispatch_to_do(
 }
 
 /// HTTP-sourced queue message path (`report_telemetry_device`'s
-/// queue-producer route in `lib.rs`) -- unchanged from before task #41: no
-/// pre-upsert has happened yet, so the trusted-internal
-/// `/pigeon/device/telemetry/write` route (`write_telemetry_device`,
-/// `objects/pigeons.rs`) does the read-before-upsert capture AND the
-/// upsert itself, in one DO round trip.
+/// queue-producer route in `lib.rs`): no pre-upsert has happened yet, so
+/// the trusted-internal `/pigeon/device/telemetry/write` route
+/// (`write_telemetry_device`, `objects/pigeons.rs`) does the
+/// read-before-upsert capture AND the upsert itself, in one DO round trip.
 async fn dispatch_http_sourced(
   stub: &worker::Stub,
   env: &Env,
@@ -182,10 +170,9 @@ async fn dispatch_http_sourced(
           .await;
         }
         Err(e) => {
-          // Fall back to the pre-task-#18 behavior: re-parse the queue
-          // message's own metrics_json (independent of the DO response
-          // shape) and write our own default (task #26: Greptime-or-PG),
-          // so a response-parsing mismatch doesn't silently drop
+          // Fall back: re-parse the queue message's own metrics_json
+          // (independent of the DO response shape) and write our own
+          // default, so a response-parsing mismatch doesn't silently drop
           // telemetry that already landed in the DO.
           console_error!(
             "Telemetry consumer: failed to parse DO write result for '{}', falling back to default write: {e}",
@@ -197,11 +184,10 @@ async fn dispatch_http_sourced(
             Ok(metrics) => {
               // `previous_values` isn't available here -- the DO's own
               // response (the only place an HTTP-sourced message carries
-              // it) is exactly what failed to parse -- so RateOfChange
-              // can't be evaluated on this degraded path; Threshold still
-              // can, same as before task #41. No `telemetry_endpoint`
-              // either, for the same reason -- always falls to the
-              // platform default here.
+              // it) is exactly what failed to parse, so RateOfChange can't
+              // be evaluated on this degraded path; Threshold still can.
+              // No `telemetry_endpoint` either, for the same reason --
+              // always falls to the platform default here.
               store_and_alert(
                 env,
                 &body.pigeon_id,
@@ -239,19 +225,19 @@ async fn dispatch_http_sourced(
 }
 
 /// WS-sourced queue message path (`handle_ws_telemetry`,
-/// `objects/pigeons.rs`, task #41). Unlike the HTTP-sourced path above,
+/// `objects/pigeons.rs`). Unlike the HTTP-sourced path above,
 /// `pigeon_telemetry` was already upserted synchronously, before this
 /// message was even enqueued, and this report's true previous values were
 /// already captured at that same moment -- see
 /// `TelemetryMessage::previous_values_json`'s doc comment. Re-running
 /// `write_telemetry_device` here would both upsert a second time for no
-/// reason and re-read "previous" values that are no longer previous (the
-/// exact bug this task fixes, since that second read would see the value
-/// `handle_ws_telemetry` already wrote). So this path skips
-/// `write_telemetry_device` entirely and only asks the DO for the one
-/// piece of state it doesn't already have -- this pigeon's
-/// `telemetry_endpoint` -- via the read-only `/pigeon/device/telemetry/endpoint`
-/// route (`read_telemetry_endpoint_device`), using the metrics and
+/// reason and re-read "previous" values that are no longer previous (that
+/// second read would see the value `handle_ws_telemetry` already wrote).
+/// So this path skips `write_telemetry_device` entirely and only asks the
+/// DO for the one piece of state it doesn't already have -- this pigeon's
+/// `telemetry_endpoint` -- via the read-only
+/// `/pigeon/device/telemetry/endpoint` route
+/// (`read_telemetry_endpoint_device`), using the metrics and
 /// previous-values already carried on the message itself.
 async fn dispatch_ws_sourced(
   stub: &worker::Stub,
@@ -342,14 +328,12 @@ async fn dispatch_ws_sourced(
 }
 
 /// Shared "where does this report's history go, and should it trip an
-/// alert" tail for both dispatch paths above -- factored out (task #41) to
-/// avoid a third copy once the WS-sourced path needed the same decision.
-/// Forwards as line protocol to a configured per-pigeon `telemetry_endpoint`
-/// if one exists (`previous_values` unused in that branch: RateOfChange
-/// isn't evaluated when a report is forwarded externally rather than
-/// stored in our own history, unchanged from before this task); otherwise
-/// writes the platform default (Greptime or PG history,
-/// `write_telemetry_default`) and evaluates alerts against
+/// alert" tail for both dispatch paths above. Forwards as line protocol to
+/// a configured per-pigeon `telemetry_endpoint` if one exists
+/// (`previous_values` unused in that branch -- RateOfChange isn't
+/// evaluated when a report is forwarded externally rather than stored in
+/// our own history); otherwise writes the platform default (Greptime or PG
+/// history, `write_telemetry_default`) and evaluates alerts against
 /// `previous_values`.
 async fn store_and_alert(
   env: &Env,
@@ -377,10 +361,9 @@ async fn store_and_alert(
         );
       }
 
-      // Alert evaluation (task #32, extended #39, threaded through for
-      // WS-sourced messages by #41) -- best-effort, alongside the default
-      // write above, same "log and move on, never fail/retry the queue
-      // message" convention.
+      // Alert evaluation -- best-effort, alongside the default write
+      // above, same "log and move on, never fail/retry the queue message"
+      // convention.
       if let Err(e) =
         check_telemetry_alerts(env, pigeon_id, metrics, previous_values, reported_at_ms).await
       {
@@ -395,23 +378,20 @@ async fn store_and_alert(
 
 /// Forwards one device telemetry report as an InfluxDB line protocol v2
 /// HTTP write (GreptimeDB-compatible) to a pigeon's user-configured
-/// `telemetry_endpoint` (task #18, part 2) -- taken INSTEAD of the
-/// platform default (our own GreptimeDB, or PG history -- see
-/// `write_telemetry_default`, task #26) once a per-pigeon endpoint is set
-/// (see `capsules::TelemetryEndpoint`'s doc comment; the DO's own
-/// latest-value upsert always happens regardless). `endpoint.url` is the
-/// user's full write URL (e.g. `https://host:4000/v1/influxdb/write`) --
-/// we only ever append `precision`/`db` query params, never assume a
-/// particular path, since GreptimeDB/InfluxDB deployments vary.
+/// `telemetry_endpoint` -- taken INSTEAD of the platform default (our own
+/// GreptimeDB, or PG history) once a per-pigeon endpoint is set; the DO's
+/// own latest-value upsert always happens regardless. `endpoint.url` is
+/// the user's full write URL -- we only ever append `precision`/`db` query
+/// params, never assume a particular path, since GreptimeDB/InfluxDB
+/// deployments vary.
 ///
-/// Line-building and the actual HTTP POST are shared with
+/// Line-building and the HTTP POST are shared with
 /// `helpers::write_telemetry_default`'s own Greptime write via
-/// `build_line_protocol`/`post_line_protocol` (`helpers/greptime.rs`,
-/// task #26) -- **deliberately passes `&[]` for `extra_headers`**: this is
-/// a per-pigeon, user-configured URL, so it must never carry this Worker's
-/// own Cloudflare Access service-token headers (those are only for our own
-/// `GREPTIMEDB_ENDPOINT` origin -- see `greptime.rs`'s doc comments on
-/// why leaking them here would be a real credential leak).
+/// `build_line_protocol`/`post_line_protocol` -- deliberately passes `&[]`
+/// for `extra_headers`: this is a per-pigeon, user-configured URL, so it
+/// must never carry this Worker's own Cloudflare Access service-token
+/// headers (those are only for our own `GREPTIMEDB_ENDPOINT` origin;
+/// leaking them here would be a real credential leak).
 async fn forward_line_protocol(
   endpoint: &TelemetryEndpoint,
   pigeon_id: &str,

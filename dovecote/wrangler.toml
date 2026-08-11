@@ -13,24 +13,21 @@ enabled = true
 invocation_logs = true
 head_sampling_rate = 0
 
-# GREPTIMEDB_ENDPOINT (task #26, all three [vars]/[env.*.vars] blocks
-# below) -- the platform's optional GreptimeDB telemetry store, read via
+# GREPTIMEDB_ENDPOINT (all three [vars]/[env.*.vars] blocks below) -- the
+# platform's optional GreptimeDB telemetry store, read via
 # helpers/greptime.rs::greptime_origin. A bare origin (scheme+host+port),
 # e.g. "http://127.0.0.1:4000" in dev, NOT a full path -- the read/write
 # code appends its own "/v1/influxdb/write" / "/v1/sql" paths. Empty/unset
-# means "use the Postgres pigeon_telemetry_history fallback" for every
+# falls back to the Postgres pigeon_telemetry_history path for every
 # write/read (see write_telemetry_default/the telemetry/history routes in
-# lib.rs) -- which is the LIVE state for prod + staging since task #47
-# folded Greptime into Postgres (docs/infra/postgres-consolidation.md) and
-# retired the Proxmox instance behind https://telemetry.pidgeiot.com. Only
-# dev still points at a real instance (local docker-compose). To bring
-# GreptimeDB back for an env: point this at its origin (plus, if it sits
-# behind a Cloudflare Tunnel + Access policy again, the ACCESS_CLIENT_*
+# lib.rs). Only dev still points at a real instance (local docker-compose).
+# To bring GreptimeDB back for an env: point this at its origin (plus, if
+# it sits behind a Cloudflare Tunnel + Access policy, the ACCESS_CLIENT_*
 # secrets below -- without them the Access gate 403s the Worker and
 # telemetry silently falls back to Postgres history).
 #
-# DEMO_PIGEON_IDS (launch-eve, all three [vars]/[env.*.vars] blocks below)
-# -- comma-separated pigeon ids allowlisted for the public, unauthenticated
+# DEMO_PIGEON_IDS (all three [vars]/[env.*.vars] blocks below) --
+# comma-separated pigeon ids allowlisted for the public, unauthenticated
 # GET /demo/pigeons/:id/telemetry* routes (helpers/demo.rs::is_demo_pigeon,
 # lib.rs). Empty/unset means no pigeon is demo-eligible in that
 # environment -- NOT "allow anything". Exact string match after splitting
@@ -38,15 +35,16 @@ head_sampling_rate = 0
 #
 # GREPTIMEDB_DB (optional, per-env var) -- the GreptimeDB *database* the
 # read/write paths target (helpers/greptime.rs::greptime_db). Unset → the
-# built-in `public` database. Historically staging set it to `"staging"` so
-# it could share prod's single self-hosted instance without its telemetry
-# landing in prod's `public` db (task #26 design doc §1.4); unused now that
-# no deployed env points at a GreptimeDB instance (see above). ONE-
-# TIME SETUP for any non-`public` name: GreptimeDB's InfluxDB write does not
-# auto-create a missing database (it 400s "Failed to find schema"), so run
-# `CREATE DATABASE <name>;` against the instance once (e.g. via its SQL HTTP
-# endpoint) before pointing an env at it. Until then telemetry silently
-# falls back to Postgres history rather than being lost.
+# built-in `public` database. Not set in any deployed env today, since no
+# env points at a GreptimeDB instance (see above) -- but it exists so
+# multiple envs sharing one self-hosted GreptimeDB instance can keep their
+# telemetry in separate databases instead of colliding in `public`.
+# ONE-TIME SETUP for any non-`public` name:
+# GreptimeDB's InfluxDB write does not auto-create a missing database (it
+# 400s "Failed to find schema"), so run `CREATE DATABASE <name>;` against
+# the instance once (e.g. via its SQL HTTP endpoint) before pointing an env
+# at it. Until then telemetry silently falls back to Postgres history
+# rather than being lost.
 #
 # Companion Worker SECRETS (never here -- wrangler.toml is committed):
 # GREPTIMEDB_AUTH_TOKEN (GreptimeDB's own HTTP auth, if the deployment has
@@ -56,8 +54,7 @@ head_sampling_rate = 0
 # pair this Worker presents so the Tunnel's Access policy lets it through
 # -- only meaningful once staging/prod's tunnel exists; irrelevant in dev,
 # which reaches the local docker instance directly with no Access gate).
-# Set via `wrangler secret put <NAME> --env <env>` once the user's infra
-# step lands.
+# Set via `wrangler secret put <NAME> --env <env>`.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
@@ -70,10 +67,10 @@ DEVICE_API_HOST = "api.pidgeiot.com"
 OPS_ALERT_EMAIL = "code@jes.contact"
 # Production demo pigeon (see the DEMO_PIGEON_IDS note above).
 DEMO_PIGEON_IDS = "44e81fc18f5beddf8cabf57c3decd16ad1b7d24dd629213c2c4ac9038e50b03f"
-# Greptime folded into Postgres (task #47, docs/infra/postgres-consolidation.md):
-# empty → every telemetry write/read uses the Postgres pigeon_telemetry_history
-# fallback (Crunchy Bridge via Hyperdrive). The Proxmox GreptimeDB instance and
-# its telemetry.pidgeiot.com tunnel route are retired with the rest of the
+# Greptime folded into Postgres: empty → every telemetry write/read uses
+# the Postgres pigeon_telemetry_history fallback (Crunchy Bridge via
+# Hyperdrive). The Proxmox GreptimeDB instance and its
+# telemetry.pidgeiot.com tunnel route are retired with the rest of the
 # home-lab box; re-point this at a real origin to bring GreptimeDB back.
 GREPTIMEDB_ENDPOINT = ""
 
@@ -84,25 +81,23 @@ id = "f2c59dfa75114889815fd453ac0db62a"
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
-# Firmware image storage (task #23) — signed MCUboot application binaries,
-# ~300KB-1MB each, capped at capsules::MAX_FIRMWARE_BYTES (2MB) on upload.
-# DO SQLite cannot hold blobs this size (see this crate's CLAUDE.md), so
-# they live in R2 instead, content-addressed by sha256
-# (`firmware/<sha256>.bin`); only catalog metadata (version, size, sha256,
-# uploaded_at) lives in Postgres, per flock (see capsules::FirmwareImage).
-# Each environment gets its own bucket, matching the telemetry queues'
-# per-env pattern below.
+# Firmware image storage — signed MCUboot application binaries, ~300KB-1MB
+# each, capped at capsules::MAX_FIRMWARE_BYTES (2MB) on upload. DO SQLite
+# cannot hold blobs this size, so they live in R2 instead, content-addressed
+# by sha256 (`firmware/<sha256>.bin`); catalog metadata (version, size,
+# sha256, uploaded_at) lives in Postgres, per flock. Each environment gets
+# its own bucket, matching the telemetry queues' per-env pattern below.
 [[r2_buckets]]
 binding = "FIRMWARE_BUCKET"
 bucket_name = "pidgeiot-firmware"
 
-# Production telemetry queue (promotion authorized 2026-07-17). Same
-# design as staging below: auth still happens synchronously at ingestion,
-# the consumer only writes messages that already passed the DO bearer-token
-# check. Each environment needs its own queue — Cloudflare allows exactly
-# one consumer worker per queue, so prod (`dovecote`) owns
-# `pidgeiot-telemetry` and staging (`dovecote-staging`) owns
-# `pidgeiot-telemetry-staging`, matching the script naming convention.
+# Production telemetry queue. Same design as staging below: auth happens
+# synchronously at ingestion, the consumer only writes messages that
+# already passed the DO bearer-token check. Each environment needs its own
+# queue — Cloudflare allows exactly one consumer worker per queue, so
+# prod (`dovecote`) owns `pidgeiot-telemetry` and staging
+# (`dovecote-staging`) owns `pidgeiot-telemetry-staging`, matching the
+# script naming convention.
 [[queues.producers]]
 queue = "pidgeiot-telemetry"
 binding = "TELEMETRY_QUEUE"
@@ -114,20 +109,16 @@ queue = "pidgeiot-telemetry"
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
 
-# Missing-heartbeat / device-state alert sweep (task #38) -- confirmed no
-# `[triggers]` block existed anywhere in this file before this, per
-# docs/design/alerts-triggers.md §2.4's own audit ("Absence-of-data cannot
-# be triggered by an ingest event by definition -- nothing arrives to
-# trigger it"). Every 5 minutes is a starting cadence: frequent enough that
-# a `MissingReport`/`DeviceState` alert's own configurable window/duration
-# (not this cron's interval) is what actually governs how quickly it fires,
-# cheap enough that a Cron Trigger invocation running one Postgres query
-# plus a handful of per-pigeon lookups every 5 minutes is a non-issue on
-# Workers' free/paid cron pricing. Handled by the `#[event(scheduled)]`
-# handler in `src/scheduled.rs`, which calls
-# `helpers::alerts::evaluate_scheduled_alerts` -- best-effort/logged
-# throughout, same convention as every other cross-store sync in this
-# codebase (see root CLAUDE.md).
+# Missing-heartbeat / device-state alert sweep -- absence-of-data
+# conditions can't be triggered by an ingest event by definition, since
+# nothing arrives to trigger them. Every 5 minutes is a starting cadence:
+# frequent enough that a `MissingReport`/`DeviceState` alert's own
+# configurable window/duration (not this cron's interval) governs how
+# quickly it fires, cheap enough that one Postgres query plus a handful of
+# per-pigeon lookups every 5 minutes is a non-issue on Workers' cron
+# pricing. Handled by the `#[event(scheduled)]` handler in
+# `src/scheduled.rs`, which calls `helpers::alerts::evaluate_scheduled_alerts`
+# -- best-effort/logged throughout.
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -143,17 +134,17 @@ watch_dir = ["./src"]
 # preview-alias staging model used by fancier is impossible here.
 # `routes = []` overrides the inherited api.pidgeiot.com custom domain;
 # staging is reachable only at dovecote-staging.<subdomain>.workers.dev.
-# Note: fresh DO namespace (staging pigeons/tokens are disjoint from prod),
-# but the Hyperdrive binding — and thus the Postgres mirror — is shared with
-# production, so staging-created entities appear in the prod mirror tables.
+# Fresh DO namespace (staging pigeons/tokens are disjoint from prod);
+# staging also has its own Hyperdrive binding/database (see below), so
+# prod and staging share no data plane.
 [env.staging]
 workers_dev = true
 routes = []
 
-# Same missing-heartbeat sweep as the production block above (task #38) --
-# staging gets its own cron since it's a wholly separate Worker script
-# (`dovecote-staging`), evaluating staging's own (disjoint) alert
-# definitions against staging's own pigeons.
+# Same missing-heartbeat sweep as the production block above -- staging
+# gets its own cron since it's a wholly separate Worker script
+# (`dovecote-staging`), evaluating staging's own disjoint alert
+# definitions.
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
 
@@ -164,12 +155,11 @@ DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
 # Staging's own demo pigeon (see the DEMO_PIGEON_IDS note above) -- lives in
 # the "Demo Flock" flock, created for this purpose; NOT the prod demo id.
 DEMO_PIGEON_IDS = "0ec346b8c062431d0bada55f93ffa6089c6fd35eda5d64c75aff0381c4ea12a3"
-# Greptime folded into Postgres, same as prod (task #47,
-# docs/infra/postgres-consolidation.md): empty → Postgres
+# Greptime folded into Postgres, same as prod: empty → Postgres
 # pigeon_telemetry_history fallback for both writes and reads. GREPTIMEDB_DB
-# is gone with it (it only ever namespaced staging inside the shared Greptime
-# instance; the Postgres path needs no equivalent — staging and prod already
-# share one database).
+# is gone with it -- it only ever namespaced staging inside the shared
+# Greptime instance; the Postgres path needs no equivalent since staging has
+# its own database (see the Hyperdrive block below).
 GREPTIMEDB_ENDPOINT = ""
 
 [env.staging.durable_objects]
@@ -181,21 +171,20 @@ bucket_name = "pidgeiot-firmware-staging"
 
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
-# dovecote-db-staging (task #11, 2026-08-08): staging's OWN database
-# (dovecote_staging on the same Crunchy cluster, dedicated role locked out
-# of the prod DB) -- prod and staging no longer share a data plane, so
-# staging-created flocks/pigeons can't ghost into prod dashboard lists.
+# dovecote-db-staging: staging's OWN database (dovecote_staging on the
+# same Crunchy cluster, dedicated role locked out of the prod DB) -- prod
+# and staging don't share a data plane, so staging-created flocks/pigeons
+# can't ghost into prod dashboard lists.
 id = "853acbf7f59246bd89d38faaf01ff58e"
 
-# Staging telemetry queue (task #14; see the production block above for
-# the shared design rationale and why each environment has its own queue).
-# Device auth still happens synchronously at ingestion
+# Staging telemetry queue -- see the production block above for the shared
+# design rationale. Device auth still happens synchronously at ingestion
 # (POST /device/pigeons/:id/telemetry verifies the bearer token against
 # the DO before enqueueing anything — see
 # verify_device_via_do/verify_telemetry_device); the consumer only ever
 # writes messages that already passed that check. Environments without
-# this binding (dev) fall back to the original synchronous
-# direct-DO-write path — see the route in src/lib.rs.
+# this binding (dev) fall back to the synchronous direct-DO-write path in
+# src/lib.rs.
 [[env.staging.queues.producers]]
 queue = "pidgeiot-telemetry-staging"
 binding = "TELEMETRY_QUEUE"
@@ -203,11 +192,10 @@ binding = "TELEMETRY_QUEUE"
 [[env.staging.queues.consumers]]
 queue = "pidgeiot-telemetry-staging"
 
-# Same sweep as prod/staging (task #38). `wrangler dev` doesn't fire this
-# on a real timer, but it does let it be exercised on demand via
+# Same sweep as prod/staging. `wrangler dev` doesn't fire this on a real
+# timer, but it can be exercised on demand via
 # `curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`
-# (wrangler's local scheduled-event test endpoint), so dev still gets a
-# working config to test against rather than a cron-free carve-out.
+# (wrangler's local scheduled-event test endpoint).
 [env.dev.triggers]
 crons = ["*/5 * * * *"]
 
@@ -218,9 +206,9 @@ DEVICE_API_HOST = "127.0.0.1:8787"
 # No demo pigeon in dev -- empty, not unset, matching the other per-env
 # vars' pattern of every environment declaring the key explicitly.
 DEMO_PIGEON_IDS = ""
-# Local docker-compose GreptimeDB (task #26, docker-compose.yml's
-# `greptimedb` service) -- reachable directly, no Cloudflare Tunnel/Access
-# in dev, and no auth configured on the local instance either, so neither
+# Local docker-compose GreptimeDB (docker-compose.yml's `greptimedb`
+# service) -- reachable directly, no Cloudflare Tunnel/Access in dev, and
+# no auth configured on the local instance either, so neither
 # GREPTIMEDB_AUTH_TOKEN nor the GREPTIMEDB_ACCESS_CLIENT_* secrets are
 # needed here.
 GREPTIMEDB_ENDPOINT = "http://127.0.0.1:4000"

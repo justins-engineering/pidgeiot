@@ -21,24 +21,19 @@ use worker::{
   wasm_bindgen,
 };
 
-/// Selected pigeon column list shared by every `pigeons` read/RETURNING
-/// statement -- keeps `telemetry_endpoint` (and any future column) from
-/// silently going missing from one of the several near-identical queries.
+/// Shared by every `pigeons` read/RETURNING statement so a column can't
+/// silently go missing from one of the near-identical queries.
 const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, updated_at, created_at";
 
-// Falls back to the production host if `DEVICE_API_HOST` isn't set for some
-// reason -- every environment ([vars]/[env.staging.vars]/[env.dev.vars] in
-// wrangler.toml) sets it explicitly today, but a missing binding should
-// degrade to prod's own host rather than emit a garbage endpoint.
+// A missing DEVICE_API_HOST binding should degrade to prod's own host
+// rather than emit a garbage endpoint.
 const DEFAULT_DEVICE_API_HOST: &str = "api.pidgeiot.com";
 const DEVICE_PIGEONS_PATH: &str = "/device/pigeons/";
 
-/// The host a minted device endpoint should point at -- deliberately NOT
-/// `ROOT_URL` (that's the frontend's own origin, e.g. pidgeiot.com, not the
-/// device-facing API host, and the two differ per environment: prod shares
-/// a domain across both, staging and dev do not). Read fresh per call
-/// instead of cached, since Durable Objects can outlive a single Worker
-/// invocation and `env` is cheap to read.
+/// The host a minted device endpoint points at -- deliberately NOT
+/// `ROOT_URL`, which is the frontend's origin; the two differ per
+/// environment. Read fresh per call: Durable Objects can outlive a single
+/// Worker invocation.
 fn device_api_host(env: &Env) -> String {
   env
     .var("DEVICE_API_HOST")
@@ -73,31 +68,18 @@ pub struct Pigeons {
   sql: SqlStorage,
   state: State,
   env: Env,
-  // In-memory (not SQLite-persisted) waiters for an in-flight `POST
-  // /pigeons/:id/shell` request (task #34, v1) -- keyed by `request_id`,
-  // resolved from `websocket_message` when the matching `shell_output`
-  // frame arrives. `RefCell` rather than a lock is correct here, not just
-  // convenient: a Durable Object's async tasks all run on one thread under
-  // a cooperative (not preemptive) executor, so there's no data race
-  // between the HTTP handler task that inserts a waiter and the later
-  // `websocket_message` invocation that removes/resolves it, even though
-  // they're two separate `async fn` calls interleaved by the runtime --
-  // see `execute_shell_command`'s doc comment for the fuller argument.
-  // Deliberately NOT SQLite-backed like every other durable field on this
-  // struct: a pending shell command has no meaning across a DO eviction
-  // (there's no in-flight HTTP handler left to resolve if this DO is
-  // recreated from scratch), so surviving hibernation would be pointless
-  // complexity, not a correctness requirement.
+  // In-flight `POST /pigeons/:id/shell` waiters, keyed by request_id and
+  // resolved when the matching `shell_output` frame arrives. `RefCell` is
+  // safe: a DO's async tasks share one thread under a cooperative
+  // executor, so insert and resolve can't race. Not SQLite-backed on
+  // purpose -- a pending command has no meaning across a DO eviction
+  // (there's no in-flight HTTP handler left to resolve).
   shell_waiters: RefCell<HashMap<String, oneshot::Sender<ShellOutputPayload>>>,
 }
 
-/// Internal (never serialized) carrier for a device's `shell_output` frame
-/// fields, handed from `websocket_message`'s dispatch to whichever
-/// `execute_shell_command` invocation is awaiting it via `shell_waiters`.
-/// Distinct from `WsInboundFrame::ShellOutput`, which is the actual wire
-/// frame this is built from -- kept separate so `shell_waiters`' value type
-/// doesn't need to carry the frame's own `request_id` a second time (the
-/// map key already is that).
+/// Carrier for a device's `shell_output` frame fields, handed from
+/// `websocket_message` to the `execute_shell_command` invocation awaiting
+/// it. No `request_id` field -- the `shell_waiters` map key already is it.
 struct ShellOutputPayload {
   output: String,
   exit_code: i32,
@@ -105,11 +87,9 @@ struct ShellOutputPayload {
 }
 
 /// `SqlCursor::one()` throws an uncaught JS exception (crashing the DO)
-/// on zero rows instead of returning a catchable `Result::Err` —
-/// `to_array()` never throws, so route "no rows" through the same
-/// catchable-error path callers already use for real query/deserialization
-/// failures. This matters once `delete()` can legitimately leave this DO's
-/// tables empty while the DO itself is still addressable.
+/// on zero rows instead of returning a catchable `Result::Err`;
+/// `to_array()` never throws. Matters because `delete()` can leave this
+/// DO's tables empty while the DO itself is still addressable.
 fn one_row<T: serde::de::DeserializeOwned>(cursor: &worker::SqlCursor) -> Result<T> {
   match cursor.to_array::<T>()?.into_iter().next() {
     Some(row) => Ok(row),
@@ -161,25 +141,18 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeons table");
 
-    // Column migration for DOs created before `telemetry_endpoint` existed
-    // (task #18) -- `CREATE TABLE IF NOT EXISTS` above is a no-op against
-    // an already-existing `pigeons` table, and SQLite has no `ADD COLUMN
-    // IF NOT EXISTS`. Errors here (column already present, e.g. every DO
-    // created after this change) are expected and ignored on purpose --
-    // unlike every other statement in this constructor, this one is
-    // allowed to fail.
+    // Column migration for DOs created before `telemetry_endpoint`
+    // existed -- `CREATE TABLE IF NOT EXISTS` above is a no-op against an
+    // existing table and SQLite has no `ADD COLUMN IF NOT EXISTS`, so a
+    // "column already present" error is expected and ignored.
     let _ = sql.exec(
       "ALTER TABLE pigeons ADD COLUMN telemetry_endpoint TEXT DEFAULT NULL;",
       None,
     );
 
-    // Same rationale as the `telemetry_endpoint` migration above -- DOs
-    // created before `board` existed (task #20, phase 1: firmware/board
-    // geometry compatibility) need this added after the fact. `board` is
-    // the pigeon's own Zephyr `CONFIG_BOARD_TARGET` string (e.g.
-    // "circuitdojo_feather/nrf9160/ns"), operator-set at provisioning time
-    // for now (device self-report is a later hardening phase) -- see
-    // `check_firmware_board_compat` for where this is actually enforced.
+    // Same deal for `board`: the pigeon's Zephyr `CONFIG_BOARD_TARGET`
+    // string (e.g. "circuitdojo_feather/nrf9160/ns"), operator-set at
+    // provisioning time -- enforced in `check_firmware_board_compat`.
     let _ = sql.exec(
       "ALTER TABLE pigeons ADD COLUMN board TEXT DEFAULT NULL;",
       None,
@@ -227,12 +200,9 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_acl table");
 
-    // Latest-value-per-key store (mirrors AWS IoT's reported-state
-    // simplicity, not a time-series log) -- a device's telemetry report
-    // overwrites, it doesn't append. History/range queries are served from
-    // Postgres's `pigeon_telemetry_history` instead (task #18, written by
-    // the queue consumer) -- this DO-local table intentionally stays
-    // latest-value-only.
+    // Latest-value-per-key store, not a time-series log -- a telemetry
+    // report overwrites, it doesn't append. History/range queries are
+    // served from Postgres `pigeon_telemetry_history` instead.
     sql
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_telemetry (
@@ -244,11 +214,9 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_telemetry table");
 
-    // Bounded ring buffer of device dictionary-log chunks (task #18, part
-    // 3) -- opaque binary blobs stored as base64 text (see
-    // `report_logs_device`'s doc comment for why not a BLOB column). `id`
-    // is a plain autoincrement so pruning can cheaply keep "the newest N
-    // rows" without a separate ordering column.
+    // Bounded ring buffer of opaque device log chunks, stored as base64
+    // text (see `report_logs_device`). `id` is a plain autoincrement so
+    // pruning can cheaply keep the newest N rows.
     sql
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_log_chunks (
@@ -269,7 +237,6 @@ impl DurableObject for Pigeons {
   }
 
   async fn fetch(&self, req: Request) -> Result<Response> {
-    // Use path parsing that ignores potential trailing slashes for robustness
     let path = req.path();
 
     match path.as_str() {
@@ -304,16 +271,12 @@ impl DurableObject for Pigeons {
     }
   }
 
-  /// Dispatched by the runtime for every text/binary frame on a
-  /// hibernation-accepted socket (task #32) -- including ones that woke this
-  /// DO from eviction, transparently. Auth already happened once, at
-  /// `accept_websocket_device`, and isn't re-checked per frame; a device
-  /// controls its own connection, so anything landing here is trusted to
-  /// belong to this pigeon. Three ways a frame gets the connection closed
-  /// rather than processed: not text (this protocol is JSON-text-only, see
-  /// `docs/api.md`), over `MAX_WS_FRAME_BYTES`, or failing the sliding-window
-  /// flood check (`check_rate_limit`) -- all three are logged before
-  /// closing, matching this file's existing "log, then respond" convention.
+  /// Runs for every frame on a hibernation-accepted socket, including ones
+  /// that woke this DO from eviction. Auth happened once, at
+  /// `accept_websocket_device`, and isn't re-checked per frame. A frame
+  /// gets the connection closed rather than processed when it isn't text
+  /// (the protocol is JSON-text-only), exceeds `MAX_WS_FRAME_BYTES`, or
+  /// fails the flood check.
   async fn websocket_message(
     &self,
     ws: WebSocket,
@@ -382,11 +345,8 @@ impl DurableObject for Pigeons {
     Ok(())
   }
 
-  /// The runtime calls this once a hibernatable socket actually closes
-  /// (client-initiated, our own `ws.close()` calls elsewhere in this file,
-  /// or a network drop) -- overriding the default (which panics via
-  /// `unimplemented!()`) is required, not optional, once any socket is ever
-  /// accepted here.
+  /// Must be overridden once any socket is accepted -- the trait default
+  /// panics via `unimplemented!()`.
   async fn websocket_close(
     &self,
     _ws: WebSocket,
@@ -402,9 +362,8 @@ impl DurableObject for Pigeons {
     Ok(())
   }
 
-  /// Same rationale as `websocket_close` above -- must be overridden once
-  /// sockets are accepted, or a transport-level error panics the DO instead
-  /// of just logging.
+  /// Same as `websocket_close` -- without this override a transport error
+  /// panics the DO instead of just logging.
   async fn websocket_error(&self, _ws: WebSocket, error: worker::Error) -> Result<()> {
     console_error!("WS error for pigeon {}: {error}", self.state.id());
     clear_shell_waiters(self, "socket error");
@@ -412,17 +371,13 @@ impl DurableObject for Pigeons {
   }
 }
 
-/// Drops every pending `shell_waiters` entry (task #34) when the device's
-/// socket goes away mid-command -- dropping a `oneshot::Sender` without
-/// calling `send` resolves its paired `Receiver` with `Err(Canceled)`
-/// automatically, so whichever `execute_shell_command` invocation is
-/// awaiting it wakes immediately with an error response instead of sitting
-/// out its own timeout window for no reason (the device is never coming
-/// back on this connection). Safe to clear the whole map unconditionally
-/// rather than filtering by socket: this codebase enforces one device
-/// socket per pigeon (`accept_websocket_device`), so there is never a
-/// second, still-live connection whose in-flight waiters this could
-/// wrongly cancel.
+/// Drops every pending `shell_waiters` entry when the device's socket goes
+/// away mid-command -- dropping a `oneshot::Sender` resolves its paired
+/// `Receiver` with `Err(Canceled)`, so the awaiting request fails fast
+/// instead of sitting out its timeout. Clearing the whole map is safe:
+/// only one device socket per pigeon ever exists
+/// (`accept_websocket_device`), so there's no second connection whose
+/// waiters this could wrongly cancel.
 fn clear_shell_waiters(pigeons: &Pigeons, reason: &str) {
   let mut waiters = pigeons.shell_waiters.borrow_mut();
   if !waiters.is_empty() {
@@ -436,32 +391,27 @@ fn clear_shell_waiters(pigeons: &Pigeons, reason: &str) {
 }
 
 /// The two access levels a dashboard-facing DO route can require -- the
-/// literal role string `"owner"` on a matching `pigeon_acl` row is still
-/// the only special-cased value, exactly as before task #12.
+/// literal role string `"owner"` on a matching `pigeon_acl` row is the
+/// only special-cased value.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AclLevel {
   Member,
   Owner,
 }
 
-/// THE DO-side authorization helper (task #12's hard requirement: every
-/// dashboard-facing check in this Durable Object funnels through here, so
-/// a future central-authz swap is contained to this one function; the
-/// gateway-side counterpart is `helpers/orgs.rs::authorize_flock`).
+/// Every dashboard-facing check in this DO funnels through here (the
+/// gateway-side counterpart is `helpers/orgs.rs::authorize_flock`), so a
+/// future central-authz swap stays contained to one function.
 ///
-/// Principal set: the caller is `X-User-Id` (the Kratos identity the
-/// gateway resolved) PLUS every org id in the gateway-injected
-/// `X-Org-Roles` header (`[{"id":"<uuid>","role":"owner"}]`, see
-/// `Principal::org_roles_header`). A `pigeon_acl` row matches when its
-/// `entity_id` equals ANY principal in that set -- org-shared pigeons
-/// simply carry an ACL row whose `entity_id` IS the org id.
+/// Principal set: `X-User-Id` (the Kratos identity the gateway resolved)
+/// plus every org id in the gateway-injected `X-Org-Roles` header. A
+/// `pigeon_acl` row matches when its `entity_id` equals any principal --
+/// org-shared pigeons simply carry a row whose `entity_id` IS the org id.
 ///
-/// Role mapping for org-matched rows (docs/api.md's matrix): the caller's
-/// role IN THE ORG gates what the org's ACL row lets them exercise --
-/// `owner`/`admin` may exercise up to the row's own role (owner-level
-/// rights when the row says `owner`), while `member` is capped at
-/// member-level regardless of the row's role. A user-matched row behaves
-/// exactly as it always has.
+/// For org-matched rows the caller's role in the org caps what the row
+/// confers: `owner`/`admin` may exercise up to the row's own role,
+/// `member` is capped at member-level regardless. Full matrix in
+/// `docs/api.md`.
 ///
 /// Both headers are internal, gateway-set values (this DO is never
 /// internet-reachable; `proxy_to_pigeon_do` builds them from the validated
@@ -494,7 +444,7 @@ fn authorize_dashboard(
 
   let allowed = rows.iter().any(|row| {
     if Some(row.entity_id) == user_uuid {
-      // Direct per-user grant -- pre-org behavior, unchanged.
+      // Direct per-user grant.
       return match level {
         AclLevel::Member => true,
         AclLevel::Owner => row.role == "owner",
@@ -521,9 +471,7 @@ fn authorize_dashboard(
   }
 }
 
-/// Thin wrappers keeping the ~20 pre-org call sites (and their historical
-/// error strings) unchanged -- all real logic lives in
-/// `authorize_dashboard` above.
+/// Thin wrappers -- all real logic lives in `authorize_dashboard`.
 fn is_authorized(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, worker::Error>> {
   authorize_dashboard(pigeons, req, AclLevel::Member)
 }
@@ -533,11 +481,8 @@ fn is_owner(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, wor
 }
 
 /// Strips every secret from a `Pigeon` before it leaves the DO via a GET
-/// route -- the connector token/PSK (existing behavior) and now the
-/// telemetry endpoint's `auth_token` (task #18), same rule: never returned
-/// except immediately after the request that sets it (`create`/
-/// `token/refresh` for the connector, the telemetry-endpoint update route
-/// for `auth_token`).
+/// route -- the connector token/PSK and the telemetry endpoint's
+/// `auth_token` are only ever returned by the request that sets them.
 fn strip_secrets(pigeon: &mut Pigeon) {
   pigeon.connector = match pigeon.connector.clone() {
     Connector::Https(c) => Connector::Https(HttpsConfig {
@@ -626,9 +571,8 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   };
 
   // The caller's "own" ACL row: their per-user row when one exists, else
-  // the ORG row their access came through (task #12 -- an org-granted
-  // caller has no per-user row at all; before this fallback the lookup
-  // below found zero rows and 500'd, caught by the live org test matrix).
+  // the org row their access came through -- an org-granted caller may
+  // have no per-user row at all.
   let org_roles: Vec<capsules::OrgRoleEntry> = req
     .headers()
     .get("X-Org-Roles")
@@ -749,7 +693,6 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Insert ACL
   if let Err(e) = pigeons.sql.exec(
     "INSERT INTO pigeon_acl (entity_id, role) VALUES (?, 'owner');",
     vec![user_id.into()],
@@ -758,7 +701,6 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     return Response::error("Internal Server Error", 500);
   }
 
-  // Insert shadow
   let shadow = match pigeons.sql.exec(
     "INSERT INTO pigeon_shadow (id) VALUES (?) RETURNING target_version, current_version, target_config, current_config, updated_at;",
     vec![do_id.into()],
@@ -776,7 +718,6 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Return directly — pigeon from DB already has correct connector
   let response = PigeonDetail {
     pigeon,
     acl: PigeonAcl {
@@ -809,7 +750,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  // Read current pigeon to determine connector type
+  // Read the current pigeon to keep its connector type.
   let mut pigeon = match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
@@ -827,7 +768,6 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  // Build new connector with refreshed token
   pigeon.connector = match &pigeon.connector {
     Connector::Https(_) => {
       let endpoint = build_http_endpoint(&pigeons.env, &do_id);
@@ -847,15 +787,14 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  // Serialize and update
   let connector_json = serde_json::to_string(&pigeon.connector).map_err(|e| {
     console_error!("Connector serialization error: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
-  // Overwriting device_public_key here is what revokes the previous token:
-  // once the old key is gone, its signature can never verify again,
-  // regardless of the token's own embedded expiry.
+  // Overwriting device_public_key is what revokes the previous token: the
+  // old signature can never verify again, regardless of the token's own
+  // embedded expiry.
   match pigeons.sql.exec(
     "UPDATE pigeons SET connector = ?, token_expires_at = ?, device_public_key = ? WHERE id = ?;",
     vec![
@@ -927,7 +866,6 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  // Serialize connector to JSON string if present
   let connector_json = row
     .connector
     .map(|c| serde_json::to_string(&c).unwrap_or_default());
@@ -946,13 +884,12 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       row.serial.into(),
       row.name.into(),
       row.tags.into(),
-      connector_json.into(), // Now Option<String> — None becomes null, Some becomes JSON text
+      connector_json.into(), // None becomes SQL NULL, Some becomes JSON text
       row.board.into(),
       pigeons.state.id().to_string().into(),
     ],
   ) {
     Ok(_) => {
-      // Read back the updated row to return
       match pigeons.sql.exec(
         &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
@@ -1018,14 +955,10 @@ async fn update_acl(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
      ON CONFLICT(entity_id) DO UPDATE SET role = excluded.role;",
     vec![acl.entity_id.to_string().into(), acl.role.clone().into()],
   ) {
-    // The gateway route (POST /pigeons/:id/acl, lib.rs) parses this
-    // response body as JSON `PigeonAcl` (matching every other DO write
-    // handler's success shape -- update_shadow, update_telemetry_endpoint,
-    // refresh_token, etc.) via parse_do_response::<PigeonAcl>(..).await?.
-    // A plain-text "ACL Updated" body here made that parse fail every
-    // time, which propagated through `?` into the top-level catch-all and
-    // always 500'd the caller even though this INSERT had already
-    // succeeded -- the write worked, only the HTTP response was wrong.
+    // The gateway parses this response as JSON `PigeonAcl` (same success
+    // shape as the other DO write handlers) -- a plain-text body here
+    // makes that parse fail and 500s the caller after the write already
+    // succeeded.
     Ok(_) => Response::from_json(&PigeonAcl {
       entity_id: acl.entity_id,
       role: acl.role,
@@ -1037,17 +970,13 @@ async fn update_acl(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   }
 }
 
-/// Trusted-internal ACL upsert (task #12) -- same write as `update_acl`
-/// but with NO `is_owner` gate of its own. Safe for the same reason as
-/// `write_telemetry_device`/`read_telemetry_endpoint_device`: Durable
-/// Objects have no public internet-facing address, and the only dispatcher
-/// of this path is this Worker's own gateway
-/// (`helpers/pigeons.rs::grant_org_acl_via_do`), which fully authorizes
-/// the operation first (flock-transfer: flock owner + org owner/admin;
-/// org-flock pigeon create: org owner/admin). Exists because the
-/// authorizing user may hold no ACL row on this pigeon at all (their right
-/// comes from the FLOCK/org side), so the owner-gated `update_acl` route
-/// can't serve these flows.
+/// Same write as `update_acl` but with NO `is_owner` gate of its own.
+/// Safe because Durable Objects have no public address and the only
+/// dispatcher of this path is this Worker's own gateway
+/// (`helpers/pigeons.rs::grant_org_acl_via_do`), which authorizes first.
+/// Exists because the authorizing user may hold no ACL row on this pigeon
+/// at all (their right comes from the flock/org side), so the owner-gated
+/// `update_acl` route can't serve these flows.
 async fn grant_acl_internal(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let acl = match req.json::<PigeonAclUpdateRequest>().await {
     Ok(data) => data,
@@ -1120,12 +1049,9 @@ struct DevicePublicKeyRow {
   device_public_key: String,
 }
 
-/// Device auth for the `/pigeon/device/*` routes. Mirrors `is_authorized`/
-/// `is_owner`'s early-return convention (`unwrap_or_return_response!`) but
-/// checks no `X-User-Id`/ACL — a device has no Kratos user identity.
-/// Instead it verifies the request's bearer token against this pigeon's own
-/// stored `device_public_key`, which only this DO (the source of truth for
-/// the pigeon's current credential) holds.
+/// Device auth for the `/pigeon/device/*` routes. No `X-User-Id`/ACL — a
+/// device has no Kratos user identity. Verifies the bearer token against
+/// this pigeon's own stored `device_public_key`, which only this DO holds.
 fn is_authorized_device(
   pigeons: &Pigeons,
   req: &Request,
@@ -1188,14 +1114,10 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
   }
 }
 
-/// Device-facing shadow report-back. Same device-auth model as
-/// `get_shadow_device` (bearer token verified against this pigeon's own
-/// `device_public_key`, no `X-User-Id`/ACL) — lets the device confirm it
-/// applied `target_config` by writing its own `current_config` plus the
-/// `target_version` it just applied (echoed back from an earlier GET, into
-/// `current_version`) — the SQL layer never re-derives this from
-/// `target_version` itself, since the device might still be catching up to
-/// a newer target by the time this lands.
+/// Device confirms it applied `target_config` by writing its own
+/// `current_config` plus the `target_version` it applied (echoed into
+/// `current_version`) — never re-derived from `target_version` here, since
+/// the device may still be catching up to a newer target.
 async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1216,14 +1138,9 @@ async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Res
   }
 }
 
-/// Shared SQL for a device confirming it applied `target_config` --
-/// factored out of `report_shadow_device` (the HTTP route,
-/// `POST /device/pigeons/:id/shadow`) so `handle_ws_shadow_report` (the
-/// WebSocket `shadow_report` frame, task #32) can reuse the exact same
-/// write instead of duplicating the query text. Only the SQL; callers are
-/// responsible for their own auth (already done once for the WS case, at
-/// socket accept) and for whatever Postgres sync/response shape they need
-/// around it.
+/// Shared SQL for a device's shadow report-back, used by both the HTTP
+/// route and the WS `shadow_report` frame. SQL only -- callers own their
+/// auth and any Postgres sync/response shape around it.
 fn write_shadow_report(
   pigeons: &Pigeons,
   report: &PigeonShadowReportRequest,
@@ -1245,10 +1162,8 @@ fn write_shadow_report(
   one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
 }
 
-/// Shared shadow read behind `accept_websocket_device`'s initial push --
-/// same `SELECT` every other shadow read site in this file uses (`get_shadow`,
-/// `get_shadow_device`, `update_shadow`), pulled out here since this is the
-/// one call site that has no request/response of its own to shape around.
+/// Shadow read with no request/response of its own to shape around --
+/// backs `accept_websocket_device`'s initial push.
 fn read_shadow(pigeons: &Pigeons) -> Result<PigeonShadow> {
   let cursor = pigeons.sql.exec(
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
@@ -1257,43 +1172,26 @@ fn read_shadow(pigeons: &Pigeons) -> Result<PigeonShadow> {
   one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
 }
 
-/// Device WebSocket upgrade (task #32) -- the real-time channel for
-/// non-cellular (WiFi/mains-powered) devices, replacing the HTTP shadow
-/// poll/telemetry-POST pattern with a persistent connection. Bearer auth
-/// happens exactly once, here, BEFORE the socket is ever accepted -- unlike
-/// the HTTP `/pigeon/device/*` routes there is no per-frame re-check
-/// afterward (see `DurableObject::websocket_message` above); a device holds
-/// the connection, not a fresh credential each time.
+/// Device WebSocket upgrade -- the real-time channel for non-cellular
+/// devices instead of polling HTTPS. Bearer auth happens exactly once,
+/// here, BEFORE the socket is accepted; there is no per-frame re-check
+/// (see `DurableObject::websocket_message` above).
 ///
-/// Accepted via the Durable Object *hibernation* API
-/// (`State::accept_websocket_with_tags`), not the in-memory
-/// `WebSocket::accept()` -- an idle connection (a device that only reports
-/// every few minutes) can be evicted from this DO's memory between messages
-/// without being torn down; the runtime transparently re-wakes this DO and
-/// re-dispatches to `websocket_message`/`websocket_close`/`websocket_error`
-/// on the next event for that socket. `WebSocket::accept()` would keep this
-/// DO pinned in memory (billed) for the entire connection lifetime instead.
+/// Accepted via the hibernation API (`accept_websocket_with_tags`), not
+/// the in-memory `WebSocket::accept()` -- an idle connection survives DO
+/// eviction between messages, while `accept()` would keep this DO pinned
+/// in memory (billed) for the whole connection. Tagged `WS_DEVICE_TAG` so
+/// another socket class can coexist without either class's close/broadcast
+/// logic touching the other's sockets.
 ///
-/// Tagged `WS_DEVICE_TAG` (rather than left untagged) so a future second
-/// socket class -- the remote-shell relay, task #34 -- can coexist without
-/// either class's "close the old one"/broadcast logic touching the other's
-/// sockets; see the tag-scoped `get_websockets_with_tag` calls here and in
-/// `update_shadow`.
-///
-/// Pushes an immediate `shadow_update` snapshot on the just-accepted socket
-/// (task #5, follow-up from #33) so a freshly (re)connected device doesn't
-/// have to wait for the next dashboard `PUT` -- or fall back to its own
-/// HTTPS `GET .../shadow` -- to catch up on a `target_config` it missed
-/// while disconnected. `WebSocketPair::new()` creates both ends of the pair
-/// synchronously and `WebSocket::send` has no dependency on an inbound
-/// message first (confirmed against the `worker` crate's own
-/// `websocket.rs`/`durable.rs` -- `accept_websocket_with_tags` only
-/// registers the socket with the hibernation manager, it doesn't gate
-/// sending), so this sends on `pair.server` directly, before the upgrade
-/// response is even returned. Best-effort like `broadcast_shadow_update`: a
-/// failed read or send here is logged and swallowed, never fails the
-/// upgrade -- the device's existing CONNECTED-event HTTPS GET remains as a
-/// fallback either way, this just makes that round trip usually redundant.
+/// Pushes an immediate `shadow_update` snapshot on the fresh socket so a
+/// reconnecting device doesn't wait for the next dashboard PUT (or fall
+/// back to its own HTTPS GET) to catch up on a `target_config` it missed
+/// while disconnected. Sending on `pair.server` before the upgrade
+/// response returns is fine -- `accept_websocket_with_tags` only registers
+/// the socket, it doesn't gate sending. Best-effort like
+/// `broadcast_shadow_update`: a failed read or send is logged, never fails
+/// the upgrade.
 async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1343,48 +1241,24 @@ struct ShellExecuteResponse {
   truncated: bool,
 }
 
-// Plain Rust constants, not per-env `wrangler.toml` vars, matching this
-// file's existing convention for protocol-level limits with no reason to
-// differ by environment (`MAX_WS_FRAME_BYTES`, `WS_RATE_LIMIT_*` in
-// `objects/ws.rs`, `MAX_LOG_CHUNK_BYTES` in `capsules`) -- unlike
-// `DEVICE_API_HOST` (task #21), which genuinely differs per environment
-// because it's a hostname.
+// Plain constants, not per-env `wrangler.toml` vars -- protocol-level
+// limits have no reason to differ by environment.
 const SHELL_TIMEOUT_DEFAULT_MS: u64 = 10_000;
 const SHELL_TIMEOUT_MAX_MS: u64 = 30_000;
 
-/// Backs `POST /pigeons/:id/shell` (task #34, v1) -- the dovecote side of
-/// the remote diagnostic shell relay. The dashboard is a plain
-/// Kratos-authenticated HTTP client here, not a second WebSocket (see the
-/// task's design doc, `## 3`): this handler sends one `ShellCmd` frame down
-/// the device's *existing* WS connection, waits for the matching
-/// `ShellOutput` reply (or a timeout), and returns it as an ordinary HTTP
-/// response.
+/// Remote shell relay: sends one `ShellCmd` frame down the device's
+/// existing WS connection, waits for the matching `ShellOutput` reply (or
+/// a timeout), and returns it as an ordinary HTTP response. The dashboard
+/// side is a plain HTTP client, not a second WebSocket.
 ///
-/// Gated by `is_owner`, not `is_authorized` -- stricter than every other
-/// dashboard route on this DO except ACL changes/token refresh/delete,
-/// because a shell command is RCE on physical hardware by design (see the
-/// design doc's `## 5`); reusing `is_owner` as-is (including its "Only
-/// owners can modify ACL" message, already reused verbatim by
-/// `refresh_token`/`delete` for non-ACL routes) rather than introducing a
-/// bespoke owner-check variant, matching this file's existing precedent.
+/// Gated by `is_owner`, not `is_authorized` -- a shell command is RCE on
+/// physical hardware by design.
 ///
-/// **Waiter registration/resolution race, addressed explicitly since this
-/// is the one place in the codebase coordinating two independently-invoked
-/// `async fn`s through shared mutable state**: a Durable Object's `fetch`
-/// and `websocket_message` handlers are two different top-level entry
-/// points the Cloudflare runtime can invoke, but neither actually runs
-/// concurrently with the other in the sense of true parallelism -- the
-/// `worker` crate's WASM environment is single-threaded, and Rust's `async`
-/// model only ever advances a future at an `.await` point; nothing between
-/// this function's `shell_waiters.borrow_mut().insert(...)` call and its
-/// next `.await` can be interleaved with any other async task, including a
-/// `websocket_message` invocation. Once this function *does* start
-/// `.await`-ing the oneshot receiver (via `futures::select!` against a
-/// timeout below), the runtime is free to run other tasks -- including the
-/// `websocket_message` call that resolves this exact waiter -- which is
-/// the intended handoff, not a race: `shell_waiters` is a `RefCell`, safe
-/// under this model precisely because there's no preemption, only
-/// cooperative yielding at `.await` boundaries.
+/// The waiter handoff is race-free without a lock: this WASM environment
+/// is single-threaded and async tasks only interleave at `.await` points,
+/// so nothing runs between the waiter insert and the `select!` below.
+/// Once we await the oneshot, the runtime may run the `websocket_message`
+/// call that resolves it -- the intended handoff, not a race.
 async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
@@ -1400,11 +1274,8 @@ async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Re
     return Response::error("Bad Request: Empty command", 400);
   }
 
-  // Exactly one device socket per pigeon is enforced at accept time
-  // (`accept_websocket_device`) -- if there's none, this pigeon simply has
-  // no live channel to relay a command over right now (a cellular/
-  // HTTPS-only device, or a WS-capable one that's just not currently
-  // connected).
+  // No socket means no live channel to relay over -- a cellular/HTTPS-only
+  // device, or a WS-capable one that isn't currently connected.
   let Some(ws) = pigeons
     .state
     .get_websockets_with_tag(WS_DEVICE_TAG)
@@ -1414,10 +1285,9 @@ async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Re
     return Response::error("Conflict: Device has no open WebSocket connection", 409);
   };
 
-  // v1 is one command in flight at a time per pigeon, mirrored on the
-  // device side by a depth-1 queue (see the design doc's `## 4`) -- refuse
-  // a second concurrent request rather than sending a `ShellCmd` the
-  // device will just reject anyway.
+  // One command in flight at a time per pigeon, mirrored by a depth-1
+  // queue on the device -- refuse rather than send a `ShellCmd` the device
+  // will just reject anyway.
   if !pigeons.shell_waiters.borrow().is_empty() {
     return Response::error(
       "Conflict: A shell command is already in flight for this pigeon",
@@ -1438,9 +1308,8 @@ async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Re
     .borrow_mut()
     .insert(request_id.clone(), tx);
 
-  // Log-only audit trail for v1 (no Postgres audit table -- see the design
-  // doc's `## 6`, open question 3): the requesting user, pigeon, and
-  // command text, before the command is ever sent to the device.
+  // Log-only audit trail: user, pigeon, and command text, before the
+  // command is ever sent to the device.
   let requesting_user = req.headers().get("X-User-Id").ok().flatten();
   console_log!(
     "Shell EXEC: pigeon {} user={:?} request_id={request_id} cmd={:?}",
@@ -1479,9 +1348,8 @@ async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Re
           truncated: payload.truncated,
         })
       }
-      // The sender was dropped without sending -- `clear_shell_waiters`
-      // ran because the socket closed/errored while this request was
-      // still waiting (see `websocket_close`/`websocket_error` above).
+      // Sender dropped without sending -- `clear_shell_waiters` ran
+      // because the socket closed/errored while this request was waiting.
       Err(_) => Response::error("Bad Gateway: Device disconnected before replying", 502),
     },
     _ = timeout => {
@@ -1495,11 +1363,9 @@ async fn execute_shell_command(pigeons: &Pigeons, mut req: Request) -> Result<Re
   }
 }
 
-/// Resolves the `shell_waiters` entry for an inbound `shell_output` frame
-/// (task #34) -- the counterpart to `execute_shell_command`'s registration.
-/// No matching waiter (already timed out, or a stray/duplicate reply) is
-/// logged and dropped, matching this file's existing "log, then no-op"
-/// convention for anything that isn't a hard protocol violation.
+/// Resolves the `shell_waiters` entry for an inbound `shell_output`
+/// frame. No matching waiter (already timed out, or a stray/duplicate
+/// reply) is logged and dropped.
 fn handle_ws_shell_output(
   pigeons: &Pigeons,
   request_id: &str,
@@ -1524,16 +1390,12 @@ fn handle_ws_shell_output(
   }
 }
 
-/// Backs the WebSocket `shadow_report` frame (task #32) -- the WS
-/// counterpart to `report_shadow_device` above, reusing `write_shadow_report`
-/// for the actual write. Unlike that HTTP route, there is no gateway route
-/// left in the loop to best-effort sync the result to Postgres afterward
-/// (frames go straight into this DO once the socket is established), so
-/// this does that sync itself, matching what the gateway route
-/// (`POST /device/pigeons/:id/shadow` in `lib.rs`) does via
-/// `update_shadow_pg_db`. Errors at any step are logged and otherwise
-/// swallowed -- there's no HTTP response to carry them back to the device,
-/// and a malformed/failed report shouldn't kill the connection.
+/// WS counterpart to `report_shadow_device`, reusing
+/// `write_shadow_report`. No gateway route is in the loop to sync Postgres
+/// afterward (frames go straight into this DO), so this does the
+/// best-effort sync itself. Errors are logged and swallowed -- there's no
+/// HTTP response to carry them back, and a failed report shouldn't kill
+/// the connection.
 async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportRequest) {
   let shadow = match write_shadow_report(pigeons, report) {
     Ok(s) => s,
@@ -1561,19 +1423,13 @@ async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportR
   }
 }
 
-/// Backs the WebSocket `telemetry` frame (task #32) -- the WS counterpart to
-/// `report_telemetry_device`/the queue-producer path in `lib.rs`. Always
-/// does the DO's own latest-value upsert synchronously first (same as every
-/// other telemetry entry point), then either enqueues onto
-/// `TELEMETRY_QUEUE` for the same consumer path the HTTP route uses (PG
-/// history or line-protocol forward, decided by `telemetry_endpoint` --
-/// see `queue.rs`), or, in an environment with no queue bound (dev today),
-/// writes PG history directly so telemetry sent over the socket doesn't
-/// silently skip history the HTTP route would have recorded in that same
-/// environment. Unlike the HTTP route, no separate auth round trip is
-/// needed before enqueueing -- the bearer token was already verified once,
-/// at socket accept, and this frame could only have arrived on an already-
-/// authenticated connection.
+/// WS counterpart to the HTTP telemetry route. Upserts the DO's own
+/// latest-value store synchronously first (like every telemetry entry
+/// point), then either enqueues onto `TELEMETRY_QUEUE` for the shared
+/// consumer path (see `queue.rs`), or -- with no queue bound (dev) --
+/// writes history directly so WS telemetry doesn't silently skip what the
+/// HTTP route would have recorded. No auth round trip: the bearer token
+/// was verified once, at socket accept.
 async fn handle_ws_telemetry(
   pigeons: &Pigeons,
   metrics: std::collections::HashMap<String, String>,
@@ -1582,18 +1438,11 @@ async fn handle_ws_telemetry(
     return;
   }
 
-  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
-  // comment (task #39, RateOfChange). NOTE (task #41): TELEMETRY_QUEUE is
-  // bound in every environment except dev (staging AND production -- see
-  // `wrangler.toml`'s default/`[[queues.*]]` blocks -- a prior comment here
-  // claimed this gap "doesn't affect dev or production", which was wrong
-  // for prod). In the queue-bound branch below, this capture is
-  // serialized onto the outgoing `TelemetryMessage` (see
-  // `TelemetryMessage::previous_values_json`'s doc comment) instead of
-  // being recomputed later in `queue.rs` -- recomputing it there, after
-  // this function's own upsert (just below) already ran, would see the
-  // *new* value where a previous one is needed, silently defeating
-  // RateOfChange for every WS-sourced report in a queue-bound environment.
+  // Must run before upsert_telemetry (see read_previous_telemetry). In
+  // the queue-bound branch below this capture rides the outgoing
+  // `TelemetryMessage` -- recomputing it in `queue.rs`, after the upsert
+  // just below, would see the *new* value where the previous one is
+  // needed, silently defeating RateOfChange for every WS-sourced report.
   let previous_values = read_previous_telemetry(pigeons, &metrics);
 
   if upsert_telemetry(pigeons, &metrics).is_err() {
@@ -1610,13 +1459,10 @@ async fn handle_ws_telemetry(
       };
 
       // Pre-serialized to a JSON string for the same reason as
-      // `metrics_json` above (see `TelemetryMessage::previous_values_json`'s
-      // doc comment) -- a raw `HashMap` field would hit the identical
-      // serde-wasm-bindgen -> JS `Map` -> `JSON.stringify` == `{}` bug. A
-      // serialization failure here (should never happen for this small,
-      // plain-data map) falls back to `None`, which makes `queue.rs`
-      // dispatch this message down the HTTP-sourced path instead --
-      // reverting to this task's original bug for that one message only,
+      // `metrics_json` -- a raw `HashMap` field hits the
+      // serde-wasm-bindgen -> JS `Map` -> `JSON.stringify` == `{}` bug.
+      // On a (shouldn't-happen) serialization failure, `None` makes
+      // `queue.rs` fall back to the HTTP-sourced path for that one message
       // rather than dropping a report that already landed in this DO.
       let previous_values_json = match serde_json::to_string(&previous_values) {
         Ok(json) => Some(json),
@@ -1641,10 +1487,8 @@ async fn handle_ws_telemetry(
     }
     Err(_) => {
       // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
-      // HTTP route's own no-queue fallback (report_telemetry_device, which
-      // is auth+write in one call with no queue involved) by writing our
-      // default (task #26: the platform's own GreptimeDB if configured,
-      // else PG history) directly here instead of silently dropping it.
+      // HTTP route's no-queue fallback by writing the default history
+      // target directly instead of silently dropping it.
       let reported_at_ms = Date::now().as_millis();
       if let Err(e) =
         crate::helpers::write_telemetry_default(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
@@ -1653,8 +1497,7 @@ async fn handle_ws_telemetry(
         console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
 
-      // Alert evaluation (task #32, extended #39) -- same best-effort
-      // convention as the default write above.
+      // Best-effort, same as the default write above.
       if let Err(e) = crate::helpers::check_telemetry_alerts(
         &pigeons.env,
         &pigeon_id,
@@ -1675,17 +1518,10 @@ struct TargetConfigRow {
   target_config: String,
 }
 
-/// Firmware shadow-key lookup for the device-facing firmware download route
-/// (`GET /device/pigeons/:id/firmware` in `lib.rs`, task #23). Same
-/// device-auth model as `get_shadow_device`/`report_shadow_device` (bearer
-/// token verified against this pigeon's own `device_public_key`, no
-/// `X-User-Id`/ACL). Reads this pigeon's own `target_config` and extracts
-/// the `firmware` key (see `capsules::FirmwareTarget`'s doc comment for the
-/// coordinated shape) so the gateway can resolve which R2 object to stream
-/// back in one DO round trip instead of two — the firmware bytes
-/// themselves never pass through this DO (SQLite is not acceptable for
-/// MB-sized blobs; see this crate's `CLAUDE.md`). 404 if this pigeon's
-/// shadow currently has no `firmware` key set (nothing assigned yet).
+/// Reads this pigeon's `target_config` and extracts the `firmware` key so
+/// the gateway can resolve which R2 object to stream in one DO round trip
+/// — the firmware bytes themselves never pass through this DO (SQLite is
+/// no place for MB-sized blobs). 404 when no firmware is assigned.
 async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1727,11 +1563,8 @@ async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<R
   }
 }
 
-/// Shared upsert loop behind all three telemetry-write entry points below
-/// (`report_telemetry_device`, `write_telemetry_device`) -- each key
-/// overwrites its own row in `pigeon_telemetry`; this is a
-/// latest-value-per-key store, not a time-series log (see the table's
-/// creation comment in `DurableObject::new`).
+/// Each key overwrites its own row in `pigeon_telemetry` -- a
+/// latest-value-per-key store, not a time-series log.
 fn upsert_telemetry(
   pigeons: &Pigeons,
   metrics: &std::collections::HashMap<String, String>,
@@ -1750,13 +1583,10 @@ fn upsert_telemetry(
 }
 
 /// One telemetry key's stored value + timestamp from immediately before
-/// this report's `upsert_telemetry` overwrote it -- feeds the
-/// `RateOfChange` alert condition (task #39, see `capsules::AlertCondition`'s
-/// own doc comment for why this exists at all: `pigeon_telemetry` is
-/// latest-value-per-key, so the prior row is gone the instant the UPSERT
-/// runs, and this is the only chance to see it). `reported_at` is the
-/// *previous* report's own unix-seconds timestamp (not this one's), used by
-/// `check_telemetry_alerts` to enforce `RateOfChange::window_secs`.
+/// this report's upsert overwrote it -- feeds the `RateOfChange` alert
+/// condition, which needs the prior row the UPSERT destroys.
+/// `reported_at` is the *previous* report's own unix-seconds timestamp,
+/// used to enforce `RateOfChange::window_secs`.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct PreviousTelemetryValue {
   pub value: String,
@@ -1770,18 +1600,13 @@ struct TelemetryKeyRow {
   reported_at: i64,
 }
 
-/// Reads whatever is currently stored for exactly the keys `metrics` is
-/// about to overwrite -- MUST be called before `upsert_telemetry` for the
-/// same report, since that call is a destructive UPSERT and this is the
-/// only chance to see the prior value (see `PreviousTelemetryValue`'s doc
-/// comment). A key with no existing row (this pigeon's first-ever report
-/// of it) is simply absent from the result, which
-/// `check_telemetry_alerts`'s `RateOfChange` arm treats as "nothing to
-/// diff against yet" rather than a synthetic zero -- so that condition can
-/// never fire on a pigeon's first reading of a key. Reads the whole table
-/// rather than building a dynamic `IN (?, ...)` clause -- `pigeon_telemetry`
-/// holds one row per distinct key this pigeon has ever reported, the same
-/// bounded size `get_telemetry_latest` already reads unconditionally.
+/// Reads what's currently stored for exactly the keys `metrics` is about
+/// to overwrite -- MUST run before `upsert_telemetry`, the only chance to
+/// see the prior values. A key with no existing row is simply absent from
+/// the result, so `RateOfChange` never fires on a first-ever reading
+/// (absent, not a synthetic zero). Reads the whole table rather than a
+/// dynamic `IN (?, ...)` -- one row per distinct key ever reported, the
+/// same bounded size `get_telemetry_latest` already reads.
 fn read_previous_telemetry(
   pigeons: &Pigeons,
   metrics: &std::collections::HashMap<String, String>,
@@ -1810,22 +1635,14 @@ fn read_previous_telemetry(
     .collect()
 }
 
-/// Device-facing telemetry ingestion. Same device-auth model as
-/// `get_shadow_device`/`report_shadow_device` (bearer token verified against
-/// this pigeon's own `device_public_key`, no `X-User-Id`/ACL). Body is a
-/// flat JSON object of string key/value pairs (matches pigeon's
-/// pigeon_set_shadow_param/pigeon_shadow_flush wire shape). Used directly
-/// (auth + write in one call) in environments with no telemetry queue bound
-/// -- see the gateway route in `lib.rs`; where a queue *is* bound, that
-/// route calls `verify_telemetry_device` + enqueues instead, and the queue
-/// consumer (`src/queue.rs`) reaches `write_telemetry_device` below. Since
-/// this handler is only ever dispatched from the no-queue fallback branch
-/// of the gateway route, it also best-effort writes history directly here
-/// via `write_telemetry_default` (task #26: platform GreptimeDB if
-/// configured, else PG) -- the same fallback `handle_ws_telemetry` already
-/// does for the WebSocket `telemetry` frame -- so the HTTP route doesn't
-/// silently skip history that environment would otherwise have recorded
-/// via the queue.
+/// Device-facing telemetry ingestion: auth + write in one call, used where
+/// no telemetry queue is bound. Where one *is* bound the gateway calls
+/// `verify_telemetry_device` + enqueues instead, and the queue consumer
+/// reaches `write_telemetry_device` below. Body is a flat JSON object of
+/// string key/value pairs (matches the device library's wire shape). Since
+/// this only runs in the no-queue case, it also best-effort writes history
+/// directly -- same fallback as `handle_ws_telemetry` -- so the HTTP route
+/// doesn't silently skip history the queue would have recorded.
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -1844,8 +1661,7 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
-  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
-  // comment (task #39, RateOfChange).
+  // Must run before upsert_telemetry (see read_previous_telemetry).
   let previous_values = read_previous_telemetry(pigeons, &metrics);
 
   if upsert_telemetry(pigeons, &metrics).is_err() {
@@ -1861,8 +1677,7 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     console_error!("HTTP telemetry: default write failed for pigeon {pigeon_id}: {e}");
   }
 
-  // Alert evaluation (task #32, extended #39) -- same best-effort
-  // convention as the default write above.
+  // Best-effort, same as the default write above.
   if let Err(e) = crate::helpers::check_telemetry_alerts(
     &pigeons.env,
     &pigeon_id,
@@ -1878,45 +1693,28 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
   Response::from_json(&metrics)
 }
 
-/// Auth-only counterpart to `report_telemetry_device`, used by the gateway
-/// route (`lib.rs`) when a telemetry queue is bound for this environment:
-/// verifies the device's bearer token against this pigeon's stored public
-/// key WITHOUT writing anything, so the gateway can confirm the report is
-/// genuine before it ever reaches the queue -- the queue itself has no
-/// authentication of its own. No response body; the caller only inspects
-/// the status code.
+/// Verifies the device's bearer token WITHOUT writing anything, so the
+/// gateway can confirm a report is genuine before it reaches the queue --
+/// the queue itself has no authentication of its own. No response body;
+/// the caller only inspects the status code.
 async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
   Response::ok("")
 }
 
-/// Trusted-internal write counterpart to `verify_telemetry_device`:
-/// performs the same upsert as `report_telemetry_device` but with NO auth
-/// check of its own. Safe only because it is reachable exclusively from
-/// this Worker's own queue consumer (`src/queue.rs`), which only ever
-/// dispatches messages that already passed `verify_telemetry_device` at
-/// enqueue time -- Durable Objects have no public internet-facing address,
-/// so there is no path for an unauthenticated caller to reach this route
-/// directly. Only reached for HTTP-sourced queue messages
-/// (`queue.rs::dispatch_http_sourced`) -- WS-sourced messages already
-/// upserted synchronously in `handle_ws_telemetry` before ever being
-/// enqueued, so they're routed to the read-only
-/// `read_telemetry_endpoint_device` below instead (task #41), which skips
-/// re-upserting and re-capturing "previous" values that would no longer be
-/// previous by the time this DO round trip happened.
-/// Response body for `write_telemetry_device`: besides confirming what got
-/// written, it hands the queue consumer (`src/queue.rs`) this pigeon's
-/// `telemetry_endpoint` (task #18) so it can decide, without a second DO
-/// round trip, whether to forward the report externally (line protocol to
-/// a user-configured endpoint) or write it into our own
-/// `pigeon_telemetry_history` Postgres mirror.
-/// `pub` (and its fields) so the queue consumer (`queue.rs`) can deserialize
-/// this same shape from the DO's write response and decide, without
-/// duplicating the type, whether to forward externally or write our own PG
-/// history (task #18, part 2). `previous_values` (task #39) rides along the
-/// same way, so `check_telemetry_alerts` can evaluate `RateOfChange` at the
-/// queue-consumer call site without a second DO round trip -- see
-/// `PreviousTelemetryValue`'s doc comment.
+/// Response shape of `write_telemetry_device` below -- the trusted-internal
+/// write path with NO auth check of its own. Safe because it's reachable
+/// only from this Worker's own queue consumer (`src/queue.rs`), which only
+/// dispatches messages that passed `verify_telemetry_device` at enqueue
+/// time; Durable Objects have no public address. Only HTTP-sourced queue
+/// messages land there -- WS-sourced ones already upserted synchronously
+/// in `handle_ws_telemetry` and go to `read_telemetry_endpoint_device`
+/// instead.
+///
+/// Besides confirming what got written, this hands the queue consumer the
+/// pigeon's `telemetry_endpoint` (forward externally vs. write our own PG
+/// history) and `previous_values` (for `RateOfChange`) without a second
+/// DO round trip.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TelemetryWriteResult {
   pub metrics: std::collections::HashMap<String, String>,
@@ -1956,8 +1754,7 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
-  // Must run before upsert_telemetry -- see read_previous_telemetry's doc
-  // comment (task #39, RateOfChange).
+  // Must run before upsert_telemetry (see read_previous_telemetry).
   let previous_values = read_previous_telemetry(pigeons, &metrics);
 
   if upsert_telemetry(pigeons, &metrics).is_err() {
@@ -1971,31 +1768,22 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
   })
 }
 
-/// Response for `read_telemetry_endpoint_device` below -- deliberately its
-/// own small type rather than reusing `TelemetryWriteResult` wholesale, so
-/// the WS-sourced queue path (`queue.rs::dispatch_ws_sourced`) can't
-/// accidentally read a `metrics`/`previous_values` field this route never
-/// populates.
+/// Deliberately its own small type rather than reusing
+/// `TelemetryWriteResult`, so the WS-sourced queue path can't accidentally
+/// read a `metrics`/`previous_values` field this route never populates.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TelemetryEndpointLookup {
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
 }
 
-/// Trusted-internal, read-only counterpart to `write_telemetry_device` for
-/// WS-originated queue messages (task #41,
-/// `queue.rs::dispatch_ws_sourced`). `handle_ws_telemetry` already upserted
-/// `pigeon_telemetry` synchronously, before enqueueing, and captured this
-/// report's true previous values itself (see its own doc comment) -- so by
-/// the time a WS-sourced message reaches the queue consumer, re-running
-/// `write_telemetry_device`'s upsert would be redundant work, and re-running
-/// its `read_previous_telemetry` would see the value `handle_ws_telemetry`
-/// already wrote rather than the true previous one (the exact bug task #41
-/// fixes). This only fetches this pigeon's `telemetry_endpoint` -- the one
-/// other piece of per-pigeon state the queue consumer needs to decide where
-/// this report's history goes -- with no request body and no table write.
-/// Safe with no auth check for the same reason as `write_telemetry_device`:
-/// reachable only from this Worker's own queue consumer, never exposed to
-/// the internet.
+/// Read-only counterpart to `write_telemetry_device` for WS-originated
+/// queue messages. `handle_ws_telemetry` already upserted synchronously
+/// and captured the true previous values before enqueueing -- re-running
+/// the upsert here would be redundant, and re-reading "previous" values
+/// would see the value already written. Fetches only `telemetry_endpoint`,
+/// the one other piece of state the queue consumer needs. No auth check
+/// for the same reason as `write_telemetry_device`: reachable only from
+/// our own queue consumer, never the internet.
 async fn read_telemetry_endpoint_device(pigeons: &Pigeons, _req: Request) -> Result<Response> {
   Response::from_json(&TelemetryEndpointLookup {
     telemetry_endpoint: read_telemetry_endpoint(pigeons),
@@ -2038,14 +1826,10 @@ async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Respons
   }
 }
 
-/// Unauthenticated counterpart to `get_telemetry_latest` above, backing the
-/// public demo route (`GET /demo/pigeons/:id/telemetry`, `lib.rs`). This DO
-/// is never reachable directly from the internet (see this crate's
-/// CLAUDE.md) -- the gateway route only proxies here after confirming
-/// `pigeon_id` is in `DEMO_PIGEON_IDS` (`helpers::is_demo_pigeon`), so
-/// there's no `X-User-Id`/`pigeon_acl` check to run here, same posture as
-/// the `/pigeon/device/*` routes skipping `is_authorized` in favor of their
-/// own (different) proof. Otherwise identical to `get_telemetry_latest`.
+/// Unauthenticated counterpart to `get_telemetry_latest`, backing the
+/// public demo route. Safe: this DO is never internet-reachable, and the
+/// gateway only proxies here after confirming the pigeon is in
+/// `DEMO_PIGEON_IDS`.
 async fn get_telemetry_latest_demo(pigeons: &Pigeons, _req: Request) -> Result<Response> {
   match pigeons.sql.exec(
     "SELECT key, value, reported_at FROM pigeon_telemetry;",
@@ -2068,14 +1852,11 @@ async fn get_telemetry_latest_demo(pigeons: &Pigeons, _req: Request) -> Result<R
   }
 }
 
-/// Dashboard-facing setter for the per-pigeon telemetry forwarding target
-/// (task #18). Same authorization level as the generic pigeon `update`
-/// route (`is_authorized`, not `is_owner` -- any ACL entry, not just the
-/// owner, may configure this). A `None` body clears the endpoint, reverting
-/// to our own Postgres history; unlike `update`'s `PigeonUpdateRequest`
-/// fields this is a direct `SET`, not `COALESCE`, so `None` truly means
-/// NULL rather than "leave unchanged" -- there is no "leave unchanged"
-/// notion for this dedicated single-field route.
+/// Dashboard-facing setter for the per-pigeon telemetry forwarding
+/// target. `is_authorized`, not `is_owner` -- any ACL entry may configure
+/// it. A `None` body clears the endpoint: a direct `SET`, not `COALESCE`,
+/// so `None` truly means NULL -- there is no "leave unchanged" for this
+/// single-field route.
 async fn update_telemetry_endpoint(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
@@ -2113,24 +1894,16 @@ async fn update_telemetry_endpoint(pigeons: &Pigeons, mut req: Request) -> Resul
   }
 }
 
-/// Bounded ring-buffer cap for `pigeon_log_chunks` (task #18, part 3) --
-/// each device log chunk is small (Zephyr dictionary-log records capped at
-/// `capsules::MAX_LOG_CHUNK_BYTES` on the way in), but an unbounded stream
-/// would grow this DO's SQLite storage without limit. After every insert,
-/// rows beyond this count (oldest first) are pruned.
+/// Ring-buffer cap for `pigeon_log_chunks` -- chunks are small (capped at
+/// `MAX_LOG_CHUNK_BYTES` on the way in), but an unbounded stream would
+/// grow this DO's SQLite storage without limit.
 const MAX_STORED_LOG_CHUNKS: i64 = 200;
 
-/// Device-facing dictionary-log chunk ingestion (task #18, part 3). Same
-/// device-auth model as the other `/pigeon/device/*` routes (bearer token
-/// verified against this pigeon's own `device_public_key`, no
-/// `X-User-Id`/ACL). The body is the raw binary chunk, not JSON -- the
-/// gateway route (`lib.rs`) forwards it via `proxy_binary_to_pigeon_do`
-/// rather than `proxy_to_pigeon_do`, which reads the body as UTF-8 text and
-/// would corrupt arbitrary binary bytes. Stored as base64 text (matches
-/// this codebase's existing convention for binary data -- see
-/// `device_public_key`, device tokens -- rather than a SQLite BLOB column,
-/// since it's handed back to the dashboard as base64 anyway; see
-/// `get_logs`/`capsules::PigeonLogChunk`).
+/// Device-facing log chunk ingestion. The body is the raw binary chunk,
+/// not JSON -- the gateway forwards it via `proxy_binary_to_pigeon_do`;
+/// the UTF-8 text proxy would corrupt arbitrary bytes. Stored as base64
+/// text rather than a BLOB column since it's handed back to the dashboard
+/// as base64 anyway.
 async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
@@ -2160,8 +1933,8 @@ async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Respo
     return Response::error("Internal Server Error", 500);
   }
 
-  // Prune beyond the ring-buffer cap, oldest first. Non-fatal if this
-  // fails -- the chunk itself is already durably stored.
+  // Prune beyond the ring-buffer cap, oldest first. Non-fatal -- the
+  // chunk itself is already durably stored.
   if let Err(e) = pigeons.sql.exec(
     "DELETE FROM pigeon_log_chunks WHERE id NOT IN (
        SELECT id FROM pigeon_log_chunks ORDER BY id DESC LIMIT ?
@@ -2174,10 +1947,9 @@ async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Respo
   Response::ok("")
 }
 
-/// ACL-gated read for the dashboard (`GET /pigeons/:id/logs` in `lib.rs`) --
-/// every currently-stored chunk, oldest first, as base64 text for
-/// host-side decode (Zephyr's dictionary-log tooling decodes off the
-/// firmware's own ELF, which the backend has no access to).
+/// Every stored chunk, oldest first, as base64 for host-side decode --
+/// Zephyr's dictionary-log tooling decodes against the firmware's own
+/// ELF, which the backend has no access to.
 async fn get_logs(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
@@ -2208,33 +1980,21 @@ struct PigeonBoardFlockRow {
   board: Option<String>,
 }
 
-/// Fail-closed board/geometry compatibility check (task #20, phase 1) --
-/// the actual server-side fix for the nRF9151 Secure Fault DoS: a firmware
-/// image built for one board's flash/partition geometry, assigned via
-/// shadow to a device with a different geometry, halts the device (TF-M
-/// fails safe, but only after the device has already tried to apply the
-/// image -- see the design doc). MCUboot's own image header carries no
-/// usable geometry fact for this fleet's swap-mode builds (`ih_load_addr`
-/// is unset in every current build), so the check is metadata declared by
-/// both sides -- this pigeon's own `board` column and the target image's
-/// `flock_firmware.board`, looked up by the `sha256` embedded in the
-/// incoming `target_config.firmware` -- compared here, before the shadow
-/// write is ever accepted. Catching a bad assignment before it can reach a
-/// device at all is strictly better than the device-side check planned for
-/// phase 2, which can only refuse an image the device has already started
-/// downloading.
+/// Board/geometry compatibility check for firmware assignments: an image
+/// built for one board's flash/partition geometry, assigned to a device
+/// with a different one, halts the device (TF-M fails safe, but only
+/// after the device already tried to apply the image). MCUboot's image
+/// header carries no usable geometry fact for swap-mode builds
+/// (`ih_load_addr` is unset), so the check compares metadata declared by
+/// both sides -- this pigeon's `board` column vs. `flock_firmware.board`
+/// looked up by the sha256 in the incoming `target_config.firmware` --
+/// before the shadow write is ever accepted.
 ///
-/// **Fail-closed, not fail-open, per explicit user decision** -- the
-/// design doc's own draft leaned fail-open (allow when either side is
-/// unset, to avoid breaking pre-existing untagged pigeons/images on
-/// rollout day), but the user chose the stricter rule since this fleet has
-/// no real users yet to disrupt: `pigeon.board` unset, `image.board`
-/// unset, no matching `flock_firmware` row at all for this sha256 in this
-/// pigeon's flock, OR an explicit mismatch -- all four reject with `400`.
-/// Only an explicit, confirmed match allows the write through. Every
-/// pigeon/image that needs to keep working under this rule must be
-/// explicitly tagged (see this task's commit for which staging fixtures
-/// were re-tagged).
+/// Fail-closed on purpose: pigeon board unset, image board unset, no
+/// matching `flock_firmware` row for this sha256 in this pigeon's flock,
+/// or an explicit mismatch all reject with 400. Only a confirmed match
+/// passes -- both the pigeon and the image must be tagged with a board
+/// before assigning firmware at all.
 async fn check_firmware_board_compat(
   pigeons: &Pigeons,
   firmware_value: &serde_json::Value,
@@ -2311,10 +2071,9 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     }
   };
 
-  // Fail-closed board/geometry compatibility check (task #20, phase 1) --
-  // only runs when this PUT's target_config actually carries a `firmware`
-  // key; every other shadow write (telemetry_interval, log, reboot, ...)
-  // is unaffected.
+  // Only when this PUT's target_config actually carries a `firmware` key;
+  // every other shadow write (telemetry_interval, log, reboot, ...) is
+  // unaffected.
   if let Some(firmware_value) = shadow.target_config.get("firmware") {
     unwrap_or_return_response!(check_firmware_board_compat(pigeons, firmware_value).await);
   }
@@ -2358,14 +2117,11 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
 }
 
 /// Pushes the new shadow to this pigeon's connected device WebSocket, if
-/// any (task #32) -- the headline latency win this endpoint exists for:
-/// without it, a device only learns about a new `target_config` on its next
-/// poll. Scoped to `WS_DEVICE_TAG` so a future remote-shell socket (task
-/// #34) never receives a frame meant for the device-telemetry protocol.
-/// Best-effort: a `send` failure (socket mid-close, buffer full, etc.) is
-/// logged and otherwise ignored, matching this codebase's established
-/// best-effort-sync convention -- the shadow write itself already succeeded
-/// and is the primary result of this request either way.
+/// any -- without this, a device only learns about a new `target_config`
+/// on its next poll. Scoped to `WS_DEVICE_TAG` so other socket classes
+/// never receive a frame meant for the device protocol. Best-effort: a
+/// `send` failure is logged and ignored -- the shadow write already
+/// succeeded and is the primary result of this request.
 fn broadcast_shadow_update(pigeons: &Pigeons, shadow: &PigeonShadow) {
   for ws in pigeons.state.get_websockets_with_tag(WS_DEVICE_TAG) {
     if let Err(e) = ws.send(&WsOutboundFrame::ShadowUpdate {

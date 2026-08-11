@@ -10,9 +10,6 @@ use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 /// `check_pigeon_authz` below -- a bare `pigeon_id` string can be
 /// constructed or forwarded by anyone, but a `PigeonAccess` can only come
 /// from code that actually queried `pigeon_acl` and got a passing result.
-/// See docs/design/tenancy-isolation.md §2.1 -- this closes the one
-/// "caller must have already checked" gap the tenancy-isolation audit
-/// found on the Postgres side.
 pub struct PigeonAccess {
   pigeon_id: String,
 }
@@ -24,13 +21,11 @@ impl PigeonAccess {
 
   /// Alternate proof source for the public, unauthenticated demo routes
   /// (`GET /demo/pigeons/:id/telemetry/history`, `lib.rs`) -- a demo
-  /// visitor has no Kratos session, so `check_pigeon_authz`'s `X-User-Id`
-  /// + `pigeon_acl` check above can never run for these routes. The
-  /// gateway route's own `helpers::is_demo_pigeon` allowlist check IS the
-  /// authorization here; this constructor exists purely so that check
-  /// still has to happen at a call site that can prove it before reaching
-  /// `query_telemetry_history_for_pigeon`, rather than that function
-  /// falling back to trusting a bare `&str` again.
+  /// visitor has no Kratos session, so `check_pigeon_authz`'s `X-User-Id` +
+  /// `pigeon_acl` check can never run. The gateway route's own
+  /// `helpers::is_demo_pigeon` allowlist check IS the authorization here;
+  /// this constructor just forces that check to happen at a call site the
+  /// compiler can verify, instead of trusting a bare `&str`.
   pub fn from_demo_allowlist(pigeon_id: &str) -> Self {
     Self {
       pigeon_id: pigeon_id.to_string(),
@@ -40,12 +35,10 @@ impl PigeonAccess {
 
 /// Runs the DO's bare ACL probe (`/pigeon/authz/check`) for `pigeon_id` and
 /// returns proof of a passing check, or the DO's own error response
-/// unchanged for the caller to return as-is. Factored out of what used to
-/// be inline in `GET /pigeons/:id/telemetry/history` (`lib.rs`) so that
+/// unchanged for the caller to return as-is. Lets
 /// `query_telemetry_history_for_pigeon`, which otherwise trusts
-/// `pigeon_id` unconditionally, can require this type instead of a bare
-/// `&str`. Behavior (status codes, response bodies) is unchanged from the
-/// inline version -- this is purely a compile-time guard, not a new check.
+/// `pigeon_id` unconditionally, require this type instead of a bare `&str`
+/// -- purely a compile-time guard, not a new check.
 pub async fn check_pigeon_authz(
   req: Request,
   user_id_str: &str,
@@ -63,12 +56,12 @@ pub async fn check_pigeon_authz(
   }))
 }
 
-/// `org_roles_json` (task #12) is the caller's org-membership set as
-/// compact JSON (`Principal::org_roles_header`, `helpers/orgs.rs`),
-/// forwarded as the internal `X-Org-Roles` header so the DO's centralized
-/// ACL check (`objects/pigeons.rs::authorize_dashboard`) can match
-/// org-granted `pigeon_acl` rows. `None` (device routes, org-less users)
-/// adds no header at all.
+/// `org_roles_json` is the caller's org-membership set as compact JSON
+/// (`Principal::org_roles_header`, `helpers/orgs.rs`), forwarded as the
+/// internal `X-Org-Roles` header so the DO's centralized ACL check
+/// (`objects/pigeons.rs::authorize_dashboard`) can match org-granted
+/// `pigeon_acl` rows. `None` (device routes, org-less users) adds no
+/// header at all.
 pub async fn proxy_to_pigeon_do(
   mut req: Request,
   user_id_str: &str,
@@ -130,10 +123,9 @@ pub async fn proxy_to_pigeon_do(
 /// own role in that org, see `objects/pigeons.rs::authorize_dashboard`)
 /// into one pigeon's Durable Object via the trusted-internal
 /// `/pigeon/acl/grant` route. Dispatched by the flock-transfer route and
-/// by pigeon-create inside an org-owned flock (task #12) -- both AFTER the
-/// gateway has fully authorized the operation, which is exactly the same
-/// trust argument `write_telemetry_device` already relies on (DOs are
-/// never internet-reachable; only this Worker can dispatch here).
+/// by pigeon-create inside an org-owned flock, both AFTER the gateway has
+/// fully authorized the operation -- DOs are never internet-reachable, so
+/// only this Worker can dispatch here.
 ///
 /// NOT best-effort: callers treat a non-2xx here as a hard failure of the
 /// primary operation -- the DO's ACL table is the authoritative
@@ -162,12 +154,12 @@ pub async fn grant_org_acl_via_do(
 }
 
 /// Binary-safe counterpart to `proxy_to_pigeon_do`, used only by `POST
-/// /device/pigeons/:id/logs` (task #18, part 3). `proxy_to_pigeon_do`
-/// forwards the body via `req.text()`, which is fine for the JSON bodies
-/// every other route sends but silently mangles non-UTF-8 bytes -- device
-/// dictionary-log chunks are arbitrary binary. Otherwise identical
-/// (`Authorization` header forwarding, no `X-User-Id` -- this is a
-/// device-facing route, see `is_authorized_device` in `objects/pigeons.rs`).
+/// /device/pigeons/:id/logs`. `proxy_to_pigeon_do` forwards the body via
+/// `req.text()`, which is fine for JSON bodies but silently mangles
+/// non-UTF-8 bytes -- device dictionary-log chunks are arbitrary binary.
+/// Otherwise identical (`Authorization` header forwarding, no `X-User-Id`
+/// -- this is a device-facing route, see `is_authorized_device` in
+/// `objects/pigeons.rs`).
 pub async fn proxy_binary_to_pigeon_do(
   mut req: Request,
   stub: &worker::ObjectId<'_>,
@@ -209,17 +201,16 @@ pub async fn proxy_binary_to_pigeon_do(
 }
 
 /// WebSocket-upgrade counterpart to `proxy_to_pigeon_do`, used only by
-/// `GET /device/pigeons/:id/ws` (task #32). GET, so no body to forward. No
-/// `X-User-Id` -- same device-auth model as the other `/device/pigeons/:id/*`
-/// routes; the DO verifies the bearer token itself, BEFORE accepting the
-/// socket (see `is_authorized_device`/`accept_websocket_device` in
+/// `GET /device/pigeons/:id/ws`. GET, so no body to forward. No
+/// `X-User-Id` -- same device-auth model as the other
+/// `/device/pigeons/:id/*` routes; the DO verifies the bearer token itself
+/// BEFORE accepting the socket (see
+/// `is_authorized_device`/`accept_websocket_device` in
 /// `objects/pigeons.rs`). The actual protocol upgrade is driven by the
 /// `Response` the DO returns (`Response::from_websocket`, carrying the
 /// `webSocket` field), not by which headers reach this internal
 /// `Stub::fetch_with_request` dispatch -- but the handshake headers are
-/// forwarded anyway, for parity with how a real HTTP proxy would forward
-/// them and in case a future consumer of this path (or the DO's own
-/// handler) ever wants to inspect them.
+/// forwarded anyway, for parity with a real HTTP proxy.
 pub async fn proxy_websocket_to_pigeon_do(
   req: Request,
   stub: &worker::ObjectId<'_>,
@@ -294,16 +285,12 @@ pub async fn verify_device_via_do(
 }
 
 /// Idempotently ensures the `pigeons.board` column exists on the Postgres
-/// mirror table (task #20, phase 1) -- same no-separate-migration-runner
-/// rationale as `ensure_pigeons_telemetry_endpoint_column`
-/// (`helpers/telemetry.rs`). Unlike that column, `board` is written
-/// unconditionally on every `insert_pigeon_pg_db`/`update_pigeon_pg_db`
-/// call (not just a dedicated opt-in route), so both call this first --
-/// discovered by actually running a fresh pigeon-create against a
-/// long-lived local Postgres while testing task #26 end-to-end (the write
-/// 500'd with a real "column does not exist" error until this was added;
-/// the same gap would have bitten staging/prod's shared, already-running
-/// database identically).
+/// mirror table -- same no-separate-migration-runner rationale as
+/// `ensure_pigeons_telemetry_endpoint_column` (`helpers/telemetry.rs`).
+/// Unlike that column, `board` is written unconditionally on every
+/// `insert_pigeon_pg_db`/`update_pigeon_pg_db` call (not just a dedicated
+/// opt-in route), so both must call this first or the write 500s with
+/// "column does not exist" against an already-deployed database.
 pub async fn ensure_pigeons_board_column(client: &Client) -> worker::Result<()> {
   client
     .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;")
@@ -477,9 +464,9 @@ pub async fn update_shadow_pg_db(
 }
 
 /// Best-effort PG sync for the dedicated `PUT
-/// /pigeons/:pigeon_id/telemetry-endpoint` route (task #18, part 2) --
-/// mirrors `update_shadow_pg_db`'s shape (single-column update, called
-/// after the DO's own write already succeeded). Calls
+/// /pigeons/:pigeon_id/telemetry-endpoint` route -- mirrors
+/// `update_shadow_pg_db`'s shape (single-column update, called after the
+/// DO's own write already succeeded). Calls
 /// `ensure_pigeons_telemetry_endpoint_column` first since staging and
 /// production share one Hyperdrive-backed Postgres with no separate
 /// migration runner (see `helpers/telemetry.rs`).

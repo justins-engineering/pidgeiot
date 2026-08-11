@@ -3,13 +3,11 @@ use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
-/// Idempotently ensures the PG firmware catalog table + index exist —
-/// mirrors `ensure_telemetry_history_table`'s rationale (task #18):
+/// Idempotently ensures the PG firmware catalog table + index exist --
 /// staging and production share one Hyperdrive-backed Postgres with no
 /// separate migration runner, so each read/write path calls this first
-/// rather than relying on a one-time manual migration against an
-/// already-deployed database. Cheap no-op after the first call (`IF NOT
-/// EXISTS`).
+/// rather than relying on a one-time manual migration. Cheap no-op after
+/// the first call (`IF NOT EXISTS`).
 pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
   client
     .batch_execute(
@@ -31,15 +29,11 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     })?;
 
   // Idempotent for pre-existing databases that created `flock_firmware`
-  // before this column existed (task #20, phase 1) -- same
-  // no-separate-migration-runner rationale as `telemetry_endpoint`
-  // (`helpers/telemetry.rs::ensure_pigeons_telemetry_endpoint_column`).
-  // Nullable at the schema level so pre-existing rows don't need a
-  // backfill -- the upload route requires `board` for every NEW image
-  // (see `lib.rs`'s `POST /flocks/:flock_id/firmware`), but an old,
-  // already-uploaded image simply stays untagged (and, under the
-  // fail-closed board-compatibility check in `objects/pigeons.rs`,
-  // unassignable) until an operator tags it.
+  // before this column existed. Nullable at the schema level so
+  // pre-existing rows don't need a backfill -- the upload route requires
+  // `board` for every NEW image, but an old, already-uploaded image simply
+  // stays untagged (and, under the fail-closed board-compatibility check
+  // in `objects/pigeons.rs`, unassignable) until an operator tags it.
   client
     .batch_execute("ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;")
     .await
@@ -50,12 +44,10 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
 }
 
 /// Proof that the org-aware flock authorization check
-/// (`helpers/orgs.rs::authorize_flock`, task #12 -- previously the
-/// user-only `is_flock_owner` that lived here) has already run and passed
-/// for the current request. Constructible only via that helper's passing
-/// case -- same "caller must have already checked" guard as `PigeonAccess`
-/// (`helpers/pigeons.rs`), applied to the flock side (see
-/// docs/design/tenancy-isolation.md §2.1).
+/// (`helpers/orgs.rs::authorize_flock`) has already run and passed for the
+/// current request. Constructible only via that helper's passing case --
+/// same "caller must have already checked" guard as `PigeonAccess`
+/// (`helpers/pigeons.rs`), applied to the flock side.
 pub struct FlockAccess {
   flock_id: String,
 }
@@ -129,10 +121,9 @@ pub async fn upsert_flock_firmware(
 }
 
 /// Backs `GET /flocks/:flock_id/firmware`. Takes a `FlockAccess` proof
-/// rather than a bare `flock_id_str` -- that proof is only constructible
-/// via `is_flock_owner`'s passing case above, so a caller can no longer
-/// reach this query without having run the owner-gate first (see
-/// docs/design/tenancy-isolation.md §2.1).
+/// rather than a bare `flock_id_str` -- only constructible via
+/// `authorize_flock`'s passing case, so a caller can't reach this query
+/// without the owner-gate having run first.
 pub async fn list_flock_firmware(
   client: &Client,
   access: &FlockAccess,
@@ -172,15 +163,13 @@ pub async fn list_flock_firmware(
 }
 
 /// Board declared for one flock's catalog image, looked up by content hash
-/// -- the enforcement lookup behind `objects/pigeons.rs::
-/// check_firmware_board_compat` (task #20, phase 1's fail-closed
-/// board-compatibility check). Returns `Ok(None)` both when the column is
-/// genuinely unset (pre-migration/untagged image) and when no catalog row
-/// matches at all (e.g. a stale/foreign sha256 not in this flock's
-/// catalog) -- the caller's fail-closed rule treats both the same way
-/// (reject), so this function doesn't need to distinguish them; a caller
-/// that does need to tell the two apart should use `list_flock_firmware`
-/// instead.
+/// -- the enforcement lookup behind
+/// `objects/pigeons.rs::check_firmware_board_compat`'s fail-closed
+/// board-compatibility check. Returns `Ok(None)` both when the column is
+/// genuinely unset (untagged image) and when no catalog row matches at all
+/// (e.g. a stale/foreign sha256 not in this flock's catalog) -- the
+/// caller's fail-closed rule rejects either way, so this doesn't need to
+/// distinguish them; use `list_flock_firmware` if you do.
 pub async fn get_firmware_board(
   client: &Client,
   flock_id_str: &str,

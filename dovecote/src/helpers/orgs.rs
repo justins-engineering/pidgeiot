@@ -1,4 +1,4 @@
-//! Organizations + org RBAC (task #12) -- Postgres-side helpers.
+//! Organizations + org RBAC -- Postgres-side helpers.
 //!
 //! Model recap (see `docs/api.md`'s "Organizations" section for the wire
 //! surface and the full permission matrix): an `organizations` row per
@@ -744,9 +744,8 @@ pub async fn accept_invite(
   Ok(Ok(member))
 }
 
-/// Builds the fancier-side accept URL for an invite token --
-/// `ROOT_URL`-based (the frontend's own origin per environment, reusing the
-/// existing config var per the reuse-existing-config directive).
+/// Builds the fancier-side accept URL for an invite token -- `ROOT_URL`-based
+/// (the frontend's own origin per environment).
 pub fn build_invite_url(env: &Env, token: &str) -> String {
   let root = env
     .var("ROOT_URL")
@@ -792,10 +791,10 @@ pub enum FlockAction {
   Manage,
 }
 
-/// THE gateway-side flock authorization helper (task #12's hard
-/// requirement: every gateway flock check funnels through here, so a
-/// future central-authz swap only has to replace this one function; the
-/// DO-side counterpart is `objects/pigeons.rs::authorize_dashboard`).
+/// THE gateway-side flock authorization helper -- every gateway flock
+/// check funnels through here, so a future central-authz swap only has to
+/// replace this one function; the DO-side counterpart is
+/// `objects/pigeons.rs::authorize_dashboard`.
 ///
 /// Rules -- a flock is EXACTLY one of user-owned or org-owned:
 /// - `org_id IS NULL` (personal): only `flocks.user_id == caller` grants
@@ -804,10 +803,9 @@ pub enum FlockAction {
 ///   anything -- `owner`/`admin` grant `Manage`, `member` grants `View`.
 ///   `flocks.user_id` is provenance, not an access grant, once transferred.
 ///
-/// Returns the same `FlockAccess` proof `is_flock_owner` used to mint
-/// (`Some` = allowed at the requested level), so downstream
-/// proof-requiring helpers (`list_flock_firmware`, telemetry history,
-/// alerts) are unchanged in shape.
+/// Returns a `FlockAccess` proof (`Some` = allowed at the requested level)
+/// in the same shape the downstream proof-requiring helpers
+/// (`list_flock_firmware`, telemetry history, alerts) already expect.
 pub async fn authorize_flock(
   client: &Client,
   flock_id_str: &str,
@@ -829,9 +827,9 @@ pub async fn authorize_flock(
     })?;
 
   let Some(row) = rows.into_iter().next() else {
-    // Unknown flock: no access (routes surface this as 403, matching the
-    // existing is_flock_owner behavior of not distinguishing
-    // missing-vs-forbidden).
+    // Unknown flock: no access (routes surface this as 403 -- deliberately
+    // not distinguishing missing-vs-forbidden, so an unauthorized caller
+    // can't probe flock ids by existence).
     return Ok(None);
   };
 
