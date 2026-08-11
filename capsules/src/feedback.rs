@@ -1,5 +1,5 @@
-//! User-feedback form types + email formatting (task #13) -- shared by
-//! dovecote's `POST /feedback` route and fancier's feedback modal.
+//! User-feedback form types + email formatting -- shared by dovecote's
+//! `POST /feedback` route and fancier's feedback modal.
 //!
 //! The email formatting lives here (not in dovecote's route/helper layer)
 //! for the same reason `connection_state` does: it's pure string logic with

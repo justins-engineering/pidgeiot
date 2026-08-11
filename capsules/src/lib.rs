@@ -2,15 +2,14 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-// Connection-state classification (task #31, moved here task #38) --
-// shared by `fancier`'s connection badge and dovecote's scheduled alert
-// evaluator. See that module's own doc comment for the full rationale.
+// Shared by fancier's connection badge and dovecote's scheduled alert
+// evaluator -- see that module's own doc comment for the rationale.
 pub mod connection_state;
 
-// User-feedback form (task #13) -- request/category types shared with
-// fancier's feedback modal, plus the (host-testable) notification-email
-// formatter dovecote's `POST /feedback` route uses. Re-exported at the
-// crate root so consumers name them like every other capsules type.
+// Request/category types shared with fancier's feedback modal, plus the
+// notification-email formatter dovecote's `POST /feedback` route uses.
+// Re-exported at the crate root so consumers name them like every other
+// capsules type.
 pub mod feedback;
 pub use feedback::{
   FeedbackCategory, FeedbackRequest, FeedbackSubmitter, MAX_FEEDBACK_BODY_BYTES,
@@ -40,12 +39,12 @@ where
 pub struct Flock {
   pub id: Uuid,
   pub user_id: Uuid,
-  /// Owning organization (task #12) -- `Some` makes this an org-owned
-  /// flock governed by `organization_members` roles; `None` keeps it a
-  /// personal flock governed by `user_id` alone. Exactly one of the two
-  /// models applies at a time: once `org_id` is set, `user_id` is
-  /// historical provenance (who created/transferred it), not an access
-  /// grant -- see dovecote's `helpers/orgs.rs::authorize_flock`.
+  /// Owning organization -- `Some` makes this an org-owned flock governed by
+  /// `organization_members` roles; `None` keeps it a personal flock governed
+  /// by `user_id` alone. Exactly one model applies at a time: once `org_id`
+  /// is set, `user_id` is historical provenance (who created/transferred
+  /// it), not an access grant -- see dovecote's
+  /// `helpers/orgs.rs::authorize_flock`.
   #[serde(default)]
   pub org_id: Option<Uuid>,
   pub name: String,
@@ -114,13 +113,11 @@ pub struct PigeonRow {
   // JSON text like `connector`, NULL/absent when no user-defined endpoint is
   // configured — most pigeons never set this.
   pub telemetry_endpoint: Option<String>,
-  // This pigeon's own Zephyr `CONFIG_BOARD_TARGET` string (task #20, phase
-  // 1), e.g. "circuitdojo_feather/nrf9160/ns" -- operator-set at
-  // provisioning/update time for now (device self-report is a later
-  // hardening phase). `None` for every pigeon created before this field
-  // existed, and for any pigeon an operator hasn't tagged yet -- see
-  // `objects/pigeons.rs::check_firmware_board_compat` in `dovecote` for
-  // where this is actually enforced against a firmware image's own board.
+  // This pigeon's own Zephyr `CONFIG_BOARD_TARGET` string, e.g.
+  // "circuitdojo_feather/nrf9160/ns" -- operator-set at provisioning/update
+  // time (device self-report may come later). `None` until an operator
+  // tags it -- see `objects/pigeons.rs::check_firmware_board_compat` in
+  // dovecote for where this is enforced against a firmware image's board.
   pub board: Option<String>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
@@ -190,16 +187,15 @@ impl Default for Pigeon {
   }
 }
 
-/// User-definable forwarding target for a pigeon's telemetry (task #18):
-/// when set, the queue consumer forwards each report to `url` as an
-/// InfluxDB line protocol v2 HTTP write (GreptimeDB-compatible) instead of
-/// our own `pigeon_telemetry_history` Postgres mirror — the DO's
-/// latest-value-per-key `pigeon_telemetry` upsert always happens either
-/// way. Stored as JSON text in the same column pattern as `connector`
-/// (no separate `*Row` variant needed — it carries no DB-native timestamp
-/// fields to convert). `auth_token` is stripped on GET the same as
-/// `connector`'s `token`/`tls_psk_secret` — it's only ever accepted on the
-/// dashboard PUT that sets it.
+/// User-definable forwarding target for a pigeon's telemetry: when set, the
+/// queue consumer forwards each report to `url` as an InfluxDB line
+/// protocol v2 HTTP write (GreptimeDB-compatible) instead of our own
+/// `pigeon_telemetry_history` Postgres mirror — the DO's latest-value-per-key
+/// `pigeon_telemetry` upsert always happens either way. Stored as JSON text
+/// in the same column pattern as `connector` (no separate `*Row` variant
+/// needed — no DB-native timestamp fields to convert). `auth_token` is
+/// stripped on GET the same as `connector`'s `token`/`tls_psk_secret` — only
+/// ever accepted on the dashboard PUT that sets it.
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct TelemetryEndpoint {
   pub url: String,
@@ -222,9 +218,8 @@ pub struct PigeonCreateRequest {
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: Connector,
-  // Operator-declared board at provisioning time (task #20, phase 1) --
-  // optional, same "unset until an operator tags it" story as
-  // `Pigeon::board`.
+  // Operator-declared board at provisioning time -- optional, same
+  // "unset until an operator tags it" story as `Pigeon::board`.
   #[serde(default)]
   pub board: Option<String>,
 }
@@ -243,11 +238,10 @@ pub struct PigeonUpdateRequest {
   pub name: Option<String>,
   pub tags: Option<String>,
   pub connector: Option<Connector>,
-  // Same `COALESCE`/partial-update semantics as every other field here --
+  // Same COALESCE/partial-update semantics as every other field here --
   // omitted keeps the current value, `Some` replaces it. No way to
   // explicitly clear an already-set board via this route today, same
-  // limitation every other `Option<String>` field on this struct already
-  // has.
+  // limitation every other `Option<String>` field on this struct has.
   #[serde(default)]
   pub board: Option<String>,
 }
@@ -400,7 +394,7 @@ impl Default for Connector {
   }
 }
 
-// --- Telemetry (task #18) ---
+// --- Telemetry ---
 
 // DB model for the DO's `pigeon_telemetry` latest-value-per-key table
 // (SQLite integer timestamp, like PigeonRow/PigeonShadowRow above).
@@ -457,7 +451,7 @@ pub struct TelemetryHistoryQuery {
   pub until: Option<OffsetDateTime>,
 }
 
-// --- Device logs (task #18) ---
+// --- Device logs ---
 
 /// Size cap enforced by dovecote's `POST /device/pigeons/:id/logs` route
 /// (`objects/pigeons.rs::report_logs_device`) on a single log chunk body --
@@ -503,7 +497,7 @@ pub struct PigeonLogChunk {
   pub received_at: OffsetDateTime,
 }
 
-// --- Device log dictionary (task #5) ---
+// --- Device log dictionary ---
 
 /// Size cap enforced by dovecote's `PUT /pigeons/:pigeon_id/log-dictionary`
 /// route on an uploaded `log_dictionary.json` -- a real build's database is
@@ -532,7 +526,7 @@ pub struct LogDictionaryInfo {
   pub version: Option<i64>,
 }
 
-// --- Firmware / FOTA (task #23) ---
+// --- Firmware / FOTA ---
 
 /// Size cap enforced by dovecote's `POST /flocks/:flock_id/firmware` route
 /// -- this fleet's signed MCUboot application images run ~300KB-1MB
@@ -541,22 +535,20 @@ pub struct LogDictionaryInfo {
 /// dashboard-side caller can pre-check without duplicating the number.
 pub const MAX_FIRMWARE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Shape embedded at `target_config.firmware` in a pigeon's shadow (task
-/// #23) -- the shadow-driven update signal. Coordinated with the device
-/// client (`~/pigeon`/`~/pigeon-examples`) before being frozen: a nested
-/// object, not a flat key, since Zephyr's `json_obj_parse` supports nested
-/// objects via `JSON_OBJ_DESCR_OBJECT` and old firmware ignores unknown
-/// top-level keys entirely either way (verified: `json_obj_parse` skips
-/// them), so this is backward-compatible with devices that predate FOTA.
-/// `sha256` is lowercase hex (not base64) -- mbedTLS/PSA sha256 on the
+/// Shape embedded at `target_config.firmware` in a pigeon's shadow -- the
+/// shadow-driven update signal. A nested object, not a flat key, since
+/// Zephyr's `json_obj_parse` supports nested objects via
+/// `JSON_OBJ_DESCR_OBJECT`, and old firmware ignores unknown top-level keys
+/// either way, so this is backward-compatible with devices that predate
+/// FOTA. `sha256` is lowercase hex (not base64) -- mbedTLS/PSA sha256 on the
 /// device side naturally produces raw bytes to hex-compare, and hex is more
 /// debuggable from the dashboard. This is also the exact response shape of
 /// the DO-internal `/pigeon/device/firmware/target` route (see
 /// `objects/pigeons.rs::get_firmware_target_device`), which the gateway's
 /// `GET /device/pigeons/:id/firmware` route (`lib.rs`) uses to resolve
 /// which R2 object to stream back -- the firmware bytes themselves never
-/// pass through the pigeon's Durable Object (SQLite is not acceptable for
-/// MB-sized blobs; see this workspace's root `CLAUDE.md`).
+/// pass through the pigeon's Durable Object (SQLite is not viable for
+/// MB-sized blobs).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct FirmwareTarget {
   pub version: String,
@@ -564,19 +556,19 @@ pub struct FirmwareTarget {
   pub sha256: String,
 }
 
-/// One uploaded firmware image, catalogued per-flock in Postgres (task
-/// #23). Firmware images are shared across every pigeon in a flock (same
-/// hardware fleet), unlike per-pigeon state (connector, telemetry_endpoint,
-/// etc.) which lives in that pigeon's own Durable Object -- flocks already
-/// have no DO of their own (see `Flock` above), so this catalog lives
-/// purely in Postgres, with no `*Row` variant needed since Postgres hands
-/// back a native `OffsetDateTime` directly (same as `Flock`). The actual
-/// binary lives in R2, content-addressed by `sha256` (key
-/// `firmware/<sha256>.bin`) -- re-uploading identical bytes to the same
-/// flock (even under a new `version` label) updates this row in place
-/// rather than duplicating the R2 object. A pigeon's *assigned* firmware is
-/// a separate, per-pigeon concern living in that pigeon's own shadow (see
-/// `FirmwareTarget` above), not here.
+/// One uploaded firmware image, catalogued per-flock in Postgres. Firmware
+/// images are shared across every pigeon in a flock (same hardware fleet),
+/// unlike per-pigeon state (connector, telemetry_endpoint, etc.) which lives
+/// in that pigeon's own Durable Object -- flocks have no DO of their own
+/// (see `Flock` above), so this catalog lives purely in Postgres, with no
+/// `*Row` variant needed since Postgres hands back a native `OffsetDateTime`
+/// directly (same as `Flock`). The actual binary lives in R2,
+/// content-addressed by `sha256` (key `firmware/<sha256>.bin`) --
+/// re-uploading identical bytes to the same flock (even under a new
+/// `version` label) updates this row in place rather than duplicating the
+/// R2 object. A pigeon's *assigned* firmware is a separate, per-pigeon
+/// concern living in that pigeon's own shadow (see `FirmwareTarget` above),
+/// not here.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct FirmwareImage {
   pub id: Uuid,
@@ -585,8 +577,7 @@ pub struct FirmwareImage {
   pub size: i64,
   pub sha256: String,
   // The Zephyr `CONFIG_BOARD_TARGET` string this image was built for (e.g.
-  // "circuitdojo_feather/nrf9160/ns") -- required on every NEW upload
-  // (task #20, phase 1: firmware/board geometry compatibility) via
+  // "circuitdojo_feather/nrf9160/ns") -- required on every NEW upload via
   // `FirmwareUploadQuery::board` below, but `Option` here since
   // pre-existing catalog rows predate the column and stay untagged
   // (`NULL`) until an operator retags them. Enforced against
@@ -600,31 +591,26 @@ pub struct FirmwareImage {
 /// Query params for `POST /flocks/:flock_id/firmware` -- `size`/`sha256`
 /// are deliberately absent: both are computed server-side from the
 /// uploaded bytes, never trusted from the client (see
-/// `helpers/firmware.rs::sha256_hex`). `board` (task #20, phase 1) is
-/// required, unlike `FirmwareImage::board` above being `Option` -- every
-/// NEW upload must declare what it was built for; only pre-existing rows
-/// from before this field existed are allowed to stay untagged.
+/// `helpers/firmware.rs::sha256_hex`). `board` is required, unlike
+/// `FirmwareImage::board` above being `Option` -- every NEW upload must
+/// declare what it was built for; only pre-existing rows from before this
+/// field existed are allowed to stay untagged.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct FirmwareUploadQuery {
   pub version: String,
   pub board: String,
 }
 
-// --- Alerts (task #32, extended task #38, #39) ---
+// --- Alerts ---
 //
 // Model follows docs/design/alerts-triggers.md §1, with one deliberate
 // simplification (see `AlertCondition::MissingReport`'s own doc comment).
-// `Threshold` and `RateOfChange` (task #39) are both evaluated by
-// dovecote's ingest-hook evaluator (`check_telemetry_alerts`,
+// `Threshold` and `RateOfChange` are both evaluated by dovecote's
+// ingest-hook evaluator (`check_telemetry_alerts`,
 // `dovecote/src/helpers/alerts.rs`); `DeviceState`/`MissingReport` are both
 // evaluated by its Cron-Trigger-driven scheduled sweep instead
-// (`evaluate_scheduled_alerts`, same file, task #38) -- see the design doc
-// §2.2/§2.4 for why absence-of-signal conditions can't be decided at
-// ingest time. `RateOfChange` needed a "previous value" lookup this
-// codebase hadn't built yet as of task #38 (design doc §2.2) -- see that
-// variant's own doc comment below for how `check_telemetry_alerts` now
-// sources it (read-before-overwrite in the DO, not a second history
-// round-trip).
+// (`evaluate_scheduled_alerts`, same file) -- see the design doc §2.2/§2.4
+// for why absence-of-signal conditions can't be decided at ingest time.
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum Comparator {
@@ -655,9 +641,9 @@ impl Default for Comparator {
 
 /// Mirrors `fancier::helpers::connection_state::ConnectionState` today,
 /// minus `Unknown` -- an alert on "we've never heard from this pigeon" is
-/// exactly what `MissingReport` already models (once it exists), and it
-/// needs different semantics anyway (an `Unknown` pigeon has no
-/// `interval_secs` to compute an age against). See design doc §1.1/§1.3.
+/// exactly what `MissingReport` already models, and it needs different
+/// semantics anyway (an `Unknown` pigeon has no `interval_secs` to compute
+/// an age against). See design doc §1.1/§1.3.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum ConnectionStateKind {
   Offline,
@@ -673,9 +659,8 @@ pub enum ConnectionStateKind {
 /// just arrived (that arrival itself proves the pigeon is online), so
 /// neither is evaluated by the ingest-triggered hook. Both are instead
 /// evaluated by dovecote's Cron-Trigger-driven scheduled sweep
-/// (`helpers/alerts.rs::evaluate_scheduled_alerts`, task #38) -- see that
-/// function's own doc comment for how it derives a pigeon's last-seen
-/// signal.
+/// (`helpers/alerts.rs::evaluate_scheduled_alerts`) -- see that function's
+/// own doc comment for how it derives a pigeon's last-seen signal.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertCondition {
   Threshold {
@@ -687,8 +672,8 @@ pub enum AlertCondition {
     state: ConnectionStateKind,
     min_duration_secs: Option<i64>,
   },
-  /// No telemetry (any key) reported in at least `max_silence_secs` --
-  /// task #38's simplification of the design doc's `MissingReport { key:
+  /// No telemetry (any key) reported in at least `max_silence_secs` -- a
+  /// simplification of the design doc's `MissingReport { key:
   /// Option<String>, window_secs: i64 }` sketch (§1.1): dropping the
   /// optional per-key scoping keeps this a straightforward "heartbeat"
   /// check (has this pigeon reported *anything* recently) rather than a
@@ -699,9 +684,9 @@ pub enum AlertCondition {
   MissingReport { max_silence_secs: i64 },
   /// Fires when `key`'s numeric value has moved by more than `max_delta`
   /// (`|new - old| > max_delta`) since the previous report of that same
-  /// key (task #39, design doc §1.1/§2.2). Edge-triggered, like
-  /// `Threshold` -- a spike is only observable at the moment a new report
-  /// lands next to the one before it, unlike `DeviceState`/`MissingReport`'s
+  /// key (design doc §1.1/§2.2). Edge-triggered, like `Threshold` -- a
+  /// spike is only observable at the moment a new report lands next to the
+  /// one before it, unlike `DeviceState`/`MissingReport`'s
   /// absence-of-signal checks. `window_secs`, if set, bounds how far apart
   /// the two samples may be: a gap larger than the window means the two
   /// reports aren't close enough in time to call the difference a "rate"
@@ -710,7 +695,7 @@ pub enum AlertCondition {
   /// skipped entirely rather than fired. `None` means no such bound --
   /// compare against the previous report regardless of how long ago it was.
   ///
-  /// The "previous value" this needs doesn't live in any table today --
+  /// The "previous value" this needs doesn't live in any table --
   /// `pigeon_telemetry` (the DO's own store) is latest-value-per-key, and
   /// the incoming report's own UPSERT overwrites the only copy before an
   /// evaluator could otherwise read it. `dovecote::objects::pigeons` solves
@@ -962,7 +947,7 @@ pub struct AlertState {
   pub last_notified_at: Option<OffsetDateTime>,
 }
 
-// --- Organizations & RBAC (task #12) ---
+// --- Organizations & RBAC ---
 //
 // Shared-org access for teams (the PVTA departure-board case): individual
 // Kratos accounts, one `organizations` row per team, membership rows in

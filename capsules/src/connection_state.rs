@@ -1,36 +1,27 @@
-// Connection-state classification (originally task #31, `fancier`-only;
-// moved here task #38) -- shared by `fancier`'s connection badge AND
-// dovecote's scheduled missing-heartbeat/device-state alert evaluator
+// Shared by `fancier`'s connection badge and dovecote's scheduled
+// missing-heartbeat/device-state alert evaluator
 // (`dovecote/src/helpers/alerts.rs::evaluate_scheduled_alerts`), so both
-// sides of the platform threshold "online/stale/offline" the exact same
-// way instead of two forks of the same math drifting apart over time --
-// see `docs/design/alerts-triggers.md` §1.3, which called this move out
-// explicitly. `classify`/`telemetry_interval_secs`/`format_last_seen`/
-// `latest_of`/`has_never_reported`/`latest_seen_by_pigeon` have zero
-// Dioxus/`web_sys`/Worker dependencies -- only `serde_json` and
-// `time::OffsetDateTime`, both already `capsules` dependencies -- so this
-// was already structurally shared-logic-shaped, just living in the wrong
-// crate.
+// sides threshold "online/stale/offline" the same way instead of two
+// forks of the same math drifting apart. Zero Dioxus/`web_sys`/Worker
+// dependencies -- only `serde_json` and `time::OffsetDateTime`, both
+// already `capsules` dependencies.
 //
 // DaisyUI presentation (`badge_class`/`status_class`/`label`) deliberately
 // stays OUT of this module -- see `fancier::helpers::connection_state`'s
 // `ConnectionStateStyle` extension trait, which implements those for
 // `ConnectionState` on the `fancier` side instead (an inherent impl isn't
-// possible from that crate now that `ConnectionState` is defined here --
+// possible from that crate since `ConnectionState` is defined here --
 // Rust's orphan rules only allow a *trait* impl on a foreign type from
 // another crate, not more inherent methods).
 //
-// Known imprecision, accepted by design (carried over unchanged from the
-// original `fancier` module): `PigeonShadow.updated_at` bumps on ANY write
-// to the shadow row (`set_shadow_updated_at` trigger,
+// Known imprecision, accepted by design: `PigeonShadow.updated_at` bumps
+// on ANY write to the shadow row (`set_shadow_updated_at` trigger,
 // dovecote/src/objects/pigeons.rs), including a dashboard user pushing a
 // new `target_config` -- not just a device reporting `current_config`
 // back. A pigeon that's actually offline can therefore appear briefly
 // "seen" right after someone edits its config. This is self-correcting
 // (the timestamp doesn't keep advancing, so the pigeon falls back to
-// stale/offline once the classification window elapses) and considered
-// an acceptable trade-off rather than a reason to add a new backend
-// signal.
+// stale/offline once the classification window elapses).
 use crate::{JsonString, TelemetryHistoryPoint};
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -76,11 +67,11 @@ pub fn telemetry_interval_secs(config: &JsonString) -> Option<i64> {
 /// reported back -- `current_version` is still the SQLite-default `0`
 /// (a real device report bumps it, see dovecote's `report_shadow_device`)
 /// and `current_config` is still the empty object it starts as. Used by
-/// `classify` (v1, frontend-only heuristic -- see its own doc comment) to
-/// stop a shadow write timestamp from reading as a "seen" signal for a
-/// pigeon that has never actually connected. A pigeon that's connected at
-/// least once and later goes offline keeps its real `current_version`/
-/// `current_config`, so this never fires again for it, even offline.
+/// `classify` to stop a shadow write timestamp from reading as a "seen"
+/// signal for a pigeon that has never actually connected. A pigeon that's
+/// connected at least once and later goes offline keeps its real
+/// `current_version`/`current_config`, so this never fires again for it,
+/// even offline.
 pub fn has_never_reported(current_version: i32, current_config: &JsonString) -> bool {
   if current_version != 0 {
     return false;
