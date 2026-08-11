@@ -61,10 +61,10 @@ use crate::coap::udp::{Datagram, MessageType};
 use crate::config::Config;
 use crate::handler::{DeviceSession, Handler, Transport};
 use crate::psk::PskResolver;
+use crate::quota::{ConnPermit, ConnQuota, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
 use crate::tls_common::{authenticated_session, build_psk_server_context};
 use crate::upstream::Dovecote;
 
-const MAX_CONNECTIONS: usize = 4096;
 const CONN_CHANNEL_DEPTH: usize = 32;
 const READ_TICK: Duration = Duration::from_secs(1);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
@@ -145,7 +145,8 @@ fn run_inner(
   tracing::info!(addr = %config.udp_listen, "DTLS/UDP listener up");
 
   let conns: ConnMap = Arc::new(Mutex::new(HashMap::new()));
-  listen_loop(sock, &ctx, &conns, &handler, &rt)
+  let quota = ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
+  listen_loop(sock, &ctx, &conns, &quota, &handler, &rt)
 }
 
 /// The demux loop, taking its socket and conn map from the caller so tests
@@ -155,6 +156,7 @@ fn listen_loop(
   sock: UdpSocket,
   ctx: &SslContext,
   conns: &ConnMap,
+  quota: &ConnQuota,
   handler: &Arc<Handler<Dovecote>>,
   rt: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
@@ -192,10 +194,14 @@ fn listen_loop(
           }
         }
       }
-      if map.len() >= MAX_CONNECTIONS {
-        tracing::warn!(%peer, "connection cap reached, dropping new peer");
-        continue;
-      }
+    }
+
+    // Full table: don't spend the cookie exchange on sources that could
+    // not be admitted anyway. Only the global count gates here -- the
+    // per-IP share is charged post-cookie, on a proven address.
+    if quota.is_full() {
+      tracing::warn!(%peer, "connection cap reached, dropping new peer");
+      continue;
     }
 
     // Unknown source: drive the stateless cookie exchange right here.
@@ -235,7 +241,15 @@ fn listen_loop(
       // the address from recv_from.
       Ok(ListenOutcome::Accepted { .. }) => {
         let pl = pending.take().expect("pending listen stream present");
-        promote_connection(pl, peer, conns, handler, rt);
+        // The per-IP share is charged only now, when the cookie has proven
+        // the source really receives at this address -- any earlier and
+        // spoofed datagrams could burn a victim IP's share.
+        match quota.try_acquire(peer.ip()) {
+          Some(permit) => promote_connection(pl, permit, peer, conns, handler, rt),
+          None => {
+            tracing::warn!(%peer, "connection quota reached, refusing verified peer");
+          }
+        }
       }
       Err(e) => {
         tracing::debug!(%peer, error = %e, "DTLSv1_listen failed");
@@ -345,6 +359,7 @@ impl PendingListen {
 /// does the source own a conn-map slot and an OS thread.
 fn promote_connection(
   pl: PendingListen,
+  permit: ConnPermit,
   peer: SocketAddr,
   conns: &ConnMap,
   handler: &Arc<Handler<Dovecote>>,
@@ -360,6 +375,11 @@ fn promote_connection(
   let spawned = std::thread::Builder::new()
     .name(format!("dtls-{peer}"))
     .spawn(move || {
+      // The permit rides the connection thread so every exit path --
+      // handshake failure, deadline abort, idle teardown -- releases its
+      // quota slots; a failed spawn drops the closure and settles the
+      // same way.
+      let _permit = permit;
       connection_thread(stream, peer, &handler, &rt);
       conns_for_thread
         .lock()
@@ -612,6 +632,13 @@ mod tests {
   /// Real listener on an ephemeral loopback port, with the conn map
   /// exposed so tests can assert which sources have earned state.
   fn start_listener(rt: &tokio::runtime::Runtime) -> (SocketAddr, ConnMap) {
+    start_listener_with_quota(rt, ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP))
+  }
+
+  fn start_listener_with_quota(
+    rt: &tokio::runtime::Runtime,
+    quota: ConnQuota,
+  ) -> (SocketAddr, ConnMap) {
     let resolver = Arc::new(PskResolver::new(
       Box::new(|identity: &str| {
         Ok((identity == TEST_IDENTITY).then(|| PskEntry {
@@ -632,7 +659,7 @@ mod tests {
     let loop_conns = conns.clone();
     let handle = rt.handle().clone();
     std::thread::spawn(move || {
-      let _ = listen_loop(sock, &ctx, &loop_conns, &handler, &handle);
+      let _ = listen_loop(sock, &ctx, &loop_conns, &quota, &handler, &handle);
     });
     (addr, conns)
   }
@@ -659,6 +686,12 @@ mod tests {
   }
 
   fn connect_client(server: SocketAddr) -> SslStream<ClientIo> {
+    try_connect_client(server, Duration::from_secs(10)).expect("client handshake timed out")
+  }
+
+  /// Attempts the DTLS handshake, giving up (None) at the deadline -- the
+  /// shape a quota-refused client presents: no error record, just silence.
+  fn try_connect_client(server: SocketAddr, patience: Duration) -> Option<SslStream<ClientIo>> {
     let sock = UdpSocket::bind("127.0.0.1:0").expect("bind client");
     sock.connect(server).expect("connect client");
     sock
@@ -681,12 +714,14 @@ mod tests {
     ssl.set_connect_state();
     let mut stream = SslStream::new(ssl, ClientIo(sock)).expect("client stream");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + patience;
     loop {
       match stream.connect() {
-        Ok(()) => return stream,
+        Ok(()) => return Some(stream),
         Err(e) if matches!(e.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {
-          assert!(Instant::now() < deadline, "client handshake timed out");
+          if Instant::now() >= deadline {
+            return None;
+          }
         }
         Err(e) => panic!("client handshake failed: {e}"),
       }
@@ -754,6 +789,27 @@ mod tests {
     // promotion consumed the previous one.
     let _second = connect_client(server);
     assert_eq!(conns.lock().expect("conn map lock").len(), 2);
+  }
+
+  #[test]
+  fn per_ip_quota_refuses_promotion() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+      .build()
+      .expect("runtime");
+    // Every loopback client shares one source IP, so a share of 1 is
+    // exhausted by the first connection.
+    let (server, conns) = start_listener_with_quota(&rt, ConnQuota::new(MAX_CONNECTIONS, 1));
+
+    let _first = connect_client(server);
+    assert_eq!(conns.lock().expect("conn map lock").len(), 1);
+
+    // The second client's cookie still verifies, but promotion must be
+    // refused: no ServerHello ever comes and no state appears in the map.
+    assert!(
+      try_connect_client(server, Duration::from_secs(3)).is_none(),
+      "over-share client must not complete a handshake"
+    );
+    assert_eq!(conns.lock().expect("conn map lock").len(), 1);
   }
 
   fn test_key(byte: u8) -> PKey<Private> {

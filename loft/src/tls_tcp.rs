@@ -14,7 +14,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use openssl::ssl::{HandshakeError, Ssl, SslContext, SslMethod, SslStream};
@@ -24,10 +23,10 @@ use crate::coap::tcp::{FrameDecoder, encode_frame};
 use crate::config::Config;
 use crate::handler::{DeviceSession, Handler, Transport};
 use crate::psk::PskResolver;
+use crate::quota::{ConnQuota, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
 use crate::tls_common::{authenticated_session, build_psk_server_context};
 use crate::upstream::Dovecote;
 
-const MAX_CONNECTIONS: usize = 4096;
 /// One blocking read tick; idle handling rides on TCP read timeouts.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Wall-clock bound on the WHOLE handshake, same figure as the DTLS
@@ -60,7 +59,7 @@ fn run_inner(
   let listener = TcpListener::bind(&config.tcp_listen)?;
   tracing::info!(addr = %config.tcp_listen, "TLS/TCP listener up");
 
-  let live = Arc::new(AtomicUsize::new(0));
+  let quota = ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
 
   for stream in listener.incoming() {
     let stream = match stream {
@@ -71,24 +70,31 @@ fn run_inner(
       }
     };
 
-    if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
-      tracing::warn!("connection cap reached, refusing TCP peer");
+    // Admission is keyed on the source IP; a socket that can't name its
+    // peer can't be accounted, so it isn't admitted.
+    let Ok(peer_ip) = stream.peer_addr().map(|a| a.ip()) else {
       continue;
-    }
+    };
+    let Some(permit) = quota.try_acquire(peer_ip) else {
+      tracing::warn!(ip = %peer_ip, "connection quota reached, refusing TCP peer");
+      continue;
+    };
 
     let ctx = ctx.clone();
     let handler = handler.clone();
     let rt = rt.clone();
-    live.fetch_add(1, Ordering::SeqCst);
-    let live_in_thread = live.clone();
     let spawned = std::thread::Builder::new()
       .name("coaps-tcp-conn".into())
       .spawn(move || {
+        // The permit rides the connection thread so every exit path --
+        // handshake failure, deadline abort, session close -- releases its
+        // quota slots; a failed spawn drops the closure and settles the
+        // same way.
+        let _permit = permit;
         connection_thread(&ctx, stream, &handler, &rt);
-        live_in_thread.fetch_sub(1, Ordering::SeqCst);
       });
-    if spawned.is_err() {
-      live.fetch_sub(1, Ordering::SeqCst);
+    if let Err(e) = spawned {
+      tracing::error!(error = %e, "connection thread spawn failed");
     }
   }
   Ok(())

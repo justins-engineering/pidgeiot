@@ -20,6 +20,7 @@ mod config;
 mod dtls;
 mod handler;
 mod psk;
+mod quota;
 mod tls_common;
 mod tls_tcp;
 mod upstream;
