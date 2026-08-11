@@ -346,13 +346,44 @@ keeps the attacker out. What keeps them out is having nothing to guess:
 sshd -T | grep -iE 'passwordauthentication|kbdinteractiveauthentication|permitrootlogin'
 ```
 
-If password or keyboard-interactive authentication is enabled, the large
-majority of those attempts are aimed at something that could in principle
-succeed, and turning both off removes that entire class outright — no
-amount of rate limiting is equivalent. `PermitRootLogin` should be `no` or
-`prohibit-password` for the same reason. Once key-only auth is enforced,
-the remaining guessing traffic is failing against a door with no keyhole,
-and fail2ban is purely there to stop it wasting cycles.
+On this host that check returned `passwordauthentication yes` (with
+`permitrootlogin without-password`, so root is already key-only). Those
+attempts are therefore not bouncing off a wall — they are guesses against a
+live door, on an image that ships a predictably-named `debian` account with
+sudo. Turning password and keyboard-interactive auth off removes that
+entire class outright; no amount of rate limiting is equivalent.
+
+Two things make this change bite people, so do both.
+
+**Confirm key auth works before removing the fallback.** There is no
+password to fall back on afterward, and the only alternative is the
+provider's console:
+
+```sh
+journalctl -u ssh --since "1 hour ago" | grep Accepted | tail -5
+```
+
+`Accepted publickey` is what you need to see. `Accepted password` means a
+key isn't installed yet — fix that first.
+
+**Put the setting where it actually wins.** sshd takes the
+first-obtained value for each keyword, and `/etc/ssh/sshd_config` includes
+`sshd_config.d/*.conf` at the top, read in alphabetical order. Cloud images
+routinely ship a `50-cloud-init.conf` that sets `PasswordAuthentication
+yes`, which is why editing `sshd_config` directly appears to do nothing —
+the drop-in already won. Check what exists, then sort ahead of it:
+
+```sh
+grep -rn -i passwordauth /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
+  > /etc/ssh/sshd_config.d/10-no-password-auth.conf
+sshd -t && systemctl reload ssh
+sshd -T | grep -i passwordauthentication
+```
+
+`sshd -t` validates the config before it is applied, and `reload` leaves
+established sessions alone. Keep the current session open and prove a new
+one works from a second terminal before closing it.
 
 Do this as its own change, after the cutover below is finished and
 verified — locking down authentication and swapping the ban mechanism at
