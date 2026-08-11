@@ -36,3 +36,6 @@ pub mod gps_track;
 
 mod timer;
 pub use timer::sleep_ms;
+
+mod visibility;
+pub use visibility::is_page_hidden;

@@ -1,13 +1,13 @@
 use crate::helpers::dict_log::{
   LogDictionary, LogEvent, decode_chunks, level_str, render_hexdump, render_plaintext,
 };
-use crate::helpers::{decode_base64, download_bytes};
+use crate::helpers::{connection_state, decode_base64, download_bytes, is_page_hidden, sleep_ms};
 use crate::models::AlertVariant;
 use crate::{api, components::Alert};
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdDownload, LdTrash2};
+use dioxus_free_icons::icons::ld_icons::{LdDownload, LdRefreshCw, LdTrash2};
 use std::rc::Rc;
 
 /// One `capsules::PigeonLogChunk` with its base64 `data` already decoded to
@@ -176,10 +176,62 @@ fn DictionaryUpload(pigeon_id: String, dict_state: Signal<DictState>) -> Element
 /// `helpers::dict_log` into readable lines -- otherwise the viewer shows an
 /// inline upload affordance and, as always, the raw chunk download path
 /// (which never fakes a text rendering of undecodable binary data).
+/// One fetch-decode-set cycle, shared by the auto-refresh loop and the
+/// manual refresh button below -- `on_latest_received` fires every cycle,
+/// not just the first, so a caller's "last seen" freshens on each poll a new
+/// chunk actually arrives.
+async fn refresh_logs(
+  pigeon_id: &str,
+  mut state: Signal<LogsState>,
+  on_latest_received: &EventHandler<Option<time::OffsetDateTime>>,
+) {
+  match api::pigeons::get_logs(pigeon_id).await {
+    Some(raw_chunks) => {
+      let decoded: Vec<DecodedChunk> = raw_chunks
+        .into_iter()
+        .filter_map(|chunk| match decode_base64(&chunk.data) {
+          Some(bytes) => Some(DecodedChunk {
+            id: chunk.id,
+            received_at: chunk.received_at,
+            bytes,
+          }),
+          None => {
+            error!("Failed to base64-decode log chunk {} as base64", chunk.id);
+            None
+          }
+        })
+        .collect();
+      on_latest_received.call(decoded.iter().map(|c| c.received_at).max());
+      state.set(LogsState::Loaded(decoded));
+    }
+    // A failed fetch on a poll that follows a real load must not blank the
+    // chunk table or tell the caller "last seen" just went away -- keep
+    // showing the last good state and let the next tick retry, same as a
+    // dropped request the user never has to know about. Only the very
+    // first fetch (nothing loaded yet) surfaces `Failed`. `peek()`, not
+    // `read()`: an untracked read so this async fn (spawned by
+    // `use_future`) never subscribes to the very signal it's about to
+    // write, which would otherwise restart the polling loop on its own
+    // `set()` below.
+    None => {
+      if matches!(*state.peek(), LogsState::Loading) {
+        on_latest_received.call(None);
+        state.set(LogsState::Failed);
+      }
+    }
+  }
+}
+
 #[component]
 pub fn LogViewer(
   pigeon_id: String,
-  /// Fired once the fetch settles, with the newest chunk's `received_at`
+  /// This pigeon's own `telemetry_interval` (seconds) -- same self-calibrated
+  /// auto-refresh cadence `GraphCard` uses (`connection_state::
+  /// poll_interval_ms`), so the log viewer and telemetry graphs on the same
+  /// page settle into the same rhythm rather than two independently-tuned
+  /// polling loops against the same pigeon.
+  interval_secs: Option<i64>,
+  /// Fired once each fetch settles, with the newest chunk's `received_at`
   /// (or `None` on an empty/failed fetch) -- lets a caller derive "last
   /// seen" from the chunks LogViewer already fetched, instead
   /// of re-fetching potentially 200 base64-encoded chunks a second time
@@ -189,39 +241,30 @@ pub fn LogViewer(
   let time_format = time::macros::format_description!(
     "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
   );
-  let mut state: Signal<LogsState> = use_signal(|| LogsState::Loading);
+  let state: Signal<LogsState> = use_signal(|| LogsState::Loading);
   let mut dict_state: Signal<DictState> = use_signal(|| DictState::Loading);
+  let mut refreshing = use_signal(|| false);
 
-  let fetch_id = pigeon_id.clone();
-  use_resource(move || {
-    let id = fetch_id.clone();
-    async move {
-      match api::pigeons::get_logs(&id).await {
-        Some(raw_chunks) => {
-          let decoded: Vec<DecodedChunk> = raw_chunks
-            .into_iter()
-            .filter_map(|chunk| match decode_base64(&chunk.data) {
-              Some(bytes) => Some(DecodedChunk {
-                id: chunk.id,
-                received_at: chunk.received_at,
-                bytes,
-              }),
-              None => {
-                error!("Failed to base64-decode log chunk {} as base64", chunk.id);
-                None
-              }
-            })
-            .collect();
-          on_latest_received.call(decoded.iter().map(|c| c.received_at).max());
-          state.set(LogsState::Loaded(decoded));
-        }
-        None => {
-          on_latest_received.call(None);
-          state.set(LogsState::Failed);
+  // Fetches immediately on mount, then keeps re-polling for new chunks at
+  // this pigeon's self-calibrated cadence for as long as the viewer stays
+  // mounted (cancelled on unmount, same as any other `use_future`) -- skips
+  // the request entirely while the tab is backgrounded so an idle dashboard
+  // doesn't keep hammering the DO's log ring buffer.
+  {
+    let fetch_id = pigeon_id.clone();
+    use_future(move || {
+      let id = fetch_id.clone();
+      async move {
+        let poll_ms = connection_state::poll_interval_ms(interval_secs);
+        loop {
+          if !is_page_hidden() {
+            refresh_logs(&id, state, &on_latest_received).await;
+          }
+          sleep_ms(poll_ms).await;
         }
       }
-    }
-  });
+    });
+  }
 
   let dict_fetch_id = pigeon_id.clone();
   use_resource(move || {
@@ -257,6 +300,7 @@ pub fn LogViewer(
   let download_all_id = pigeon_id.clone();
   let download_decoded_id = pigeon_id.clone();
   let remove_dict_id = pigeon_id.clone();
+  let refresh_id = pigeon_id.clone();
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
@@ -268,6 +312,26 @@ pub fn LogViewer(
           }
         }
         div { class: "flex flex-row gap-2",
+          button {
+            class: "btn btn-outline btn-sm",
+            r#type: "button",
+            title: "Refresh now",
+            disabled: refreshing(),
+            onclick: move |_| {
+                let pigeon_id = refresh_id.clone();
+                async move {
+                    refreshing.set(true);
+                    refresh_logs(&pigeon_id, state, &on_latest_received).await;
+                    refreshing.set(false);
+                }
+            },
+            if refreshing() {
+              span { class: "loading loading-spinner loading-xs" }
+            } else {
+              Icon { icon: LdRefreshCw, width: 16, height: 16 }
+            }
+            " Refresh"
+          }
           if decoded_events.read().is_some() {
             button {
               class: "btn btn-outline btn-sm",

@@ -150,7 +150,11 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   }
                 }
                 section { id: "telemetryGraphs",
-                  PigeonGraphs { pigeon_id: pigeon_id.clone(), quick_add: quick_add_graph }
+                  PigeonGraphs {
+                    pigeon_id: pigeon_id.clone(),
+                    interval_secs,
+                    quick_add: quick_add_graph,
+                  }
                 }
                 section { id: "pigeonAlerts",
                   PigeonAlerts { pigeon_id: pigeon_id.clone() }
@@ -161,6 +165,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 section { id: "logViewer",
                   LogViewer {
                     pigeon_id: pigeon_id.clone(),
+                    interval_secs,
                     on_latest_received: move |t| latest_log_received.set(t),
                   }
                 }

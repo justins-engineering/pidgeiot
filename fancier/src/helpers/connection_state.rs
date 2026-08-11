@@ -20,6 +20,33 @@ pub use capsules::connection_state::{
   latest_seen_by_pigeon, telemetry_interval_secs,
 };
 
+/// Floor and fallback for `poll_interval_ms` -- fancier-only (dovecote never
+/// polls itself), so unlike `classify`'s thresholds these don't need to live
+/// in `capsules`.
+const POLL_FLOOR_SECS: i64 = 10;
+const POLL_FALLBACK_SECS: i64 = 30;
+
+/// Auto-refresh cadence for a live-polling dashboard widget (`GraphCard`,
+/// `LogViewer`), self-calibrated from a pigeon's own `telemetry_interval`
+/// the same way `classify`'s online/stale thresholds are: a pigeon that
+/// reports every 10s gets refreshed close to that cadence, one that reports
+/// every 10 minutes doesn't get polled needlessly often. Floored so a
+/// misconfigured tiny interval can't hammer the Durable Object; falls back
+/// to a fixed default for a pigeon with no interval configured yet, mirroring
+/// how `classify` falls back to `DEFAULT_ONLINE_SECS`/`DEFAULT_STALE_SECS`.
+///
+/// Read once when a polling loop starts (see `GraphCard`/`LogViewer`), not
+/// re-evaluated live if the pigeon's `telemetry_interval` changes mid-visit
+/// -- same one-shot-per-mount tradeoff `views::demo`'s fixed `REFRESH_MS`
+/// makes, just computed instead of constant.
+pub fn poll_interval_ms(interval_secs: Option<i64>) -> i32 {
+  let secs = interval_secs
+    .filter(|s| *s > 0)
+    .map(|s| s.max(POLL_FLOOR_SECS))
+    .unwrap_or(POLL_FALLBACK_SECS);
+  (secs * 1000) as i32
+}
+
 /// DaisyUI badge/status styling for `ConnectionState` -- kept here (not in
 /// `capsules`) since it's Dioxus-dashboard-specific presentation, not
 /// shared logic. An extension trait rather than an inherent impl: since

@@ -9,10 +9,12 @@
 use crate::LocalSession;
 use crate::api::telemetry;
 use crate::components::{ChartSeries, TelemetryChart};
-use crate::helpers::gps_track;
+use crate::helpers::{connection_state, gps_track, is_page_hidden, sleep_ms};
 use crate::local_storage;
 use capsules::{TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
+use dioxus_free_icons::Icon;
+use dioxus_free_icons::icons::ld_icons::LdRefreshCw;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
@@ -287,6 +289,11 @@ fn numeric_keys_from_history(points: &[TelemetryHistoryPoint]) -> Vec<String> {
 #[component]
 pub fn PigeonGraphs(
   pigeon_id: String,
+  /// This pigeon's own `telemetry_interval` (seconds), already extracted by
+  /// the caller from its shadow -- threaded straight into each `GraphCard`'s
+  /// auto-refresh cadence via `connection_state::poll_interval_ms` rather
+  /// than re-deriving it here from a shadow this component doesn't have.
+  interval_secs: Option<i64>,
   /// One-click "add a graph" inbox for sibling widgets on the same page
   /// (currently `components::track_widget::TrackWidget`'s "+ Speed
   /// graph"/"+ Altitude graph" buttons) -- since `graphs` below is a
@@ -371,6 +378,7 @@ pub fn PigeonGraphs(
             key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
             def: graph.clone(),
             source: DataSource::Pigeon(pigeon_id.clone()),
+            interval_secs,
             on_remove: {
                 let pigeon_id = pigeon_id.clone();
                 move |id: String| {
@@ -474,6 +482,9 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
             key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
             def: graph.clone(),
             source: DataSource::Flock(flock_id),
+            // No single pigeon interval at flock scope -- falls back to
+            // poll_interval_ms's fixed default.
+            interval_secs: None,
             on_remove: {
                 let scope_id = scope_id.clone();
                 move |id: String| {
@@ -513,26 +524,74 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
   }
 }
 
+async fn refresh_outcome(
+  source: &DataSource,
+  def: &GraphDef,
+  mut outcome: Signal<Option<SeriesOutcome>>,
+  mut loading: Signal<bool>,
+) {
+  loading.set(true);
+  let fresh = fetch_series(source, def).await;
+  // `Preview` only ever means the fetch itself failed (see `fetch_series` --
+  // a real "no telemetry yet" pigeon comes back `Empty`, not `Preview`), so
+  // a `Preview` result on a poll that follows a real `Live`/`Empty` fetch is
+  // a transient failure, not new information. Downgrading the chart to mock
+  // curves in that case is exactly the "actively misleading" outcome this
+  // module's own `SeriesOutcome` doc comment warns against -- keep showing
+  // the last good state and let the next poll retry, same as a dropped
+  // request the user never has to know about. `peek()`, not `read()|()`: an
+  // untracked read so this async fn (spawned by `use_future`) never
+  // subscribes to the very signal it's about to write, which would
+  // otherwise restart the polling loop on its own `set()` below.
+  let has_prior_data = matches!(
+    outcome.peek().as_ref(),
+    Some(SeriesOutcome::Live(_)) | Some(SeriesOutcome::Empty)
+  );
+  if !(matches!(fresh, SeriesOutcome::Preview(_)) && has_prior_data) {
+    outcome.set(Some(fresh));
+  }
+  loading.set(false);
+}
+
 #[component]
 fn GraphCard(
   def: GraphDef,
   source: DataSource,
+  interval_secs: Option<i64>,
   on_remove: EventHandler<String>,
   on_update: EventHandler<GraphDef>,
 ) -> Element {
-  let mut outcome: Signal<Option<SeriesOutcome>> = use_signal(|| None);
-  let mut loading = use_signal(|| true);
+  let outcome: Signal<Option<SeriesOutcome>> = use_signal(|| None);
+  let loading = use_signal(|| true);
 
+  // Fetches immediately on mount, then keeps re-fetching at this pigeon's
+  // own self-calibrated cadence for as long as the card stays mounted
+  // (Dioxus cancels the future on unmount, same as `views::demo`'s
+  // equivalent loop) -- skips the fetch entirely while the tab is
+  // backgrounded (`is_page_hidden`) so a dashboard nobody is looking at
+  // doesn't keep polling the Durable Object. A graph's `id`/`range`/`keys`
+  // changing at all already remounts this component fresh (see the `key`
+  // passed at each call site), so a plain loop over `def`/`source` captured
+  // at mount is enough for those -- `source`'s pigeon/flock id is otherwise
+  // constant for the lifetime of a mounted parent anyway. `interval_secs`
+  // is NOT part of that key, though: see `poll_interval_ms`'s own doc
+  // comment for the one case this loop doesn't react to (a shadow's
+  // `telemetry_interval` changing mid-visit keeps the cadence this loop
+  // already started with).
   {
     let def = def.clone();
     let source = source.clone();
-    use_resource(move || {
+    use_future(move || {
       let def = def.clone();
       let source = source.clone();
       async move {
-        loading.set(true);
-        outcome.set(Some(fetch_series(&source, &def).await));
-        loading.set(false);
+        let poll_ms = connection_state::poll_interval_ms(interval_secs);
+        loop {
+          if !is_page_hidden() {
+            refresh_outcome(&source, &def, outcome, loading).await;
+          }
+          sleep_ms(poll_ms).await;
+        }
       }
     });
   }
@@ -560,6 +619,28 @@ fn GraphCard(
             },
             for r in TimeRange::ALL {
               option { value: "{r.label()}", selected: r == def.range, "{r.label()}" }
+            }
+          }
+          button {
+            class: "btn btn-ghost btn-sm",
+            r#type: "button",
+            title: "Refresh now",
+            disabled: loading(),
+            onclick: {
+                let def = def.clone();
+                let source = source.clone();
+                move |_| {
+                    let def = def.clone();
+                    let source = source.clone();
+                    async move {
+                        refresh_outcome(&source, &def, outcome, loading).await;
+                    }
+                }
+            },
+            if loading() {
+              span { class: "loading loading-spinner loading-xs" }
+            } else {
+              Icon { icon: LdRefreshCw, width: 14, height: 14 }
             }
           }
           button {
