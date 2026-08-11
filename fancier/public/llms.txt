@@ -9,11 +9,13 @@
 
 Devices authenticate with per-device Ed25519 keypairs and compact binary
 bearer tokens (not JWTs); refreshing a token cryptographically revokes the
-previous one. Supported device transports today: HTTPS and WebSocket
-(CoAP-over-TLS/TCP is designed in but not yet live). The device library
-targets Zephyr RTOS (vendor-agnostic), with samples for ESP32-C6, Nordic
-nRF9160/nRF9151, and a native_sim target that runs the whole platform flow
-on a desktop with no hardware.
+previous one. Supported device transports today: HTTPS, WebSocket, and
+CoAP on port 5684 — both CoAP-over-DTLS/UDP (the primary transport for
+constrained cellular devices) and RFC 8323 CoAP-over-TLS/TCP, each
+authenticated by a per-device TLS-PSK. The device library targets Zephyr
+RTOS (vendor-agnostic), with samples for ESP32-C6, Nordic nRF9160/nRF9151,
+and a native_sim target that runs the whole platform flow on a desktop
+with no hardware.
 
 ## Docs
 
