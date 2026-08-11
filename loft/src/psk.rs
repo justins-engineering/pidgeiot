@@ -12,12 +12,25 @@
 //! request.
 //!
 //! Staleness window: a `token/refresh` rotates the bearer token AND the
-//! PSK together, but a positive cache entry here can let the OLD PSK
-//! complete a handshake for up to `positive_ttl` (default 60s) afterwards.
-//! That handshake is harmless beyond its own existence: the stale entry's
-//! bearer token is revoked, so every upstream call such a session could
-//! make 401s at the DO. There is no window in which a revoked credential
-//! can read or write data through this terminator.
+//! PSK together, but a positive cache entry here can hold the OLD pair
+//! for up to `positive_ttl` (default 60s; up to `stale_grace` if dovecote
+//! is unreachable when the entry would otherwise be refetched). That cuts
+//! both ways depending on which side of the rotation is reconnecting:
+//! a device still running the OLD PSK completes the handshake against the
+//! stale entry, but every upstream call it then makes 401s at the DO
+//! (the bearer token was revoked) -- harmless, no window where a revoked
+//! credential reads or writes data. A device that already has the NEW PSK
+//! (freshly rotated) instead FAILS the handshake outright, because this
+//! cache is still handing OpenSSL the old secret to match against --
+//! that device is locked out until the entry expires. This is
+//! availability-only (never a credential leak) and self-heals on its own
+//! once the TTL passes, with no action needed here; in practice it is
+//! rarely even reachable, since rotating CoAP credentials today requires
+//! reflashing the device, which takes far longer than the cache window.
+//! There is deliberately no push-invalidation path from dovecote for this
+//! -- the one-directional (dovecote -> loft) design has no channel for
+//! dovecote to reach into a terminator process's cache, and given the
+//! above this window isn't worth building one for.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -191,14 +204,6 @@ impl PskResolver {
     }
   }
 
-  /// Drops one identity's entry -- not called anywhere yet, but the
-  /// explicit invalidation hook the documented cache-staleness contract
-  /// reserves for a future push-invalidation path.
-  #[allow(dead_code)]
-  pub fn invalidate(&self, identity: &str) {
-    self.cache.lock().expect("psk cache lock").remove(identity);
-  }
-
   #[cfg(test)]
   fn with_ttls(
     source: Box<dyn PskSource>,
@@ -312,19 +317,6 @@ mod tests {
     );
     assert_eq!(resolver.resolve("a"), Some(entry("orig")));
     assert_eq!(resolver.resolve("a"), Some(entry("orig")));
-    assert_eq!(hits.load(Ordering::SeqCst), 2);
-  }
-
-  #[test]
-  fn invalidate_forces_refetch() {
-    let hits = Arc::new(AtomicUsize::new(0));
-    let resolver = PskResolver::new(
-      counting_source(hits.clone(), |_| Ok(Some(entry("s")))),
-      Duration::from_secs(60),
-    );
-    resolver.resolve("a");
-    resolver.invalidate("a");
-    resolver.resolve("a");
     assert_eq!(hits.load(Ordering::SeqCst), 2);
   }
 }
