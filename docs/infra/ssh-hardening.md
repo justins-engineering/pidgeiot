@@ -119,11 +119,21 @@ test -f /var/log/auth.log \
 iptables --version                           # legacy vs nf_tables, informational
 ```
 
-`jail.local` assumes the sshd unit is named `ssh.service`, which is the
-Debian default. If `systemctl status ssh` reports the unit doesn't exist,
-retry with `systemctl status sshd` — if that's the real name instead, add
-`journalmatch = _SYSTEMD_UNIT=sshd.service` under `[sshd]` in
-`jail.local` before deploying it in the next step.
+The unit name turns out not to be a real risk: the stock sshd filter's
+journalmatch is `_SYSTEMD_UNIT=ssh.service + _COMM=sshd`, so it matches on
+the process name even where the unit is called something else. Worth
+knowing rather than worrying about — no `journalmatch` override is needed
+on a stock Debian host, and adding one would *narrow* that match rather
+than widen it.
+
+A note on what a ban looks like, because it differs from the throttle being
+replaced. `iptables-multiport`'s default blocktype is
+`REJECT --reject-with icmp-port-unreachable`, not `DROP`. A banned client
+gets an immediate "connection refused" instead of hanging until timeout —
+which is a real diagnostic improvement: the silent timeouts the old
+xt_recent `DROP` produced were exactly what made a self-inflicted lockout
+look like an outage and invite the retry loop that prolonged it. If you are
+banned by fail2ban, you will know within a second.
 
 ### 2. Deploy the jail
 
