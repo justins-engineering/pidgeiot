@@ -87,15 +87,15 @@ selfservice:
     registration:
       lifespan: 10m
       ui_url: http://127.0.0.1:4455/registration
-      # Uses Kratos v25.4's default TWO-STEP registration (profile traits
-      # first, password on a second step). This works end-to-end in a real
-      # browser: fancier's FormBuilder posts a native <form>, Kratos 303s back
-      # to ui_url, the SPA re-fetches the merged flow and renders the password
-      # step. NOTE: inspecting the flow with `Accept: application/json` shows
-      # only profile nodes on step 1 (Kratos's JSON path returns 400 + the
-      # next step's nodes) — that is NOT "registration is broken"; the native
-      # browser form path (Accept: text/html) works. Do not re-add
-      # enable_legacy_one_step on that false alarm. (See task #16.)
+      # Kratos's default TWO-STEP registration (profile traits first,
+      # password on a second step). Works end-to-end in a real browser:
+      # fancier's FormBuilder posts a native <form>, Kratos 303s back to
+      # ui_url, the SPA re-fetches the merged flow and renders the
+      # password step. Inspecting the flow with `Accept: application/json`
+      # shows only profile nodes on step 1 (Kratos's JSON path returns 400
+      # + the next step's nodes) — that is NOT "registration is broken";
+      # the native browser form path (Accept: text/html) works. Do not
+      # re-add enable_legacy_one_step on that false alarm.
       after:
         default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
         password:
@@ -141,8 +141,8 @@ courier:
   smtp:
     connection_uri: smtps://test:test@mailslurper:1025/?skip_ssl_verify=true
   # Branded HTML/plaintext overrides for the verification/recovery email
-  # flows (task #33), replacing Kratos's stock templates. Versioned as a
-  # subdirectory (v1) rather than the bare courier-templates/ root so a
+  # flows, replacing Kratos's stock templates. Versioned as a subdirectory
+  # (v1) rather than the bare courier-templates/ root so a
   # future redesign can land as v2/ and cut over by changing this one path,
   # without clobbering the previous version or requiring an in-place rewrite.
   # This path lives inside the same ./schemas/kratos bind mount
@@ -150,15 +150,13 @@ courier:
   # (target /opt/kratos/ on the `kratos` service), so no separate volume
   # entry is needed for it to be visible in the container.
   template_override_path: /opt/kratos/courier-templates/v1
-  # `template_override_path` above is Ory's documented mechanism and does work
-  # for the subject line (confirmed live against a real recovery flow +
-  # MailSlurper capture) -- but on this exact `oryd/kratos:v25.4` image, the
-  # body (both HTML and plaintext) silently falls back to Kratos's *built-in*
-  # stock body wording instead of reading the override file, even for a
-  # trivial single-line replacement with no template directives at all. No
-  # error is logged (the built-in template renders fine), so this is easy to
-  # miss without literally rendering a real email end-to-end -- config
-  # validation and even `wrangler`-style template parsing both look correct.
+  # `template_override_path` above is Ory's documented mechanism and does
+  # work for the subject line -- but on this image, the body (both HTML
+  # and plaintext) silently falls back to Kratos's *built-in* stock body
+  # wording instead of reading the override file, even for a trivial
+  # single-line replacement with no template directives at all. No error
+  # is logged (the built-in template renders fine), so this is easy to
+  # miss without literally rendering a real email end-to-end.
   # The explicit per-flow `templates:` keys below use a different, independent
   # code path (Kratos fetches the `file://` URI itself rather than resolving
   # it via template_override_path's directory-glob lookup) and were verified

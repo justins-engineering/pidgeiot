@@ -1,4 +1,4 @@
--- Migration: organizations + org RBAC (task #12).
+-- Migration: organizations + org RBAC.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Apply to EXISTING prod + staging databases (dovecote's own

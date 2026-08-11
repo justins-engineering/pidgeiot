@@ -54,13 +54,13 @@ CREATE TABLE IF NOT EXISTS pigeons (
   tags TEXT,
   connector JSONB NOT NULL,
   token_expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '1 year',
-  -- User-definable GreptimeDB/InfluxDB forwarding target (task #18) —
-  -- NULL when unset (the common case). Mirrors the DO's own
-  -- `pigeons.telemetry_endpoint` column; see capsules::TelemetryEndpoint.
+  -- User-definable GreptimeDB/InfluxDB forwarding target — NULL when unset
+  -- (the common case). Mirrors the DO's own `pigeons.telemetry_endpoint`
+  -- column; see capsules::TelemetryEndpoint.
   telemetry_endpoint JSONB,
-  -- This pigeon's own Zephyr CONFIG_BOARD_TARGET string (task #20, phase
-  -- 1), e.g. "circuitdojo_feather/nrf9160/ns" -- NULL until an operator
-  -- tags it (at provisioning or via update). Mirrors the DO's own
+  -- This pigeon's own Zephyr CONFIG_BOARD_TARGET string, e.g.
+  -- "circuitdojo_feather/nrf9160/ns" -- NULL until an operator tags it (at
+  -- provisioning or via update). Mirrors the DO's own
   -- `pigeons.board` column; see capsules::Pigeon::board. Enforced against
   -- flock_firmware.board (below) by dovecote's
   -- check_firmware_board_compat before a firmware shadow assignment is
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS pigeon_shadow (
   updated_at BIGINT NOT NULL
 );
 
--- PIGEON TELEMETRY HISTORY Table (task #18)
+-- PIGEON TELEMETRY HISTORY Table
 -- Written by the queue consumer alongside the DO's own latest-value-per-key
 -- upsert (`pigeon_telemetry` in the DO's SQLite) -- this is the append-only
 -- time-series counterpart, queried by GET /pigeons/:id/telemetry/history and
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS pigeon_telemetry_history (
   reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- FLOCK FIRMWARE Table (task #23)
+-- FLOCK FIRMWARE Table
 -- Firmware images are shared across every pigeon in a flock (same hardware
 -- fleet) rather than duplicated per-pigeon, so this catalog lives here
 -- rather than in each pigeon's own DO (which also can't hold MB-sized
@@ -132,10 +132,10 @@ CREATE TABLE IF NOT EXISTS flock_firmware (
   version TEXT NOT NULL,
   size BIGINT NOT NULL,
   sha256 TEXT NOT NULL,
-  -- The Zephyr CONFIG_BOARD_TARGET this image was built for (task #20,
-  -- phase 1) -- required at upload time going forward (see dovecote's
-  -- POST /flocks/:flock_id/firmware), NULL only for rows uploaded before
-  -- this column existed. Compared against pigeons.board before a shadow
+  -- The Zephyr CONFIG_BOARD_TARGET this image was built for -- required at
+  -- upload time going forward (see dovecote's POST
+  -- /flocks/:flock_id/firmware), NULL only for rows uploaded before this
+  -- column existed. Compared against pigeons.board before a shadow
   -- firmware assignment is accepted; see capsules::FirmwareImage::board.
   board TEXT,
   uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS flock_firmware (
 -- before this column existed.
 ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;
 
--- ALERT DEFINITIONS Table (task #32)
+-- ALERT DEFINITIONS Table
 -- Postgres-only, not DO-mirrored -- same reasoning already applied to
 -- flock_firmware above: this is dashboard-authored config with no
 -- device-facing counterpart, and a flock-scoped alert has no DO to live in
@@ -179,7 +179,7 @@ CREATE TRIGGER trigger_alert_definitions_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION trigger_set_timestamp();
 
--- ALERT STATE Table (task #32)
+-- ALERT STATE Table
 -- Debounce/hysteresis + fired-state tracking (see capsules::AlertState) --
 -- one row per (alert_definition_id, pigeon_id), not per definition, since a
 -- flock-scoped alert fires/clears independently per pigeon it applies to.
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS alert_state (
   PRIMARY KEY (alert_definition_id, pigeon_id)
 );
 
--- ORGANIZATIONS (task #12) -- shared-org access for teams (individual
+-- ORGANIZATIONS -- shared-org access for teams (individual
 -- Kratos accounts, org-level RBAC, membership-row revocation; no literal
 -- shared accounts, no Ory Keto). See capsules::Organization/OrgRole and
 -- dovecote's helpers/orgs.rs. A flock is EXACTLY one of user-owned
@@ -238,19 +238,19 @@ CREATE TABLE IF NOT EXISTS organization_invites (
   accepted_at TIMESTAMPTZ
 );
 
--- Org-owned flock marker (task #12). ON DELETE SET NULL is a safety net
--- only -- org deletion is refused while any org-owned flock exists.
+-- Org-owned flock marker. ON DELETE SET NULL is a safety net only -- org
+-- deletion is refused while any org-owned flock exists.
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE SET NULL;
 
--- Denormalized flock-owner email (task #32, design doc §3.4) -- needed to
--- resolve an alert notification's recipient without a Kratos admin-API call
--- from the edge (none is reachable from staging/prod today). NULL until a
--- follow-up wires `require_auth`/`create_user_flock` to populate it from
--- the session's own `identity.traits` (already fetched, currently
--- discarded, on every authenticated request) -- see
--- docs/design/alerts-triggers.md §3.4 and dovecote's
--- helpers/alerts.rs::resolve_alert_recipient, which already reads this
--- column and degrades to "no recipient, log and skip" until it's populated.
+-- Denormalized flock-owner email -- needed to resolve an alert
+-- notification's recipient without a Kratos admin-API call from the edge
+-- (none is reachable from staging/prod today). NULL until a follow-up
+-- wires `require_auth`/`create_user_flock` to populate it from the
+-- session's own `identity.traits` (already fetched, currently discarded,
+-- on every authenticated request) -- see docs/design/alerts-triggers.md
+-- §3.4 and dovecote's helpers/alerts.rs::resolve_alert_recipient, which
+-- already reads this column and degrades to "no recipient, log and skip"
+-- until it's populated.
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
 -- Indexes

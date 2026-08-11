@@ -3,7 +3,7 @@
 # proxmox-greptimedb-lxc.sh
 #
 # Provisions a Proxmox LXC container running GreptimeDB in STANDALONE mode,
-# the default telemetry store for PidgeIoT (see docs/api.md + task #26).
+# the default telemetry store for PidgeIoT (see docs/api.md).
 #
 # Run this ON THE PROXMOX HOST (needs `pct`/`pveam`), as root.
 #

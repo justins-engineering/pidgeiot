@@ -42,8 +42,8 @@ services:
     volumes:
       # This one bind mount also covers courier.template_override_path
       # (kratos.yml) at /opt/kratos/courier-templates/v1 -- the branded
-      # email templates (task #33) live under ./schemas/kratos too, so no
-      # extra volume entry is required for the container to see them.
+      # email templates live under ./schemas/kratos too, so no extra
+      # volume entry is required for the container to see them.
       # --watch-courier (above) hot-reloads template edits without a restart.
       - type: bind
         source: ../schemas/kratos
@@ -71,11 +71,9 @@ services:
     networks:
       - intranet
 
-  # Pinned (task #26) — was `:latest`; dev and prod should run the exact
-  # same version once prod is stood up (see dovecote's CLAUDE.md/wrangler.toml
-  # notes on GREPTIMEDB_ENDPOINT), and an unpinned tag here would let the two
-  # drift silently. `v1.1.2` is what `:latest` actually resolved to at the
-  # time of pinning.
+  # Pinned — an unpinned tag here would let dev and prod drift silently
+  # (see dovecote's CLAUDE.md/wrangler.toml notes on GREPTIMEDB_ENDPOINT).
+  # `v1.1.2` is what `:latest` resolved to at the time of pinning.
   greptimedb:
     image: greptime/greptimedb:v1.1.2
     ports:
@@ -85,9 +83,9 @@ services:
       - '4003:4003' # Postgres wire
     command: standalone start --http-addr 0.0.0.0:4000 --rpc-bind-addr 0.0.0.0:4001 --mysql-addr 0.0.0.0:4002 --postgres-addr 0.0.0.0:4003
     volumes:
-      # Named volume (task #26) — was unmounted, so all telemetry data was
-      # lost on every `docker-compose down`. `/greptimedb_data` is
-      # GreptimeDB's own default data-home inside the image.
+      # Named volume — without it, all telemetry data is lost on every
+      # `docker-compose down`. `/greptimedb_data` is GreptimeDB's own
+      # default data-home inside the image.
       - greptimedb_data:/greptimedb_data
     networks:
       - intranet

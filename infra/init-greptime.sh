@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # init-greptime.sh
 #
-# Idempotent init/retention script for GreptimeDB (task #34) -- the
-# counterpart to init-db.sql, but deliberately NOT a schema mirror.
-# `pigeon_telemetry` is a GreptimeDB **auto-schema wide table**: it is
-# auto-created, and every new metric key auto-adds its own column, on first
-# InfluxDB line-protocol write (see dovecote/src/helpers/greptime.rs's
-# `build_line_protocol`/`query_greptime_sql` doc comments, confirmed
-# empirically against a real instance while that code was built). There is
-# no per-metric-column DDL to pre-declare here, and this script does not try.
+# Idempotent init/retention script for GreptimeDB -- the counterpart to
+# init-db.sql, but deliberately NOT a schema mirror. `pigeon_telemetry` is
+# a GreptimeDB **auto-schema wide table**: it is auto-created, and every
+# new metric key auto-adds its own column, on first InfluxDB line-protocol
+# write (see dovecote/src/helpers/greptime.rs's `build_line_protocol`/
+# `query_greptime_sql`). There is no per-metric-column DDL to pre-declare
+# here, and this script does not try.
 #
 # What this DOES codify (the two things that don't happen automatically):
 #
@@ -17,9 +16,7 @@
 #      (it 400s "Failed to find schema") -- only `public` auto-exists. Prod
 #      uses `public` (GREPTIMEDB_DB unset, see dovecote/wrangler.toml
 #      [vars]); staging uses `staging` (GREPTIMEDB_DB="staging",
-#      [env.staging.vars]) on the SAME shared self-hosted instance, and that
-#      db has so far been created by hand. This script makes that step
-#      idempotent/scripted instead of a one-off manual command.
+#      [env.staging.vars]) on the SAME shared self-hosted instance.
 #
 #   2. RETENTION / TTL -- the actual point of this file. Telemetry today is
 #      unbounded time-series with NO retention policy anywhere in the stack
@@ -31,8 +28,7 @@
 #      skeleton table in each db, so retention is in effect from row zero
 #      even if a future per-database change ever drifts the two apart.
 #
-# TTL WINDOW -- DECISION FLAGGED FOR THE LEAD, NOT UNILATERALLY CHOSEN HERE:
-#   Recommending 90 DAYS as the starting default. Rationale:
+# TTL WINDOW: 90 days by default.
 #     - fancier's telemetry graph UI (`fancier/src/components/graph_widget.rs`,
 #       `TimeRange` enum) tops out at a 30-day preset today -- no 90d/1y/"all
 #       time" option exists yet. 90d gives 3x headroom above the longest
@@ -41,14 +37,12 @@
 #       (unbounded growth today), so a conservative multiple of real UI usage
 #       beats guessing a much longer window nobody has asked for yet.
 #   Override with GREPTIME_TTL=45d ./init-greptime.sh (or any other value)
-#   if the lead picks differently -- nothing below is hardcoded past this
-#   one default. Re-running this script after a TTL change is always safe
-#   (see "Idempotent" below).
+#   for a different window -- nothing below is hardcoded past this one
+#   default. Re-running this script after a TTL change is always safe (see
+#   "Idempotent" below).
 #
-# VERIFIED SYNTAX -- checked against GreptimeDB v1.1.3 (the version pinned in
-# both docker-compose.yml's `greptimedb` service and
-# infra/proxmox-greptimedb-lxc.sh's GREPTIME_VERSION) via
-# https://docs.greptime.com/reference/sql/create/ and .../alter/:
+# SQL SYNTAX -- GreptimeDB v1.1.x (docker-compose.yml's `greptimedb`
+# service and infra/proxmox-greptimedb-lxc.sh's GREPTIME_VERSION):
 #
 #   CREATE DATABASE [IF NOT EXISTS] db_name [WITH (ttl = '90d')]
 #   ALTER DATABASE db_name SET 'ttl' = '90d'          -- for a db that already
@@ -65,22 +59,8 @@
 #   NULL / '' / '0s' mean never-expire; 'instant' means delete-on-insert
 #   (tables only -- a DATABASE's own ttl cannot be 'instant').
 #
-#   Additionally live-verified (not just doc-checked) against this repo's own
-#   docker-compose `greptimedb` service (v1.1.2 -- one patch behind the
-#   v1.1.3 pinned for the real Proxmox/tunneled instance, no syntax
-#   difference in CREATE/ALTER DATABASE or TTL between the two): every
-#   statement below ran clean end-to-end, `SHOW CREATE DATABASE public`
-#   confirmed the ttl landed (GreptimeDB normalizes '90d' to its own
-#   '2months 29days 2h 52m 48s' display, same duration), TTL inheritance to
-#   a pre-existing table with no ttl of its own was confirmed via `SHOW
-#   CREATE TABLE`, and a second run of the whole script was a clean
-#   idempotent no-op (all affectedrows: 0 except the first-ever `CREATE
-#   DATABASE staging`).
-#
 # HOW TO RUN against the live tunneled instance (telemetry.pidgeiot.com) --
-# needs the CF-Access-Client-Id/Secret service-token headers, which the lead
-# holds (not available in this worktree, so this has been syntax-verified
-# against GreptimeDB's docs but NOT run live):
+# needs the CF-Access-Client-Id/Secret service-token headers:
 #
 #   GREPTIME_ENDPOINT=https://telemetry.pidgeiot.com \
 #   GREPTIMEDB_ACCESS_CLIENT_ID=<id> \
@@ -98,8 +78,7 @@
 #   GREPTIME_ENDPOINT=http://127.0.0.1:4000 ./init-greptime.sh
 #
 # Dry run -- prints the exact curl invocations instead of sending them, no
-# credentials required, safe to sanity-check the script itself (this is how
-# it was verified in this worktree, with no live instance reachable):
+# credentials required:
 #
 #   DRY_RUN=1 ./init-greptime.sh
 #
@@ -204,9 +183,8 @@ echo "== 3. pigeon_telemetry skeleton (tag + time-index only; TTL from row zero)
 # Table-qualified names (`db.table`) target each database explicitly, so no
 # separate `db=` request parameter is needed for these two statements.
 #
-# `TIMESTAMP` with no explicit precision defaults to millisecond (confirmed
-# live: DESC TABLE showed `TimestampMillisecond`) -- this matches, not
-# fights, dovecote's own write path: `write_greptime_default`
+# `TIMESTAMP` with no explicit precision defaults to millisecond -- this
+# matches, not fights, dovecote's own write path: `write_greptime_default`
 # (helpers/greptime.rs) always writes with `precision=ms` explicitly, so a
 # fresh `staging`/`public` skeleton created by this script and dovecote's
 # real device writes agree on precision from row zero.
