@@ -235,7 +235,7 @@ pub fn Footer() -> Element {
             }
           }
           div { class: "flex items-center space-x-6",
-            // Opens the app-chrome feedback modal (task #13) -- a button,
+            // Opens the app-chrome feedback modal -- a button,
             // not a route, and present in both logged-in and logged-out
             // footers since this aside row is the one part shared by both.
             button {

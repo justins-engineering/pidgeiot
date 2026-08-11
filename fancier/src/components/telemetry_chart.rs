@@ -1,5 +1,5 @@
-// Hand-rolled SVG line chart (task #19: "NO new JS/chart dependencies").
-// Follows the house dataviz method: fixed categorical hue order (never
+// Hand-rolled SVG line chart -- no new JS/chart dependency. Follows the
+// house dataviz method: fixed categorical hue order (never
 // cycled), 2px round-cap/join lines, 8px surface-ringed end markers, a
 // legend for 2+ series (a single series gets a direct end-label instead),
 // a crosshair + one-tooltip-for-every-series hover layer, and a table-view

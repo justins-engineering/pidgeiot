@@ -13,7 +13,7 @@ use ory_kratos_client_wasm::apis::frontend_api::to_session;
 #[derive(Clone, Copy)]
 pub struct FeedbackForm(pub Signal<bool>);
 
-/// The feedback form (task #13, `POST /feedback` -- see docs/api.md's
+/// The feedback form (`POST /feedback` -- see docs/api.md's
 /// "Feedback" section). Rendered conditionally by `Wrapper` from the
 /// `FeedbackForm` context signal rather than toggled via a native
 /// `<dialog>`, same convention as `TokenReveal`/`DeletePigeonModal`: the

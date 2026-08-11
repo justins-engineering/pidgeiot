@@ -1,7 +1,7 @@
-//! Organizations list + create (task #12) -- structure mirrors
-//! `views/flocks.rs` (header + card grid + native-`<dialog>` create
-//! modal), but data is view-local (`use_resource`) rather than
-//! `LocalSession`-cached; see `api/orgs.rs`'s module comment.
+//! Organizations list + create -- structure mirrors `views/flocks.rs`
+//! (header + card grid + native-`<dialog>` create modal), but data is
+//! view-local (`use_resource`) rather than `LocalSession`-cached; see
+//! `api/orgs.rs`'s module comment.
 
 use crate::{Route, api};
 use capsules::OrganizationMembership;

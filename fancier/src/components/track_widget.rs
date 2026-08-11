@@ -10,7 +10,7 @@
 // instead of a tile provider's fixed light/dark styling. A later upgrade
 // to real map tiles would mean swapping this SVG polyline/marker layer
 // for a Leaflet (or MapLibre GL) instance underneath the same
-// time-range/hover chrome -- explicitly out of scope for this pass.
+// time-range/hover chrome.
 //
 // All the bounding-box/projection/nearest-point math lives in
 // `helpers::gps_track` as pure, unit-tested functions; this component is

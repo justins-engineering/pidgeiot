@@ -7,13 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Formatting gate: fail the release build on unformatted Rust rather than
-# shipping drift (rustfmt.toml: tab_spaces=2, max_width=100). Deliberately
-# `cargo fmt --check` ONLY — `dx fmt` is NOT enforced: dioxus-cli 0.7.9's
-# formatter both rewrites files even under --check and, worse, corrupts
-# valid code (mangles match arms inside rsx! — produced 8 compile errors
-# across firmware_modal.rs/alerts_panel.rs when run over this crate,
-# 2026-07-27). Revisit when a fixed dioxus-cli ships; until then rsx-body
-# style is convention, not machine-enforced.
+# shipping drift (rustfmt.toml: tab_spaces=2, max_width=100). `cargo fmt
+# --check` only — `dx fmt` rewrites files even under --check and corrupts
+# valid code (mangles match arms inside rsx!), so it's not enforced here;
+# rsx-body style is convention, not machine-enforced.
 cargo fmt --check -p fancier -p dovecote -p capsules
 
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
@@ -30,19 +27,18 @@ bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 # Dioxus.toml's [web.resource] writes a static <link rel="stylesheet"> into
 # the generated index.html so the browser can fetch CSS in parallel with
 # app.js/wasm, instead of only requesting it after Dioxus's runtime
-# document::Link call fires post-WASM-boot (the FOUC/CLS root cause — see
-# fancier design-review notes, task #9: CSS was arriving ~15s after
-# navigation start under throttling, entirely serialized behind the ~3MB wasm
-# download, producing a single ~0.10 layout shift on every page load).
+# document::Link call fires post-WASM-boot (the FOUC/CLS root cause: CSS
+# was arriving ~15s after navigation start under throttling, entirely
+# serialized behind the ~3MB wasm download, producing a ~0.10 layout shift
+# on every page load).
 #
-# Confirmed empirically against dioxus-cli 0.7.9: [web.resource]'s style
-# entries DO get content-hashed and copied to assets/main-dxh*.css like any
-# other asset!()-tracked file, but the <link> tag dx writes into index.html
-# still uses the literal pre-hash path ("assets/styling/main.css"), which
-# never exists in the release output — a dx bug, not a config mistake. Work
-# around it by placing an unhashed copy at that exact literal path via
-# Dioxus's own asset_dir="public" passthrough (Dioxus.toml), which copies
-# fancier/public/* verbatim into the output root.
+# dx bug: [web.resource]'s style entries DO get content-hashed and copied
+# to assets/main-dxh*.css like any other asset!()-tracked file, but the
+# <link> tag dx writes into index.html still uses the literal pre-hash
+# path ("assets/styling/main.css"), which never exists in the release
+# output. Work around it by placing an unhashed copy at that exact literal
+# path via Dioxus's own asset_dir="public" passthrough (Dioxus.toml),
+# which copies fancier/public/* verbatim into the output root.
 mkdir -p ./public/assets/styling
 cp ./assets/styling/main.css ./public/assets/styling/main.css
 # /favicon.ico at the conventional root path: browsers and link-preview
@@ -53,64 +49,58 @@ cp ./assets/styling/main.css ./public/assets/styling/main.css
 # hashed light/dark variants; this is just the conventional-path catchall.
 cp ./assets/images/icon-light.ico ./public/favicon.ico
 
-# --ssg (task #42): prerenders every statically-routable page (see
-# `static_routes` server fn, fancier/src/lib.rs) to its own
-# public/<route>/index.html via dioxus-server's incremental renderer, so
-# marketing pages have real content in the initial HTML response instead of
-# an empty shell hydrated by wasm. --force-sequential builds the server
-# target (used only at build time to run the prerender) before the client
-# wasm/js bundle, which the client-side dx CLI docs recommend for fullstack
-# release builds; the "server" binary itself is never shipped or run in
-# production -- wrangler only serves this directory's static files (see
-# wrangler.toml's [assets], no [build].main/worker script). Auth-gated
-# routes (/dashboard, /flocks, /session, /settings) are included in
-# `static_routes` too (dioxus-router only excludes routes with dynamic
-# segments, not layout/auth), but they prerender AuthGuard's "Verifying
-# session..." placeholder -- `Session`'s state Signal starts at
-# `AuthState::Pending` and the client-only cookie check in `use_future`
-# never resolves during the synchronous SSG render, so nothing private ever
-# lands in the static HTML. Confirmed empirically (2026-07-23): no crash,
-# no panic, real prerendered text for /, /features, /pricing, etc.
+# --ssg prerenders every statically-routable page (see `static_routes`
+# server fn, fancier/src/lib.rs) to its own public/<route>/index.html via
+# dioxus-server's incremental renderer, so marketing pages have real
+# content in the initial HTML response instead of an empty shell hydrated
+# by wasm. --force-sequential builds the server target (used only at build
+# time to run the prerender) before the client wasm/js bundle; the
+# "server" binary itself is never shipped or run in production -- wrangler
+# only serves this directory's static files (see wrangler.toml's [assets],
+# no [build].main/worker script). Auth-gated routes (/dashboard, /flocks,
+# /session, /settings) are included in `static_routes` too (dioxus-router
+# only excludes routes with dynamic segments, not layout/auth), but they
+# prerender AuthGuard's "Verifying session..." placeholder -- `Session`'s
+# state Signal starts at `AuthState::Pending` and the client-only cookie
+# check in `use_future` never resolves during the synchronous SSG render,
+# so nothing private ever lands in the static HTML.
 # Wipe the previous output first: dx never cleans stale hashed assets out
 # of the output dir, so successive builds accumulate dead multi-MB wasm
-# bundles that every deploy then uploads (found during the mobile-perf
-# pass, 2026-08-09 -- three generations of fancier_bg-*.wasm were riding
-# along). The path is recreated by dx below.
+# bundles that every deploy then uploads. The path is recreated by dx below.
 rm -rf ../target/dx/fancier/release/web/public
 dx build --web --ssg --force-sequential --release --debug-symbols=false
 
-# Second, unrelated dx-cli defect in the same [web.resource] tag writer
-# (task #28): the CSS/theme-init.js <link>/<script> tags above land in
-# index.html as bare relative paths ("assets/...", no leading "/"), unlike
-# the auto-injected wasm loader tag, which dx does correctly root
+# Second, unrelated dx-cli defect in the same [web.resource] tag writer:
+# the CSS/theme-init.js <link>/<script> tags above land in index.html as
+# bare relative paths ("assets/...", no leading "/"), unlike the
+# auto-injected wasm loader tag, which dx does correctly root
 # ("/./wasm/fancier.js"). A relative href resolves against the REQUESTING
 # URL's path, not the site root -- fine for "/" or any single-segment
 # route, but a direct/bookmarked/refreshed load of a 2+-segment route
 # (e.g. /flocks/<id>/pigeons/<id>) resolves it to a nonexistent path
-# nested under that route and 404s, leaving the page unstyled. Confirmed
-# this reproduces in the actual prod artifact, not just `dx serve`:
-# wrangler's static-assets handler serves this exact index.html verbatim
-# for any unmatched path (`not_found_handling = "single-page-application"`
-# in wrangler.toml), so the browser — not the server — is what resolves
-# the bad relative path. Root-fixing every such href here is simpler and
-# safer than a <base href="/"> tag, which would silently affect any other
+# nested under that route and 404s, leaving the page unstyled. This
+# reproduces in the actual prod artifact, not just `dx serve`: wrangler's
+# static-assets handler serves this exact index.html verbatim for any
+# unmatched path (`not_found_handling = "single-page-application"` in
+# wrangler.toml), so the browser — not the server — is what resolves the
+# bad relative path. Root-fixing every such href here is simpler and safer
+# than a <base href="/"> tag, which would silently affect any other
 # relative reference added later; this only touches the two tags actually
 # affected, leaving the already-correct wasm loader tag untouched.
 #
-# --ssg (task #42) made this worse, not just present at "/": every
-# prerendered public/<route>/index.html carries its own copy of the same
-# two relative-path tags, one directory level deep, so ALL of them need the
+# --ssg makes this worse, not just present at "/": every prerendered
+# public/<route>/index.html carries its own copy of the same two
+# relative-path tags, one directory level deep, so ALL of them need the
 # same fix -- not just the site-root index.html.
 PUBLIC_DIR="../target/dx/fancier/release/web/public"
 find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
   -e 's#href="assets/#href="/assets/#g' \
   -e 's#src="assets/#src="/assets/#g'
 
-# Social/crawler head tags (launch-day fix, 2026-07-28): Dioxus's
-# document::Title/Meta components only materialize CLIENT-SIDE after
-# hydration -- verified against the live prerendered HTML, which shipped
-# with no <title> and zero metas, so link unfurlers (Slack/Discord/X/
-# iMessage), none of which run JS, rendered bare previews. Same class of
+# Social/crawler head tags: Dioxus's document::Title/Meta components only
+# materialize CLIENT-SIDE after hydration, so the prerendered HTML ships
+# with no <title> and zero metas -- link unfurlers (Slack/Discord/X/
+# iMessage), none of which run JS, render bare previews. Same class of
 # problem as the [web.resource] CSS fix above, same class of solution:
 # inject the tags statically into every prerendered index.html. og:url is
 # derived per page from its output path. Idempotent (skips files already
@@ -121,22 +111,21 @@ find "$PUBLIC_DIR" -name "index.html" -print0 | xargs -0 sed -i \
 cp ./assets/images/og.png "$PUBLIC_DIR/og.png"
 # The getting-started click-to-play still frame, same verbatim-copy route as
 # og.png and for the same reason: dx's image pipeline re-encodes webp assets
-# (60KB -> 218KB measured, dioxus-cli 0.7.10 -- both via asset!() and via
-# the public/ passthrough dir, which it also runs the optimizer over). This
-# image is that page's LCP element, so its byte size directly moves mobile
-# LCP. getting_started.rs references the literal path.
+# (60KB -> 218KB measured -- both via asset!() and via the public/
+# passthrough dir, which it also runs the optimizer over). This image is
+# that page's LCP element, so its byte size directly moves mobile LCP.
+# getting_started.rs references the literal path.
 cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started-poster.webp"
 
 # Belt-and-suspenders re-copy of the public/ passthrough files: dx's
-# asset_dir copying proved NON-DETERMINISTIC against a warm target/dx
-# cache after the output-dir wipe above (observed 2026-08-10: a build
-# emitted all prerendered HTML but silently dropped EVERY loose public/
-# file -- robots.txt, llms.txt, auth.md, _headers, .well-known/ -- while
-# the same commits built fine in a cold-target worktree). The prerendered
-# pages don't depend on this, but these files are correctness-critical
-# (robots directives, Link headers, agent surfaces), so copy them
-# explicitly and deterministically; identical content when dx also copied
-# them, a repair when it didn't. `/. ` form includes dot-directories.
+# asset_dir copying is NON-DETERMINISTIC against a warm target/dx cache --
+# a build can emit all prerendered HTML while silently dropping EVERY
+# loose public/ file (robots.txt, llms.txt, auth.md, _headers,
+# .well-known/, ...). The prerendered pages don't depend on this, but
+# these files are correctness-critical (robots directives, Link headers,
+# agent surfaces), so copy them explicitly and deterministically;
+# identical content when dx also copied them, a repair when it didn't.
+# `/. ` form includes dot-directories.
 cp -r ./public/. "$PUBLIC_DIR/"
 
 # Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
@@ -231,24 +220,22 @@ for title, desc in PAGES.values():
     if not (len(title) <= 60 and 120 <= len(desc) <= 160):
         print(f"WARNING seo band violation: {len(title)}/{len(desc)} {title!r}")
 
-# Cloudflare Web Analytics (RUM), MANUAL install by decision 2026-08-09:
-# baked into the artifact instead of edge auto-injection so served HTML is
-# byte-identical to what the Playwright hydration checks verify, and local
-# Lighthouse runs measure the same page composition as prod. The token is a
-# public beacon identifier (always visible in page source), not a secret.
+# Cloudflare Web Analytics (RUM), installed manually: baked into the
+# artifact instead of edge auto-injection so served HTML is byte-identical
+# to what the Playwright hydration checks verify, and local Lighthouse
+# runs measure the same page composition as prod. The token is a public
+# beacon identifier (always visible in page source), not a secret.
 # type=module defers execution; non-render-blocking. Auto-injection must
 # stay OFF in the Cloudflare dashboard or pages get a second beacon.
 RUM = """<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "16f747723d074609936627f7f7daf1cf"}'></script><!-- End Cloudflare Web Analytics -->"""
 
-# NOTE (tried and rejected, 2026-08-09): do NOT add a <link rel="preload">
-# for the wasm bundle here. It was measured to CRATER the Lighthouse mobile
-# score on every page (landing 1.00 -> 0.74, LCP 1.5s -> 8.7s locally):
-# preloading makes the wasm arrive early enough that hydration begins
-# before the hero's first paint in the observed trace, so Lighthouse's
+# Do NOT add a <link rel="preload"> for the wasm bundle here. It craters
+# the Lighthouse mobile score on every page (landing 1.00 -> 0.74, LCP
+# 1.5s -> 8.7s locally): preloading makes the wasm arrive early enough
+# that hydration begins before the hero's first paint, so Lighthouse's
 # Lantern simulation chains the LCP element into the full wasm
-# fetch+execute dependency graph -- the exact task #62 failure mode
-# (LCP must never depend on the wasm bundle), reintroduced from the
-# network side instead of the CSS side.
+# fetch+execute dependency graph -- LCP must never depend on the wasm
+# bundle.
 
 for f in root.rglob("index.html"):
     html = f.read_text()
@@ -258,8 +245,8 @@ for f in root.rglob("index.html"):
     # description (lib.rs document::Meta, which DOES materialize during the
     # SSG pass, unlike at launch when it was client-only) -- leaving them in
     # alongside the injected per-page pair means two titles/descriptions per
-    # page, and Google may pick the generic one (SEO audit F1, 2026-07-29).
-    # Strip the shell's pair before injecting ours.
+    # page, and Google may pick the generic one. Strip the shell's pair
+    # before injecting ours.
     html = re.sub(r"<title>.*?</title>", "", html, count=1)
     html = re.sub(r'<meta name="description"[^>]*/?>', "", html, count=1)
     route = "/" + str(f.parent.relative_to(root)).replace("\\", "/").lstrip(".")
@@ -290,8 +277,8 @@ for f in root.rglob("index.html"):
         f.write_text(html.replace("<head>", "<head>" + tags, 1))
 
 # Regenerate sitemap.xml from the SAME indexable-page map, so it can never
-# drift from what's actually published (the old checked-in sitemap sat six
-# pages stale). Overwrites the public/ passthrough copy in the output.
+# drift from what's actually published. Overwrites the public/ passthrough
+# copy in the output.
 urls = "".join(f"<url><loc>{BASE}{r if r != '/' else '/'}</loc></url>" for r in PAGES)
 (root / "sitemap.xml").write_text(
     '<?xml version="1.0" encoding="UTF-8"?>'

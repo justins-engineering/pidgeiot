@@ -151,8 +151,8 @@ pub async fn update_shadow(
   serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
 }
 
-// GET /pigeons/:id/logs (task #18 backend, task #25 dashboard UI) -- every
-// currently-stored device log chunk for this pigeon, oldest first, as
+// GET /pigeons/:id/logs -- every currently-stored device log chunk for
+// this pigeon, oldest first, as
 // base64-encoded binary (docs/api.md's "Logs" section). This is the only
 // pigeon route this crate never mirrors into `LocalSession`: log chunks
 // aren't part of `Pigeon`/`PigeonDetail`, so there's no cached field for
@@ -169,7 +169,7 @@ pub async fn get_logs(pigeon_id: &str) -> Option<Vec<PigeonLogChunk>> {
   serde_wasm_bindgen::from_value::<Vec<PigeonLogChunk>>(json).ok()
 }
 
-// --- Log dictionary (task #5, docs/api.md's "Log dictionary" section) ---
+// --- Log dictionary (docs/api.md's "Log dictionary" section) ---
 // Like get_logs above, none of these touch `LocalSession`: the dictionary
 // isn't part of `Pigeon`/`PigeonDetail`, so `LogViewer` holds it in local
 // component state.
@@ -223,10 +223,9 @@ pub async fn delete_log_dictionary(pigeon_id: &str) -> Option<()> {
   Some(())
 }
 
-// PUT /pigeons/:id/telemetry-endpoint (task #18, landed in dovecote
-// bc1373c), mirroring the other per-pigeon PUT routes above (e.g.
-// /shadow). Unlike those, the route responds with the bare
-// `Option<TelemetryEndpoint>` it just wrote (`Response::from_json(&endpoint)`
+// PUT /pigeons/:id/telemetry-endpoint, mirroring the other per-pigeon PUT
+// routes above (e.g. /shadow). Unlike those, the route responds with the
+// bare `Option<TelemetryEndpoint>` it just wrote (`Response::from_json(&endpoint)`
 // in dovecote's lib.rs) rather than a full `Pigeon` — deserializing this as
 // `Pigeon` would fail on every required field and silently collapse every
 // call to `None`. Outer `Option` is request success; inner `Option` is "is
@@ -252,7 +251,7 @@ pub async fn update_telemetry_endpoint(
   serde_wasm_bindgen::from_value::<Option<TelemetryEndpoint>>(json).ok()
 }
 
-// POST /pigeons/:id/shell (task #34, v1) -- not a capsules type, deliberately:
+// POST /pigeons/:id/shell -- not a capsules type, deliberately:
 // dovecote's own gateway route (`lib.rs`) never deserializes this body
 // either, it's a pure passthrough into `proxy_to_pigeon_do`, so there was
 // never a shared-crate request/response type to reuse. `ShellExecuteRequest`

@@ -69,17 +69,13 @@ enum Route {
     #[route("/settings?:flow")]
     SettingsFlow { flow: Option<String> },
   #[end_layout]
-  // Public (indexable) pages use trailing-slash paths (task #63): wrangler's
-  // static hosting 307-redirects /features -> /features/ (html_handling
-  // directory-index resolution), so emitting the canonical trailing-slash
-  // form directly in every <a href> saves crawlers a redirect hop per link
-  // and matches build-release.sh's PAGES/canonical/sitemap URLs. The router
-  // still accepts both forms — dioxus-router strips trailing slashes during
-  // parsing and skips empty trailing static segments (see the
-  // public_route_trailing_slash tests below) — only Display/href output
-  // changes. Auth-gated and Kratos-flow routes are deliberately left in
-  // non-slash form: they're noindex (no SEO benefit) and the flow routes
-  // carry query-param props with known SSG-hydration sensitivity (task #43).
+  // Public pages use trailing-slash paths so generated <a href>s are already
+  // wrangler's canonical form (it 307s /features -> /features/) -- saves
+  // crawlers a redirect hop. The router still accepts both forms (see the
+  // public_route_trailing_slash tests below); only Display/href changes.
+  // Auth-gated and Kratos-flow routes stay non-slash: noindex, and the flow
+  // routes carry query-param props with SSG-hydration sensitivity (see
+  // helpers::url_query_param).
   #[route("/")]
   Index {},
   #[route("/about/")]
@@ -104,10 +100,10 @@ enum Route {
   OpenSourcePage {},
   #[route("/terms/")]
   TermsPage {},
-  // Org invite landing page (task #12) -- public (NOT AuthGuard'd, see
+  // Org invite landing page -- public (NOT AuthGuard'd, see
   // views/invite.rs's module comment) and non-trailing-slash like the
-  // Kratos flow routes, since it carries a query-param prop with the known
-  // SSG-hydration sensitivity (task #43; read via url_query_param).
+  // Kratos flow routes, since it carries a query-param prop with
+  // SSG-hydration sensitivity (read via url_query_param).
   #[route("/invite?:token")]
   InviteAccept { token: Option<String> },
   #[route("/login?:flow")]
@@ -128,14 +124,14 @@ enum Route {
   PageNotFound { route: Vec<String> },
 }
 
-// SSG spike (task #42): `dx build --ssg` calls this endpoint (must be named
-// exactly "static_routes") to discover which routes to prerender. Dioxus
-// router's `Route::static_routes()` already filters out any route with a
-// dynamic (`:flock_id`) or catch-all (`:..route`) segment, so this returns
-// every public marketing page plus the small number of statically-routable
+// `dx build --ssg` calls this endpoint (must be named exactly
+// "static_routes") to discover which routes to prerender. Dioxus router's
+// `Route::static_routes()` already filters out any route with a dynamic
+// (`:flock_id`) or catch-all (`:..route`) segment, so this returns every
+// public marketing page plus the small number of statically-routable
 // AuthGuard'd pages (`/dashboard`, `/flocks`, `/session`, `/settings`) --
 // those prerender AuthGuard's logged-out redirect state, not real content
-// (see CLAUDE.md's SSG spike note for why that's harmless).
+// (harmless: no private data leaks into the prerendered HTML).
 #[server(endpoint = "static_routes", output = server_fn::codec::Json)]
 async fn static_routes() -> Result<Vec<String>, ServerFnError> {
   Ok(
@@ -173,12 +169,12 @@ fn AuthGuard() -> Element {
 struct LocalSession {
   flocks: Signal<HashMap<Uuid, Flock>>,
   pigeons: Signal<HashMap<String, Pigeon>>,
-  // User-defined alerts (task #32) -- keyed by alert id, same shared/additive
-  // cache convention as `flocks`/`pigeons` above: `api::alerts::list_pigeon`/
-  // `list_flock` extend this map, never prune it. `AlertDefinition::scope`
-  // already carries either the owning pigeon_id or flock_id, so callers
-  // filter this map by `scope` locally (see `components::AlertsPanel`)
-  // rather than needing a second, scope-keyed cache.
+  // Keyed by alert id, same shared/additive cache convention as
+  // `flocks`/`pigeons` above: `api::alerts::list_pigeon`/`list_flock` extend
+  // this map, never prune it. `AlertDefinition::scope` already carries
+  // either the owning pigeon_id or flock_id, so callers filter this map by
+  // `scope` locally (see `components::AlertsPanel`) instead of needing a
+  // second, scope-keyed cache.
   alerts: Signal<HashMap<Uuid, AlertDefinition>>,
 }
 
@@ -229,8 +225,7 @@ pub fn App() -> Element {
     // Release builds get main.css from a static <link> in index.html instead
     // (Dioxus.toml's [web.resource], populated by scripts/build-release.sh) —
     // it loads in parallel with app.js/wasm rather than only after this
-    // component mounts post-WASM-boot, which was the FOUC/CLS root cause
-    // (task #9 design review, ~0.10 layout shift on every page load). Dev
+    // component mounts post-WASM-boot, which causes a FOUC/layout shift. Dev
     // keeps this runtime injection since `[web.resource.dev]` is
     // deliberately left empty — see that config's comment for why.
     if cfg!(debug_assertions) {
@@ -269,13 +264,12 @@ pub fn App() -> Element {
   }
 }
 
-// Regression evidence for the task #43 prod signup outage: these prove the
-// ROUTER parses `?flow=` correctly — including the trailing-slash form that
-// wrangler's `html_handling` 307 produces for every prerendered route
-// (`/registration?flow=X` → `/registration/?flow=X`) — so the router was
-// ruled OUT as the culprit. What actually dropped the flow id is SSG
-// hydration restoring the prerendered `flow: None` route instead of
-// re-parsing `window.location`; see helpers::url_query_param for the fix.
+// These prove the ROUTER parses `?flow=` correctly — including the
+// trailing-slash form that wrangler's `html_handling` 307 produces for every
+// prerendered route (`/registration?flow=X` → `/registration/?flow=X`).
+// What drops the flow id on a real page load is SSG hydration restoring the
+// prerendered `flow: None` route instead of re-parsing `window.location`;
+// see helpers::url_query_param for the fix.
 #[cfg(test)]
 mod route_query_param_parsing {
   use super::Route;
@@ -312,13 +306,12 @@ mod route_query_param_parsing {
   }
 }
 
-// Task #63: public routes are annotated with trailing-slash paths so that
-// generated hrefs are wrangler's canonical form directly (no 307 hop for
-// crawlers). These prove the router still accepts BOTH forms — a deep load
-// of /features (no slash, e.g. a stale external link before wrangler
-// redirects) and /features/ must resolve to the same component, never fall
-// through to the PageNotFound catch-all — and that Display now emits the
-// trailing-slash canonical.
+// Public routes are annotated with trailing-slash paths so generated hrefs
+// are wrangler's canonical form directly (no 307 hop for crawlers). These
+// prove the router still accepts BOTH forms — a deep load of /features (no
+// slash, e.g. a stale external link) and /features/ must resolve to the
+// same component, never fall through to the PageNotFound catch-all — and
+// that Display emits the trailing-slash canonical.
 #[cfg(test)]
 mod public_route_trailing_slash {
   use super::Route;

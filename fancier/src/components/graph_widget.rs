@@ -1,6 +1,6 @@
-// User-defined telemetry graphs (task #19). A GraphDef says which key(s) to
+// User-defined telemetry graphs. A GraphDef says which key(s) to
 // plot, over what time range; GraphCard fetches the data and renders it with
-// TelemetryChart. Backed by task #18's real capsules::TelemetryHistoryPoint
+// TelemetryChart. Backed by the real capsules::TelemetryHistoryPoint
 // route shapes (api/telemetry.rs) — when a route call fails outright (route
 // missing, network error), GraphCard falls back to clearly-labeled
 // deterministic mock data so the widget is still usable to look at and
@@ -255,7 +255,7 @@ fn fallback_keys() -> Vec<String> {
 /// non-numeric points via `value_num`, so a key with none would otherwise
 /// be pickable in `AddGraphModal` and render an empty chart. Mirrors
 /// alerts_panel.rs's `numeric_keys_from_latest`/`numeric_keys_from_history`
-/// (task #32 point 4, see CLAUDE.md's telemetry-forwarding note).
+/// (see CLAUDE.md's telemetry-forwarding note).
 ///
 /// Also drops `gps_lat`/`gps_lon` specifically even though both parse as
 /// perfectly numeric floats -- see `gps_track::is_line_graph_excluded`'s
@@ -419,7 +419,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
 
   // No flock-level "latest keys" route — derive a best-effort key list from
   // the flock's own history fetch at the default range instead of adding
-  // another endpoint on top of the ones task #18 already owns.
+  // another endpoint.
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
   use_resource(move || async move {

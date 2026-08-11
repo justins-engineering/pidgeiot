@@ -1,4 +1,4 @@
-//! Organizations API client (task #12) -- see `docs/api.md`'s
+//! Organizations API client -- see `docs/api.md`'s
 //! "Organizations" section for the wire surface and permission matrix.
 //!
 //! Unlike flocks/pigeons, orgs are NOT cached in `LocalSession` -- the org

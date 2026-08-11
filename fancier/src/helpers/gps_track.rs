@@ -1,5 +1,5 @@
 // GPS/asset-tracking math for the pigeon detail view's `TrackWidget`
-// (components::track_widget) -- a new device sample reports GPS fixes as
+// (components::track_widget) -- a device sample reports GPS fixes as
 // ordinary numeric telemetry keys (gps_lat/gps_lon/gps_alt_m/
 // gps_speed_mps/gps_heading_deg/gps_sats/gps_fix_quality). Only
 // gps_lat/gps_lon are required to plot a fix -- everything else is

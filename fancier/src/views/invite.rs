@@ -1,4 +1,4 @@
-//! Org invite acceptance (task #12) -- the landing page for
+//! Org invite acceptance -- the landing page for
 //! `<ROOT_URL>/invite?token=<token>` links minted by `POST
 //! /orgs/:org_id/invites`.
 //!
@@ -11,10 +11,10 @@
 //! render: the token is single-use, and a stray prefetch/reload must not
 //! burn it).
 //!
-//! Per the SSG-hydration rule (CLAUDE.md, task #43): the `token` query
-//! param is read from the ADDRESS BAR via `url_query_param` first; the
-//! route prop is only the SSG-side fallback. Skipping this would hand the
-//! prerendered `token: None` to every full-page load of an invite link.
+//! The `token` query param is read from the ADDRESS BAR via
+//! `url_query_param` first; the route prop is only the SSG-side fallback.
+//! Skipping this would hand the prerendered `token: None` to every
+//! full-page load of an invite link.
 
 use crate::helpers::url_query_param;
 use crate::models::AuthState;

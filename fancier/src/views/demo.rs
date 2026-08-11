@@ -1,5 +1,5 @@
-// Public, no-signup live demo (launch-eve, no ticket number). Reads real
-// telemetry from one real, allowlisted pigeon over dovecote's new
+// Public, no-signup live demo. Reads real
+// telemetry from one real, allowlisted pigeon over dovecote's
 // unauthenticated /demo/pigeons/:id/telemetry* routes (docs/api.md's
 // "Public Demo API" section) -- this is the actual platform serving real
 // device data, not a mock. Reuses the same TelemetryChart the authenticated
@@ -18,9 +18,9 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdPlay, LdRadio};
 
-/// Auto-refresh cadence (task brief: "every ~30s while mounted") -- the
-/// demo pigeon itself reports every 30s, so this matches its own cadence
-/// rather than polling faster than new data could possibly arrive.
+/// Auto-refresh cadence -- the demo pigeon itself reports every 30s, so
+/// this matches its own cadence rather than polling faster than new data
+/// could possibly arrive.
 const REFRESH_MS: i32 = 30_000;
 
 /// How far back the graphs look. The demo pigeon reports every 30s, so 6
@@ -30,9 +30,9 @@ const REFRESH_MS: i32 = 30_000;
 const HISTORY_HOURS: i64 = 6;
 
 /// (key, chart title, unit suffix for the latest-value stat tile).
-/// Matches what the demo pigeon actually reports (CLAUDE.md's task brief:
-/// temp_c/humidity_pct/light_lux every 30s, plus soil_moisture_pct and
-/// uptime_s). Only the first three get their own chart -- three numeric
+/// Matches what the demo pigeon actually reports (temp_c/humidity_pct/
+/// light_lux every 30s, plus soil_moisture_pct and uptime_s). Only the
+/// first three get their own chart -- three numeric
 /// series compared cleanly fits the page without a key picker; the other
 /// two still show in the latest-value strip.
 const CHART_KEYS: [(&str, &str, &str); 3] = [
@@ -200,14 +200,12 @@ fn DemoContent() -> Element {
     }
 
     // Always render the chart cards, with fixed-height skeletons until the
-    // first fetch lands. The old version inserted this whole section only
-    // after `loaded_once()`, which pushed everything below it down once data
-    // arrived -- Lighthouse mobile flagged it as a 0.078 CLS on /demo/ (the
-    // "Start Your Own, Free" section was the shifted element). Since this
-    // now also renders during the SSG prerender pass, the static HTML
-    // carries the full page layout too. The skeleton mirrors TelemetryChart's
-    // real footprint (a ~24px toolbar row + the 220px CANVAS_H svg) so the
-    // swap-in is not itself a shift.
+    // first fetch lands -- inserting this section only once data arrives
+    // pushes everything below it down (a real layout shift, flagged by
+    // Lighthouse mobile). Rendering unconditionally also means the SSG
+    // prerender pass emits the full page layout in the static HTML. The
+    // skeleton mirrors TelemetryChart's real footprint (a ~24px toolbar row
+    // + the 220px CANVAS_H svg) so the swap-in is not itself a shift.
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8 flex flex-col gap-6",
         for (key , title , _unit) in CHART_KEYS {

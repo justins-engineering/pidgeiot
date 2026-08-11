@@ -23,11 +23,10 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let mut show_telemetry_endpoint_modal = use_signal(|| false);
   let mut show_firmware_modal = use_signal(|| false);
 
-  // Connection-state indicator (task #31) -- "last seen" is the newest of
-  // three signals this page already fetches (or, for the log chunks,
-  // would fetch anyway via LogViewer): the latest telemetry report, the
-  // shadow's own updated_at, and the newest received device log chunk.
-  // No new backend routes, no extra device traffic.
+  // "Last seen" is the newest of three signals this page already fetches
+  // (or, for the log chunks, would fetch anyway via LogViewer): the latest
+  // telemetry report, the shadow's own updated_at, and the newest received
+  // device log chunk. No new backend routes, no extra device traffic.
   let mut telemetry_latest: Signal<Option<Vec<TelemetryLatest>>> = use_signal(|| None);
   let mut latest_log_received: Signal<Option<time::OffsetDateTime>> = use_signal(|| None);
 
@@ -165,7 +164,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     on_latest_received: move |t| latest_log_received.set(t),
                   }
                 }
-                // Owner-gated (task #34, v1): mirrors dovecote's own
+                // Owner-gated: mirrors dovecote's own
                 // `is_owner` gate on `POST /pigeons/:id/shell` -- `pd.acl`
                 // is the *requesting user's own* ACL row for this pigeon
                 // (see `AclInfo`'s "You" badge below), so this check is the
@@ -698,7 +697,7 @@ fn ShadowInfo(shadow: PigeonShadow) -> Element {
   }
 }
 
-/// Remote diagnostic shell (task #34, v1) -- runs one command on the
+/// Remote diagnostic shell -- runs one command on the
 /// device over its existing WebSocket channel and shows the result.
 /// Rendered only for the pigeon's owner by `PigeonView` above; the caller
 /// gate is a courtesy, dovecote's `is_owner` check on the route itself is
@@ -852,16 +851,16 @@ fn AclInfo(acl: PigeonAcl) -> Element {
   }
 }
 
-/// Client-side-only sanity cap on an uploaded `target_config` JSON file
-/// (task #26) -- dovecote's `PUT /pigeons/:id/shadow` enforces no size limit
-/// of its own on `target_config`, so this exists purely to give a friendly
-/// error instead of stuffing something absurd into the textarea below.
+/// Client-side-only sanity cap on an uploaded `target_config` JSON file --
+/// dovecote's `PUT /pigeons/:id/shadow` enforces no size limit of its own on
+/// `target_config`, so this exists purely to give a friendly error instead
+/// of stuffing something absurd into the textarea below.
 const MAX_SHADOW_UPLOAD_BYTES: u64 = 64 * 1024;
 
 /// Parses an uploaded `target_config` JSON file's text and, on success,
-/// returns it pretty-printed for the editor textarea below to preview (task
-/// #26 -- "reuse the existing editor ... so the user can eyeball or tweak
-/// what the file contained"). Only a JSON *object* is accepted -- arrays and
+/// returns it pretty-printed for the editor textarea below to preview, so
+/// the user can eyeball or tweak what the file contained. Only a JSON
+/// *object* is accepted -- arrays and
 /// bare scalars would round-trip through `serde_json::Value` fine, but
 /// `PigeonShadowUpdateRequest::target_config` is conceptually a config
 /// object (see the live textarea's own default of `"{}"`), and silently
@@ -1357,7 +1356,7 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                 }
                 // Disabled (not hidden): an existing CoAP-connector pigeon
                 // still renders its current selection, but nothing new can
-                // switch onto a transport with no live terminator (task #56).
+                // switch onto a transport with no live terminator.
                 option {
                   value: "Coap",
                   selected: selected_connector() == "Coap",

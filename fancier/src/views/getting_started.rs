@@ -30,27 +30,21 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    // The whole flow, recorded
     section { class: "pb-16",
       div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
         p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
           "The whole flow in under a minute"
         }
-        // Click-to-play <video> instead of the old 1.48MB autoplaying GIF.
-        // Two Lighthouse-mobile findings drove this exact shape (both
-        // measured, 2026-08-09): (1) as an <img>, the GIF was this page's
-        // LCP element and gated LCP on its full download (~9s simulated
-        // slow-4G, page score 0.73); (2) an AUTOPLAYING <video> doesn't fix
-        // that -- for autoplay, Chrome takes the first video frame (not the
-        // poster paint) as the LCP candidate, so LCP still waited on the
-        // whole stream. With click-to-play, the LCP candidate is the still
-        // image below (paints with the page), and the ~830KB webm is only
-        // fetched at all for visitors who actually press play.
+        // Click-to-play <video> instead of an autoplaying GIF: as an <img>
+        // the GIF was this page's LCP element, gating LCP on its full
+        // download (a 1.48MB GIF costs ~9s on slow 4G). Autoplaying video
+        // doesn't fix it either -- Chrome takes the first frame, not the
+        // poster, as the LCP candidate. Click-to-play makes the poster image
+        // the LCP candidate instead; the ~830KB webm only loads on click.
         GettingStartedRecording {}
       }
     }
 
-    // What you'll have at the end
     section { class: "pb-16",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         div { class: "flex gap-4 items-start bg-primary/10 border border-primary/30 rounded-2xl p-6",
@@ -73,7 +67,6 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    // Steps 1-5: account through device credentials
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
@@ -117,7 +110,6 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    // Run the simulator
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
@@ -173,7 +165,6 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    // What you should see
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
@@ -230,7 +221,6 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    // Where to go next
     section { class: "pb-24 md:pb-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
@@ -305,12 +295,10 @@ fn GettingStartedRecording() -> Element {
         img {
           class: "w-full block",
           // Deliberately NOT asset!(): dx's image pipeline re-encodes webp
-          // assets and bloated this 60KB still to 218KB (measured against
-          // dioxus-cli 0.7.10; ImageFormat::Unknown didn't bypass it
-          // either). Served verbatim from fancier/public/ instead, the
-          // same passthrough og.png and favicon.ico already use. This
-          // still is likely the page's LCP element, so its size directly
-          // moves mobile LCP -- keep it small.
+          // assets and bloats this 60KB still to 218KB. Served verbatim
+          // from fancier/public/ instead, same as og.png and favicon.ico.
+          // This still is likely the page's LCP element, so its size
+          // directly moves mobile LCP -- keep it small.
           src: "/getting-started-poster.webp",
           alt: "Terminal recording still: building and running the wifi_init sample for Zephyr's native_sim target from pigeon-examples.",
           width: "796",

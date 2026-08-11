@@ -1,5 +1,4 @@
-// Fleet-wide dashboard (replaces the old `/dashboard` -> `Flocks` alias):
-// a fleet-at-a-glance view built entirely from data the app already fetches
+// Fleet-at-a-glance view built entirely from data the app already fetches
 // elsewhere -- no new backend routes. `Flocks` (the create/search/manage
 // list) stays reachable at its own `/flocks` route and via the links this
 // page renders; this view is a summary layer on top of it, not a
@@ -36,7 +35,7 @@ pub fn Dashboard() -> Element {
   let pigeons = local.pigeons;
   let mut last_seen: Signal<HashMap<String, OffsetDateTime>> = use_signal(HashMap::new);
   let mut fleet_data_loaded = use_signal(|| false);
-  // Flock-scoped alert count per flock (task #32) -- deliberately NOT a
+  // Flock-scoped alert count per flock -- deliberately NOT a
   // fleet-wide total: there is no "list every alert this user owns" route,
   // only per-pigeon and per-flock listing (dovecote/src/lib.rs's "Alert
   // Routes"), so a true fleet total would mean fetching every pigeon's own
@@ -205,7 +204,6 @@ pub fn Dashboard() -> Element {
           }
         }
 
-        // Stat row
         div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-cols-2 lg:grid-cols-4 mb-8",
           div { class: "stat",
             div { class: "stat-figure text-secondary",
@@ -242,10 +240,8 @@ pub fn Dashboard() -> Element {
         }
 
         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-          // Main column
           div { class: "lg:col-span-2 flex flex-col gap-6",
 
-            // Fleet health bar
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               h2 { class: "text-lg font-bold mb-4", "Fleet Health" }
               if total_pigeons == 0 {
@@ -296,7 +292,6 @@ pub fn Dashboard() -> Element {
               }
             }
 
-            // Devices needing a look
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-4",
                 h2 { class: "text-lg font-bold", "Devices" }
@@ -345,10 +340,8 @@ pub fn Dashboard() -> Element {
             }
           }
 
-          // Sidebar column
           div { class: "flex flex-col gap-6",
 
-            // Flocks quick nav
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-4",
                 h2 { class: "text-lg font-bold", "Flocks" }
@@ -369,14 +362,12 @@ pub fn Dashboard() -> Element {
               }
             }
 
-            // Alerts summary (task #32) -- the backend + dashboard CRUD are
-            // both real now, so this is no longer the "Planned" placeholder.
-            // Still `Beta`, not badge-free: only Threshold conditions are
-            // actually evaluated today (device-state alerts save but don't
-            // fire yet, see `components::alerts_panel`'s own doc comment),
-            // and this count is flock-scoped alerts only -- there's no
-            // "every alert this user owns" route to total up per-pigeon
-            // alerts too without an expensive per-pigeon fan-out (see the
+            // `Beta`, not badge-free: only Threshold conditions are actually
+            // evaluated today (device-state alerts save but don't fire yet,
+            // see `components::alerts_panel`'s own doc comment), and this
+            // count is flock-scoped alerts only -- there's no "every alert
+            // this user owns" route to total up per-pigeon alerts too
+            // without an expensive per-pigeon fan-out (see the
             // `flock_alert_counts` comment above).
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-3",

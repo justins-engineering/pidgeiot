@@ -1,8 +1,8 @@
 // Worker entrypoint for the fancier script: Cloudflare Access gate
 // (staging only, var-gated) in front of markdown content negotiation +
-// static asset serving (markdown.mjs). Since the markdown-negotiation
-// change this IS production's `main` too (wrangler.toml), scoped by
-// `run_worker_first` to just the negotiable page routes.
+// static asset serving (markdown.mjs). This is also production's `main`
+// (wrangler.toml), scoped by `run_worker_first` to just the negotiable
+// page routes.
 //
 // Staging here means a Workers *version preview* of the same "fancier"
 // script that serves production (see wrangler.staging.toml), not a separate

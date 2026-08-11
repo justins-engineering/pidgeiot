@@ -25,10 +25,10 @@ pub fn SettingsFlow(flow: Option<String>) -> Element {
             if res.status == 410 || res.status == 404 || res.status == 403 =>
           {
             // Expired (410), unknown (404), or another browser's (403) flow
-            // id: fall through and mint a fresh flow. The previous
-            // nav.replace(flow: None) + "Refreshing expired session..."
-            // placeholder could never recover — use_resource's future does
-            // not rerun on the post-replace rerender — so it hung forever.
+            // id: fall through and mint a fresh flow inline. Don't
+            // nav.replace(flow: None) and rely on a fresh fetch instead —
+            // use_resource's future does not rerun on the post-replace
+            // rerender, so that approach hangs forever.
           }
           Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
             return Err(res.view_response_content());

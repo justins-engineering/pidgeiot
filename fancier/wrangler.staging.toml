@@ -35,9 +35,9 @@ directory = "../target/dx/fancier/release/web/public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 # Without this, Workers+Assets serves any request matching a static file
-# directly from ASSETS, never invoking `main` at all — confirmed by testing
-# locally: every request 200'd, even with no Cf-Access-Jwt-Assertion header,
-# because access-gate.mjs never ran.
+# directly from ASSETS, never invoking `main` at all — every request would
+# 200, even with no Cf-Access-Jwt-Assertion header, since access-gate.mjs
+# never runs.
 run_worker_first = true
 
 [build]

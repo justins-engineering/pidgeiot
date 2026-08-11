@@ -1,4 +1,4 @@
-//! Client-side decoder for Zephyr dictionary-based logging (task #5).
+//! Client-side decoder for Zephyr dictionary-based logging.
 //!
 //! Devices ship `CONFIG_LOG_DICTIONARY_SUPPORT` binary log records (see the
 //! sibling `~/pigeon` library's `pigeon_log_backend.c`), which dovecote
@@ -46,7 +46,7 @@ pub use render::{level_str, render_hexdump, render_plaintext};
 mod parity {
   use super::*;
 
-  // Fixture provenance (2026-08-01, Zephyr v4.4.1 via the ~/pigeon-examples
+  // Fixture provenance (Zephyr v4.4.1 via the ~/pigeon-examples
   // west workspace, samples/subsys/logging/dictionary):
   //
   // - dictm3.*: qemu_cortex_m3 (arm, 32-bit LE -- same arch family as the

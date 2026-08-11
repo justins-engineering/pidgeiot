@@ -1,26 +1,21 @@
 //! Read query parameters straight from the browser's address bar.
 //!
-//! Why this exists (task #43, prod signup outage): with SSG prerendering
-//! (task #42), every statically-rendered page embeds the route it was
-//! prerendered AS into its hydration payload — always the bare route with no
-//! query string (`/registration?` → `flow: None`, `/session/local?state=false`
-//! — booleans prerender as their `Default`). On a full-page load the client
+//! SSG prerendering bakes the route a page was prerendered AS into its
+//! hydration payload — always the bare route with no query string
+//! (`/registration?` → `flow: None`, `/session/local?state=false` since
+//! booleans prerender as their `Default`). On a full-page load the client
 //! restores THAT serialized route during hydration instead of re-parsing
-//! `window.location` (confirmed by decoding `initial_dioxus_hydration_data`
-//! in the built `registration/index.html`: it contains the literal string
-//! "/registration?"), so a route prop like `flow: Option<String>` arrives as
+//! `window.location`, so a route prop like `flow: Option<String>` arrives as
 //! `None` even when the address bar plainly says `?flow=<id>`. Kratos's
 //! browser self-service flows are driven entirely by full-page 303 redirects
-//! carrying `?flow=` (and `/session/local?state=`), so in the SSG-served prod
-//! artifact every such handoff silently lost its parameter: registration
-//! looped back to a brand-new empty form with no error, and the post-login
-//! handoff ran the `state=false` branch and tore the session hint down.
-//! `Route::from_str` parses these URLs fine (see the tests in lib.rs) — the
-//! router isn't the problem, the hydrated initial route is. Components that
-//! consume query params on entry must treat the real URL as the source of
-//! truth and use the route prop only as a fallback (the native/SSG server
-//! build has no `window`; there the prop is all we have, and the prerender
-//! renders the loading state regardless).
+//! carrying `?flow=` (and `/session/local?state=`), so any such handoff
+//! silently loses its parameter unless read this way. `Route::from_str`
+//! parses these URLs fine (see the tests in lib.rs) — the router isn't the
+//! problem, the hydrated initial route is. Components that consume query
+//! params on entry must treat the real URL as the source of truth and use
+//! the route prop only as a fallback (the native/SSG server build has no
+//! `window`; there the prop is all we have, and the prerender renders the
+//! loading state regardless).
 
 /// The value of `key` in the current `window.location` query string, if any.
 ///

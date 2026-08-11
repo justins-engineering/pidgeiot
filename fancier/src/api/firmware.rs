@@ -1,5 +1,4 @@
-// Task #23's dovecote routes (docs/api.md's "Firmware" section) and
-// task #25 Part B's dashboard UI (components/firmware_modal.rs). Firmware
+// Dovecote's firmware routes (docs/api.md's "Firmware" section). Firmware
 // images are catalogued per-flock, not per-pigeon (see capsules::FirmwareImage's
 // doc comment) -- assigning one to a pigeon is a separate concern handled
 // through the existing `api::pigeons::update_shadow`, not here.
@@ -16,12 +15,11 @@ use wasm_bindgen_futures::JsFuture;
 /// computation blindly. `version`/`board` are percent-encoded via the
 /// browser's own `encodeURIComponent` (`js_sys::encode_uri_component`)
 /// since both are free-text and may contain `+`/`&`/spaces/`/` etc. that
-/// would otherwise corrupt the query string. `board` (task #20, phase 1)
-/// is required by dovecote as of commit 5a54948 -- an upload with an empty
-/// board 400s -- it's the Zephyr `CONFIG_BOARD_TARGET` this image was
-/// built for, matched against a pigeon's own `board` before a shadow
-/// assignment is allowed (see `components::FirmwareModal`'s fail-closed
-/// assign gating).
+/// would otherwise corrupt the query string. `board` is required by
+/// dovecote -- an upload with an empty board 400s -- it's the Zephyr
+/// `CONFIG_BOARD_TARGET` this image was built for, matched against a
+/// pigeon's own `board` before a shadow assignment is allowed (see
+/// `components::FirmwareModal`'s fail-closed assign gating).
 pub async fn upload(
   flock_id: Uuid,
   version: &str,

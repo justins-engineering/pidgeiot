@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 #[component]
 pub fn Wrapper() -> Element {
-  // Feedback modal open-state (task #13) lives here -- the one ancestor
+  // Feedback modal open-state lives here -- the one ancestor
   // both the Footer link and the Navbar menu items share -- and is handed
   // down via context (`FeedbackForm`). Conditionally rendered rather than
   // a native <dialog> so every open remounts the form fresh (it holds

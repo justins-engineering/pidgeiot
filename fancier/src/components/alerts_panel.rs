@@ -1,4 +1,4 @@
-// User-defined alerts UI (task #32) -- the dashboard-facing last mile over
+// User-defined alerts UI -- the dashboard-facing last mile over
 // dovecote's already-deployed alert CRUD routes (docs/api.md's "Alert
 // Routes" section, dovecote/src/helpers/alerts.rs). Two entry points,
 // `PigeonAlerts`/`FlockAlerts`, mirror `components::graph_widget`'s
@@ -108,9 +108,9 @@ fn duration_label(secs: i64) -> String {
 /// One-line summary of an alert's condition for the list table -- the four
 /// variants `capsules::AlertCondition` has today. All four are evaluated
 /// by the backend: `Threshold`/`RateOfChange` at every telemetry ingest
-/// (`check_telemetry_alerts`, task #39 added the latter),
+/// (`check_telemetry_alerts`),
 /// `DeviceState`/`MissingReport` by the Cron-Trigger-driven scheduled sweep
-/// (`evaluate_scheduled_alerts`, task #38) -- see
+/// (`evaluate_scheduled_alerts`) -- see
 /// `dovecote/src/helpers/alerts.rs`.
 fn condition_summary(condition: &AlertCondition) -> String {
   match condition {
@@ -152,7 +152,7 @@ fn condition_summary(condition: &AlertCondition) -> String {
   }
 }
 
-/// Telemetry keys eligible for a Threshold alert (task #32 point 4): a
+/// Telemetry keys eligible for a Threshold alert: a
 /// non-numeric-valued key can't be compared against a numeric threshold,
 /// same rule the telemetry graph section models via
 /// `TelemetryHistoryPoint::value_num` (see CLAUDE.md's telemetry-forwarding
@@ -401,7 +401,7 @@ enum ConditionKind {
   RateOfChange,
 }
 
-/// Create/edit form (task #32). Rendered conditionally by `AlertsSection`
+/// Create/edit form. Rendered conditionally by `AlertsSection`
 /// rather than a native `<dialog>`, per CLAUDE.md's reset-sensitive-modal
 /// pattern (`EditShadowModal`/`FirmwareModal`/`DeletePigeonModal`) -- every
 /// field here is derived from `editing` at mount time, so opening this for

@@ -29,8 +29,8 @@ enum LogsState {
   Failed,
 }
 
-/// Whether this pigeon has a usable `log_dictionary.json` stored (task #5,
-/// `GET /pigeons/:id/log-dictionary` -- docs/api.md's "Log dictionary"
+/// Whether this pigeon has a usable `log_dictionary.json` stored
+/// (`GET /pigeons/:id/log-dictionary` -- docs/api.md's "Log dictionary"
 /// section). `Loaded` carries the parsed dictionary the decode memo below
 /// runs against; `Missing` is the state that shows the inline upload
 /// affordance; `Invalid` means something IS stored but this build of the
@@ -170,10 +170,9 @@ fn DictionaryUpload(pigeon_id: String, dict_state: Signal<DictState>) -> Element
   }
 }
 
-/// Device log chunk list for the pigeon detail page (task #25, part A;
-/// decoding added task #5). `GET /pigeons/:id/logs` returns Zephyr
-/// `CONFIG_LOG_DICTIONARY_SUPPORT` binary records; when this pigeon has a
-/// `log_dictionary.json` stored (task #5), they're decoded right here via
+/// Device log chunk list for the pigeon detail page. `GET /pigeons/:id/logs`
+/// returns Zephyr `CONFIG_LOG_DICTIONARY_SUPPORT` binary records; when this
+/// pigeon has a `log_dictionary.json` stored, they're decoded right here via
 /// `helpers::dict_log` into readable lines -- otherwise the viewer shows an
 /// inline upload affordance and, as always, the raw chunk download path
 /// (which never fakes a text rendering of undecodable binary data).
@@ -182,7 +181,7 @@ pub fn LogViewer(
   pigeon_id: String,
   /// Fired once the fetch settles, with the newest chunk's `received_at`
   /// (or `None` on an empty/failed fetch) -- lets a caller derive "last
-  /// seen" (task #31) from the chunks LogViewer already fetched, instead
+  /// seen" from the chunks LogViewer already fetched, instead
   /// of re-fetching potentially 200 base64-encoded chunks a second time
   /// just to read a timestamp.
   on_latest_received: EventHandler<Option<time::OffsetDateTime>>,

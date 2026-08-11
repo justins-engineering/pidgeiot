@@ -125,7 +125,7 @@ fn FlockCard(flock: Flock) -> Element {
         div { class: "flex flex-row justify-between items-center",
           h2 { class: "card-title text-secondary font-bold mb-1",
             "{flock.name}"
-            // Org-owned marker (task #12) -- governed by org roles, not
+            // Org-owned marker -- governed by org roles, not
             // flocks.user_id; full org detail lives on the /orgs pages.
             if flock.org_id.is_some() {
               span { class: "badge badge-outline badge-secondary badge-sm", "Org" }

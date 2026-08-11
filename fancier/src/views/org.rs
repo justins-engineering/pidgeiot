@@ -1,5 +1,5 @@
-//! Organization detail (task #12): members + roles, pending invites,
-//! rename, delete. Follows the codebase's two modal conventions
+//! Organization detail: members + roles, pending invites, rename, delete.
+//! Follows the codebase's two modal conventions
 //! deliberately (see CLAUDE.md): the rename modal is a native `<dialog>`
 //! (no reset-sensitive state), while the one-time invite-link reveal is
 //! conditional-render (`if let Some(..)`) so it always remounts fresh --

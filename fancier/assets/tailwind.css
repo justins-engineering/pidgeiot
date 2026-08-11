@@ -73,12 +73,13 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-/* Telemetry chart tokens (task #19). Chrome/grid/ink reuse the app's own
-   DaisyUI theme vars so they swap with the existing light/dark toggle for
-   free; the eight categorical series hexes are the validated dataviz-skill
-   default palette (see palette.md) — that specific ordering is the CVD-safety
-   mechanism (worst adjacent CVD ΔE 9.1 light / 8.4 dark), not a cosmetic
-   choice, so don't reorder it without re-running the palette validator. */
+/* Telemetry chart tokens. Chrome/grid/ink reuse the app's own DaisyUI
+   theme vars so they swap with the existing light/dark toggle for free;
+   the eight categorical series hexes are the validated dataviz-skill
+   default palette (see palette.md) — that specific ordering is the
+   CVD-safety mechanism (worst adjacent CVD ΔE 9.1 light / 8.4 dark), not
+   a cosmetic choice, so don't reorder it without re-running the palette
+   validator. */
 :root {
   --chart-surface: var(--color-base-100);
   --chart-grid: color-mix(in oklch, var(--color-base-content), transparent 88%);
@@ -157,8 +158,8 @@
     }
   }
 
-  /* Deliberately no opacity fade (task #62): the landing hero (section#home,
-     the page's LCP element) starts this animation at first paint, and a
+  /* Deliberately no opacity fade: the landing hero (section#home, the
+     page's LCP element) starts this animation at first paint, and a
      0%-opacity start means the text's first *visible* paint lands ~100ms
      after FCP — by which point wasm execution has already begun, so
      Lighthouse's Lantern simulation chains the entire wasm bundle into the

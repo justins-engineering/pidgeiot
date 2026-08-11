@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdX;
 
-/// Set/clear a pigeon's telemetry forwarding target (task #18's
-/// `capsules::TelemetryEndpoint` — a GreptimeDB/InfluxDB-line-protocol HTTP
+/// Set/clear a pigeon's telemetry forwarding target
+/// (`capsules::TelemetryEndpoint` — a GreptimeDB/InfluxDB-line-protocol HTTP
 /// write target the queue consumer forwards to instead of our own history
 /// mirror). Rendered conditionally by the caller rather than a native
 /// `<dialog>`, per the reset-sensitive modal pattern in CLAUDE.md: it holds
@@ -22,10 +22,9 @@ use dioxus_free_icons::icons::ld_icons::LdX;
 /// below says so rather than implying it's preserved.
 ///
 /// `api::pigeons::update_telemetry_endpoint` targets `PUT
-/// /pigeons/:id/telemetry-endpoint` (task #18, landed in dovecote
-/// bc1373c). Until that build is deployed to an environment this
-/// dashboard build talks to, calls still fail soft (`None`) like any other
-/// `fetch_json` caller.
+/// /pigeons/:id/telemetry-endpoint`. If that route isn't available on the
+/// environment this dashboard build talks to, calls fail soft (`None`)
+/// like any other `fetch_json` caller.
 #[component]
 pub fn TelemetryEndpointModal(
   pigeon_id: String,

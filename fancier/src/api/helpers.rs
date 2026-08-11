@@ -51,7 +51,7 @@ pub async fn fetch_json(method: &str, path: &str, body: Option<&JsValue>) -> Opt
 /// that need to distinguish *which* error occurred (status code + body
 /// text), not just "it failed". Most routes only care about success vs.
 /// failure, which `fetch_json` already covers; this exists for routes like
-/// `POST /pigeons/:id/shell` (task #34) whose 400/403/409/502/504
+/// `POST /pigeons/:id/shell` whose 400/403/409/502/504
 /// responses are each a distinct, actionable state the UI shows
 /// differently rather than one generic error.
 pub async fn fetch_json_any_status(

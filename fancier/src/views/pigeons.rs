@@ -11,8 +11,8 @@ use std::collections::HashMap;
 #[cfg(feature = "web")]
 use wasm_bindgen_futures::JsFuture;
 
-/// How far back the flock pigeon-list looks for a per-pigeon "last seen"
-/// (task #31) -- deliberately short and bounded to keep this the only
+/// How far back the flock pigeon-list looks for a per-pigeon "last seen" --
+/// deliberately short and bounded to keep this the only
 /// fetch the list makes for the feature (no per-pigeon fan-out, no new
 /// routes: one `GET /flocks/:id/telemetry/history` call covers the whole
 /// table). A pigeon that hasn't reported within this window shows as
@@ -27,7 +27,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // (pigeon_id, token) — the id rides alongside the token so dismissing
   // the reveal can navigate to the pigeon it belongs to.
   let mut new_token = use_signal(|| None::<(String, String)>);
-  // Conditional-render gate for the flock->org transfer modal (task #12)
+  // Conditional-render gate for the flock->org transfer modal
   // -- remounts fresh each open, same reasoning as TokenReveal/
   // DeletePigeonModal (it loads the caller's org list on mount and holds
   // reset-sensitive submit state).
@@ -133,7 +133,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               }
             }
           }
-          // Org affordance (task #12): a personal flock offers transfer
+          // Org affordance: a personal flock offers transfer
           // into an org the caller manages; an org-owned one just shows
           // the marker (no org->org re-transfer today, see docs/api.md).
           {
@@ -267,7 +267,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   }
 }
 
-/// Flock -> org transfer (task #12). Conditional-render modal (see the
+/// Flock -> org transfer. Conditional-render modal (see the
 /// `show_transfer` gate above). Only orgs where the caller is owner/admin
 /// are offered -- the backend enforces the same rule, this just avoids
 /// offering choices that would 403.
@@ -537,9 +537,9 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
                     }
                 },
                 option { value: "Https", selected: true, "HTTPS (REST API)" }
-                // Disabled until the network-side CoAP terminator exists
-                // (task #56/#58) -- letting users provision a connector that
-                // can never connect is a trap, not a feature.
+                // Disabled until the network-side CoAP terminator exists --
+                // letting users provision a connector that can never
+                // connect is a trap, not a feature.
                 option { value: "Coap", disabled: true, "CoAP (coming soon)" }
               }
             }

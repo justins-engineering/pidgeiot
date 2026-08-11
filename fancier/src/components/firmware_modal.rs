@@ -18,21 +18,21 @@ fn format_bytes(len: i64) -> String {
 }
 
 /// Pulls `target_config.firmware`/`current_config.firmware`
-/// (`capsules::FirmwareTarget`, task #23) out of a shadow's `JsonString`
+/// (`capsules::FirmwareTarget`) out of a shadow's `JsonString`
 /// field for display -- `None` covers both "not valid JSON" (shouldn't
 /// happen for a config this dashboard itself wrote) and "no `firmware` key
 /// set yet" (the common case for any pigeon that predates FOTA or has
 /// never been assigned an image). Pure and synchronous so it's
 /// unit-testable without a wasm target, same rationale as
-/// `parse_shadow_upload` in views/pigeon.rs (task #26).
+/// `parse_shadow_upload` in views/pigeon.rs.
 fn extract_firmware_target(config: &JsonString) -> Option<FirmwareTarget> {
   let value: serde_json::Value = serde_json::from_str(&config.to_string()).ok()?;
   let firmware = value.get("firmware")?.clone();
   serde_json::from_value(firmware).ok()
 }
 
-/// Fail-closed board/geometry compatibility check (task #20, phase 1),
-/// mirrored client-side from dovecote's own `check_firmware_board_compat`
+/// Fail-closed board/geometry compatibility check, mirrored client-side
+/// from dovecote's own `check_firmware_board_compat`
 /// (`objects/pigeons.rs`) -- both sides must be set AND equal; an unset
 /// pigeon board, an unset/untagged image board, or an explicit mismatch
 /// are all incompatible, not a free pass. This is a courtesy that avoids
@@ -48,17 +48,17 @@ fn boards_compatible(pigeon_board: Option<&str>, image_board: Option<&str>) -> b
   }
 }
 
-/// Merges a `firmware` key into an existing `target_config` (task #23/#25B
-/// -- "Firmware assignment reuses [the shadow PUT] route... Merge a
-/// `firmware` key into `target_config`", docs/api.md's "Shadow" section).
-/// dovecote's `PUT /pigeons/:id/shadow` replaces `target_config` wholesale
+/// Merges a `firmware` key into an existing `target_config` -- firmware
+/// assignment reuses the shadow PUT route rather than a dedicated endpoint
+/// (docs/api.md's "Shadow" section). dovecote's `PUT /pigeons/:id/shadow`
+/// replaces `target_config` wholesale
 /// (see `objects/pigeons.rs::update_shadow`) rather than merging
 /// server-side, so the merge has to happen here before sending the full
 /// object back -- naively sending just `{"firmware": {...}}` would silently
 /// wipe out any other keys (e.g. `telemetry_interval`) already targeted.
 /// Errors if the existing `target_config` isn't a JSON object, which
 /// shouldn't happen given `EditShadowModal`'s own object-only validation
-/// (task #26) but is checked explicitly rather than assumed.
+/// but is checked explicitly rather than assumed.
 fn merge_firmware_target(
   config: &JsonString,
   target: &FirmwareTarget,
@@ -75,9 +75,9 @@ fn merge_firmware_target(
   Ok(value)
 }
 
-/// Owner-gated firmware upload + per-pigeon assignment (task #25 Part B).
-/// Rendered conditionally by the caller rather than a native `<dialog>`,
-/// per the reset-sensitive modal pattern in CLAUDE.md: the selected file,
+/// Owner-gated firmware upload + per-pigeon assignment. Rendered
+/// conditionally by the caller rather than a native `<dialog>`, per the
+/// reset-sensitive modal pattern in CLAUDE.md: the selected file,
 /// computed hash, and version label must never linger across an
 /// open/cancel/reopen cycle.
 ///
@@ -87,8 +87,8 @@ fn merge_firmware_target(
 /// this pigeon's own "Upload Firmware" button is just a convenient place to
 /// reach the flock's catalog from. Assignment goes through the existing
 /// shadow `PUT` (`api::pigeons::update_shadow`) with a merged
-/// `target_config.firmware` (task #24's frozen wire shape) -- there is no
-/// separate "assign firmware" endpoint. `dovecote` never trusts a
+/// `target_config.firmware` -- there is no separate "assign firmware"
+/// endpoint. `dovecote` never trusts a
 /// client-supplied hash for the upload itself (`size`/`sha256` are always
 /// server-computed), so the client-side `helpers::sha256_hex` result here
 /// is a display/sanity-check value only, compared against the server's

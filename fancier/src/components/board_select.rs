@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
-/// The sample boards this fleet currently builds firmware for (task #20,
-/// phase 1) -- shown as `<datalist>` suggestions on every `board` input
+/// The sample boards this fleet currently builds firmware for -- shown as
+/// `<datalist>` suggestions on every `board` input
 /// (pigeon create/edit, firmware upload) rather than a hard `<select>`,
 /// since `board` is an open Zephyr `CONFIG_BOARD_TARGET` string (any
 /// vendor-agnostic board this fleet's device library supports builds for

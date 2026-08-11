@@ -1,12 +1,11 @@
 use dioxus::logger::tracing::error;
 use wasm_bindgen_futures::JsFuture;
 
-/// Client-side SHA-256 via the browser's native `SubtleCrypto` (task #25B --
-/// "compute client-side via SubtleCrypto, compare against the server's
-/// response"). There's no sha2 crate anywhere in this dependency tree
-/// (unlike base64 in `download.rs`, hashing a whole firmware image up to
-/// `capsules::MAX_FIRMWARE_BYTES` is worth reaching for the browser's own
-/// hardware-backed implementation over a pure-Rust one compiled to wasm).
+/// Client-side SHA-256 via the browser's native `SubtleCrypto`, so the
+/// caller can compare against the server's own hash. No sha2 crate in this
+/// dependency tree -- hashing a whole firmware image up to
+/// `capsules::MAX_FIRMWARE_BYTES` is worth reaching for the browser's
+/// hardware-backed implementation over a pure-Rust one compiled to wasm.
 /// Returns lowercase hex, matching `capsules::FirmwareTarget::sha256`'s
 /// wire format.
 pub async fn sha256_hex(bytes: &[u8]) -> Option<String> {

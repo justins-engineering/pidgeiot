@@ -1,8 +1,7 @@
 use dioxus::prelude::*;
 
-// SSG spike (task #42): only set a server config when building the "server"
-// platform target (`server_only!` compiles to nothing on the `web`/wasm
-// build), so the plain client build stays identical to before this spike.
+// `server_only!` compiles to nothing on the `web`/wasm build, so this only
+// runs for the native "server" target that drives SSG prerendering.
 fn main() {
   dioxus::LaunchBuilder::new()
     .with_cfg(server_only! {

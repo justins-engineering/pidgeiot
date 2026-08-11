@@ -2,7 +2,7 @@ use crate::helpers::connection_state::{ConnectionState, ConnectionStateStyle, fo
 use dioxus::prelude::*;
 use time::OffsetDateTime;
 
-/// Colored state badge + human "last seen" caption (task #31). Purely
+/// Colored state badge + human "last seen" caption. Purely
 /// presentational -- callers do the classification (see
 /// `helpers::connection_state`) since the signals available differ
 /// between the pigeon detail page (telemetry + shadow + logs) and the
