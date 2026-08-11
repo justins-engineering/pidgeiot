@@ -1,0 +1,159 @@
+# CoAP terminator (loft) -- production systemd unit. Install to
+# /etc/systemd/system/loft.service. Full deployment procedure, including
+# how the binary at /usr/local/bin/loft gets there and how the credential
+# file below gets provisioned: docs/infra/coap-terminator.md.
+#
+# The Docker path (infra/coap-terminator/docker-compose.yml) is a
+# separately supported deployment, not a fallback for this one -- see
+# that runbook for when each applies. This unit is not derived from it;
+# a bare-binary systemd service and a container have different attack
+# surfaces and are hardened on their own terms.
+
+[Unit]
+Description=PidgeIoT CoAP terminator (DTLS/UDP + TLS/TCP, port 5684)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# loft has no sd_notify integration (it's not a fork-and-signal-readiness
+# daemon, just a process that starts two listener threads), so Type=notify
+# would sit waiting for a readiness message that never arrives and get
+# killed at TimeoutStartSec. Type=exec is the closest honest match: the
+# unit is considered started once the execve() itself succeeds, no more
+# and no less than what loft actually guarantees.
+Type=exec
+ExecStart=/usr/local/bin/loft
+
+# main.rs treats either listener thread exiting as fatal and deliberately
+# bails the whole process (previously "the container restarts us" -- same
+# contract, restated for systemd).
+Restart=on-failure
+RestartSec=5s
+
+# Non-secret config, mirroring docker-compose.yml's `environment:` block
+# so the two deployments read identically even though these all match
+# loft's own built-in defaults (src/config.rs) -- explicit here so a
+# future default change in code can't silently change prod behavior
+# without a deliberate edit to this file too.
+Environment=LOFT_DOVECOTE_URL=https://api.pidgeiot.com
+Environment=LOFT_UDP_LISTEN=0.0.0.0:5684
+Environment=LOFT_TCP_LISTEN=0.0.0.0:5684
+Environment=LOFT_LOG=info
+
+# The secret never goes in this file (unit files under /etc/systemd/system
+# are world-readable) and never rides in the process environment either --
+# LoadCredential= hands it to loft as a file under $CREDENTIALS_DIRECTORY,
+# readable only by the credential store systemd sets up for this unit's
+# own dynamic user. loft reads it from there in preference to the
+# COAP_SERVICE_SECRET env var (loft/src/config.rs, resolve_service_secret) --
+# the env var path still exists, unchanged, for the Docker/local-dev story.
+#
+# Source file: create it out of band, before first start --
+#   install -m 0400 -o root -g root /dev/stdin /etc/loft/coap-service-secret
+# containing the exact same value as dovecote's COAP_SERVICE_SECRET Worker
+# secret. Root-only is correct and doesn't need loosening: systemd (PID1,
+# running as root) reads the source file itself and re-exposes its
+# contents into the per-unit credential store, which is where loft's own
+# (unprivileged, dynamic) uid actually reads from.
+LoadCredential=COAP_SERVICE_SECRET:/etc/loft/coap-service-secret
+
+SyslogIdentifier=loft
+
+# --- Hardening -----------------------------------------------------------
+# loft's entire job is: bind udp+tcp 5684, make outbound HTTPS to
+# dovecote, read one secret, hold no other state and write no files. Every
+# directive below is chosen against that shape specifically, not copied
+# from a generic template -- see docs/infra/coap-terminator.md for the
+# directives considered and rejected, and what's still unverified until a
+# real bring-up.
+
+# Ephemeral, unprivileged uid/gid allocated for this unit alone -- loft
+# never runs as a real system user and there is no shared uid to leak into
+# or out of.
+DynamicUser=yes
+
+# Whole filesystem read-only except the credential store systemd itself
+# manages. Safe with zero ReadWritePaths= exceptions because loft is
+# stateless by design -- it writes nothing, anywhere (see config.rs's
+# module doc: "stateless across restarts").
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# /dev reduced to the minimal set (null, zero, random, urandom, tty) --
+# OpenSSL's RNG and the DTLS cookie key (dtls.rs) both come from
+# /dev/urandom via the kernel getrandom() path, which this still permits;
+# loft has no reason to touch any real device node.
+PrivateDevices=yes
+
+NoNewPrivileges=yes
+
+# 5684 needs no capability at all on this host (net.ipv4.ip_unprivileged_
+# port_start = 1024), and nothing else loft does needs one either.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Outbound to dovecote and inbound from devices are both plain IPv4/IPv6
+# sockets -- nothing here needs AF_UNIX, AF_NETLINK, AF_PACKET, etc.
+# CAVEAT, not yet verified against this specific host: if glibc's resolver
+# is configured via nsswitch.conf's `resolve` module (systemd-resolved's
+# NSS plugin, which talks to resolved over an AF_UNIX/varlink socket
+# rather than querying 127.0.0.53:53 as a plain UDP nameserver), DNS
+# lookups for LOFT_DOVECOTE_URL's hostname would need AF_UNIX too and
+# this would break outbound resolution with everything else working. The
+# confirmed host facts don't establish which nsswitch config is active.
+# If loft logs upstream connection failures after deploy but the same
+# hostname resolves fine with `getent hosts`/`resolvectl query` run as a
+# normal (unsandboxed) process, this is the first thing to suspect --
+# add AF_UNIX here as the fix, don't disable the directive outright.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+# Moot in practice (loft creates no files to chmod), included for
+# defense in depth at zero cost.
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+# systemd's standard broad allowlist for ordinary network services --
+# covers the socket/epoll/thread(clone)/file-descriptor syscalls loft's
+# tokio + thread-per-connection model needs without enumerating them by
+# hand, while still excluding classes like module loading and mount that
+# loft has no legitimate reason to reach.
+SystemCallFilter=@system-service
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+
+# UNVERIFIED against a real run, included on static grounds: loft's own
+# code has no JIT, no runtime codegen, and no dlopen'd OpenSSL engines
+# (the only FFI is dtls-ffi-shim's small statically-linked C shim around
+# DTLSv1_listen). Ordinary ELF loading maps .text as PROT_EXEC without
+# PROT_WRITE, which this directive does not touch -- it only blocks a
+# mapping that is simultaneously writable and executable, or any
+# mprotect() call requesting PROT_EXEC. Nothing in loft's dependency tree
+# (openssl 0.10 against libssl.so.3/libcrypto.so.3, rustls via reqwest,
+# tokio, ureq) is known to need that. First thing to check if the service
+# dies immediately with a SIGSYS: `journalctl -u loft` naming this
+# directive, or `systemd-analyze security loft.service` after a real run.
+MemoryDenyWriteExecute=yes
+
+# Backstop, not a capacity plan. loft's own admission control already
+# hard-bounds Block1 reassembly buffers at 4096 entries * 64KiB = 256MiB
+# (handler.rs's MAX_BLOCK1_ENTRIES/MAX_BLOCK1_BODY comment does this
+# arithmetic explicitly) and each connection thread's default 2MiB stack
+# is virtual, not resident, until touched. 1536M gives several times that
+# hard floor of headroom for realistic load (the docs describe the
+# expected fleet as "hundreds-to-low-thousands of mostly sleeping
+# devices", not the two listeners' theoretical combined ceiling of 8192
+# concurrent connections at once) while staying well under half this
+# host's 3825MB total with zero swap -- if loft leaks or gets driven
+# pathologically past this, the cgroup OOM killer takes down only loft's
+# own process tree, and Restart=on-failure brings it back, rather than
+# the box-wide OOM killer picking a target among sshd/fail2ban/Kratos/
+# dockerd with nothing to page out to.
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target
