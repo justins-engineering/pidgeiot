@@ -11,7 +11,7 @@
 //!   the connection.
 //! - No message ids, no ACKs, no retransmission -- TCP owns reliability.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,11 +32,57 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Wall-clock bound on the WHOLE handshake, same figure as the DTLS
 /// listener's. A per-recv timeout alone is not a bound: each byte the peer
 /// dribbles in restarts it, so a slow-trickle client could sit inside
-/// accept() forever holding a pre-auth connection slot.
+/// accept() forever holding a pre-auth connection slot. Enforced by
+/// `GuardedTcp` on every read and write, plus the accept loop's own check
+/// on quiet ticks.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
-/// Socket-timeout tick during the handshake -- how often a stalled accept()
-/// surfaces WouldBlock so the deadline above can be checked.
+/// Socket-timeout tick during the handshake -- how often a *silent* peer
+/// surfaces WouldBlock out of accept() so the deadline can be checked.
 const HANDSHAKE_TICK: Duration = Duration::from_secs(1);
+
+/// `TcpStream` wrapper that fails handshake IO outright once the wall-clock
+/// deadline passes. The tick timeouts on the socket only bound silence:
+/// while bytes keep arriving, OpenSSL calls straight back into recv without
+/// ever surfacing WouldBlock, so a peer pacing one valid byte per tick
+/// would otherwise stay inside a single accept() call for as long as it
+/// can stretch a handshake message. Checking the deadline on every read
+/// and write bounds the handshake regardless of pacing. Disarmed once the
+/// session is established; from then on IO is a plain passthrough.
+#[derive(Debug)]
+struct GuardedTcp {
+  tcp: TcpStream,
+  deadline: Instant,
+  armed: bool,
+}
+
+impl GuardedTcp {
+  fn expired(&self) -> Option<io::Error> {
+    (self.armed && Instant::now() >= self.deadline)
+      .then(|| io::Error::new(io::ErrorKind::TimedOut, "handshake deadline exceeded"))
+  }
+}
+
+impl Read for GuardedTcp {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    if let Some(e) = self.expired() {
+      return Err(e);
+    }
+    self.tcp.read(buf)
+  }
+}
+
+impl Write for GuardedTcp {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    if let Some(e) = self.expired() {
+      return Err(e);
+    }
+    self.tcp.write(buf)
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    self.tcp.flush()
+  }
+}
 
 pub fn run(
   config: &Config,
@@ -110,9 +156,10 @@ fn connection_thread(
     Ok(a) => a.to_string(),
     Err(_) => "unknown".to_string(),
   };
-  // Tick-length timeouts on both directions while the handshake runs: a
-  // peer that trickles bytes (or never drains our flight) must keep
-  // surfacing WouldBlock so the wall-clock deadline gets checked.
+  // Tick-length timeouts on both directions while the handshake runs, so a
+  // peer that goes quiet (or never drains our flight) surfaces WouldBlock
+  // once per tick for the deadline check below; GuardedTcp covers the
+  // complementary case of a peer that keeps bytes flowing.
   if tcp.set_read_timeout(Some(HANDSHAKE_TICK)).is_err()
     || tcp.set_write_timeout(Some(HANDSHAKE_TICK)).is_err()
     || tcp.set_nodelay(true).is_err()
@@ -129,7 +176,11 @@ fn connection_thread(
   };
 
   let started = Instant::now();
-  let mut attempt = ssl.accept(tcp);
+  let mut attempt = ssl.accept(GuardedTcp {
+    tcp,
+    deadline: started + HANDSHAKE_DEADLINE,
+    armed: true,
+  });
   let mut stream = loop {
     match attempt {
       Ok(s) => break s,
@@ -157,10 +208,11 @@ fn connection_thread(
   };
   tracing::info!(%peer, identity, "coaps+tcp session established");
 
-  let _ = stream.get_ref().set_read_timeout(Some(IDLE_TIMEOUT));
+  stream.get_mut().armed = false;
+  let _ = stream.get_ref().tcp.set_read_timeout(Some(IDLE_TIMEOUT));
   // Established sessions write firmware blocks to devices that can stall
   // far longer than a handshake tick; let the OS pace those writes again.
-  let _ = stream.get_ref().set_write_timeout(None);
+  let _ = stream.get_ref().tcp.set_write_timeout(None);
 
   let session = DeviceSession {
     pigeon_id: identity,
@@ -185,7 +237,7 @@ fn connection_thread(
 }
 
 fn serve_frames(
-  stream: &mut SslStream<TcpStream>,
+  stream: &mut SslStream<GuardedTcp>,
   session: &DeviceSession,
   handler: &Handler<Dovecote>,
   rt: &tokio::runtime::Handle,
@@ -240,5 +292,41 @@ fn serve_frames(
         return;
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Data availability must not bypass the deadline: the guard refuses IO
+  /// even with a byte already queued, and reverts to a passthrough once
+  /// disarmed.
+  #[test]
+  fn guarded_tcp_refuses_io_past_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = TcpStream::connect(addr).unwrap();
+    let (server, _) = listener.accept().unwrap();
+    client.write_all(b"x").unwrap();
+
+    let mut guarded = GuardedTcp {
+      tcp: server,
+      deadline: Instant::now(),
+      armed: true,
+    };
+    let mut buf = [0u8; 1];
+    assert_eq!(
+      guarded.read(&mut buf).unwrap_err().kind(),
+      io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+      guarded.write(b"y").unwrap_err().kind(),
+      io::ErrorKind::TimedOut
+    );
+
+    guarded.armed = false;
+    assert_eq!(guarded.read(&mut buf).unwrap(), 1);
+    assert_eq!(&buf, b"x");
   }
 }

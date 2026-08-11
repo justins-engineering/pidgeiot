@@ -95,10 +95,25 @@ struct DgramIo {
   /// pending-listen stream (the listener must never sleep on one source's
   /// silence), one READ_TICK once a connection thread owns it.
   tick: Duration,
+  /// While the post-cookie handshake runs, the wall-clock instant past
+  /// which reads fail outright instead of delivering more datagrams. The
+  /// tick above only bounds silence: a peer feeding valid handshake
+  /// fragments faster than the tick keeps accept() making just enough
+  /// progress to never surface WouldBlock to the caller's deadline check.
+  /// Armed at promotion, cleared once the session is established.
+  deadline: Option<Instant>,
 }
 
 impl Read for DgramIo {
   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    if let Some(deadline) = self.deadline
+      && Instant::now() >= deadline
+    {
+      return Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "handshake deadline exceeded",
+      ));
+    }
     match self.rx.recv_timeout(self.tick) {
       Ok(dgram) => {
         let n = dgram.len().min(buf.len());
@@ -347,6 +362,9 @@ impl PendingListen {
       // Overwritten before any datagram is fed; never sent to as-is.
       peer: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
       tick: Duration::ZERO,
+      // The pending stream only ever runs the stateless cookie exchange;
+      // the handshake deadline arms at promotion.
+      deadline: None,
     };
     Ok(PendingListen {
       stream: SslStream::new(ssl, io)?,
@@ -400,8 +418,11 @@ fn connection_thread(
 ) {
   // Reads may park a tick at a time from here on: unlike the listener
   // thread, this thread has nothing else to service, and the tick doubles
-  // as the deadline-check cadence for the loops below.
+  // as the deadline-check cadence for the loops below. The IO-level
+  // deadline covers the complementary case of a peer that keeps datagrams
+  // flowing fast enough that accept() never goes quiet.
   stream.get_mut().tick = READ_TICK;
+  stream.get_mut().deadline = Some(Instant::now() + HANDSHAKE_DEADLINE);
 
   // The MTU must be applied after DTLSv1_listen, whose internal SSL_clear
   // resets DTLS transfer state; the handshake flights SSL_accept is about
@@ -434,13 +455,18 @@ fn connection_thread(
 }
 
 /// Continues the handshake `DTLSv1_listen` began, bounded by a wall-clock
-/// deadline. The cookie exchange already happened statelessly on the
-/// listener thread; only the post-cookie flights are driven here.
+/// deadline enforced both here (quiet ticks) and inside `DgramIo::read`
+/// (a peer that keeps datagrams flowing). The cookie exchange already
+/// happened statelessly on the listener thread; only the post-cookie
+/// flights are driven here.
 fn complete_handshake(stream: &mut SslStream<DgramIo>, peer: SocketAddr) -> bool {
   let started = Instant::now();
   loop {
     match stream.accept() {
-      Ok(()) => return true,
+      Ok(()) => {
+        stream.get_mut().deadline = None;
+        return true;
+      }
       Err(e) if matches!(e.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {
         if started.elapsed() > HANDSHAKE_DEADLINE {
           tracing::debug!(%peer, "handshake deadline exceeded");
@@ -726,6 +752,31 @@ mod tests {
         Err(e) => panic!("client handshake failed: {e}"),
       }
     }
+  }
+
+  /// Data availability must not bypass the handshake deadline: with a
+  /// datagram already queued, an armed expired deadline still refuses the
+  /// read, and clearing it delivers the datagram again.
+  #[test]
+  fn dgram_io_refuses_reads_past_deadline() {
+    let (tx, rx) = std::sync::mpsc::sync_channel(4);
+    tx.send(vec![1u8, 2, 3]).expect("queue datagram");
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let peer = sock.local_addr().expect("addr");
+    let mut io = DgramIo {
+      rx,
+      sock,
+      peer,
+      tick: Duration::ZERO,
+      deadline: Some(Instant::now()),
+    };
+    let mut buf = [0u8; 16];
+    assert_eq!(
+      io.read(&mut buf).expect_err("must refuse").kind(),
+      io::ErrorKind::TimedOut
+    );
+    io.deadline = None;
+    assert_eq!(io.read(&mut buf).expect("deliver"), 3);
   }
 
   #[test]
