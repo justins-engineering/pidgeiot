@@ -123,11 +123,24 @@ carrier NAT, and DTLS/TLS-PSK is the access control, so there's no source-IP all
 on top the way there is for SSH below. Explicit `RETURN`s make that intent visible, followed by
 a backstop drop for anything else that reaches the WAN interface:
 
+Docker ships `DOCKER-USER` pre-populated with a catch-all `RETURN`, so appending the backstop
+lands it *after* that rule where it can never be reached — a silent no-op that looks correct in
+`iptables -L`. Rebuild the chain in order instead of appending to it:
+
 ```sh
-iptables -I DOCKER-USER -p udp --dport 5684 -j RETURN
-iptables -I DOCKER-USER -p tcp --dport 5684 -j RETURN
+iptables -F DOCKER-USER
+iptables -A DOCKER-USER -p udp --dport 5684 -j RETURN
+iptables -A DOCKER-USER -p tcp --dport 5684 -j RETURN
 iptables -A DOCKER-USER -i ens3 -m conntrack --ctstate NEW -j DROP
+iptables -A DOCKER-USER -j RETURN
 ```
+
+The trailing `RETURN` restores the default Docker expects, now *after* the backstop. Keep
+`-i ens3` on the drop: unscoped, it also matches container-initiated NEW connections traversing
+`FORWARD` and silently kills loft's own outbound calls to dovecote.
+
+Verify with `iptables -L -v -n`, never bare `-L` — the latter omits interface matches, so a rule
+missing its `-i` looks identical to one that has it.
 
 The trailing `DROP` matters beyond the two CoAP ports: it's the backstop against a future
 compose edit publishing something that was never meant to be reachable. `loft` is the first
