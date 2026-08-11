@@ -1,9 +1,13 @@
 //! Upstream HTTP client for dovecote's device routes. After a PSK
 //! handshake, the terminator acts as an ordinary device-side HTTP client:
-//! `Authorization: Bearer <psk_secret>` on `/device/pigeons/:id/*` -- the
-//! PSK secret IS the device bearer token (see capsules::CoapConfig), and
-//! the owning Durable Object verifies it per-request exactly as it does
-//! for direct HTTPS devices. Nothing here weakens or bypasses device auth.
+//! `Authorization: Bearer <token>` on `/device/pigeons/:id/*`, where
+//! `token` is the pigeon's device bearer token -- a distinct credential
+//! from the PSK secret that keyed the handshake (minted together, rotated
+//! together; see `capsules::CoapConfig`). The PSK only proves the peer is
+//! this pigeon; the bearer token is what actually authorizes each
+//! upstream call, and the owning Durable Object verifies it per-request
+//! exactly as it does for direct HTTPS devices. Nothing here weakens or
+//! bypasses device auth.
 
 use std::time::Duration;
 
