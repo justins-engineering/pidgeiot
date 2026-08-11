@@ -2,3 +2,8 @@
 secrets.env
 .migration/
 kratos.yml
+
+# Claude Code session state: agent worktrees, transcripts, review artifacts.
+# prune-worktrees.sh is deliberately tracked; everything else here is local.
+.claude/*
+!.claude/prune-worktrees.sh
