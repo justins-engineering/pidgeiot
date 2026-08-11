@@ -5,14 +5,14 @@
 #
 # See docs/infra/coap-terminator.md for deployment.
 
-FROM rust:1-bookworm AS build
+FROM rust:1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN cargo build -p loft --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libssl3 ca-certificates \
+  && apt-get install -y --no-install-recommends libssl3t64 ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
   # Sanity-check at image build time that this OpenSSL actually provides
   # the constrained-device PSK suites loft is configured for -- a silently
