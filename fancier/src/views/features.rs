@@ -4,7 +4,8 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
   LdCodeXml, LdDatabase, LdHardDriveDownload, LdKeyRound, LdLineChart, LdLockKeyhole,
-  LdMailWarning, LdNetwork, LdPlay, LdRadio, LdScrollText, LdShieldAlert, LdSquareTerminal, LdWifi,
+  LdMailWarning, LdMapPin, LdNetwork, LdPlay, LdRadio, LdScrollText, LdShieldAlert,
+  LdSquareTerminal, LdWifi,
 };
 
 #[component]
@@ -54,6 +55,17 @@ pub fn FeaturesPage() -> Element {
           eyebrow: "For anyone who's outgrown a spreadsheet of sensor readings",
           title: "Telemetry With Real History, On Your Terms",
           body: "Devices report flat key/value telemetry over HTTPS or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports go straight there instead of into the platform's history store.",
+          maturity: None,
+        }
+
+        // GPS tracks
+        FeatureBlock {
+          icon: rsx! {
+            Icon { icon: LdMapPin, class: "size-8 stroke-primary", title: "Map pin icon" }
+          },
+          eyebrow: "For anyone whose devices don't stay put",
+          title: "GPS Tracks From Ordinary Telemetry",
+          body: "Report GPS fixes as plain telemetry keys — gps_lat, gps_lon, and friends — and the pigeon's detail page draws its track over any time range you pick: start marker, pulsing live position, nearest-point hover readout. Rendered as self-contained SVG straight from your telemetry history, with no map-tile service and no new dependencies.",
           maturity: None,
         }
 
