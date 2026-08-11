@@ -209,19 +209,41 @@ final ACCEPT should both still be present, in that order.
 
 ### 6. Persist
 
+Stop fail2ban first. This is not optional, and it is the one step here
+that is easy to get wrong in a way that only shows up weeks later:
+
 ```sh
+systemctl stop fail2ban
 netfilter-persistent save
+systemctl start fail2ban
 ```
+
+`netfilter-persistent save` snapshots the live ruleset, and a running
+fail2ban has injected its own `f2b-sshd` chain, the `INPUT` jump into it,
+and one rule per currently-banned address. Saving that state writes all of
+it into `rules.v4`/`rules.v6` as if it were static configuration, which
+breaks two ways at once. On the next boot the restore recreates the
+`f2b-sshd` chain and its jump, then fail2ban starts and adds its own jump
+on top — so the jumps accumulate one per reboot. And any address that
+happened to be banned at save time is now a permanent static rule that
+fail2ban has no record of, so `fail2ban-client unban` will not remove it
+and neither will the ban expiring.
+
+Stopping the service first runs the jail's `actionstop`, which tears down
+the chain and the jump, leaving only the static ruleset to be saved.
+Starting it again rebuilds them at runtime, which is where they belong.
 
 One command covers both families — `netfilter-persistent` iterates every
 registered plugin (iptables and ip6tables) on a single save, not two
-separate invocations. Confirm:
+separate invocations. Confirm the saved files contain neither the old
+throttle nor any fail2ban state:
 
 ```sh
-grep -i recent /etc/iptables/rules.v4 /etc/iptables/rules.v6
+grep -iE 'recent|f2b' /etc/iptables/rules.v4 /etc/iptables/rules.v6
 ```
 
-should return nothing from either file.
+should return nothing from either file. If `f2b` appears, the save
+happened while the service was running — stop it, save again, restart.
 
 ## Rollback
 
