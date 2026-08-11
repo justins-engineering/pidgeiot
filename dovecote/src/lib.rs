@@ -4,7 +4,8 @@ use crate::helpers::{
   create_organization, create_pigeon_alert, create_user_flock, delete_alert_definition,
   delete_organization_if_empty, delete_pigeon_pg_db, get_db_client, get_flock_with_pigeons,
   get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
-  insert_pigeon_pg_db, is_alert_owner, is_demo_pigeon, list_flock_alerts, list_flock_firmware,
+  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
+  list_flock_alerts, list_flock_firmware,
   list_org_invites, list_org_members, list_pigeon_alerts, list_user_organizations, load_org_roles,
   mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
@@ -722,16 +723,30 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     // Service-internal PSK resolution for the CoAP terminator (`loft`,
     // docs/infra/coap-terminator.md). NOT a device or dashboard route: the
-    // only legitimate caller is the terminator itself, authenticated by
+    // only legitimate caller is the terminator itself, gated by two
+    // independent layers -- a source-address allowlist
+    // (COAP_SERVICE_ALLOWED_IPS, the terminator's egress addresses) and
     // the COAP_SERVICE_SECRET Worker secret (set via `wrangler secret put`
     // per env, never [vars] -- same convention as RESEND_API_KEY; local
     // dev reads it from dovecote/.dev.vars). The `:pigeon_id` path param
     // IS the PSK identity -- `create`/`refresh_token` mint
-    // `tls_psk_identity` as the pigeon's own DO id. An environment without
-    // the secret configured refuses every call (fail closed), so this
-    // route is inert until the terminator is actually provisioned.
+    // `tls_psk_identity` as the pigeon's own DO id. An environment where
+    // either layer is unconfigured refuses every call (fail closed), so
+    // this route is inert until the terminator is actually provisioned.
     .get_async("/internal/coap-psk/:pigeon_id", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
+
+      // Address gate first: the secret grants unscoped PSK resolution for
+      // every pigeon, so a leaked copy must not be usable from anywhere
+      // but the terminator host -- and a disallowed caller gets no timing
+      // signal from the secret comparison either.
+      if !is_allowed_coap_service_ip(&ctx.env, &req) {
+        console_error!(
+          "Internal PSK lookup from disallowed address {:?}",
+          req.headers().get("CF-Connecting-IP").ok().flatten()
+        );
+        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+      }
 
       let Ok(expected) = ctx.env.secret("COAP_SERVICE_SECRET") else {
         console_error!("COAP_SERVICE_SECRET not configured; refusing internal PSK lookup");

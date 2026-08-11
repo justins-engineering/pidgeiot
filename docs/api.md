@@ -1354,8 +1354,11 @@ PSK resolution for the CoAP terminator — the only route in this API authentica
 service secret rather than a Kratos session or device token:
 `Authorization: Bearer <COAP_SERVICE_SECRET>` (a Worker secret, set per environment via
 `wrangler secret put COAP_SERVICE_SECRET`, never a `[vars]` entry; `loft` holds the same value
-in its own `COAP_SERVICE_SECRET` env var). The secret is compared in constant time; an
-environment where the secret is unconfigured refuses every call (fail closed). Not
+in its own `COAP_SERVICE_SECRET` env var). The secret is compared in constant time, and is
+only half the gate: the request's source address (`CF-Connecting-IP`, edge-set and not
+client-forgeable) must also appear in the environment's `COAP_SERVICE_ALLOWED_IPS` allowlist
+(`dovecote/wrangler.toml`) — the terminator's own egress addresses, empty meaning deny-all.
+An environment where either layer is unconfigured refuses every call (fail closed). Not
 CORS-usable from a browser in any meaningful way; never called by devices or the dashboard.
 
 `:pigeon_id` is the PSK identity (identical to the pigeon's id). Response is
@@ -1365,7 +1368,8 @@ CORS-usable from a browser in any meaningful way; never called by devices or the
 {"identity": "<pigeon_id>", "secret": "<tls_psk_secret>", "token": "<device_bearer_token>"}
 ```
 
-- `401` missing bearer, `403` wrong/unconfigured secret.
+- `401` missing bearer, `403` source address outside the allowlist or wrong/unconfigured
+  secret.
 - `404` for an unknown identity or an `Https`-connector pigeon (no PSK exists).
 - `400` for a string that cannot be a pigeon id at all (Durable Object ids embed a namespace
   check, so a malformed/foreign id fails before any lookup). `loft` treats `400` and `404`

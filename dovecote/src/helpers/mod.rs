@@ -32,6 +32,9 @@ pub use pigeons::verify_device_via_do;
 mod demo;
 pub use demo::is_demo_pigeon;
 
+mod coap_service;
+pub use coap_service::is_allowed_coap_service_ip;
+
 mod telemetry;
 pub use telemetry::ensure_pigeons_telemetry_endpoint_column;
 pub use telemetry::get_flock_pigeon_ids;

@@ -70,6 +70,17 @@ head_sampling_rate = 0
 # (same never-[vars] convention as RESEND_API_KEY; `wrangler secret put
 # COAP_SERVICE_SECRET` per env, dovecote/.dev.vars for local dev). The
 # route fails closed while it's unset.
+#
+# COAP_SERVICE_ALLOWED_IPS (all three [vars]/[env.*.vars] blocks) --
+# comma-separated source addresses allowed to reach that same route
+# (helpers/coap_service.rs), layered ahead of the secret check: the
+# terminator's egress addresses, nothing else, matched against
+# CF-Connecting-IP as parsed addresses. Empty/unset means the route
+# denies every caller -- NOT "allow anything" (same fail-closed
+# convention as DEMO_PIGEON_IDS). Deliberately its own var rather than
+# derived from COAP_DEVICE_HOST: the name devices dial and the address
+# the terminator egresses from are independent facts (NAT, a future
+# load balancer) even though today both are the same VPS.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
@@ -89,6 +100,12 @@ DEMO_PIGEON_IDS = "44e81fc18f5beddf8cabf57c3decd16ad1b7d24dd629213c2c4ac9038e50b
 # telemetry.pidgeiot.com tunnel route are retired with the rest of the
 # home-lab box; re-point this at a real origin to bring GreptimeDB back.
 GREPTIMEDB_ENDPOINT = ""
+# loft's egress on the VPS -- the same box coap.pidgeiot.com's A record
+# points at, which has no IPv6 egress, so this single v4 address is the
+# only one Cloudflare can ever see the terminator arrive from. Must move
+# with the VPS (docs/infra/coap-terminator.md, "Internal PSK route
+# allowlist").
+COAP_SERVICE_ALLOWED_IPS = "15.204.254.3"
 
 [[hyperdrive]]
 binding = "YugabyteDB"
@@ -180,6 +197,10 @@ DEMO_PIGEON_IDS = "0ec346b8c062431d0bada55f93ffa6089c6fd35eda5d64c75aff0381c4ea1
 # Greptime instance; the Postgres path needs no equivalent since staging has
 # its own database (see the Hyperdrive block below).
 GREPTIMEDB_ENDPOINT = ""
+# No staging terminator (see COAP_DEVICE_HOST above), so no address may
+# call staging's internal PSK route: empty is a deliberate deny-all, not
+# an oversight. A future staging terminator lists its egress here.
+COAP_SERVICE_ALLOWED_IPS = ""
 
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
@@ -228,6 +249,12 @@ COAP_DEVICE_HOST = "127.0.0.1"
 # No demo pigeon in dev -- empty, not unset, matching the other per-env
 # vars' pattern of every environment declaring the key explicitly.
 DEMO_PIGEON_IDS = ""
+# `wrangler dev` sets CF-Connecting-IP to the local client's socket
+# address; both loopback literals because a connect over v6 presents a
+# real `::1`, which is not an IPv4-mapped form and so is deliberately NOT
+# normalized to 127.0.0.1 (a mapped `::ffff:127.0.0.1` is -- see
+# helpers/coap_service.rs).
+COAP_SERVICE_ALLOWED_IPS = "127.0.0.1,::1"
 # Local docker-compose GreptimeDB (docker-compose.yml's `greptimedb`
 # service) -- reachable directly, no Cloudflare Tunnel/Access in dev, and
 # no auth configured on the local instance either, so neither

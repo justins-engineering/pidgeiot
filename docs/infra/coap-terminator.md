@@ -33,15 +33,17 @@ device ──DTLS-PSK / TLS-PSK──▶ loft ──HTTPS──▶ dovecote ─�
    - `token` — the ordinary device bearer token.
 2. At handshake time, loft's PSK callback resolves identity → (PSK, token) through
    dovecote's `GET /internal/coap-psk/:pigeon_id`, authenticated by the shared
-   `COAP_SERVICE_SECRET`. Positive results are cached 60s, negatives 10s; a stale positive
-   may be served for up to 5 min only if dovecote is unreachable.
+   `COAP_SERVICE_SECRET` and accepted only from the terminator's own egress addresses (see
+   "Internal PSK route allowlist" below). Positive results are cached 60s, negatives 10s; a
+   stale positive may be served for up to 5 min only if dovecote is unreachable.
 3. After the handshake, loft acts as a plain device-side HTTP client: every proxied request
    carries `Authorization: Bearer <token>` and is verified cryptographically by the pigeon's
    own Durable Object — loft adds exactly one check of its own (Uri-Path pigeon id must
    equal the handshake identity) and weakens nothing.
 4. Scope of `COAP_SERVICE_SECRET`: per-identity device credentials only (each still
-   DO-verified per request). No dashboard, org, flock, or Postgres access. Treat it like any
-   other production secret regardless.
+   DO-verified per request). No dashboard, org, flock, or Postgres access — and since the
+   route is also source-address-gated, the secret is unusable from anywhere but the
+   terminator host itself. Treat it like any other production secret regardless.
 5. Revocation: `token/refresh` overwrites the DO's verification key, so old tokens die
    instantly. The 60s PSK cache means an OLD PSK can still complete a *handshake* for up to
    60s after a refresh — but every request on that session presents the revoked token and
@@ -74,6 +76,61 @@ Stateless across restarts: the only in-memory state is the PSK cache, per-connec
 session state, and UDP duplicate-detection windows — all safely lost on restart (devices
 rehandshake).
 
+## Internal PSK route allowlist (dovecote-side)
+
+`GET /internal/coap-psk/:pigeon_id` is double-gated: the `COAP_SERVICE_SECRET` bearer check
+above, plus a source-address allowlist in front of it — `COAP_SERVICE_ALLOWED_IPS`
+(`dovecote/wrangler.toml`, declared per env; matched against `CF-Connecting-IP`, which
+Cloudflare's edge sets on every path into the Worker and a client cannot forge). The secret
+alone grants unscoped PSK resolution for *every* pigeon — inherent to the terminator model,
+since the PSK callback must resolve whatever identity a handshake presents — so a leaked
+secret must not be usable from anywhere but the terminator host itself. Empty/unset denies
+every caller.
+
+Per environment:
+
+- **Production**: the VPS's egress address (the same box `coap.pidgeiot.com`'s A record
+  points at). The host has no IPv6 egress, so the single v4 address is the complete list —
+  but if it ever gains a global v6 address, outbound connections to dovecote may start
+  preferring it and PSK lookups will 403 until that address is added too.
+- **Staging**: empty — a deliberate deny-all, not an oversight, since no staging terminator
+  exists. Whoever brings one up adds its egress address then.
+- **Dev**: `127.0.0.1,::1` — `wrangler dev` populates `CF-Connecting-IP` with the local
+  client's socket address, so a local `cargo run -p loft` against `http://127.0.0.1:8787`
+  keeps working with no extra setup.
+
+The list is committed config applied by an ordinary (owner-gated) dovecote deploy — no
+Cloudflare-dashboard step. Any VPS move or renumbering must update the production value and
+redeploy dovecote in the same maintenance window: until both happen, PSK lookups 403 and new
+handshakes start failing once loft's positive cache (60s) drains.
+
+Verifying after a deploy (never echo the secret):
+
+```sh
+# From the VPS (allowed address + real secret + garbage identity) — expect 400, not 403;
+# command substitution keeps the secret out of the terminal:
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(sudo cat /etc/loft/coap-service-secret)" \
+  https://api.pidgeiot.com/internal/coap-psk/not-a-real-id
+
+# From any other machine (any bearer) — expect 403, plus a "disallowed address" line in
+# `wrangler tail`:
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer x" \
+  https://api.pidgeiot.com/internal/coap-psk/not-a-real-id
+```
+
+**Secret rotation cadence**: with the address gate in place the secret is one of two
+independent layers, not the only one — rotate it quarterly, and immediately on any suspicion
+of exposure. Procedure: mint a new value (`openssl rand -base64 32`), `wrangler secret put
+COAP_SERVICE_SECRET` on the dovecote side, rewrite `/etc/loft/coap-service-secret` and
+`systemctl restart loft` on the VPS. Order doesn't matter beyond doing both promptly: while
+the two sides disagree, lookups 403 (loft logs loudly and treats it as indeterminate rather
+than negative-caching), established sessions keep working, and everything self-heals once
+both hold the new value.
+
+A multi-instance/anycast future (see "Future" below) widens the production list to that
+platform's egress addresses.
+
 ## VPS bring-up
 
 Steps 1, 2, and 5 are identical regardless of which deployment runs `loft` itself; step 3
@@ -92,7 +149,9 @@ In order:
 2. **DNS**: `coap.pidgeiot.com` → A/AAAA record for the VPS, **DNS-only (grey cloud)**.
    Cloudflare's proxy carries neither raw UDP nor port 5684, so an orange-clouded record
    would silently break both transports. (This also means no CF DDoS shielding on 5684 —
-   the DTLS cookie exchange and connection caps below are the mitigation.)
+   the DTLS cookie exchange and connection caps below are the mitigation.) The host's egress
+   address also belongs in `COAP_SERVICE_ALLOWED_IPS` (`dovecote/wrangler.toml`) — see
+   "Internal PSK route allowlist" above.
 3. **Firewall**: do this before step 4 — both deployments make port 5684 reachable the moment
    they start, independent of when the firewall rules land. See "Firewall" below, and use the
    rule set that matches the deployment you're about to run — they are not interchangeable,
