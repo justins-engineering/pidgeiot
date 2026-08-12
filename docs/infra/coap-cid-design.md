@@ -422,13 +422,19 @@ listener on a separate port (never touching 5684 until cutover), a same-binary e
 switch, a currently tiny CoAP fleet, loft's restart-cheap stateless design, and the
 documented stop→install→start binary rollback.
 
-**Phase 0 — spike (hard gate, ~half a day).** In the trixie build image and once on the VPS:
-`apt-get install libmbedtls-dev`, `nm -D` for `mbedtls_ssl_conf_cid` (+ confirm
-`mbedtls_ssl_set_user_data_p` is header-inline as expected), then a ~20-line probe linking
-`-lmbedtls -lmbedcrypto` running one PSK-CCM8 loopback handshake with CID negotiated. This
-converts the debian/rules reading into an artifact-level fact. If it fails structurally,
-stop and re-price the sidecar fallback — do not proceed on hope. Remove `-dev` from the VPS
-afterward; the host keeps zero toolchain.
+**Phase 0 — spike (hard gate, ~half a day).** In the trixie build image: `apt-get install
+libmbedtls-dev`, `nm -D` for `mbedtls_ssl_conf_cid` (+ confirm `mbedtls_ssl_set_user_data_p`
+is header-inline as expected), then a probe linking `-lmbedtls -lmbedcrypto` running one
+PSK-CCM8 loopback handshake with CID negotiated. This converts the debian/rules reading into
+an artifact-level fact. If it fails structurally, stop and re-price the sidecar fallback —
+do not proceed on hope. **Passed** on every criterion (packages `3.6.5-0.1~deb13u1`
+throughout; the probe additionally proved the type-25/offset-11 uplink shape with
+type-23-only downlink on the wire, and ran again dynamically linked against the runtime
+stage's `libmbedtls21` alone). The VPS side needs no separate spike touch of its own: the
+fact that matters there is the runtime `.so` resolving against the shipped binary, which
+Phase 2's `apt-get install libmbedtls21` + extended `ldd` check proves inside the one
+already-gated host window — and the host then never carries `-dev` or any toolchain at all,
+rather than install-then-remove.
 
 **Phase 1 — land the code, default off.** `mbedtls-ffi-shim`, `dtls_common.rs` extraction,
 `dtls_mbed.rs`, config knobs, the `conn_id` Block1 rekey (active on both stacks), packaging.
