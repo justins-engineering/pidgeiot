@@ -1,0 +1,26 @@
+# Detached from the parent workspace on purpose (its own empty [workspace]
+# table): these binaries link the system mbedTLS through mbedtls-ffi-shim
+# and are only ever built inside the netns harness's trixie image, never by
+# a dev-box `cargo build` at the repo root.
+[package]
+name = "cid-harness"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mbedtls-ffi-shim = { path = "../../../mbedtls-ffi-shim" }
+libc = "0.2"
+
+[[bin]]
+name = "cid_client"
+path = "src/bin/cid_client.rs"
+
+[[bin]]
+name = "psk_stub"
+path = "src/bin/psk_stub.rs"
+
+[profile.release]
+opt-level = 1
