@@ -532,8 +532,10 @@ canary knob; keep OpenSSL for `tls_tcp.rs`; sweep the three co-dependent artifac
   RNG stateless `getrandom`, cookie state listener-confined; `MBEDTLS_THREADING_PTHREAD` is
   a backstop, not a dependency.
 - **Retransmission idiom change** (timer callbacks + `MBEDTLS_ERR_SSL_TIMEOUT` instead of
-  re-entering accept): bugs here surface only under loss. *Mitigation*: the shim ports
-  `timeout_retransmission`'s test shape; the netns harness includes a netem lossy-link cell.
+  re-entering accept): bugs here surface only under loss. *Mitigation*: the shim's
+  `lost_server_flight_is_retransmitted_via_timer` test drives a forced flight loss through
+  the timer callbacks (`cargo test -p mbedtls-ffi-shim`); a netem lossy-link cell is a
+  documented extension point in the netns harness, not yet implemented there.
 - **systemd hardening interaction** (`MemoryDenyWriteExecute`, `@system-service`,
   `RestrictAddressFamilies`): expected clean (no JIT/dlopen/netlink) but verified live in
   the canary under the real production unit, closing the unit's own "UNVERIFIED" note.
@@ -565,26 +567,41 @@ loopback CID negotiation with a zero-length client CID asserting CCM8 selection 
 `get_peer_cid`.
 
 **Tier 2 — local netns NAT-rebind wire-proof** (the acceptance gate for the feature itself;
-scripted under `scripts/test/`, no hardware, no production traffic). Topology: `cli ↔ nat ↔
-srv` namespaces over veth pairs; nftables SNAT in `nat`; loft in `srv` with
+scripted under `scripts/test/`, no hardware, no production traffic). **Implemented and
+passing** — `scripts/test/cid-netns-harness.sh` (a privileged trixie container running the
+real `--features mbedtls` loft binary), reproducibly green across repeated runs. Topology:
+`cli ↔ nat ↔ srv` namespaces over veth pairs; nftables SNAT in `nat`; loft in `srv` with
 `LOFT_DTLS_STACK=mbedtls` against a stub PSK endpoint honoring the
 `/internal/coap-psk/:id` + bearer contract (harness-minted test PSKs only — the harness
 needs no dovecote and no real credentials). Rebind = swap the SNAT rule to a new source port
-+ `conntrack -F`; capture = tshark on the server-side veth. Cells:
+(one atomic `nft -f` transaction, so no datagram leaks un-NAT'd) + `conntrack -F`; capture =
+tshark on the server-side veth, asserting on the first record byte per direction so a
+DTLS-dissector quirk can't mask a regression. The harness's own CID client is a small
+`mbedtls-ffi-shim` binary rather than mbedTLS's `ssl_client2` (Debian ships the library, not
+its sample programs); it offers the same zero-length CID the device does. Cells 1 and 3 —
+the ones whose value is the *real NAT on the wire* — are implemented as live cells; the
+anti-spoof/replay, loss-soak, and parallel-listener cells are covered by the crate unit
+tests (`cargo test -p loft --features mbedtls`, `-p mbedtls-ffi-shim`) and are further
+`run_cell`-shaped extension points in the script. Cells:
 
-1. **CID rebind survival** (primary): mbedTLS's own `ssl_client2` (`cid=1 cid_val=` — the
-   empty value matches the device's zero-length offer exactly) exchanges, rebinds, exchanges.
-   Assert: uplink records are type 25 with an 8-byte CID; **all** downlink records are type
-   23; zero ClientHellos after the rebind; exactly one handshake + one migration line in the
-   journal; the second exchange succeeds.
+1. **CID rebind survival** (primary, *implemented*): the harness CID client (a
+   `mbedtls-ffi-shim` binary offering the device's zero-length CID) exchanges, rebinds,
+   exchanges. Assert: every uplink record walked full-datagram is type 25 with the 8-byte
+   CID on the post-rebind source port as well as the pre-rebind one; **all** downlink records
+   are type 23 (device-safe); zero post-rebind uplink handshake records (no re-handshake);
+   exactly one CID-negotiated session and exactly one migration line in the journal, the
+   handshake count cross-checked against loft's own established-session count; all exchanges
+   succeed.
 2. **Full-stack authoritative client**: the pigeon `native_sim` build with the CID Kconfig
    enabled, attached via TAP into the client namespace, polling a shadow through the
    stub-backed loft; rebind mid-cadence; next poll succeeds with no re-handshake and no
    retransmit stall, wire shows type-25 uplink.
-3. **Mixed fleet / no-CID regression**: an OpenSSL-libcoap client and `ssl_client2 cid=0`
-   behave exactly as today, including rebind → re-handshake recovery and 300s idle teardown;
-   a CID session survives a synthetic >300s gap (both eviction edges tested by swinging
-   `LOFT_DTLS_CID_IDLE_SECS`).
+3. **No-CID regression** (*implemented*): the harness client with the CID offer off takes the
+   identical rebind and behaves exactly as today — forced into a re-handshake to recover
+   (asserted via post-rebind uplink handshake records *and* an established-session count of
+   two), with no type-25 record anywhere. The idle-eviction edges (a CID session surviving a
+   synthetic >300s gap by swinging `LOFT_DTLS_CID_IDLE_SECS`, and the 300s no-CID teardown)
+   remain an extension point.
 4. **Anti-spoof/redirect**: replay a captured authenticated type-25 record (and a
    bit-flipped variant, and an already-delivered genuine record) from a third address —
    reply path must not move, no migration line, original client still served.
