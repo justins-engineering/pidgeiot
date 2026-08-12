@@ -457,6 +457,7 @@ fn connection_thread(
     pigeon_id: identity,
     token,
     peer: peer.to_string(),
+    conn_id: crate::handler::next_conn_id(),
   };
 
   serve_datagrams(&mut stream, &session, handler, rt);

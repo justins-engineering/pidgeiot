@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::coap::block::{self, Block, MAX_SZX};
@@ -73,8 +74,21 @@ pub struct DeviceSession {
   pub pigeon_id: String,
   /// This pigeon's device bearer token, presented on every upstream call.
   pub token: String,
-  /// Peer address string; Block1 reassembly key component.
+  /// Peer address string, for logging only -- it can change mid-session
+  /// once a connection survives an address migration, so nothing may key
+  /// state on it.
   pub peer: String,
+  /// Process-unique connection identity; the Block1 reassembly key
+  /// component. Stable across address migrations, never reused across
+  /// sequential connections that happen to share a source address.
+  pub conn_id: u64,
+}
+
+/// Hands out process-unique connection ids for [`DeviceSession`]s, shared
+/// by every listener.
+pub fn next_conn_id() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 struct Reassembly {
@@ -85,7 +99,7 @@ struct Reassembly {
 
 pub struct Handler<U> {
   upstream: U,
-  block1: Mutex<HashMap<(String, String), Reassembly>>,
+  block1: Mutex<HashMap<(u64, String), Reassembly>>,
 }
 
 impl<U: Upstream> Handler<U> {
@@ -406,12 +420,12 @@ impl<U: Upstream> Handler<U> {
       return BodyState::Complete(req.payload.clone());
     };
 
-    let key = (session.peer.clone(), leaf.to_string());
+    let key = (session.conn_id, leaf.to_string());
     let mut map = self.block1.lock().expect("block1 lock");
     let now = Instant::now();
 
     if b.num == 0 {
-      // A restart of an already-tracked upload (same peer+leaf) just
+      // A restart of an already-tracked upload (same connection+leaf) just
       // overwrites its entry, so only a genuinely new key needs to clear
       // the cap -- otherwise a peer retrying its own upload could be
       // starved by unrelated entries that filled the table after it.
@@ -588,6 +602,7 @@ mod tests {
       pigeon_id: "pigeon-1".into(),
       token: "tok-1".into(),
       peer: "10.0.0.1:1234".into(),
+      conn_id: next_conn_id(),
     }
   }
 
@@ -1000,29 +1015,32 @@ mod tests {
       req.payload = vec![0xAA; 16];
       req
     };
-    let peer = |i: usize| DeviceSession {
+    // Distinct connections, deliberately sharing one peer string: the
+    // reassembly key is the connection id, not the address.
+    let conn = |i: usize| DeviceSession {
       pigeon_id: "pigeon-1".into(),
       token: "tok-1".into(),
-      peer: format!("10.0.0.1:{i}"),
+      peer: "10.0.0.1:1234".into(),
+      conn_id: 10_000 + i as u64,
     };
 
-    // Fill the table: one in-progress reassembly per distinct peer.
+    // Fill the table: one in-progress reassembly per distinct connection.
     for i in 0..MAX_BLOCK1_ENTRIES {
       let out = handler
-        .handle(&block1_start(), &peer(i), Transport::Udp)
+        .handle(&block1_start(), &conn(i), Transport::Udp)
         .await;
       assert_eq!(out.code, code::CONTINUE, "entry {i} should be admitted");
     }
 
-    // A never-seen peer starting a new reassembly is refused -- the table
-    // is at capacity, not because of anything wrong with this request.
+    // A never-seen connection starting a new reassembly is refused -- the
+    // table is at capacity, not because of anything wrong with this request.
     let out = handler
-      .handle(&block1_start(), &peer(MAX_BLOCK1_ENTRIES), Transport::Udp)
+      .handle(&block1_start(), &conn(MAX_BLOCK1_ENTRIES), Transport::Udp)
       .await;
     assert_eq!(out.code, code::SERVICE_UNAVAILABLE);
 
-    // A peer already holding a slot can still finish its own upload --
-    // the cap only blocks new entries, not progress on admitted ones.
+    // A connection already holding a slot can still finish its own upload
+    // -- the cap only blocks new entries, not progress on admitted ones.
     let mut req = request(code::POST, "pigeon-1", "logs");
     req.set_option_uint(
       option::BLOCK1,
@@ -1034,8 +1052,97 @@ mod tests {
       .encode(),
     );
     req.payload = vec![0xBB; 16];
-    let out = handler.handle(&req, &peer(0), Transport::Udp).await;
+    let out = handler.handle(&req, &conn(0), Transport::Udp).await;
     assert_eq!(out.code, code::CHANGED);
+  }
+
+  /// Two sequential connections reusing one source address must not share
+  /// a reassembly -- under CID a NAT can hand a new device the exact
+  /// ip:port an unfinished upload was keyed on.
+  #[tokio::test]
+  async fn block1_reassemblies_do_not_collide_across_connections_sharing_an_address() {
+    let mock = MockUpstream::new(|_| {
+      Ok(UpstreamResponse {
+        status: 200,
+        ..Default::default()
+      })
+    });
+    let handler = Handler::new(&mock);
+
+    let at_addr = |conn_id: u64| DeviceSession {
+      pigeon_id: "pigeon-1".into(),
+      token: "tok-1".into(),
+      peer: "10.0.0.1:1234".into(),
+      conn_id,
+    };
+    let part = |num: u32, more: bool, fill: u8| {
+      let mut req = request(code::POST, "pigeon-1", "logs");
+      req.set_option_uint(option::BLOCK1, Block { num, more, szx: 4 }.encode());
+      req.payload = vec![fill; 16];
+      req
+    };
+
+    let out = handler
+      .handle(&part(0, true, 0xAA), &at_addr(1), Transport::Udp)
+      .await;
+    assert_eq!(out.code, code::CONTINUE);
+    // A second connection starts its own upload from the same address; the
+    // old key shape would have overwritten connection 1's entry here.
+    let out = handler
+      .handle(&part(0, true, 0xEE), &at_addr(2), Transport::Udp)
+      .await;
+    assert_eq!(out.code, code::CONTINUE);
+
+    let out = handler
+      .handle(&part(1, false, 0xBB), &at_addr(1), Transport::Udp)
+      .await;
+    assert_eq!(out.code, code::CHANGED);
+    let calls = mock.calls.lock().unwrap();
+    let (body, _) = calls[0].body.clone().unwrap();
+    assert_eq!(&body[..16], &[0xAA; 16], "connection 1's own first block");
+    assert_eq!(&body[16..], &[0xBB; 16], "no cross-connection bleed");
+  }
+
+  /// An upload survives its peer address changing between blocks -- the
+  /// session's peer string is display-only and must not orphan reassembly.
+  #[tokio::test]
+  async fn block1_reassembly_survives_address_migration() {
+    let mock = MockUpstream::new(|_| {
+      Ok(UpstreamResponse {
+        status: 200,
+        ..Default::default()
+      })
+    });
+    let handler = Handler::new(&mock);
+
+    let at = |peer: &str| DeviceSession {
+      pigeon_id: "pigeon-1".into(),
+      token: "tok-1".into(),
+      peer: peer.into(),
+      conn_id: 42,
+    };
+    let part = |num: u32, more: bool| {
+      let mut req = request(code::POST, "pigeon-1", "logs");
+      req.set_option_uint(option::BLOCK1, Block { num, more, szx: 4 }.encode());
+      req.payload = vec![0xCC; 16];
+      req
+    };
+
+    let out = handler
+      .handle(&part(0, true), &at("10.0.0.1:1000"), Transport::Udp)
+      .await;
+    assert_eq!(out.code, code::CONTINUE);
+    let out = handler
+      .handle(&part(1, false), &at("198.51.100.7:2000"), Transport::Udp)
+      .await;
+    assert_eq!(
+      out.code,
+      code::CHANGED,
+      "rebind mid-upload must not orphan it"
+    );
+    let calls = mock.calls.lock().unwrap();
+    let (body, _) = calls[0].body.clone().unwrap();
+    assert_eq!(body.len(), 32);
   }
 
   #[tokio::test]

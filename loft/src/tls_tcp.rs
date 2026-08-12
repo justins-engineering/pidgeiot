@@ -219,6 +219,7 @@ fn connection_thread(
     pigeon_id: identity,
     token,
     peer,
+    conn_id: crate::handler::next_conn_id(),
   };
 
   // Our CSM: default settings are fine for this surface (no
