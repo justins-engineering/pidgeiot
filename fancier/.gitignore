@@ -13,3 +13,12 @@ build/
 dist
 assets/styling/main.css
 public/assets/styling/main.css
+
+# design-sync (claude.ai/design): staged converter scripts, build output, and
+# machine-local state. The durable inputs in .design-sync/ (config, notes,
+# conventions) stay tracked.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules

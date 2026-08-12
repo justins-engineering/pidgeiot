@@ -1,0 +1,10 @@
+{
+  "projectId": "592c6142-ff00-4c42-b6b1-31b71c8a562c",
+  "shape": "package",
+  "pkg": "fancier",
+  "globalName": "PidgeIoT",
+  "entry": "./.design-sync/ds-entry.mjs",
+  "cssEntry": ".design-sync/.cache/ds-css.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "buildCmd": "bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css && mkdir -p .design-sync/.cache && cat node_modules/daisyui/daisyui.css assets/styling/main.css > .design-sync/.cache/ds-css.css"
+}

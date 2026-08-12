@@ -1,4 +1,6 @@
 {
+  "name": "fancier",
+  "private": true,
   "dependencies": {
     "daisyui": "^5.7.16",
     "tailwindcss": "^4.3.3"
