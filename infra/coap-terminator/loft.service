@@ -39,6 +39,11 @@ Environment=LOFT_DOVECOTE_URL=https://api.pidgeiot.com
 Environment=LOFT_UDP_LISTEN=0.0.0.0:5684
 Environment=LOFT_TCP_LISTEN=0.0.0.0:5684
 Environment=LOFT_LOG=info
+# Which DTLS implementation binds LOFT_UDP_LISTEN. The CID rollout
+# (docs/infra/coap-cid-design.md) flips this to mbedtls via a drop-in
+# (drop-ins parse after this file, so their assignment wins), and its
+# canary phase adds LOFT_DTLS_MBED_CANARY_ADDR the same way.
+Environment=LOFT_DTLS_STACK=openssl
 
 # The secret never goes in this file (unit files under /etc/systemd/system
 # are world-readable) and never rides in the process environment either --
@@ -81,9 +86,9 @@ ProtectHome=yes
 PrivateTmp=yes
 
 # /dev reduced to the minimal set (null, zero, random, urandom, tty) --
-# OpenSSL's RNG and the DTLS cookie key (dtls.rs) both come from
-# /dev/urandom via the kernel getrandom() path, which this still permits;
-# loft has no reason to touch any real device node.
+# OpenSSL's RNG, the DTLS cookie keys (both stacks'), and the mbedTLS
+# listener's getrandom(2)-backed RNG all ride the kernel entropy paths
+# this still permits; loft has no reason to touch any real device node.
 PrivateDevices=yes
 
 NoNewPrivileges=yes
@@ -132,16 +137,22 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 
 # UNVERIFIED against a real run, included on static grounds: loft's own
-# code has no JIT, no runtime codegen, and no dlopen'd OpenSSL engines
-# (the only FFI is dtls-ffi-shim's small statically-linked C shim around
-# DTLSv1_listen). Ordinary ELF loading maps .text as PROT_EXEC without
-# PROT_WRITE, which this directive does not touch -- it only blocks a
-# mapping that is simultaneously writable and executable, or any
-# mprotect() call requesting PROT_EXEC. Nothing in loft's dependency tree
-# (openssl 0.10 against libssl.so.3/libcrypto.so.3, rustls via reqwest,
-# tokio, ureq) is known to need that. First thing to check if the service
-# dies immediately with a SIGSYS: `journalctl -u loft` naming this
-# directive, or `systemd-analyze security loft.service` after a real run.
+# code has no JIT, no runtime codegen, no dlopen'd OpenSSL engines. Its
+# crypto inventory is three dynamically-linked, apt-patched libraries --
+# OpenSSL (libssl.so.3/libcrypto.so.3: the incumbent DTLS listener and the
+# TLS/TCP listener), mbedTLS (libmbedtls.so.21: the RFC 9146 CID DTLS
+# listener), and rustls (in-binary, the outbound HTTPS leg) -- reached
+# through two small first-party shims (dtls-ffi-shim: hand-declared
+# externs around DTLSv1_listen; mbedtls-ffi-shim: a non-crypto C glue TU
+# for context allocation and inline setters). Ordinary ELF loading maps
+# .text as PROT_EXEC without PROT_WRITE, which this directive does not
+# touch -- it only blocks a mapping that is simultaneously writable and
+# executable, or any mprotect() call requesting PROT_EXEC. Nothing in
+# loft's dependency tree (openssl 0.10, mbedtls via the shim, rustls via
+# reqwest, tokio, ureq) is known to need that. First thing to check if
+# the service dies immediately with a SIGSYS: `journalctl -u loft` naming
+# this directive, or `systemd-analyze security loft.service` after a
+# real run.
 MemoryDenyWriteExecute=yes
 
 # Backstop, not a capacity plan. loft's own admission control already

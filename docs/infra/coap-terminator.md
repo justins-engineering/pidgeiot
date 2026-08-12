@@ -238,6 +238,14 @@ In order:
    A JSON shadow document back over DTLS is the whole chain working. `coaps+tcp://` same
    command, TCP transport.
 
+   When verifying a deploy where `LOFT_DTLS_STACK=mbedtls` (or the 5685 canary listener) is
+   in play, add a CID spot-check: the startup journal names the stack and the runtime mbedTLS
+   version, an established CID session logs `DTLS session established (CID negotiated)`, and
+   a short owner-approved `tcpdump -i <iface> udp port 5684 -X` must show uplink records
+   starting `19 fe fd` (content type 25, `tls12_cid`) with **all** server->device records
+   still starting `17 fe fd` — a CID-bearing downlink would be silently blackholed on-device,
+   indistinguishable from packet loss.
+
 ### Build artifact
 
 The systemd path deploys a binary, not a container, but still builds through
@@ -245,12 +253,17 @@ The systemd path deploys a binary, not a container, but still builds through
 no `cc`/`pkg-config`/`make`, and no `libssl-dev` by design (smaller attack surface, nothing to
 keep patched beyond what the running service needs), so Docker's `rust:1-trixie` build stage
 is standing in for a toolchain that deliberately isn't installed on the host itself. The
-extracted binary's runtime needs are exactly what `debian:trixie-slim` already has: glibc
-2.41, `libssl.so.3`/`libcrypto.so.3` (`libssl3t64`), `libz.so.1`, and the brotli libs reqwest's
-`http2` feature pulls in — all confirmed present on the VPS already (`ldd` on the extracted
-binary resolves cleanly, no missing library errors), so no extra `apt install` is needed on
-the host beyond what a stock trixie already ships plus `ca-certificates` (also already
-present, needed for the outbound HTTPS call to dovecote to verify).
+extracted binary's runtime needs are what `debian:trixie-slim` already has — glibc 2.41,
+`libssl.so.3`/`libcrypto.so.3` (`libssl3t64`), `libz.so.1`, and the brotli libs reqwest's
+`http2` feature pulls in — plus, since the RFC 9146 CID listener landed, `libmbedtls.so.21`
+(`libmbedtls21`, pulling `libmbedcrypto16`/`libmbedx509-7`). The mbedTLS packages are the one
+runtime need a stock trixie does NOT ship: `apt-get install libmbedtls21` is a one-time VPS
+prep step before installing a dual-stack binary, and the post-deploy `ldd` check on the
+extracted binary must resolve `libmbedtls.so.21` alongside the OpenSSL pair. The image build
+gates both stacks' feature sets (the `openssl ciphers` PSK probe, an `nm` probe for
+`mbedtls_ssl_conf_cid` on the runtime `.so`, and the mbedtls-ffi-shim's compile-time `#error`
+probes against the build headers), so a library packaging regression fails the build loudly
+instead of failing handshakes quietly.
 
 ### Firewall
 
@@ -479,16 +492,17 @@ COAP_SERVICE_SECRET=<same value> LOFT_DOVECOTE_URL=http://127.0.0.1:8787 \
 
 ## Known gaps and upgrade paths
 
-- **No RFC 9146 Connection ID.** Surveyed with source-level evidence: rust-openssl (OpenSSL
-  itself never implemented DTLS 1.2 CID — upstream issue #18724 remains open), webrtc-dtls
-  (the Rust port never received pion's CID work), fortanix/rust-mbedtls (the C code is
-  vendored with CID compiled in but zero Rust wrapper), wolfssl-rs (C supports it, bindings
-  don't expose it, and the crate is GPL-licensed). Consequence for PSM'd cellular devices:
-  when the NAT mapping dies during sleep, the next wake is a fresh handshake (~2 RTT) rather
-  than a seamless resume. Paths, in preference order: (1) contribute the
-  `mbedtls_ssl_set_cid` wrapper to fortanix/rust-mbedtls and swap the DTLS listener behind
-  its existing trait seam; (2) wrap wolfSSL directly (license review first); (3) OpenSSL
-  ships DTLS 1.3 (RFC 9147 has CID built in) and rust-openssl exposes it.
+- **RFC 9146 Connection ID: resolved** — designed, decided, and implemented per
+  [`coap-cid-design.md`](./coap-cid-design.md) (the full decision record, rollout plan, and
+  risk register). The fortanix/rust-mbedtls path this section used to prefer was overridden
+  there on disqualifying facts: the crate is in maintenance mode and statically vendors
+  mbedTLS C 2.28, whose CID is the draft-05 wire format — incompatible with the fleet's
+  RFC 9146 final. What shipped instead: a second DTLS listener (`loft/src/dtls_mbed.rs`) on
+  Debian's system mbedTLS 3.6 behind the first-party `mbedtls-ffi-shim` crate, dual-stack
+  behind `LOFT_DTLS_STACK` (default `openssl`) with an in-process canary listener knob, so a
+  PSM'd device's NAT rebind becomes one routed datagram instead of a ~93s retransmission
+  stall plus re-handshake. The OpenSSL DTLS path and `dtls-ffi-shim` are deleted after the
+  cutover has soaked (the design doc's Phase 6).
 - **Server-side handshake retransmission timers**: the safe `openssl` crate doesn't expose
   `DTLSv1_get_timeout`/`DTLSv1_handle_timeout` (both are `SSL_ctrl` macros, so a small shim
   can reach them). Convergence currently relies on client-side retransmission, which every
@@ -506,6 +520,8 @@ any number of loft instances can run behind one IP. The natural path is Fly.io (
 + TCP on the same app, `fly.toml` service ports `5684/udp` + `5684/tcp`), pointing
 `coap.pidgeiot.com` at the Fly anycast IP; each region's instance resolves PSKs against the
 same dovecote. Two things to revisit at that point: DTLS handshakes must complete against a
-single instance (Fly's UDP routing pins a 5-tuple to an instance, which suffices), and the
-absent-CID story matters more (a NAT rebind can land on a different region's instance;
-without CID that is just the same rehandshake cost as today).
+single instance (Fly's UDP routing pins a 5-tuple to an instance, which suffices), and CID
+sessions are in-process state — a rebind whose new 5-tuple routes to a *different* region's
+instance arrives as an unknown-CID record there and is silently dropped, so the device still
+pays a timeout and re-handshake for cross-instance rebinds (same-instance rebinds, the common
+case, resume seamlessly).
