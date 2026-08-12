@@ -1,0 +1,12 @@
+[package]
+name = "mbedtls-ffi-shim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Safe wrappers over the system mbedTLS 3.6 shared library for loft's DTLS listener: PSK server/client configs, RFC 9146 Connection ID, HelloVerifyRequest cookies, timer-driven retransmission. Dynamically linked; builds where libmbedtls-dev 3.6 is installed (the loft Dockerfile's trixie build stage in CI/deploy)."
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"

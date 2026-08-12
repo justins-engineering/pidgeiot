@@ -1,5 +1,12 @@
 [workspace]
-members = ["dovecote", "fancier", "capsules", "loft", "dtls-ffi-shim"]
+members = [
+  "dovecote",
+  "fancier",
+  "capsules",
+  "loft",
+  "dtls-ffi-shim",
+  "mbedtls-ffi-shim",
+]
 resolver = "3"
 
 [workspace.dependencies]
