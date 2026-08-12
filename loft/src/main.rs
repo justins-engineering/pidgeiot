@@ -31,6 +31,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::handler::Handler;
 use crate::psk::{DovecotePskSource, PskResolver};
+use crate::quota::{ConnQuota, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
 use crate::upstream::Dovecote;
 
 fn main() -> anyhow::Result<()> {
@@ -63,17 +64,25 @@ fn main() -> anyhow::Result<()> {
     udp = %config.udp_listen,
     tcp = %config.tcp_listen,
     upstream = %config.dovecote_url,
+    dtls_stack = ?config.dtls_stack,
+    canary = config.dtls_mbed_canary_addr.as_deref().unwrap_or("off"),
+    cid_idle_secs = config.dtls_cid_idle.as_secs(),
     "loft starting"
   );
+
+  // One admission table for every DTLS/UDP listener in the process, so a
+  // canary listener cannot double any source's share.
+  let udp_quota = ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
 
   let udp = {
     let config = config.clone();
     let resolver = resolver.clone();
     let handler = handler.clone();
     let rt = runtime.handle().clone();
+    let quota = udp_quota.clone();
     std::thread::Builder::new()
       .name("dtls-listener".into())
-      .spawn(move || dtls::run(&config, resolver, handler, rt))?
+      .spawn(move || dtls::run(&config, resolver, handler, rt, quota))?
   };
 
   let tcp = {

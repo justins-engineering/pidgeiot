@@ -9,6 +9,16 @@
 use std::path::Path;
 use std::time::Duration;
 
+/// Which implementation terminates DTLS on `LOFT_UDP_LISTEN`. The OpenSSL
+/// listener is the incumbent; the mbedTLS listener adds RFC 9146
+/// Connection ID (see docs/infra/coap-cid-design.md) and stays inert
+/// unless selected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DtlsStack {
+  Openssl,
+  Mbedtls,
+}
+
 #[derive(Clone)]
 pub struct Config {
   /// UDP (DTLS, coaps) listen address. Default 0.0.0.0:5684.
@@ -24,7 +34,21 @@ pub struct Config {
   pub service_secret: String,
   /// Positive PSK cache TTL.
   pub psk_cache_ttl: Duration,
+  /// LOFT_DTLS_STACK: which stack binds LOFT_UDP_LISTEN.
+  pub dtls_stack: DtlsStack,
+  /// LOFT_DTLS_MBED_CANARY_ADDR: when set (e.g. 0.0.0.0:5685), an
+  /// additional mbedTLS DTLS listener on that address while the primary
+  /// stays wherever LOFT_DTLS_STACK points -- same process, same quota,
+  /// same resolver; the canary mechanism of the CID rollout.
+  pub dtls_mbed_canary_addr: Option<String>,
+  /// LOFT_DTLS_CID_IDLE_SECS: idle deadline for CID-negotiated sessions.
+  /// Multi-hour PSM sleep gaps are the CID design case, so this is hours
+  /// where the non-CID deadline is minutes.
+  pub dtls_cid_idle: Duration,
 }
+
+/// Default CID-session idle deadline (6h, the recorded owner decision).
+const DEFAULT_CID_IDLE: Duration = Duration::from_secs(21_600);
 
 impl Config {
   /// Reads config from the environment. The only hard-required var is
@@ -55,7 +79,29 @@ impl Config {
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or(crate::psk::DEFAULT_POSITIVE_TTL),
+      dtls_stack: parse_dtls_stack(std::env::var("LOFT_DTLS_STACK").ok().as_deref())?,
+      dtls_mbed_canary_addr: std::env::var("LOFT_DTLS_MBED_CANARY_ADDR")
+        .ok()
+        .filter(|v| !v.trim().is_empty()),
+      dtls_cid_idle: std::env::var("LOFT_DTLS_CID_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_CID_IDLE),
     })
+  }
+}
+
+/// A typo in the stack selector must refuse to start, not silently serve
+/// the wrong implementation.
+fn parse_dtls_stack(value: Option<&str>) -> Result<DtlsStack, String> {
+  match value {
+    None => Ok(DtlsStack::Openssl),
+    Some("openssl") => Ok(DtlsStack::Openssl),
+    Some("mbedtls") => Ok(DtlsStack::Mbedtls),
+    Some(other) => Err(format!(
+      "LOFT_DTLS_STACK must be \"openssl\" or \"mbedtls\", got {other:?}"
+    )),
   }
 }
 
@@ -118,6 +164,18 @@ mod tests {
     let dir = std::env::temp_dir().join(format!("loft-config-test-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
+  }
+
+  #[test]
+  fn dtls_stack_parses_strictly() {
+    assert_eq!(parse_dtls_stack(None), Ok(DtlsStack::Openssl));
+    assert_eq!(parse_dtls_stack(Some("openssl")), Ok(DtlsStack::Openssl));
+    assert_eq!(parse_dtls_stack(Some("mbedtls")), Ok(DtlsStack::Mbedtls));
+    let err = parse_dtls_stack(Some("mbed")).expect_err("typos must fail closed");
+    assert!(
+      err.contains("LOFT_DTLS_STACK"),
+      "error names the var: {err}"
+    );
   }
 
   #[test]

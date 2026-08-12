@@ -15,7 +15,7 @@ use openssl::error::ErrorStack;
 use openssl::ex_data::Index;
 use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslVersion};
 
-use crate::psk::PskResolver;
+use crate::psk::{PskEntry, PskResolver};
 
 /// Constrained-device PSK suites, most-preferred first. CCM_8 (8-byte tag)
 /// is the CoAP/cellular-IoT standard suite; GCM and CBC variants cover
@@ -56,6 +56,27 @@ pub fn build_psk_server_context(
   Ok(builder)
 }
 
+/// Stack-neutral identity resolution shared by every PSK callback (the
+/// OpenSSL DTLS/TCP callbacks here and the mbedTLS callback in the CID
+/// listener), so reject semantics cannot drift between them: a non-UTF-8
+/// identity, a resolver miss, and a resolver error all collapse to the
+/// same `None`.
+pub fn resolve_psk_identity(resolver: &PskResolver, identity: &[u8]) -> Option<(String, PskEntry)> {
+  let Ok(identity) = std::str::from_utf8(identity) else {
+    tracing::debug!("rejecting non-UTF-8 PSK identity");
+    return None;
+  };
+  // Cached (60s positive TTL) blocking lookup against dovecote. Runs on
+  // the connection's own OS thread -- never on the tokio runtime.
+  match resolver.resolve(identity) {
+    Some(entry) => Some((identity.to_string(), entry)),
+    None => {
+      tracing::info!(identity, "PSK identity rejected");
+      None
+    }
+  }
+}
+
 fn psk_callback(
   resolver: &PskResolver,
   ssl: &mut openssl::ssl::SslRef,
@@ -68,15 +89,7 @@ fn psk_callback(
   let Some(identity) = identity else {
     return Ok(0);
   };
-  let Ok(identity) = std::str::from_utf8(identity) else {
-    tracing::debug!("rejecting non-UTF-8 PSK identity");
-    return Ok(0);
-  };
-
-  // Cached (60s positive TTL) blocking lookup against dovecote. Runs on
-  // the connection's own OS thread -- never on the tokio runtime.
-  let Some(entry) = resolver.resolve(identity) else {
-    tracing::info!(identity, "PSK identity rejected");
+  let Some((identity, entry)) = resolve_psk_identity(resolver, identity) else {
     return Ok(0);
   };
 
@@ -90,7 +103,7 @@ fn psk_callback(
   }
   psk_out[..len].copy_from_slice(entry.psk.as_bytes());
 
-  ssl.set_ex_data(*SESSION_EX_INDEX, (identity.to_string(), entry.token));
+  ssl.set_ex_data(*SESSION_EX_INDEX, (identity, entry.token));
   Ok(len)
 }
 

@@ -60,7 +60,7 @@ use crate::config::Config;
 use crate::dtls_common::{DedupCache, process_datagram, rand_u16};
 use crate::handler::{DeviceSession, Handler};
 use crate::psk::PskResolver;
-use crate::quota::{ConnPermit, ConnQuota, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
+use crate::quota::{ConnPermit, ConnQuota};
 use crate::tls_common::{authenticated_session, build_psk_server_context};
 use crate::upstream::Dovecote;
 
@@ -151,8 +151,9 @@ pub fn run(
   resolver: Arc<PskResolver>,
   handler: Arc<Handler<Dovecote>>,
   rt: tokio::runtime::Handle,
+  quota: ConnQuota,
 ) {
-  if let Err(e) = run_inner(config, resolver, handler, rt) {
+  if let Err(e) = run_inner(config, resolver, handler, rt, quota) {
     tracing::error!(error = %e, "DTLS listener failed");
   }
 }
@@ -162,13 +163,13 @@ fn run_inner(
   resolver: Arc<PskResolver>,
   handler: Arc<Handler<Dovecote>>,
   rt: tokio::runtime::Handle,
+  quota: ConnQuota,
 ) -> anyhow::Result<()> {
   let ctx = build_context(resolver)?;
   let sock = UdpSocket::bind(&config.udp_listen)?;
   tracing::info!(addr = %config.udp_listen, "DTLS/UDP listener up");
 
   let conns: ConnMap = Arc::new(Mutex::new(HashMap::new()));
-  let quota = ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
   listen_loop(sock, &ctx, &conns, &quota, &handler, &rt)
 }
 
@@ -539,6 +540,7 @@ fn serve_datagrams(
 mod tests {
   use super::*;
   use crate::psk::PskEntry;
+  use crate::quota::{MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
 
   const TEST_IDENTITY: &str = "test-pigeon";
   const TEST_PSK: &str = "0123456789abcdef0123456789abcdef";
