@@ -116,9 +116,18 @@ impl Read for DgramIo {
     }
     match self.rx.recv_timeout(self.tick) {
       Ok(dgram) => {
-        let n = dgram.len().min(buf.len());
-        buf[..n].copy_from_slice(&dgram[..n]);
-        Ok(n)
+        // A datagram larger than the caller's buffer is dropped whole, never
+        // truncated: a prefix of a DTLS datagram is a corrupt record, and
+        // handing one to OpenSSL turns an oversized packet into decode noise
+        // instead of the plain UDP loss it should be. OpenSSL always offers
+        // a max-record-size buffer here, so this only fires against a
+        // hostile or broken sender.
+        if dgram.len() > buf.len() {
+          tracing::debug!(len = dgram.len(), "dropping oversized datagram");
+          return Err(io::Error::new(io::ErrorKind::WouldBlock, "oversized"));
+        }
+        buf[..dgram.len()].copy_from_slice(&dgram);
+        Ok(dgram.len())
       }
       Err(RecvTimeoutError::Timeout) => Err(io::Error::new(io::ErrorKind::WouldBlock, "tick")),
       Err(RecvTimeoutError::Disconnected) => Ok(0),
@@ -777,6 +786,31 @@ mod tests {
     );
     io.deadline = None;
     assert_eq!(io.read(&mut buf).expect("deliver"), 3);
+  }
+
+  /// A datagram that doesn't fit the caller's buffer must vanish whole --
+  /// delivering a prefix would hand the SSL layer a corrupt record.
+  #[test]
+  fn dgram_io_drops_oversized_datagrams_instead_of_truncating() {
+    let (tx, rx) = std::sync::mpsc::sync_channel(4);
+    tx.send(vec![0xAA; 32]).expect("queue oversized");
+    tx.send(vec![0xBB; 4]).expect("queue fitting");
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let peer = sock.local_addr().expect("addr");
+    let mut io = DgramIo {
+      rx,
+      sock,
+      peer,
+      tick: Duration::ZERO,
+      deadline: None,
+    };
+    let mut buf = [0u8; 16];
+    assert_eq!(
+      io.read(&mut buf).expect_err("must drop").kind(),
+      io::ErrorKind::WouldBlock
+    );
+    assert_eq!(io.read(&mut buf).expect("deliver next"), 4);
+    assert_eq!(&buf[..4], &[0xBB; 4]);
   }
 
   #[test]
