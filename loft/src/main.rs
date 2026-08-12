@@ -18,6 +18,7 @@
 mod coap;
 mod config;
 mod dtls;
+mod dtls_common;
 mod handler;
 mod psk;
 mod quota;

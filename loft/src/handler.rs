@@ -957,7 +957,7 @@ mod tests {
     let handler = Handler::new(&mock);
     let sess = session();
 
-    let mut part = |num: u32, more: bool, payload: &[u8]| {
+    let part = |num: u32, more: bool, payload: &[u8]| {
       let mut req = request(code::POST, "pigeon-1", "logs");
       req.set_option_uint(option::BLOCK1, Block { num, more, szx: 4 }.encode());
       req.payload = payload.to_vec();
