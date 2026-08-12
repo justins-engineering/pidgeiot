@@ -6,6 +6,6 @@
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.16.0",
     "@tailwindcss/cli": "^4.3.3",
-    "wrangler": "^4.120.1"
+    "wrangler": "^4.122.0"
   }
 }

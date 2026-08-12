@@ -756,7 +756,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [futures-channel 0.3.33](https://github.com/rust-lang/futures-rs), [futures-core 0.3.33](https://github.com/rust-lang/futures-rs), [futures-executor 0.3.33](https://github.com/rust-lang/futures-rs), [futures-io 0.3.33](https://github.com/rust-lang/futures-rs), [futures-macro 0.3.33](https://github.com/rust-lang/futures-rs), [futures-sink 0.3.33](https://github.com/rust-lang/futures-rs), [futures-task 0.3.33](https://github.com/rust-lang/futures-rs), [futures-util 0.3.33](https://github.com/rust-lang/futures-rs), [futures 0.3.33](https://github.com/rust-lang/futures-rs)
+**Used by:** [futures-channel 0.3.34](https://github.com/rust-lang/futures-rs), [futures-core 0.3.34](https://github.com/rust-lang/futures-rs), [futures-executor 0.3.34](https://github.com/rust-lang/futures-rs), [futures-io 0.3.34](https://github.com/rust-lang/futures-rs), [futures-macro 0.3.34](https://github.com/rust-lang/futures-rs), [futures-sink 0.3.34](https://github.com/rust-lang/futures-rs), [futures-task 0.3.34](https://github.com/rust-lang/futures-rs), [futures-util 0.3.34](https://github.com/rust-lang/futures-rs), [futures 0.3.34](https://github.com/rust-lang/futures-rs)
 
 
 ````text
@@ -2008,7 +2008,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [chrono 0.4.45](https://github.com/chronotope/chrono), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [whoami 2.1.2](https://github.com/ardaku/whoami)
+**Used by:** [chrono 0.4.45](https://github.com/chronotope/chrono), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [whoami 2.1.3](https://github.com/ardaku/whoami)
 
 
 ````text

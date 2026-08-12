@@ -1077,7 +1077,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [futures-channel 0.3.33](https://github.com/rust-lang/futures-rs), [futures-core 0.3.33](https://github.com/rust-lang/futures-rs), [futures-executor 0.3.33](https://github.com/rust-lang/futures-rs), [futures-io 0.3.33](https://github.com/rust-lang/futures-rs), [futures-macro 0.3.33](https://github.com/rust-lang/futures-rs), [futures-sink 0.3.33](https://github.com/rust-lang/futures-rs), [futures-task 0.3.33](https://github.com/rust-lang/futures-rs), [futures-util 0.3.33](https://github.com/rust-lang/futures-rs), [futures 0.3.33](https://github.com/rust-lang/futures-rs)
+**Used by:** [futures-channel 0.3.34](https://github.com/rust-lang/futures-rs), [futures-core 0.3.34](https://github.com/rust-lang/futures-rs), [futures-executor 0.3.34](https://github.com/rust-lang/futures-rs), [futures-io 0.3.34](https://github.com/rust-lang/futures-rs), [futures-macro 0.3.34](https://github.com/rust-lang/futures-rs), [futures-sink 0.3.34](https://github.com/rust-lang/futures-rs), [futures-task 0.3.34](https://github.com/rust-lang/futures-rs), [futures-util 0.3.34](https://github.com/rust-lang/futures-rs), [futures 0.3.34](https://github.com/rust-lang/futures-rs)
 
 
 ````text
@@ -1849,7 +1849,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [http-body-util 0.1.4](https://github.com/hyperium/http-body), [http-body 1.1.0](https://github.com/hyperium/http-body)
+**Used by:** [http-body-util 0.1.5](https://github.com/hyperium/http-body), [http-body 1.1.0](https://github.com/hyperium/http-body)
 
 
 ````text

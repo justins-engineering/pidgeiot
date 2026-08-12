@@ -1,5 +1,5 @@
 name = "fancier"
-compatibility_date = "2026-08-10"
+compatibility_date = "2026-08-12"
 send_metrics = false
 # Keep version-preview URLs enabled on prod deploys — staging for this
 # script IS a version preview (`versions upload -c wrangler.staging.toml
@@ -39,17 +39,28 @@ not_found_handling = "single-page-application"
 # routes get an index.md variant + Link header advertisement).
 run_worker_first = [
   "/",
-  "/features", "/features/",
-  "/pricing", "/pricing/",
-  "/documentation", "/documentation/",
-  "/api-reference", "/api-reference/",
-  "/architecture", "/architecture/",
-  "/getting-started", "/getting-started/",
-  "/demo", "/demo/",
-  "/open-source", "/open-source/",
-  "/about", "/about/",
-  "/privacy", "/privacy/",
-  "/terms", "/terms/",
+  "/features",
+  "/features/",
+  "/pricing",
+  "/pricing/",
+  "/documentation",
+  "/documentation/",
+  "/api-reference",
+  "/api-reference/",
+  "/architecture",
+  "/architecture/",
+  "/getting-started",
+  "/getting-started/",
+  "/demo",
+  "/demo/",
+  "/open-source",
+  "/open-source/",
+  "/about",
+  "/about/",
+  "/privacy",
+  "/privacy/",
+  "/terms",
+  "/terms/",
 ]
 
 [build]
