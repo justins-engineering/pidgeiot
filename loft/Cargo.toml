@@ -37,3 +37,12 @@ openssl = "0.10"
 # DTLSv1_listen for the DTLS listener's stateless cookie exchange -- the
 # safe openssl crate does not expose it. See loft/src/dtls.rs module docs.
 dtls-ffi-shim = { path = "../dtls-ffi-shim" }
+# The RFC 9146 CID listener's stack (docs/infra/coap-cid-design.md).
+# Optional because it dynamically links the system mbedTLS 3.6, which dev
+# machines may not carry -- the Dockerfile build stage always enables it,
+# so every shipped binary is dual-stack; a binary built without it refuses
+# LOFT_DTLS_STACK=mbedtls at startup rather than silently downgrading.
+mbedtls-ffi-shim = { path = "../mbedtls-ffi-shim", optional = true }
+
+[features]
+mbedtls = ["dep:mbedtls-ffi-shim"]

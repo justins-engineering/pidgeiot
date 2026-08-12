@@ -19,6 +19,8 @@ mod coap;
 mod config;
 mod dtls;
 mod dtls_common;
+#[cfg(feature = "mbedtls")]
+mod dtls_mbed;
 mod handler;
 mod psk;
 mod quota;
@@ -27,8 +29,10 @@ mod tls_tcp;
 mod upstream;
 
 use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, DtlsStack};
 use crate::handler::Handler;
 use crate::psk::{DovecotePskSource, PskResolver};
 use crate::quota::{ConnQuota, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
@@ -74,16 +78,41 @@ fn main() -> anyhow::Result<()> {
   // canary listener cannot double any source's share.
   let udp_quota = ConnQuota::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
 
-  let udp = {
-    let config = config.clone();
-    let resolver = resolver.clone();
-    let handler = handler.clone();
-    let rt = runtime.handle().clone();
-    let quota = udp_quota.clone();
-    std::thread::Builder::new()
-      .name("dtls-listener".into())
-      .spawn(move || dtls::run(&config, resolver, handler, rt, quota))?
+  let udp = match config.dtls_stack {
+    DtlsStack::Openssl => {
+      let config = config.clone();
+      let resolver = resolver.clone();
+      let handler = handler.clone();
+      let rt = runtime.handle().clone();
+      let quota = udp_quota.clone();
+      std::thread::Builder::new()
+        .name("dtls-listener".into())
+        .spawn(move || dtls::run(&config, resolver, handler, rt, quota))?
+    }
+    DtlsStack::Mbedtls => spawn_mbed_listener(
+      config.udp_listen.clone(),
+      config.dtls_cid_idle,
+      resolver.clone(),
+      handler.clone(),
+      runtime.handle().clone(),
+      udp_quota.clone(),
+    )?,
   };
+
+  let canary = config
+    .dtls_mbed_canary_addr
+    .as_ref()
+    .map(|addr| {
+      spawn_mbed_listener(
+        addr.clone(),
+        config.dtls_cid_idle,
+        resolver.clone(),
+        handler.clone(),
+        runtime.handle().clone(),
+        udp_quota.clone(),
+      )
+    })
+    .transpose()?;
 
   let tcp = {
     let resolver = resolver.clone();
@@ -94,9 +123,45 @@ fn main() -> anyhow::Result<()> {
       .spawn(move || tls_tcp::run(&config, resolver, handler, rt))?
   };
 
-  // Either listener exiting is fatal -- the container restarts us.
+  // Any listener exiting is fatal -- the service manager restarts us.
   let udp_result = udp.join();
   let tcp_result = tcp.join();
-  tracing::error!(?udp_result, ?tcp_result, "listener exited");
+  let canary_result = canary.map(JoinHandle::join);
+  tracing::error!(?udp_result, ?tcp_result, ?canary_result, "listener exited");
   anyhow::bail!("listener exited");
+}
+
+/// The mbedTLS DTLS listener (primary or canary), present only in
+/// `--features mbedtls` builds -- which every Dockerfile-built binary is.
+/// Refusing to start beats silently serving the wrong stack.
+#[cfg(feature = "mbedtls")]
+fn spawn_mbed_listener(
+  listen: String,
+  cid_idle: Duration,
+  resolver: Arc<PskResolver>,
+  handler: Arc<Handler<Dovecote>>,
+  rt: tokio::runtime::Handle,
+  quota: ConnQuota,
+) -> anyhow::Result<JoinHandle<()>> {
+  Ok(
+    std::thread::Builder::new()
+      .name("dtls-mbed-listener".into())
+      .spawn(move || dtls_mbed::run(&listen, cid_idle, resolver, handler, rt, quota))?,
+  )
+}
+
+#[cfg(not(feature = "mbedtls"))]
+fn spawn_mbed_listener(
+  listen: String,
+  _cid_idle: Duration,
+  _resolver: Arc<PskResolver>,
+  _handler: Arc<Handler<Dovecote>>,
+  _rt: tokio::runtime::Handle,
+  _quota: ConnQuota,
+) -> anyhow::Result<JoinHandle<()>> {
+  anyhow::bail!(
+    "the mbedTLS DTLS listener ({listen}) was requested, but this binary was built without \
+     the `mbedtls` feature -- build via loft/Dockerfile (or `--features mbedtls` with \
+     libmbedtls-dev installed)"
+  )
 }
