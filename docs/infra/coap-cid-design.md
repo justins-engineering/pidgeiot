@@ -202,7 +202,12 @@ Demux order per datagram, inspecting only the first record's header:
    device handed a still-mapped ip:port by its NAT used to be deaf until the old session
    idled out) as a side effect. The `established` guard is what makes it safe: during a
    lossy in-flight handshake, a retransmitted cookied ClientHello still routes to the
-   session that owns it. Otherwise push to the session channel as today.
+   session that owns it. Stated plainly so nobody rediscovers it as a bug: during that
+   pre-`established` window a *spoofed* plaintext ClientHello from the mapped address is
+   also fed to the in-flight session, where it is DTLS flight-machinery noise — it cannot
+   evict the handshake, cannot complete one (the cookie never re-runs on a promoted
+   context), and costs at most a retransmitted server flight. Otherwise push to the
+   session channel as today.
 3. **Miss** → the stateless pending-listen path.
 
 ### Pending listen, cookies, HelloVerifyRequest
@@ -351,6 +356,13 @@ mirroring `PSK_CIPHER_LIST`; `mbedtls_ssl_conf_cid(conf, 8, MBEDTLS_SSL_UNEXPECT
 left at their defaults (on and off respectively). 8-byte CIDs are comfortably under the
 device's 32-byte echo cap and cheap on constrained uplinks (+8 bytes per record).
 
+One deliberate behavior delta at cutover: mbedTLS selects ciphersuites in **server**
+preference order, where the OpenSSL listener's default follows the client's. The fleet pins
+CCM8 first on both ends, so nothing changes for it — but a third-party client that prefers
+GCM while also offering CCM8 negotiated GCM against the OpenSSL listener and will negotiate
+CCM8 against this one. Both are in the pinned suite list; noted so a post-cutover suite
+change in a foreign client's logs reads as this, not as a defect.
+
 ### Deadlines, eviction, limits
 
 `HANDSHAKE_DEADLINE` 30s, `READ_TICK` 1s, channel depth 32, dedup 150s/256, all connection
@@ -450,9 +462,13 @@ Zero intended behavior change; any anomaly → reinstall `loft.prev`.
 
 **Phase 3 — canary listener.** Systemd drop-in adds
 `Environment=LOFT_DTLS_MBED_CANARY_ADDR=0.0.0.0:5685`; a time-boxed `INPUT` accept for
-5685/udp, source-restricted to the test client's egress address where practical (the port
-carries only a dedicated test pigeon's traffic either way, and DTLS-PSK remains the access
-control). Because the canary is the same process on the same host, its PSK lookups egress
+5685/udp, **source-restricted to the test client's egress address as a required
+precondition, not a nicety**: the canary deliberately shares the primary listener's
+`ConnQuota`, and promotion charges a permit at cookie verification — before any PSK check —
+so an attacker completing cookie exchanges against an open 5685 could drain the shared
+4096-permit table and starve the production listener on 5684. The source restriction is
+what keeps the canary's added pre-auth surface at zero; DTLS-PSK then gates everything
+past it. Because the canary is the same process on the same host, its PSK lookups egress
 from the VPS's own address — already in `COAP_SERVICE_ALLOWED_IPS`, so no dovecote change.
 Drive the full rebind harness against it from the dev box (real dovecote, dedicated test
 pigeon), then the hardware pass (below) at a 60s cadence for ≥72h with forced rebinds. Watch
