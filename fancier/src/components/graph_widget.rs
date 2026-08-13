@@ -752,7 +752,7 @@ fn GraphCard(
         }
         div { class: "flex items-center gap-2 flex-wrap",
           select {
-            class: "select select-bordered select-sm",
+            class: "select select-bordered select-sm sm:w-32",
             title: "{def.kind.describes()}",
             "aria-label": "Chart type",
             value: "{def.kind.label()}",
@@ -771,7 +771,7 @@ fn GraphCard(
             }
           }
           select {
-            class: "select select-bordered select-sm",
+            class: "select select-bordered select-sm sm:w-40",
             "aria-label": "Time range",
             value: "{def.range.label()}",
             onchange: {

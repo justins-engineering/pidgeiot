@@ -323,6 +323,22 @@ fn bar_path(x: f64, width: f64, y_base: f64, y_cap: f64) -> String {
   }
 }
 
+/// Places a series' end label beside its last mark, flipping it to the
+/// mark's left when the text would otherwise run past the plot. Width is
+/// estimated from the character count rather than measured -- there is no
+/// text metrics API in SVG without a DOM round trip, and over-estimating
+/// only flips the label a little early, whereas the alternative is a label
+/// sliced off at the canvas edge.
+fn end_label_position(label: &str, mark_x: f64) -> (f64, &'static str) {
+  const CHAR_W: f64 = 5.6;
+  let estimated = label.chars().count() as f64 * CHAR_W;
+  if mark_x + 8.0 + estimated > CANVAS_W - MARGIN_RIGHT {
+    (mark_x - 8.0, "end")
+  } else {
+    (mark_x + 8.0, "start")
+  }
+}
+
 /// Per-slot marker shapes, in the same fixed order as the hues. This is the
 /// secondary encoding `MAX_SCATTER_SERIES` refers to: on an all-pairs form
 /// hue alone is not guaranteed to separate every pair under CVD, so shape
@@ -367,6 +383,11 @@ fn marker_path(slot: usize, cx: f64, cy: f64, r: f64) -> String {
 /// than a raw sample the reader cannot see on the chart.
 struct Prepared {
   series: Vec<ChartSeries>,
+  /// Bar only: how many buckets the range was cut into. Bar geometry needs
+  /// the bucket count itself, not the number of buckets that happened to
+  /// receive a sample -- deriving the slot width from the latter would
+  /// widen every bar as soon as one bucket came back empty.
+  slots: Option<usize>,
   /// Series the kind could not honestly carry, dropped from the tail.
   dropped: usize,
   /// The transform, stated plainly, when there was one worth disclosing.
@@ -398,6 +419,7 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
       let width = ((t_max - t_min).max(1) as f64 / buckets as f64).round() as i64;
       Prepared {
         series: bucket_series(&kept, t_min, t_max, buckets),
+        slots: Some(buckets),
         dropped,
         note: Some(format!(
           "Mean per {} bucket. A bucket nothing was reported in is left empty, not drawn as zero.",
@@ -417,6 +439,7 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
               points: s.points.into_iter().step_by(stride).collect(),
             })
             .collect(),
+          slots: None,
           dropped,
           note: Some(format!(
             "Every {stride}th sample is drawn — the full range is too dense to plot one mark each. The table view is unstrided."
@@ -425,6 +448,7 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
       } else {
         Prepared {
           series: kept,
+          slots: None,
           dropped,
           note: None,
         }
@@ -432,6 +456,7 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
     }
     _ => Prepared {
       series: kept,
+      slots: None,
       dropped,
       note: None,
     },
@@ -535,7 +560,14 @@ pub fn TelemetryChart(
   };
   let v_span = (v_max - v_min).max(f64::EPSILON);
 
-  let x_of = move |t: i64| MARGIN_LEFT + ((t - t_min) as f64 / t_span) * plot_w;
+  // Bars are centred on their bucket, so the first and last would hang half
+  // their width into the axis gutter on a scale that runs edge to edge. The
+  // bar scale is inset by half a slot instead; every other kind marks a
+  // point, which has no width to spill.
+  let bucket_slot = prepared.slots.map(|n| plot_w / n as f64).unwrap_or(0.0);
+  let x_inset = bucket_slot / 2.0;
+  let x_span_px = plot_w - 2.0 * x_inset;
+  let x_of = move |t: i64| MARGIN_LEFT + x_inset + ((t - t_min) as f64 / t_span) * x_span_px;
   let y_of = move |v: f64| MARGIN_TOP + (1.0 - (v - v_min) / v_span) * plot_h;
   let y_zero = y_of(0.0);
 
@@ -554,7 +586,6 @@ pub fn TelemetryChart(
 
   // Bars share each bucket slot between the series, leaving the slot's
   // outer fifth as air and a surface gap between neighbours.
-  let bucket_slot = plot_w / (drawn.iter().map(|s| s.points.len()).max().unwrap_or(1) as f64);
   let band = bucket_slot * 0.8;
   let bar_w = ((band - SURFACE_GAP * (drawn.len().saturating_sub(1)) as f64) / drawn.len() as f64)
     .clamp(0.5, MAX_BAR_WIDTH);
@@ -672,10 +703,13 @@ pub fn TelemetryChart(
                   stroke_width: "1.5",
                   stroke_dasharray: "5 4",
                 }
+                // Left-anchored: the right edge belongs to the series' own
+                // end marker and direct label, and on a narrow viewport the
+                // right edge is the part scrolled out of sight.
                 text {
-                  x: "{CANVAS_W - MARGIN_RIGHT - 2.0}",
+                  x: "{MARGIN_LEFT + 4.0}",
                   y: "{(y_of(r.value) - 4.0).max(MARGIN_TOP + 8.0)}",
-                  text_anchor: "end",
+                  text_anchor: "start",
                   font_size: "9",
                   fill: "var(--chart-ink-secondary)",
                   "{r.label}"
@@ -793,13 +827,23 @@ pub fn TelemetryChart(
                 // latest value ride the mark itself instead.
                 if !show_legend {
                   if let Some((t , v)) = s.points.last() {
-                    text {
-                      x: "{(x_of(*t) + 8.0).min(CANVAS_W - MARGIN_RIGHT)}",
-                      y: "{y_of(*v) - 8.0}",
-                      text_anchor: if kind == ChartKind::Bar { "middle" } else { "start" },
-                      font_size: "10",
-                      fill: "var(--chart-ink-secondary)",
-                      "{s.key}: {format_value(*v)}"
+                    {
+                        let label = format!("{}: {}", s.key, format_value(*v));
+                        let (x, anchor) = end_label_position(&label, x_of(*t));
+                        let y = (y_of(*v) - 8.0).clamp(
+                            MARGIN_TOP + 9.0,
+                            CANVAS_H - MARGIN_BOTTOM - 4.0,
+                        );
+                        rsx! {
+                          text {
+                            x: "{x}",
+                            y: "{y}",
+                            text_anchor: "{anchor}",
+                            font_size: "10",
+                            fill: "var(--chart-ink-secondary)",
+                            "{label}"
+                          }
+                        }
                     }
                   }
                 }
