@@ -1138,6 +1138,296 @@ pub struct OrgRoleEntry {
   pub role: OrgRole,
 }
 
+// --- Billing (Stripe) ---
+//
+// Billing attaches to `organizations`, not to `flocks`: an org is the only
+// entity that already survives a change of individual owner and can hold a
+// team's payment relationship. Usage aggregation stays in our own Postgres
+// and Stripe's meter is a reporting sink, so nothing here treats Stripe as
+// authoritative for anything we can compute ourselves -- these types carry
+// only the state Stripe genuinely owns (who the customer is, whether the
+// subscription is paid, when the period rolls).
+
+/// The five subscription tiers. Stored lowercase in `organizations.plan`,
+/// serialized lowercase on the wire. `Perch` is the free tier and the
+/// resting state of an org that has never subscribed.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingPlan {
+  #[default]
+  Perch,
+  Builder,
+  Growth,
+  Scale,
+  Fleet,
+}
+
+impl BillingPlan {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      BillingPlan::Perch => "perch",
+      BillingPlan::Builder => "builder",
+      BillingPlan::Growth => "growth",
+      BillingPlan::Scale => "scale",
+      BillingPlan::Fleet => "fleet",
+    }
+  }
+
+  /// Devices included before per-device overage applies. Perch is a hard
+  /// cap rather than an overage floor -- the free tier never bills, it
+  /// stops.
+  pub fn included_devices(&self) -> i64 {
+    match self {
+      BillingPlan::Perch => 10,
+      BillingPlan::Builder => 50,
+      BillingPlan::Growth => 250,
+      BillingPlan::Scale => 1_500,
+      BillingPlan::Fleet => 10_000,
+    }
+  }
+
+  /// Pooled device->platform messages included per month, account-wide.
+  /// Counts telemetry reports, shadow report-backs and log uploads; shadow
+  /// polls, firmware chunks, dashboard calls and WebSocket pings are not
+  /// billable and never counted.
+  pub fn included_messages(&self) -> i64 {
+    match self {
+      BillingPlan::Perch => 300_000,
+      BillingPlan::Builder => 1_500_000,
+      BillingPlan::Growth => 7_500_000,
+      BillingPlan::Scale => 45_000_000,
+      BillingPlan::Fleet => 300_000_000,
+    }
+  }
+
+  /// Whether exceeding the message allowance bills overage or pauses
+  /// ingestion. The free tier has no payment method to bill, so it is the
+  /// one tier that must stop instead.
+  pub fn bills_overage(&self) -> bool {
+    !matches!(self, BillingPlan::Perch)
+  }
+}
+
+impl std::str::FromStr for BillingPlan {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "perch" => Ok(BillingPlan::Perch),
+      "builder" => Ok(BillingPlan::Builder),
+      "growth" => Ok(BillingPlan::Growth),
+      "scale" => Ok(BillingPlan::Scale),
+      "fleet" => Ok(BillingPlan::Fleet),
+      other => Err(format!("invalid billing plan '{other}'")),
+    }
+  }
+}
+
+impl std::fmt::Display for BillingPlan {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// Mirrors Stripe's own subscription status vocabulary verbatim, plus
+/// `None` for an org that has never had a subscription. Kept verbatim
+/// rather than collapsed into "paid/unpaid" because dunning distinguishes
+/// them: `PastDue` is a customer Stripe is still retrying, `Unpaid` is one
+/// it has given up on, and treating those the same would either cut off a
+/// recoverable customer or keep serving an unrecoverable one.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionStatus {
+  #[default]
+  None,
+  Incomplete,
+  IncompleteExpired,
+  Trialing,
+  Active,
+  PastDue,
+  Canceled,
+  Unpaid,
+  Paused,
+}
+
+impl SubscriptionStatus {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      SubscriptionStatus::None => "none",
+      SubscriptionStatus::Incomplete => "incomplete",
+      SubscriptionStatus::IncompleteExpired => "incomplete_expired",
+      SubscriptionStatus::Trialing => "trialing",
+      SubscriptionStatus::Active => "active",
+      SubscriptionStatus::PastDue => "past_due",
+      SubscriptionStatus::Canceled => "canceled",
+      SubscriptionStatus::Unpaid => "unpaid",
+      SubscriptionStatus::Paused => "paused",
+    }
+  }
+
+  /// Whether a paid tier's entitlements should currently be served.
+  /// `PastDue` stays entitled deliberately: Stripe is still retrying the
+  /// card, and cutting a fleet of devices off mid-dunning turns a recovered
+  /// payment into a churned customer.
+  pub fn is_entitled(&self) -> bool {
+    matches!(
+      self,
+      SubscriptionStatus::Trialing | SubscriptionStatus::Active | SubscriptionStatus::PastDue
+    )
+  }
+}
+
+impl std::str::FromStr for SubscriptionStatus {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "none" => Ok(SubscriptionStatus::None),
+      "incomplete" => Ok(SubscriptionStatus::Incomplete),
+      "incomplete_expired" => Ok(SubscriptionStatus::IncompleteExpired),
+      "trialing" => Ok(SubscriptionStatus::Trialing),
+      "active" => Ok(SubscriptionStatus::Active),
+      "past_due" => Ok(SubscriptionStatus::PastDue),
+      "canceled" => Ok(SubscriptionStatus::Canceled),
+      "unpaid" => Ok(SubscriptionStatus::Unpaid),
+      "paused" => Ok(SubscriptionStatus::Paused),
+      other => Err(format!("invalid subscription status '{other}'")),
+    }
+  }
+}
+
+impl std::fmt::Display for SubscriptionStatus {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// One price on a subscription item, as Stripe sends it. Only the two
+/// fields that identify which tier was bought are modeled; everything else
+/// on a Stripe price is Stripe's to know.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StripePriceRow {
+  #[serde(default)]
+  pub id: String,
+  /// The stable, human-chosen handle set when the price is created. This is
+  /// what maps a Stripe price back to a `BillingPlan`, in preference to the
+  /// generated `id`, so re-creating a price at a new amount doesn't orphan
+  /// every subscription on it.
+  #[serde(default)]
+  pub lookup_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StripeSubscriptionItemRow {
+  #[serde(default)]
+  pub price: StripePriceRow,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StripeSubscriptionItemsRow {
+  #[serde(default)]
+  pub data: Vec<StripeSubscriptionItemRow>,
+}
+
+/// A Stripe subscription object as it arrives on the wire -- the `*Row`
+/// half of the pair, in the same sense as `PigeonRow`/`PigeonShadowRow`:
+/// timestamps are unix-epoch integers and `status` is a bare string,
+/// because that is what the source hands us. `OrganizationBilling` below is
+/// the RFC 3339 / typed-enum public variant, produced by the `From` impl.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StripeSubscriptionRow {
+  pub id: String,
+  pub customer: String,
+  #[serde(default)]
+  pub status: String,
+  #[serde(default)]
+  pub current_period_start: Option<i64>,
+  #[serde(default)]
+  pub current_period_end: Option<i64>,
+  #[serde(default)]
+  pub cancel_at_period_end: bool,
+  #[serde(default)]
+  pub items: StripeSubscriptionItemsRow,
+  #[serde(default)]
+  pub metadata: std::collections::HashMap<String, String>,
+}
+
+impl StripeSubscriptionRow {
+  /// Which tier this subscription sells, from `metadata.plan` first and the
+  /// first item's price `lookup_key` second. `None` means the subscription
+  /// named neither, in which case the caller must leave the org's stored
+  /// plan alone -- guessing would silently downgrade a paying customer on a
+  /// provisioning typo.
+  pub fn plan(&self) -> Option<BillingPlan> {
+    self
+      .metadata
+      .get("plan")
+      .and_then(|raw| raw.parse().ok())
+      .or_else(|| {
+        self
+          .items
+          .data
+          .first()
+          .and_then(|item| item.price.lookup_key.as_deref())
+          .and_then(|key| key.parse().ok())
+      })
+  }
+}
+
+/// An organization's billing state: everything Stripe owns about the
+/// subscription, in the shapes the rest of the codebase uses. `plan` is
+/// optional for the reason given on `StripeSubscriptionRow::plan`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationBilling {
+  pub plan: Option<BillingPlan>,
+  pub status: SubscriptionStatus,
+  pub stripe_customer_id: Option<String>,
+  pub stripe_subscription_id: Option<String>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub current_period_start: Option<OffsetDateTime>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub current_period_end: Option<OffsetDateTime>,
+  pub cancel_at_period_end: bool,
+}
+
+impl Default for OrganizationBilling {
+  fn default() -> Self {
+    OrganizationBilling {
+      plan: Some(BillingPlan::Perch),
+      status: SubscriptionStatus::None,
+      stripe_customer_id: None,
+      stripe_subscription_id: None,
+      current_period_start: None,
+      current_period_end: None,
+      cancel_at_period_end: false,
+    }
+  }
+}
+
+impl From<StripeSubscriptionRow> for OrganizationBilling {
+  fn from(row: StripeSubscriptionRow) -> Self {
+    let plan = row.plan();
+    OrganizationBilling {
+      plan,
+      // An unrecognized status string means Stripe added a state we don't
+      // model yet. Falling back to `None` would read as "never subscribed"
+      // and strip entitlements from a live customer, so hold `Incomplete`
+      // instead: unentitled, but visibly a subscription in a state needing
+      // a human.
+      status: row.status.parse().unwrap_or(SubscriptionStatus::Incomplete),
+      stripe_customer_id: Some(row.customer),
+      stripe_subscription_id: Some(row.id),
+      current_period_start: row
+        .current_period_start
+        .and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
+      current_period_end: row
+        .current_period_end
+        .and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
+      cancel_at_period_end: row.cancel_at_period_end,
+    }
+  }
+}
+
 /// Internal wire shape for the CoAP terminator's PSK resolution call --
 /// dovecote's `GET /internal/coap-psk/:identity` (service-secret gated,
 /// never CORS-exposed to browsers) returns this to `loft` (and only to
@@ -1154,4 +1444,85 @@ pub struct CoapPskLookup {
   pub identity: String,
   pub secret: String,
   pub token: String,
+}
+
+#[cfg(test)]
+mod billing_tests {
+  use super::{BillingPlan, OrganizationBilling, StripeSubscriptionRow, SubscriptionStatus};
+
+  fn subscription_json(extra: &str) -> StripeSubscriptionRow {
+    serde_json::from_str(&format!(
+      r#"{{"id":"sub_123","customer":"cus_123","status":"active",
+          "current_period_start":1754956800,"current_period_end":1757635200,
+          "cancel_at_period_end":false{extra}}}"#
+    ))
+    .expect("subscription fixture should deserialize")
+  }
+
+  #[test]
+  fn plan_comes_from_metadata_first() {
+    let row = subscription_json(
+      r#","metadata":{"plan":"growth"},
+         "items":{"data":[{"price":{"id":"price_1","lookup_key":"scale"}}]}"#,
+    );
+    assert_eq!(row.plan(), Some(BillingPlan::Growth));
+  }
+
+  #[test]
+  fn plan_falls_back_to_price_lookup_key() {
+    let row =
+      subscription_json(r#","items":{"data":[{"price":{"id":"price_1","lookup_key":"fleet"}}]}"#);
+    assert_eq!(row.plan(), Some(BillingPlan::Fleet));
+  }
+
+  #[test]
+  fn unnamed_or_unknown_plan_stays_none_rather_than_guessing() {
+    assert_eq!(subscription_json("").plan(), None);
+    assert_eq!(
+      subscription_json(r#","metadata":{"plan":"enterprise"}"#).plan(),
+      None
+    );
+    assert_eq!(
+      subscription_json(r#","items":{"data":[{"price":{"id":"price_1"}}]}"#).plan(),
+      None
+    );
+  }
+
+  #[test]
+  fn row_converts_to_typed_public_variant() {
+    let billing: OrganizationBilling =
+      subscription_json(r#","metadata":{"plan":"builder"}"#).into();
+    assert_eq!(billing.plan, Some(BillingPlan::Builder));
+    assert_eq!(billing.status, SubscriptionStatus::Active);
+    assert_eq!(billing.stripe_customer_id.as_deref(), Some("cus_123"));
+    assert_eq!(billing.stripe_subscription_id.as_deref(), Some("sub_123"));
+    assert_eq!(
+      billing.current_period_end.map(|t| t.unix_timestamp()),
+      Some(1757635200)
+    );
+    assert!(billing.status.is_entitled());
+  }
+
+  #[test]
+  fn unknown_status_holds_unentitled_instead_of_reading_as_never_subscribed() {
+    let mut row = subscription_json("");
+    row.status = "some_future_state".into();
+    let billing: OrganizationBilling = row.into();
+    assert_eq!(billing.status, SubscriptionStatus::Incomplete);
+    assert!(!billing.status.is_entitled());
+    assert_ne!(billing.status, SubscriptionStatus::None);
+  }
+
+  #[test]
+  fn past_due_stays_entitled_while_stripe_retries() {
+    assert!(SubscriptionStatus::PastDue.is_entitled());
+    assert!(!SubscriptionStatus::Unpaid.is_entitled());
+    assert!(!SubscriptionStatus::Canceled.is_entitled());
+  }
+
+  #[test]
+  fn free_tier_pauses_rather_than_billing_overage() {
+    assert!(!BillingPlan::Perch.bills_overage());
+    assert!(BillingPlan::Builder.bills_overage());
+  }
 }
