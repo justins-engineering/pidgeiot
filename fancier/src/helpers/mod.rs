@@ -34,6 +34,8 @@ pub mod dict_log;
 
 pub mod gps_track;
 
+pub mod graph_store;
+
 mod timer;
 pub use timer::sleep_ms;
 

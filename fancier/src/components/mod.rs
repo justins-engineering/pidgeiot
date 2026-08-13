@@ -28,7 +28,7 @@ mod connector_badge;
 pub use connector_badge::ConnectorBadge;
 
 mod telemetry_chart;
-pub use telemetry_chart::{ChartSeries, TelemetryChart};
+pub use telemetry_chart::{ChartKind, ChartSeries, TelemetryChart};
 
 mod graph_widget;
 pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs};

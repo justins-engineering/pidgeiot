@@ -17,6 +17,7 @@
 // just the SVG + DaisyUI presentation over them, the same split
 // `telemetry_chart.rs`/`graph_widget.rs` already use.
 use crate::api::telemetry;
+use crate::components::ChartKind;
 use crate::components::graph_widget::{GraphDef, TimeRange};
 use crate::components::telemetry_chart::format_time;
 use crate::helpers::gps_track::{self, Bounds, GpsFix, TrackProjector, current_position_line};
@@ -304,6 +305,7 @@ pub fn TrackWidget(
                       title: "Speed".to_string(),
                       keys: vec![gps_track::KEY_SPEED_MPS.to_string()],
                       range: range(),
+                      kind: ChartKind::default(),
                   });
           },
           "+ Speed graph"
@@ -318,6 +320,7 @@ pub fn TrackWidget(
                       title: "Altitude".to_string(),
                       keys: vec![gps_track::KEY_ALT_M.to_string()],
                       range: range(),
+                      kind: ChartKind::default(),
                   });
           },
           "+ Altitude graph"

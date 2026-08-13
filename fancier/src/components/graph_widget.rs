@@ -8,9 +8,10 @@
 // instead (see `SeriesOutcome`).
 use crate::LocalSession;
 use crate::api::telemetry;
-use crate::components::{ChartSeries, TelemetryChart};
+use crate::components::telemetry_chart::format_duration;
+use crate::components::{ChartKind, ChartSeries, TelemetryChart};
+use crate::helpers::graph_store::{self, GraphScope};
 use crate::helpers::{connection_state, gps_track, is_page_hidden, sleep_ms};
-use crate::local_storage;
 use capsules::{TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -20,22 +21,25 @@ use std::collections::BTreeMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// Persisted client-side only (localStorage v1, see local_storage.rs) —
-/// deliberately NOT a server round trip yet. Server-side persistence (so a
-/// user's graphs follow them across browsers) is a later upgrade once
-/// there's a natural place to hang per-user dashboard config on the
-/// Pigeon/Flock API; today capsules has nothing like it, and adding one is
-/// out of scope for this pass (capsules is owned by the dovecote agent this
-/// cycle).
+/// One saved graph. Persisted client-side only for now; see
+/// `helpers::graph_store` for where that is, why, and what a move to the
+/// backend would and would not involve.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GraphDef {
   pub id: String,
   pub title: String,
   /// Pigeon scope: one series per key. Flock scope: exactly one key,
-  /// plotted as one series per pigeon in the flock (see `DataSource::Flock`
+  /// plotted as one series per pigeon in the flock (see `GraphScope::Flock`
   /// handling in `fetch_series`).
   pub keys: Vec<String>,
   pub range: TimeRange,
+  /// `#[serde(default)]` is load-bearing rather than tidy: a graph saved
+  /// before this field existed carries no `kind`, and without the default
+  /// its whole scope fails to deserialize and reads back as no graphs at
+  /// all. `Line` is the default precisely because it is what those graphs
+  /// were already being drawn as.
+  #[serde(default)]
+  pub kind: ChartKind,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,26 +88,39 @@ impl TimeRange {
   }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum DataSource {
-  Pigeon(String),
-  Flock(Uuid),
-}
-
 fn now() -> OffsetDateTime {
   OffsetDateTime::now_utc()
 }
 
-fn storage_key(scope: &str, id: &str) -> String {
-  format!("pidgeiot.graphs.v1.{scope}.{id}")
-}
+/// The reporting cadence at or above which a straight line between two
+/// samples is claiming more than the data supports. Telemetry is sampled,
+/// not continuous: at 30-second reporting the gaps are short enough that
+/// reading a line as "roughly what it was doing" is fair, but at five
+/// minutes and up the interpolation is drawing minutes of movement nobody
+/// measured, and a step -- which holds the last reading until the next one
+/// arrives -- is the shape that says only what was actually reported.
+const STEP_RECOMMENDED_INTERVAL_SECS: i64 = 300;
 
-fn load_graphs(scope: &str, id: &str) -> Vec<GraphDef> {
-  local_storage::load(&storage_key(scope, id)).unwrap_or_default()
-}
-
-fn save_graphs(scope: &str, id: &str, graphs: &[GraphDef]) {
-  local_storage::save(&storage_key(scope, id), &graphs);
+/// Suggests a chart kind for a *new* graph, with the reason to show the
+/// user. Deliberately separate from `ChartKind::default()`, which is pinned
+/// to `Line` for deserializing already-saved graphs: this is advice at
+/// creation time, and it comes with its evidence rather than quietly
+/// preselecting something surprising.
+///
+/// Only cadence is used, because cadence is the one thing we actually know
+/// about a key before plotting it. `None` (no configured interval) yields
+/// no recommendation at all -- guessing from a key's name would be
+/// inventing a signal.
+fn recommended_kind(interval_secs: Option<i64>) -> Option<(ChartKind, String)> {
+  let secs = interval_secs.filter(|s| *s >= STEP_RECOMMENDED_INTERVAL_SECS)?;
+  Some((
+    ChartKind::Step,
+    format!(
+      "Step is preselected: this pigeon reports every {}, so a line between two readings would draw {} of movement nobody measured.",
+      format_duration(secs),
+      format_duration(secs)
+    ),
+  ))
 }
 
 /// Deterministic per-key pseudo-random walk so the same key always renders
@@ -152,12 +169,12 @@ enum SeriesOutcome {
   Preview(Vec<ChartSeries>),
 }
 
-async fn fetch_series(source: &DataSource, def: &GraphDef) -> SeriesOutcome {
+async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
   let until = now();
   let since = until - time::Duration::seconds(def.range.seconds());
 
   match source {
-    DataSource::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
+    GraphScope::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
       Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
         series: series_from_history(&def.keys, &history.points),
         truncated: history.truncated.unwrap_or(false),
@@ -174,7 +191,7 @@ async fn fetch_series(source: &DataSource, def: &GraphDef) -> SeriesOutcome {
           .collect(),
       ),
     },
-    DataSource::Flock(flock_id) => {
+    GraphScope::Flock(flock_id) => {
       match telemetry::get_flock_history(flock_id, since, until).await {
         Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
           series: series_from_flock_history(&def.keys, &history.points),
@@ -320,13 +337,17 @@ pub fn PigeonGraphs(
   /// implying the device has gone quiet.
   forwarding_to: Option<String>,
 ) -> Element {
-  let mut graphs = use_signal(|| load_graphs("pigeon", &pigeon_id));
+  let scope = GraphScope::Pigeon(pigeon_id.clone());
+  let mut graphs = use_signal({
+    let scope = scope.clone();
+    move || graph_store::load(&scope)
+  });
   let mut show_add = use_signal(|| false);
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
 
   {
-    let pigeon_id = pigeon_id.clone();
+    let scope = scope.clone();
     use_effect(move || {
       if let Some(def) = quick_add() {
         // Idempotent: clicking "+ Speed graph" twice shouldn't create two
@@ -334,7 +355,7 @@ pub fn PigeonGraphs(
         // key set is left alone rather than duplicated.
         if !graphs.read().iter().any(|g| g.keys == def.keys) {
           graphs.write().push(def);
-          save_graphs("pigeon", &pigeon_id, &graphs.read());
+          graph_store::save(&scope, &graphs.read());
         }
         quick_add.set(None);
       }
@@ -394,23 +415,23 @@ pub fn PigeonGraphs(
           GraphCard {
             key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
             def: graph.clone(),
-            source: DataSource::Pigeon(pigeon_id.clone()),
+            source: scope.clone(),
             interval_secs,
             forwarding_to: forwarding_to.clone(),
             on_remove: {
-                let pigeon_id = pigeon_id.clone();
+                let scope = scope.clone();
                 move |id: String| {
                     graphs.write().retain(|g| g.id != id);
-                    save_graphs("pigeon", &pigeon_id, &graphs.read());
+                    graph_store::save(&scope, &graphs.read());
                 }
             },
             on_update: {
-                let pigeon_id = pigeon_id.clone();
+                let scope = scope.clone();
                 move |updated: GraphDef| {
                     if let Some(g) = graphs.write().iter_mut().find(|g| g.id == updated.id) {
                         *g = updated;
                     }
-                    save_graphs("pigeon", &pigeon_id, &graphs.read());
+                    graph_store::save(&scope, &graphs.read());
                 }
             },
           }
@@ -421,12 +442,13 @@ pub fn PigeonGraphs(
         AddGraphModal {
           available_keys: available_keys(),
           multi_select: true,
+          recommendation: recommended_kind(interval_secs),
           on_close: move |_| show_add.set(false),
           on_save: {
-              let pigeon_id = pigeon_id.clone();
+              let scope = scope.clone();
               move |def: GraphDef| {
                   graphs.write().push(def);
-                  save_graphs("pigeon", &pigeon_id, &graphs.read());
+                  graph_store::save(&scope, &graphs.read());
                   show_add.set(false);
               }
           },
@@ -438,8 +460,11 @@ pub fn PigeonGraphs(
 
 #[component]
 pub fn FlockGraphs(flock_id: Uuid) -> Element {
-  let scope_id = flock_id.to_string();
-  let mut graphs = use_signal(|| load_graphs("flock", &scope_id));
+  let scope = GraphScope::Flock(flock_id);
+  let mut graphs = use_signal({
+    let scope = scope.clone();
+    move || graph_store::load(&scope)
+  });
   let mut show_add = use_signal(|| false);
   let local_session = use_context::<LocalSession>();
 
@@ -499,7 +524,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
           GraphCard {
             key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
             def: graph.clone(),
-            source: DataSource::Flock(flock_id),
+            source: scope.clone(),
             // No single pigeon interval at flock scope -- falls back to
             // poll_interval_ms's fixed default. Nor one telemetry endpoint:
             // forwarding is per-pigeon, and a flock chart would need every
@@ -507,19 +532,19 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
             interval_secs: None,
             forwarding_to: None,
             on_remove: {
-                let scope_id = scope_id.clone();
+                let scope = scope.clone();
                 move |id: String| {
                     graphs.write().retain(|g| g.id != id);
-                    save_graphs("flock", &scope_id, &graphs.read());
+                    graph_store::save(&scope, &graphs.read());
                 }
             },
             on_update: {
-                let scope_id = scope_id.clone();
+                let scope = scope.clone();
                 move |updated: GraphDef| {
                     if let Some(g) = graphs.write().iter_mut().find(|g| g.id == updated.id) {
                         *g = updated;
                     }
-                    save_graphs("flock", &scope_id, &graphs.read());
+                    graph_store::save(&scope, &graphs.read());
                 }
             },
           }
@@ -530,12 +555,15 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
         AddGraphModal {
           available_keys: available_keys(),
           multi_select: false,
+          // No per-pigeon reporting cadence at flock scope, so nothing to
+          // base a kind recommendation on -- see `recommended_kind`.
+          recommendation: None,
           on_close: move |_| show_add.set(false),
           on_save: {
-              let scope_id = scope_id.clone();
+              let scope = scope.clone();
               move |def: GraphDef| {
                   graphs.write().push(def);
-                  save_graphs("flock", &scope_id, &graphs.read());
+                  graph_store::save(&scope, &graphs.read());
                   show_add.set(false);
               }
           },
@@ -546,7 +574,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
 }
 
 async fn refresh_outcome(
-  source: &DataSource,
+  source: &GraphScope,
   def: &GraphDef,
   mut outcome: Signal<Option<SeriesOutcome>>,
   mut loading: Signal<bool>,
@@ -577,7 +605,7 @@ async fn refresh_outcome(
 #[component]
 fn GraphCard(
   def: GraphDef,
-  source: DataSource,
+  source: GraphScope,
   interval_secs: Option<i64>,
   forwarding_to: Option<String>,
   on_remove: EventHandler<String>,
@@ -625,9 +653,29 @@ fn GraphCard(
           h3 { class: "font-semibold text-lg", "{def.title}" }
           p { class: "text-xs text-base-content/50", "{def.keys.join(\", \")}" }
         }
-        div { class: "flex items-center gap-2",
+        div { class: "flex items-center gap-2 flex-wrap",
           select {
             class: "select select-bordered select-sm",
+            title: "{def.kind.describes()}",
+            "aria-label": "Chart type",
+            value: "{def.kind.label()}",
+            onchange: {
+                let def = def.clone();
+                move |evt: Event<FormData>| {
+                    if let Some(kind) = ChartKind::from_label(&evt.value()) {
+                        let mut updated = def.clone();
+                        updated.kind = kind;
+                        on_update.call(updated);
+                    }
+                }
+            },
+            for k in ChartKind::ALL {
+              option { value: "{k.label()}", selected: k == def.kind, "{k.label()}" }
+            }
+          }
+          select {
+            class: "select select-bordered select-sm",
+            "aria-label": "Time range",
             value: "{def.range.label()}",
             onchange: {
                 let def = def.clone();
@@ -685,7 +733,7 @@ fn GraphCard(
             p { class: "text-[11px] text-warning/80",
               "Preview data — showing example values until live telemetry history is available here."
             }
-            TelemetryChart { series: series.clone() }
+            TelemetryChart { series: series.clone(), kind: def.kind }
           },
           Some(SeriesOutcome::Live { series, truncated }) => rsx! {
             if *truncated {
@@ -693,7 +741,7 @@ fn GraphCard(
                 "Newest {capsules::TELEMETRY_HISTORY_MAX_POINTS} points only — this range holds more than one response can carry, so its earliest part isn't drawn. Pick a shorter range to see a complete window."
               }
             }
-            TelemetryChart { series: series.clone() }
+            TelemetryChart { series: series.clone(), kind: def.kind }
           },
           Some(SeriesOutcome::Empty) | None => match forwarding_to.as_ref() {
             Some(url) => rsx! {
@@ -722,12 +770,19 @@ fn GraphCard(
 fn AddGraphModal(
   available_keys: Vec<String>,
   multi_select: bool,
+  /// A kind to preselect plus the evidence for it, from
+  /// `recommended_kind`. `None` preselects the plain default and shows no
+  /// justification, because there is nothing to justify.
+  recommendation: Option<(ChartKind, String)>,
   on_close: EventHandler<()>,
   on_save: EventHandler<GraphDef>,
 ) -> Element {
   let mut title = use_signal(String::new);
   let mut selected_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut range = use_signal(|| TimeRange::Last24h);
+  let recommended = recommendation.as_ref().map(|(k, _)| *k);
+  let recommendation_reason = recommendation.map(|(_, reason)| reason);
+  let mut kind = use_signal(|| recommended.unwrap_or_default());
   let can_save = !title.read().trim().is_empty() && !selected_keys.read().is_empty();
 
   rsx! {
@@ -801,6 +856,28 @@ fn AddGraphModal(
           }
 
           div {
+            label { class: "fieldset-legend text-xs font-semibold mb-1", "Chart type" }
+            select {
+              class: "select select-bordered w-full text-sm",
+              value: "{kind().label()}",
+              onchange: move |evt: Event<FormData>| {
+                  if let Some(k) = ChartKind::from_label(&evt.value()) {
+                      kind.set(k);
+                  }
+              },
+              for k in ChartKind::ALL {
+                option { value: "{k.label()}", selected: k == kind(), "{k.label()}" }
+              }
+            }
+            p { class: "text-xs text-base-content/60 mt-1", "{kind().describes()}" }
+            if let Some(reason) = recommendation_reason.as_ref() {
+              if Some(kind()) == recommended {
+                p { class: "text-xs text-base-content/50 mt-1", "{reason}" }
+              }
+            }
+          }
+
+          div {
             label { class: "fieldset-legend text-xs font-semibold mb-1", "Time range" }
             select {
               class: "select select-bordered w-full text-sm",
@@ -829,6 +906,7 @@ fn AddGraphModal(
                     title: title.read().clone(),
                     keys: selected_keys.read().clone(),
                     range: range(),
+                    kind: kind(),
                 };
                 on_save.call(def);
             },
