@@ -37,7 +37,10 @@ pub fn Navbar() -> Element {
 
         // --- Navbar Center: Desktop Links (Hidden when logged in) ---
         if !is_logged_in {
-          div { class: "navbar-center hidden lg:flex",
+          // Seven marketing links plus the two auth buttons need ~1190px;
+          // below xl they collapse into the mobile menu together, which
+          // already carries the same set.
+          div { class: "navbar-center hidden xl:flex",
             ul { class: "menu menu-horizontal px-1 gap-2 text-base font-medium",
               // Conversion-oriented links, ordered by visitor intent: what
               // it does, how it works, who it's for, then see it and build
@@ -98,7 +101,7 @@ pub fn Navbar() -> Element {
         // --- Navbar End: Auth, Theme Toggle & Mobile Menu ---
         div { class: "navbar-end flex items-center gap-2 lg:gap-4",
           // Desktop Auth Actions
-          div { class: "hidden lg:flex items-center gap-4",
+          div { class: "hidden xl:flex items-center gap-4",
             if is_logged_in {
               // --- User Profile Dropdown ---
               div { class: "dropdown dropdown-end",
@@ -182,7 +185,7 @@ pub fn Navbar() -> Element {
           ThemeController {}
 
           // --- Mobile Menu Toggle Button ---
-          div { class: "lg:hidden",
+          div { class: "xl:hidden",
             button {
               class: "btn btn-ghost btn-circle swap swap-rotate",
               class: if is_menu_open() { "swap-active" },
@@ -197,7 +200,7 @@ pub fn Navbar() -> Element {
 
       // --- Mobile Menu Dropdown Overlay ---
       if is_menu_open() {
-        div { class: "lg:hidden bg-base-200/95 backdrop-blur-md border-t border-base-300 shadow-xl absolute w-full left-0",
+        div { class: "xl:hidden bg-base-200/95 backdrop-blur-md border-t border-base-300 shadow-xl absolute w-full left-0",
           ul { class: "menu menu-lg w-full p-4 gap-2",
             // Marketing links (Hidden when logged in)
             if !is_logged_in {
