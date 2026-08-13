@@ -114,13 +114,15 @@ fn Stop(
         div { class: "p-4 rounded-2xl bg-base-300 border border-base-content/10", {icon} }
         span { class: "text-sm font-mono font-bold text-base-content/40", "{number}" }
       }
-      div { class: "min-w-0 flex-1",
+      // w-full is load-bearing: `items-start` sizes a column child to its
+      // max-content width, and the code sample's longest line would drag
+      // the whole text column past the viewport, where it gets clipped
+      // rather than scrolled.
+      div { class: "w-full min-w-0 flex-1",
         h2 { class: "text-2xl md:text-3xl font-bold mb-3", "{title}" }
         p { class: "text-lg text-base-content/70 leading-relaxed max-w-3xl", "{body}" }
         if let Some(sample) = code {
-          // DaisyUI's .mockup-code scrolls horizontally on overflow, which
-          // keeps a long request line from widening the page on mobile.
-          div { class: "mockup-code mt-6 text-sm w-full",
+          div { class: "mockup-code mt-6 text-sm w-full max-w-full overflow-x-auto",
             pre { class: "px-5 whitespace-pre-wrap break-words", code { "{sample}" } }
           }
         }
