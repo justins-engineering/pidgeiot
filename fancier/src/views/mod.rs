@@ -57,6 +57,12 @@ pub use pigeon::PigeonView;
 mod features;
 pub use features::FeaturesPage;
 
+mod how_it_works;
+pub use how_it_works::HowItWorksPage;
+
+mod use_cases;
+pub use use_cases::UseCasesPage;
+
 mod documentation;
 pub use documentation::DocumentationPage;
 

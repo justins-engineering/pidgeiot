@@ -11,9 +11,10 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DocumentationPage, FeaturesPage,
-  Flocks, GettingStartedPage, Index, InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs,
-  PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow,
-  ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, VerificationFlow, Wrapper,
+  Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow, OpenSourcePage,
+  OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow,
+  RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, UseCasesPage,
+  VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -84,6 +85,10 @@ enum Route {
   Architecture {},
   #[route("/features/")]
   FeaturesPage {},
+  #[route("/how-it-works/")]
+  HowItWorksPage {},
+  #[route("/use-cases/")]
+  UseCasesPage {},
   #[route("/documentation/")]
   DocumentationPage {},
   #[route("/getting-started/")]
@@ -342,6 +347,8 @@ mod public_route_trailing_slash {
   both_forms!(about, "/about", AboutUs);
   both_forms!(architecture, "/architecture", Architecture);
   both_forms!(features, "/features", FeaturesPage);
+  both_forms!(how_it_works, "/how-it-works", HowItWorksPage);
+  both_forms!(use_cases, "/use-cases", UseCasesPage);
   both_forms!(documentation, "/documentation", DocumentationPage);
   both_forms!(getting_started, "/getting-started", GettingStartedPage);
   both_forms!(pricing, "/pricing", PricingPage);
