@@ -8,6 +8,9 @@ pub use auth::authenticate_browser;
 mod access;
 pub use access::verify_cf_access;
 
+mod crypto;
+pub use crypto::constant_time_eq;
+
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;

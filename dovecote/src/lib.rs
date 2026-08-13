@@ -1,11 +1,11 @@
 use crate::helpers::{
   PigeonAccess, Principal, accept_invite, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_pigeon_authz, create_flock_alert, create_invite,
-  create_organization, create_pigeon_alert, create_user_flock, delete_alert_definition,
-  delete_organization_if_empty, delete_pigeon_pg_db, get_db_client, get_flock_with_pigeons,
-  get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
-  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
-  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
+  build_invite_url, change_member_role, check_pigeon_authz, constant_time_eq, create_flock_alert,
+  create_invite, create_organization, create_pigeon_alert, create_user_flock,
+  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db, get_db_client,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
+  grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
+  is_demo_pigeon, list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_org_roles, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
@@ -66,18 +66,6 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
     .with_allowed_headers(vec!["Content-Type", "Accept", "Authorization"])
     .with_exposed_headers(vec!["Location"])
     .with_credentials(true)
-}
-
-/// Constant-time byte comparison for the internal service-secret gate
-/// (`GET /internal/coap-psk/:pigeon_id`) -- a plain `==` short-circuits on
-/// the first differing byte, which leaks prefix-match timing to a caller
-/// probing the secret. Length still leaks (unavoidable without padding)
-/// but reveals nothing useful on its own.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-  if a.len() != b.len() {
-    return false;
-  }
-  a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// RFC 9727 API catalog handler for `/.well-known/api-catalog`, shared by
