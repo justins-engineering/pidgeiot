@@ -1401,6 +1401,13 @@ pub struct StripePriceRow {
 pub struct StripeSubscriptionItemRow {
   #[serde(default)]
   pub price: StripePriceRow,
+  /// Stripe API version 2026-07-29.dahlia moved the billing period bounds
+  /// here from the subscription's own top level -- see
+  /// `StripeSubscriptionRow::period_start`.
+  #[serde(default)]
+  pub current_period_start: Option<i64>,
+  #[serde(default)]
+  pub current_period_end: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -1452,6 +1459,32 @@ impl StripeSubscriptionRow {
           .and_then(|key| key.parse().ok())
       })
   }
+
+  /// When the current billing period started, per `plan`'s same
+  /// item-first-then-top-level convention: Stripe API version
+  /// 2026-07-29.dahlia stopped sending this on the subscription itself and
+  /// moved it onto the first item, but an account still pinned to an older
+  /// API version sends it only at the top level, so that's the fallback.
+  /// `items.data` being empty (or lacking the field) falls through the same
+  /// way, rather than panicking.
+  pub fn period_start(&self) -> Option<i64> {
+    self
+      .items
+      .data
+      .first()
+      .and_then(|item| item.current_period_start)
+      .or(self.current_period_start)
+  }
+
+  /// See `period_start`.
+  pub fn period_end(&self) -> Option<i64> {
+    self
+      .items
+      .data
+      .first()
+      .and_then(|item| item.current_period_end)
+      .or(self.current_period_end)
+  }
 }
 
 /// An organization's billing state: everything Stripe owns about the
@@ -1487,6 +1520,10 @@ impl Default for OrganizationBilling {
 impl From<StripeSubscriptionRow> for OrganizationBilling {
   fn from(row: StripeSubscriptionRow) -> Self {
     let plan = row.plan();
+    // Resolved before `row.customer`/`row.id` move below -- both read all
+    // of `row` by reference, so they have to run while it's still whole.
+    let period_start = row.period_start();
+    let period_end = row.period_end();
     OrganizationBilling {
       plan,
       // An unrecognized status string means Stripe added a state we don't
@@ -1497,12 +1534,8 @@ impl From<StripeSubscriptionRow> for OrganizationBilling {
       status: row.status.parse().unwrap_or(SubscriptionStatus::Incomplete),
       stripe_customer_id: Some(row.customer),
       stripe_subscription_id: Some(row.id),
-      current_period_start: row
-        .current_period_start
-        .and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
-      current_period_end: row
-        .current_period_end
-        .and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
+      current_period_start: period_start.and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
+      current_period_end: period_end.and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()),
       cancel_at_period_end: row.cancel_at_period_end,
     }
   }
@@ -1530,10 +1563,14 @@ pub struct CoapPskLookup {
 mod billing_tests {
   use super::{BillingPlan, OrganizationBilling, StripeSubscriptionRow, SubscriptionStatus};
 
+  // No top-level period fields: this is the shape Stripe actually sends
+  // under API version 2026-07-29.dahlia and later, confirmed on a real
+  // delivered `customer.subscription.updated`. Tests that care about the
+  // period fields supply them explicitly, either on an item (current shape)
+  // or at the top level (`legacy_subscription_json`, pre-dahlia shape).
   fn subscription_json(extra: &str) -> StripeSubscriptionRow {
     serde_json::from_str(&format!(
       r#"{{"id":"sub_123","customer":"cus_123","status":"active",
-          "current_period_start":1754956800,"current_period_end":1757635200,
           "cancel_at_period_end":false{extra}}}"#
     ))
     .expect("subscription fixture should deserialize")
@@ -1570,17 +1607,66 @@ mod billing_tests {
 
   #[test]
   fn row_converts_to_typed_public_variant() {
-    let billing: OrganizationBilling =
-      subscription_json(r#","metadata":{"plan":"builder"}"#).into();
+    // Current wire shape: period bounds live on the item, not the
+    // subscription. This is the exact shape a real staging webhook
+    // delivered; a fixture with top-level period fields instead would pass
+    // against code that can no longer read a real payload correctly.
+    let billing: OrganizationBilling = subscription_json(
+      r#","metadata":{"plan":"builder"},
+         "items":{"data":[{"price":{"id":"price_1"},
+           "current_period_start":1754956800,"current_period_end":1757635200}]}"#,
+    )
+    .into();
     assert_eq!(billing.plan, Some(BillingPlan::Builder));
     assert_eq!(billing.status, SubscriptionStatus::Active);
     assert_eq!(billing.stripe_customer_id.as_deref(), Some("cus_123"));
     assert_eq!(billing.stripe_subscription_id.as_deref(), Some("sub_123"));
     assert_eq!(
+      billing.current_period_start.map(|t| t.unix_timestamp()),
+      Some(1754956800)
+    );
+    assert_eq!(
       billing.current_period_end.map(|t| t.unix_timestamp()),
       Some(1757635200)
     );
     assert!(billing.status.is_entitled());
+  }
+
+  #[test]
+  fn period_falls_back_to_subscription_level_for_older_api_versions() {
+    // An account still pinned to a pre-dahlia Stripe API version sends
+    // period bounds only at the top level -- no item carries them at all.
+    let row = subscription_json(
+      r#","current_period_start":1754956800,"current_period_end":1757635200,
+         "items":{"data":[{"price":{"id":"price_1"}}]}"#,
+    );
+    assert_eq!(row.period_start(), Some(1754956800));
+    assert_eq!(row.period_end(), Some(1757635200));
+  }
+
+  #[test]
+  fn period_prefers_item_value_over_subscription_level() {
+    // Both present and disagreeing: the item wins, since that's what the
+    // current API version considers authoritative.
+    let row = subscription_json(
+      r#","current_period_start":1,"current_period_end":2,
+         "items":{"data":[{"price":{"id":"price_1"},
+           "current_period_start":1754956800,"current_period_end":1757635200}]}"#,
+    );
+    assert_eq!(row.period_start(), Some(1754956800));
+    assert_eq!(row.period_end(), Some(1757635200));
+  }
+
+  #[test]
+  fn empty_items_does_not_panic_and_falls_back() {
+    let row = subscription_json(
+      r#","current_period_start":1754956800,"current_period_end":1757635200,
+         "items":{"data":[]}"#,
+    );
+    assert_eq!(row.period_start(), Some(1754956800));
+    assert_eq!(row.period_end(), Some(1757635200));
+    assert_eq!(subscription_json("").period_start(), None);
+    assert_eq!(subscription_json("").period_end(), None);
   }
 
   #[test]
