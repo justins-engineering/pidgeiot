@@ -54,7 +54,7 @@ pub fn FeaturesPage() -> Element {
           },
           eyebrow: "For anyone who's outgrown a spreadsheet of sensor readings",
           title: "Telemetry With Real History, On Your Terms",
-          body: "Devices report flat key/value telemetry over HTTPS or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Don't want us holding your data at all? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports go straight there instead of into the platform's history store.",
+          body: "Devices report flat key/value telemetry over HTTPS or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Want the time series living somewhere else? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports are forwarded straight there instead of into the platform's history store. We still keep the latest value of each key — that's what the dashboard renders and what alerts evaluate against — but the history accumulates in your database, not ours.",
           maturity: None,
         }
 

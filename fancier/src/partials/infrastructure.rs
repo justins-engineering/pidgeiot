@@ -81,7 +81,7 @@ pub fn Infrastructure() -> Element {
             h3 { class: "text-2xl font-bold", "No Telemetry Lock-In" }
           }
           p { class: "leading-relaxed",
-            "Point a device at your own InfluxDB-line-protocol-compatible endpoint and its telemetry goes straight there instead of the platform's built-in history store — your data, your database."
+            "Point a device at your own InfluxDB-line-protocol-compatible endpoint and its telemetry is forwarded straight there instead of into the platform's built-in history store. We keep only the latest value per key for the dashboard and alerts; the history is yours, in your database."
           }
         }
         div {
