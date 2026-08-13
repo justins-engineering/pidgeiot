@@ -3,8 +3,8 @@ use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdBookOpen, LdBuilding2, LdLayoutGrid, LdLogIn, LdMenu, LdMessageSquare, LdRadio,
-  LdRocket, LdSettings, LdSparkles, LdTag, LdUser, LdX,
+  LdBird, LdBookOpen, LdBuilding2, LdLayoutGrid, LdLightbulb, LdLogIn, LdMenu, LdMessageSquare,
+  LdRadio, LdRocket, LdRoute, LdSettings, LdSparkles, LdTag, LdUser, LdX,
 };
 
 #[component]
@@ -39,13 +39,28 @@ pub fn Navbar() -> Element {
         if !is_logged_in {
           div { class: "navbar-center hidden lg:flex",
             ul { class: "menu menu-horizontal px-1 gap-2 text-base font-medium",
-              // Five conversion-oriented links, ordered by visitor intent.
-              // Home is the logo's job; About Us lives in the footer.
+              // Conversion-oriented links, ordered by visitor intent: what
+              // it does, how it works, who it's for, then see it and build
+              // it. Home is the logo's job; About Us lives in the footer.
               li {
                 Link {
                   to: Route::FeaturesPage {},
                   class: "hover:text-primary transition-colors duration-300",
                   "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::HowItWorksPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "How It Works"
+                }
+              }
+              li {
+                Link {
+                  to: Route::UseCasesPage {},
+                  class: "hover:text-primary transition-colors duration-300",
+                  "Use Cases"
                 }
               }
               li {
@@ -195,6 +210,28 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Features"
+                }
+              }
+              li {
+                Link {
+                  to: Route::HowItWorksPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdRoute,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "How It Works"
+                }
+              }
+              li {
+                Link {
+                  to: Route::UseCasesPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdLightbulb,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Use Cases"
                 }
               }
               li {

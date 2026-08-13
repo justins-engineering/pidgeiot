@@ -85,6 +85,30 @@ pub fn Footer() -> Element {
                   li {
                     Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
+                      to: Route::HowItWorksPage {},
+                      Icon {
+                        icon: LdChevronRight,
+                        class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
+                        title: "Chevron right",
+                      }
+                      "How It Works"
+                    }
+                  }
+                  li {
+                    Link {
+                      class: "hover:text-primary transition-colors duration-300 flex items-center group",
+                      to: Route::UseCasesPage {},
+                      Icon {
+                        icon: LdChevronRight,
+                        class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
+                        title: "Chevron right",
+                      }
+                      "Use Cases"
+                    }
+                  }
+                  li {
+                    Link {
+                      class: "hover:text-primary transition-colors duration-300 flex items-center group",
                       to: Route::DemoPage {},
                       Icon {
                         icon: LdChevronRight,
