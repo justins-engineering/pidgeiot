@@ -6,7 +6,7 @@
 use crate::components::{ConnectorBadge, Maturity, MaturityBadge};
 use crate::helpers::connection_state::{self, ConnectionState, ConnectionStateStyle};
 use crate::{Route, api};
-use capsules::{Flock, Pigeon};
+use capsules::{AlertStatus, Flock, Pigeon};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
@@ -35,17 +35,18 @@ pub fn Dashboard() -> Element {
   let pigeons = local.pigeons;
   let mut last_seen: Signal<HashMap<String, OffsetDateTime>> = use_signal(HashMap::new);
   let mut fleet_data_loaded = use_signal(|| false);
-  // Flock-scoped alert count per flock -- deliberately NOT a
-  // fleet-wide total: there is no "list every alert this user owns" route,
-  // only per-pigeon and per-flock listing (dovecote/src/lib.rs's "Alert
-  // Routes"), so a true fleet total would mean fetching every pigeon's own
-  // alerts too -- an N-pigeon fan-out this page's own `MAX_DEVICE_CARDS`
-  // cap and `FLEET_LOOKBACK_HOURS` comment already treat as a cost worth
-  // avoiding for a summary widget. Flock-scoped counts alone are one cheap
-  // call per flock (same shape as the telemetry fetch above), so the card
-  // below is explicit that pigeon-level alerts aren't counted here rather
-  // than silently under-reporting.
-  let mut flock_alert_counts: Signal<HashMap<Uuid, usize>> = use_signal(HashMap::new);
+  // Flock-scoped *firing* alert count per flock -- deliberately NOT a
+  // fleet-wide total: there is no "list every alert's state this user
+  // owns" route, only per-pigeon and per-flock listing (dovecote/src/lib.rs's
+  // "Alert Routes"), so a true fleet total would mean fetching every
+  // pigeon's own alert state too -- an N-pigeon fan-out this page's own
+  // `MAX_DEVICE_CARDS` cap and `FLEET_LOOKBACK_HOURS` comment already treat
+  // as a cost worth avoiding for a summary widget. Flock-scoped state alone
+  // is one cheap call per flock (same shape as the telemetry fetch above,
+  // via `api::alerts::state_flock`), so the card below is explicit that
+  // pigeon-level alerts aren't counted here rather than silently
+  // under-reporting.
+  let mut flock_firing_alert_counts: Signal<HashMap<Uuid, usize>> = use_signal(HashMap::new);
 
   // Populates the two things this page needs that aren't already fetched
   // by the time an authenticated user lands here: each flock's pigeons
@@ -89,13 +90,17 @@ pub fn Dashboard() -> Element {
             .or_insert(seen);
         }
       }
-      if let Some(alerts) = api::alerts::list_flock(flock_id).await {
-        alert_counts.insert(flock_id, alerts.len());
+      if let Some(states) = api::alerts::state_flock(flock_id).await {
+        let firing = states
+          .iter()
+          .filter(|state| state.status == AlertStatus::Firing)
+          .count();
+        alert_counts.insert(flock_id, firing);
       }
     }
 
     last_seen.set(merged);
-    flock_alert_counts.set(alert_counts);
+    flock_firing_alert_counts.set(alert_counts);
     fleet_data_loaded.set(true);
   });
 
@@ -184,7 +189,7 @@ pub fn Dashboard() -> Element {
   flock_list.sort_by_key(|flock| flock.name.to_lowercase());
   drop(flock_map);
 
-  let total_flock_alerts: usize = flock_alert_counts.read().values().sum();
+  let total_firing_flock_alerts: usize = flock_firing_alert_counts.read().values().sum();
 
   rsx! {
     section { id: "dashboard",
@@ -365,10 +370,10 @@ pub fn Dashboard() -> Element {
             // `Beta`, not badge-free: only Threshold conditions are actually
             // evaluated today (device-state alerts save but don't fire yet,
             // see `components::alerts_panel`'s own doc comment), and this
-            // count is flock-scoped alerts only -- there's no "every alert
-            // this user owns" route to total up per-pigeon alerts too
-            // without an expensive per-pigeon fan-out (see the
-            // `flock_alert_counts` comment above).
+            // count is currently-firing, flock-scoped alerts only -- there's
+            // no "every alert this user owns" route to total up per-pigeon
+            // alert state too without an expensive per-pigeon fan-out (see
+            // the `flock_firing_alert_counts` comment above).
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-3",
                 h2 { class: "text-lg font-bold", "Alerts" }
@@ -378,29 +383,29 @@ pub fn Dashboard() -> Element {
                 div { class: "flex justify-center py-6",
                   span { class: "loading loading-spinner loading-sm text-primary" }
                 }
-              } else if total_flock_alerts == 0 {
+              } else if total_firing_flock_alerts == 0 {
                 div { class: "flex flex-col items-center text-center gap-2 py-6",
                   Icon {
                     width: 32,
                     height: 32,
                     icon: LdBellOff,
                     class: "text-base-content/30",
-                    title: "No alerts yet",
+                    title: "No alerts firing",
                   }
                   p { class: "text-sm text-base-content/60 max-w-[22ch]",
-                    "No flock-level alerts defined yet."
+                    "No flock-level alerts are firing right now."
                   }
                   Link {
                     to: Route::Flocks {},
                     class: "link link-hover text-xs text-base-content/60",
-                    "Add one from a flock →"
+                    "Manage alerts in a flock →"
                   }
                 }
               } else {
                 div { class: "flex flex-col gap-2",
                   div { class: "flex items-center justify-between text-sm",
-                    span { class: "text-base-content/70", "Flock-level alerts defined" }
-                    span { class: "font-semibold", "{total_flock_alerts}" }
+                    span { class: "text-base-content/70", "Flock-level alerts firing" }
+                    span { class: "font-semibold", "{total_firing_flock_alerts}" }
                   }
                   p { class: "text-xs text-base-content/50",
                     "Per-pigeon alerts aren't counted here — open a pigeon's own page to see those."

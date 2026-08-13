@@ -69,14 +69,22 @@ pub async fn list_pigeon(pigeon_id: &str) -> Option<Vec<AlertDefinition>> {
 /// separate lifecycles (an alert has no state row until the evaluator has
 /// run once), and a missing row means "never fired", so a stale cached copy
 /// would be worse than a fresh read.
-///
-/// The flock counterpart is deliberately absent here -- that route belongs
-/// to the dashboard's firing-alert count and is being added there.
 pub async fn state_pigeon(pigeon_id: &str) -> Option<Vec<AlertState>> {
   let mut path = String::with_capacity(96);
   path.push_str("/pigeons/");
   path.push_str(pigeon_id);
   path.push_str("/alerts/state");
+
+  let response = fetch_json("GET", &path, None).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  serde_wasm_bindgen::from_value(json).ok()
+}
+
+/// `GET /flocks/:flock_id/alerts/state` -- flock counterpart of
+/// `state_pigeon` above, same reasoning (state is per-pigeon, not cached).
+/// Used by the dashboard's firing-alert count, one call per flock.
+pub async fn state_flock(flock_id: Uuid) -> Option<Vec<AlertState>> {
+  let path = format!("/flocks/{flock_id}/alerts/state");
 
   let response = fetch_json("GET", &path, None).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
