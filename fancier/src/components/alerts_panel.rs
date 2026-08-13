@@ -218,8 +218,8 @@ pub fn FlockAlerts(flock_id: Uuid) -> Element {
     api::alerts::list_flock(flock_id).await;
     let until = time::OffsetDateTime::now_utc();
     let since = until - time::Duration::hours(FLOCK_KEY_LOOKBACK_HOURS);
-    if let Some(points) = api::telemetry::get_flock_history(&flock_id, since, until).await {
-      available_keys.set(numeric_keys_from_history(&points));
+    if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, until).await {
+      available_keys.set(numeric_keys_from_history(&history.points));
     }
   });
 

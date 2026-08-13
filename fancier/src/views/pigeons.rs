@@ -58,8 +58,8 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   use_resource(move || async move {
     let now = time::OffsetDateTime::now_utc();
     let since = now - time::Duration::hours(LIST_LOOKBACK_HOURS);
-    if let Some(points) = api::telemetry::get_flock_history(&flock_id, since, now).await {
-      last_seen_by_pigeon.set(connection_state::latest_seen_by_pigeon(&points));
+    if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, now).await {
+      last_seen_by_pigeon.set(connection_state::latest_seen_by_pigeon(&history.points));
     }
   });
 

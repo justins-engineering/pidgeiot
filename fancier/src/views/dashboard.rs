@@ -77,8 +77,8 @@ pub fn Dashboard() -> Element {
       if !pigeon_ids.is_empty() {
         api::pigeons::list(&pigeon_ids).await;
       }
-      if let Some(points) = api::telemetry::get_flock_history(&flock_id, since, now).await {
-        for (id, seen) in connection_state::latest_seen_by_pigeon(&points) {
+      if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, now).await {
+        for (id, seen) in connection_state::latest_seen_by_pigeon(&history.points) {
           merged
             .entry(id)
             .and_modify(|t| {

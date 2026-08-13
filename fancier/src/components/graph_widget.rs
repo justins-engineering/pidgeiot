@@ -139,7 +139,15 @@ fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
 /// fabricated curves on a real, just-quiet pigeon would be actively
 /// misleading.
 enum SeriesOutcome {
-  Live(Vec<ChartSeries>),
+  Live {
+    series: Vec<ChartSeries>,
+    /// The server hit its own per-response point cap, so this chart is
+    /// showing the newest slice of a longer window than its range claims.
+    /// `TelemetryHistory::truncated`'s "backend didn't say" case collapses
+    /// to `false` here — the warning is only worth showing when we
+    /// positively know the range was cut.
+    truncated: bool,
+  },
   Empty,
   Preview(Vec<ChartSeries>),
 }
@@ -150,9 +158,10 @@ async fn fetch_series(source: &DataSource, def: &GraphDef) -> SeriesOutcome {
 
   match source {
     DataSource::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
-      Some(points) if !points.is_empty() => {
-        SeriesOutcome::Live(series_from_history(&def.keys, &points))
-      }
+      Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
+        series: series_from_history(&def.keys, &history.points),
+        truncated: history.truncated.unwrap_or(false),
+      },
       Some(_) => SeriesOutcome::Empty,
       None => SeriesOutcome::Preview(
         def
@@ -167,9 +176,10 @@ async fn fetch_series(source: &DataSource, def: &GraphDef) -> SeriesOutcome {
     },
     DataSource::Flock(flock_id) => {
       match telemetry::get_flock_history(flock_id, since, until).await {
-        Some(points) if !points.is_empty() => {
-          SeriesOutcome::Live(series_from_flock_history(&def.keys, &points))
-        }
+        Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
+          series: series_from_flock_history(&def.keys, &history.points),
+          truncated: history.truncated.unwrap_or(false),
+        },
         Some(_) => SeriesOutcome::Empty,
         None => {
           let key = def.keys.first().cloned().unwrap_or_default();
@@ -434,8 +444,8 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
     let until = now();
     let since = until - time::Duration::seconds(TimeRange::Last24h.seconds());
     match telemetry::get_flock_history(&flock_id, since, until).await {
-      Some(points) if !points.is_empty() => {
-        let keys = numeric_keys_from_history(&points);
+      Some(history) if !history.points.is_empty() => {
+        let keys = numeric_keys_from_history(&history.points);
         if keys.is_empty() {
           available_keys.set(fallback_keys());
           is_mock_keys.set(true);
@@ -545,7 +555,7 @@ async fn refresh_outcome(
   // otherwise restart the polling loop on its own `set()` below.
   let has_prior_data = matches!(
     outcome.peek().as_ref(),
-    Some(SeriesOutcome::Live(_)) | Some(SeriesOutcome::Empty)
+    Some(SeriesOutcome::Live { .. }) | Some(SeriesOutcome::Empty)
   );
   if !(matches!(fresh, SeriesOutcome::Preview(_)) && has_prior_data) {
     outcome.set(Some(fresh));
@@ -665,7 +675,12 @@ fn GraphCard(
             }
             TelemetryChart { series: series.clone() }
           },
-          Some(SeriesOutcome::Live(series)) => rsx! {
+          Some(SeriesOutcome::Live { series, truncated }) => rsx! {
+            if *truncated {
+              p { class: "text-[11px] text-warning/80",
+                "Newest {capsules::TELEMETRY_HISTORY_MAX_POINTS} points only — this range holds more than one response can carry, so its earliest part isn't drawn. Pick a shorter range to see a complete window."
+              }
+            }
             TelemetryChart { series: series.clone() }
           },
           Some(SeriesOutcome::Empty) | None => rsx! {

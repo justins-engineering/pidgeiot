@@ -67,7 +67,7 @@ pub fn TrackWidget(
         let until = now();
         let since = until - time::Duration::seconds(range().seconds());
         let result = telemetry::get_history(&pigeon_id, since, until).await;
-        fixes.set(result.map(|points| gps_track::gps_fixes_from_history(&points)));
+        fixes.set(result.map(|history| gps_track::gps_fixes_from_history(&history.points)));
         hover_index.set(None);
       }
     });
