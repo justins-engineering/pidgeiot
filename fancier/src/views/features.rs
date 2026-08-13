@@ -26,7 +26,7 @@ pub fn FeaturesPage() -> Element {
         FeatureRow {
           eyebrow: "01 — Identity",
           title: "A key per device, minted where its state lives",
-          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot — only the public key is ever stored. That token is 69 bytes: version, expiry, signature. Authentication costs almost nothing on a metered link.",
+          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot — only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
           body_secondary: rsx! {
             "Refreshing a token overwrites the old public key, which means rotation "
             span { class: "italic", "is" }
@@ -185,7 +185,7 @@ pub fn FeaturesPage() -> Element {
           FeatureCard {
             eyebrow: "06 — Logs",
             title: "Remote logs that fit the link",
-            body: "Structured Zephyr logs ship as dictionary-compressed codes — a fraction of the bytes over cellular — into a rolling per-device buffer you pull on demand.",
+            body: "Structured Zephyr logs ship as dictionary-compressed codes — a fraction of the bytes over cellular — into a rolling per-device buffer you pull on demand. When reading isn't enough, ask a connected device a question directly and get its answer back: the site visit you didn't have to make.",
             visual: rsx! {
               div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
                 p { class: "whitespace-nowrap", "12:04:18 <inf> modem: attach ok, rsrp -91" }
@@ -203,11 +203,12 @@ pub fn FeaturesPage() -> Element {
         div { class: "lg:col-span-7 flex flex-col gap-3",
           h2 { class: "text-2xl md:text-3xl font-bold", "What isn't here yet" }
           p { class: "text-lg leading-relaxed text-base-content/80",
-            "A user-authored rule engine — your own logic running against incoming telemetry at the edge — is designed and not built. We'd rather list it here than imply it ships today. Everything else on this page is running now."
+            "Two things are designed and not built: a user-authored rule engine — your own logic running against incoming telemetry at the edge — and per-flock storage, which would give a fleet a database of its own instead of a shared one. We'd rather list them here than imply they ship today. Everything else on this page is running now."
           }
         }
         div { class: "lg:col-span-5 flex flex-wrap gap-3",
           span { class: "badge badge-ghost font-mono", "rule engine · planned" }
+          span { class: "badge badge-ghost font-mono", "per-flock storage · planned" }
           span { class: "badge badge-ghost font-mono", "beta · pre-revenue" }
         }
       }
