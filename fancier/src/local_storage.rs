@@ -21,3 +21,10 @@ pub fn save<T: Serialize>(key: &str, value: &T) -> Option<()> {
   let raw = serde_json::to_string(value).ok()?;
   storage()?.set_item(key, &raw).ok()
 }
+
+/// For keys that are consumed rather than kept -- a one-shot handoff left
+/// behind after being read would be picked up again by a later, unrelated
+/// visit.
+pub fn remove(key: &str) -> Option<()> {
+  storage()?.remove_item(key).ok()
+}

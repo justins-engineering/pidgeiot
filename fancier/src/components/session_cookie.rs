@@ -1,9 +1,13 @@
-use crate::helpers::{remove_session_cookie, url_query_param, write_session_hint_cookie};
+use crate::helpers::{
+  clear_return_to, remove_session_cookie, take_return_to, url_query_param,
+  write_session_hint_cookie,
+};
 use crate::models::AuthState;
 use crate::{Configuration, Create, Route, Session};
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::to_session;
+use std::str::FromStr;
 
 #[component]
 pub fn SetSessionCookie(state: bool) -> Element {
@@ -33,7 +37,16 @@ pub fn SetSessionCookie(state: bool) -> Element {
             // view stops explaining a sign-out that has been undone.
             session.signed_out.set(false);
             session.state.set(AuthState::Authenticated);
-            nav.replace(Route::Dashboard {});
+            // Signing back in after a session ended mid-visit resumes on
+            // the interrupted page. A stale or hand-edited entry can only
+            // ever name an in-app route, and one that no longer resolves
+            // would land on the 404 view -- worse than the dashboard, so
+            // it falls back instead.
+            let destination = take_return_to()
+              .and_then(|path| Route::from_str(&path).ok())
+              .filter(|route| !matches!(route, Route::PageNotFound { .. }))
+              .unwrap_or(Route::Dashboard {});
+            nav.replace(destination);
           } else {
             error!("Kratos returned a valid session, but missing expiry.");
             session.state.set(AuthState::Unauthenticated);
@@ -53,8 +66,10 @@ pub fn SetSessionCookie(state: bool) -> Element {
       // Tear down the UI hint and global state.
       remove_session_cookie();
       // Logging out on purpose is not being signed out, so the login form
-      // must not greet a returning user with an expiry notice.
+      // must not greet a returning user with an expiry notice, and the
+      // next sign-in must not resume a page they chose to leave.
       session.signed_out.set(false);
+      clear_return_to();
       session.state.set(AuthState::Unauthenticated);
       nav.replace(Route::Index {});
     }

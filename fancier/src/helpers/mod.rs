@@ -23,6 +23,9 @@ pub use session_cookie::write_session_hint_cookie;
 mod session_end;
 pub use session_end::session_lost;
 
+mod return_to;
+pub use return_to::{clear_return_to, stash_return_to, take_return_to};
+
 pub mod browser;
 
 mod download;
