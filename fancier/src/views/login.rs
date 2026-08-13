@@ -1,11 +1,19 @@
 use crate::components::{Alert, FormBuilder};
 use crate::helpers::{DisplayError, extract_ui_messages, url_query_param};
-use crate::{Configuration, Create, Route};
+use crate::models::AlertVariant;
+use crate::{Configuration, Create, Route, Session};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{create_browser_login_flow, get_login_flow};
 
 #[component]
 pub fn LoginFlow(flow: Option<String>) -> Element {
+  // Someone sent here by their session lapsing gets told that, rather than
+  // being dropped on a login form with no explanation for why the page
+  // they asked for went away. Read outside the flow-fetch match so the
+  // notice is up while the flow is still loading, not just after.
+  let session = use_context::<Session>();
+  let signed_out = (session.signed_out)();
+
   // 1. Fetch or initialize the flow natively
   let get_flow = use_resource(move || {
     let flow_param = flow.clone();
@@ -55,43 +63,52 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
   });
 
   // 2. Render the UI
-  match &*get_flow.read() {
-    Some(Ok(res)) => {
-      let error_messages = extract_ui_messages(&res.ui);
+  rsx! {
+    if signed_out {
+      div { class: "mx-auto w-full max-w-lg mt-10",
+        Alert { variant: AlertVariant::Warning,
+          "Your session ended, so you were signed out. Sign in again to pick up where you left off."
+        }
+      }
+    }
+    match &*get_flow.read() {
+      Some(Ok(res)) => {
+        let error_messages = extract_ui_messages(&res.ui);
 
-      rsx! {
-        h1 { class: "text-center text-2xl mt-10", "Sign In" }
-        div { class: "mx-auto w-full max-w-lg",
-          div { class: "mt-10",
-            if !error_messages.is_empty() {
-              div { class: "flex flex-col gap-2 mb-4",
-                for (variant , msg) in error_messages {
-                  Alert { variant, persistent: false, "{msg}" }
+        rsx! {
+          h1 { class: "text-center text-2xl mt-10", "Sign In" }
+          div { class: "mx-auto w-full max-w-lg",
+            div { class: "mt-10",
+              if !error_messages.is_empty() {
+                div { class: "flex flex-col gap-2 mb-4",
+                  for (variant , msg) in error_messages {
+                    Alert { variant, persistent: false, "{msg}" }
+                  }
                 }
               }
-            }
 
-            // Pure HTML submission. Browser handles the POST, strategy injection, and 303 Redirect.
-            FormBuilder { ui: *res.ui.to_owned() }
-            p { class: "text-sm leading-6 mt-4",
-              "Don't have an account? "
-              Link {
-                to: Route::RegisterFlow { flow: None },
-                class: "link-primary link-hover",
-                "Register →"
+              // Pure HTML submission. Browser handles the POST, strategy injection, and 303 Redirect.
+              FormBuilder { ui: *res.ui.to_owned() }
+              p { class: "text-sm leading-6 mt-4",
+                "Don't have an account? "
+                Link {
+                  to: Route::RegisterFlow { flow: None },
+                  class: "link-primary link-hover",
+                  "Register →"
+                }
               }
             }
           }
         }
       }
+      Some(Err(err_elem)) => rsx! {
+        div { class: "mx-auto max-w-lg mt-10", {err_elem.clone()} }
+      },
+      None => rsx! {
+        div { class: "flex justify-center mt-10",
+          p { class: "animate-pulse", "Loading login flow..." }
+        }
+      },
     }
-    Some(Err(err_elem)) => rsx! {
-      div { class: "mx-auto max-w-lg mt-10", {err_elem.clone()} }
-    },
-    None => rsx! {
-      div { class: "flex justify-center mt-10",
-        p { class: "animate-pulse", "Loading login flow..." }
-      }
-    },
   }
 }

@@ -18,7 +18,14 @@ pub use url_query::url_query_param;
 mod session_cookie;
 pub use session_cookie::remove_session_cookie;
 pub use session_cookie::session_cookie_valid;
+pub use session_cookie::session_hint_seconds_remaining;
 pub use session_cookie::write_session_hint_cookie;
+
+mod session_end;
+pub use session_end::{session_lost, watch_session_expiry};
+
+mod return_to;
+pub use return_to::{clear_return_to, stash_return_to, take_return_to};
 
 pub mod browser;
 

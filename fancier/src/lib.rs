@@ -29,6 +29,11 @@ mod views;
 #[derive(Clone, Copy)]
 struct Session {
   state: Signal<AuthState>,
+  // True only when an established session ended on its own -- expired, or
+  // revoked server-side -- as opposed to a deliberate logout or a visitor
+  // who was never signed in. The login view reads it to explain why it is
+  // being shown instead of the page that was asked for.
+  signed_out: Signal<bool>,
 }
 
 trait Create {
@@ -150,6 +155,9 @@ async fn static_routes() -> Result<Vec<String>, ServerFnError> {
 #[component]
 fn AuthGuard() -> Element {
   let session = use_context::<Session>();
+  // Hoisted above the match: a hook called from only one arm would shift
+  // this scope's hook indices as the auth state resolves.
+  let nav = use_navigator();
 
   match (session.state)() {
     AuthState::Authenticated => {
@@ -158,8 +166,17 @@ fn AuthGuard() -> Element {
       }
     }
     AuthState::Unauthenticated => {
-      let nav = use_navigator();
-      nav.replace(Route::Unauthorized {});
+      if (session.signed_out)() {
+        // A session that lapsed mid-visit lands on the login form, which
+        // says so, carrying the page it interrupted so signing back in
+        // resumes there. The bare 401 page is the honest answer only for
+        // someone who was never signed in at all -- shown after an
+        // expiry it reads as a bug rather than as a session ending.
+        crate::helpers::stash_return_to();
+        nav.replace(Route::LoginFlow { flow: None });
+      } else {
+        nav.replace(Route::Unauthorized {});
+      }
       rsx! {}
     }
     AuthState::Pending => {
@@ -181,6 +198,11 @@ struct LocalSession {
   // `scope` locally (see `components::AlertsPanel`) instead of needing a
   // second, scope-keyed cache.
   alerts: Signal<HashMap<Uuid, AlertDefinition>>,
+  // Whether the last attempt to fill `flocks` failed. An empty map on its
+  // own cannot tell "this account owns no flocks" from "the request did
+  // not come back", and the two need to say different things -- the same
+  // distinction views::Pigeons already draws for a flock's pigeon list.
+  flocks_load_failed: Signal<bool>,
 }
 
 #[component]
@@ -197,6 +219,7 @@ pub fn App() -> Element {
   // 1. Initialize context with the Pending state
   let mut session = use_context_provider(|| Session {
     state: Signal::new(AuthState::Pending),
+    signed_out: Signal::new(false),
   });
 
   // 2. Fire the async check. This future runs automatically on mount.
@@ -210,15 +233,28 @@ pub fn App() -> Element {
     });
   });
 
-  let _local_session = use_context_provider(|| LocalSession {
+  let mut local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),
     pigeons: Signal::new(HashMap::new()),
     alerts: Signal::new(HashMap::new()),
+    flocks_load_failed: Signal::new(false),
   });
 
   use_resource(move || async move {
     if (session.state)() == AuthState::Authenticated {
-      api::flocks::list().await;
+      let loaded = api::flocks::list().await.is_some();
+      local_session.flocks_load_failed.set(!loaded);
+    }
+  });
+
+  // Without this an idle tab keeps its signed-in chrome until the user
+  // clicks something, which is the first request that gets a 401. Reading
+  // `session.state` first is what re-arms the watch on each sign-in and
+  // drops it on each sign-out -- see `watch_session_expiry` for why it
+  // costs no network and what it deliberately does not detect.
+  use_resource(move || async move {
+    if (session.state)() == AuthState::Authenticated {
+      crate::helpers::watch_session_expiry().await;
     }
   });
 

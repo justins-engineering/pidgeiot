@@ -47,31 +47,42 @@ pub fn remove_session_cookie() {
   }
 }
 
-pub async fn session_cookie_valid() -> bool {
+/// Seconds left on the session hint cookie, or `None` when no readable,
+/// parseable hint cookie is present.
+///
+/// This is readable at all only because the hint cookie is written by
+/// `write_session_hint_cookie` above rather than by Kratos: its value is
+/// the RFC 3339 expiry Kratos reported at sign-in. The session cookie that
+/// actually authenticates a request is `HttpOnly` and invisible to script,
+/// so the hint is the only way to know when a session is due to lapse
+/// without asking the network.
+///
+/// Takes the furthest-out expiry when several cookies match, matching the
+/// browser's own behaviour of sending all of them: while any one is still
+/// live the session it stands for may be too.
+pub fn session_hint_seconds_remaining() -> Option<i64> {
   let html_document = html_document!(window!());
   let cookie_string = get_cookies!(html_document);
-  let cookies = cookie_string.split(';');
 
-  for cookie in cookies {
-    if cookie.contains(SESSION_COOKIE_NAME) {
-      let mut c = cookie.split('=');
-      if let Some(expiry) = c.next_back() {
-        let timestamp: Result<OffsetDateTime, time::error::Parse> =
-          OffsetDateTime::parse(expiry.trim(), &Rfc3339);
+  cookie_string
+    .split(';')
+    .filter(|cookie| cookie.contains(SESSION_COOKIE_NAME))
+    .filter_map(|cookie| {
+      let expiry = cookie.split('=').next_back()?;
+      let timestamp: Result<OffsetDateTime, time::error::Parse> =
+        OffsetDateTime::parse(expiry.trim(), &Rfc3339);
 
-        match timestamp {
-          Ok(dt) => {
-            // Return true immediately if we find a valid, unexpired cookie
-            if OffsetDateTime::now_utc() < dt {
-              return true;
-            }
-          }
-          Err(err) => error!("Failed to parse cookie expiry: {err:?}"),
+      match timestamp {
+        Ok(dt) => Some((dt - OffsetDateTime::now_utc()).whole_seconds()),
+        Err(err) => {
+          error!("Failed to parse cookie expiry: {err:?}");
+          None
         }
       }
-    }
-  }
+    })
+    .max()
+}
 
-  // Default to false if the loop finishes without returning true
-  false
+pub async fn session_cookie_valid() -> bool {
+  session_hint_seconds_remaining().is_some_and(|remaining| remaining > 0)
 }
