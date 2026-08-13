@@ -312,6 +312,13 @@ pub fn PigeonGraphs(
   /// this Signal to both components so a write here is picked up
   /// reactively instead of requiring a page reload to see the new graph.
   mut quick_add: Signal<Option<GraphDef>>,
+  /// This pigeon's configured `telemetry_endpoint` URL, if it has one.
+  /// Reports from such a pigeon are forwarded there *instead of* being
+  /// written to the platform's own history table — the two paths are
+  /// mutually exclusive per report — so its graphs are empty permanently
+  /// rather than "not yet". The empty state names that cause instead of
+  /// implying the device has gone quiet.
+  forwarding_to: Option<String>,
 ) -> Element {
   let mut graphs = use_signal(|| load_graphs("pigeon", &pigeon_id));
   let mut show_add = use_signal(|| false);
@@ -389,6 +396,7 @@ pub fn PigeonGraphs(
             def: graph.clone(),
             source: DataSource::Pigeon(pigeon_id.clone()),
             interval_secs,
+            forwarding_to: forwarding_to.clone(),
             on_remove: {
                 let pigeon_id = pigeon_id.clone();
                 move |id: String| {
@@ -493,8 +501,11 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
             def: graph.clone(),
             source: DataSource::Flock(flock_id),
             // No single pigeon interval at flock scope -- falls back to
-            // poll_interval_ms's fixed default.
+            // poll_interval_ms's fixed default. Nor one telemetry endpoint:
+            // forwarding is per-pigeon, and a flock chart would need every
+            // member's endpoint to say anything true about why it's empty.
             interval_secs: None,
+            forwarding_to: None,
             on_remove: {
                 let scope_id = scope_id.clone();
                 move |id: String| {
@@ -568,6 +579,7 @@ fn GraphCard(
   def: GraphDef,
   source: DataSource,
   interval_secs: Option<i64>,
+  forwarding_to: Option<String>,
   on_remove: EventHandler<String>,
   on_update: EventHandler<GraphDef>,
 ) -> Element {
@@ -683,8 +695,22 @@ fn GraphCard(
             }
             TelemetryChart { series: series.clone() }
           },
-          Some(SeriesOutcome::Empty) | None => rsx! {
-            TelemetryChart { series: Vec::new() }
+          Some(SeriesOutcome::Empty) | None => match forwarding_to.as_ref() {
+            Some(url) => rsx! {
+              div { class: "text-sm text-base-content/60 py-8 text-center flex flex-col gap-1",
+                p {
+                  "No history to chart — this pigeon's telemetry is forwarded to "
+                  span { class: "font-mono text-xs break-all", "{url}" }
+                  " instead of being stored here."
+                }
+                p { class: "text-xs",
+                  "Clear the telemetry endpoint to have PidgeIoT keep history for graphs."
+                }
+              }
+            },
+            None => rsx! {
+              TelemetryChart { series: Vec::new() }
+            },
           },
         }
       }

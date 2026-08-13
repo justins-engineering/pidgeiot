@@ -54,6 +54,11 @@ pub fn TrackWidget(
   /// itself; see `PigeonGraphs`' doc comment on why the write has to
   /// happen there instead.
   on_quick_add: EventHandler<GraphDef>,
+  /// This pigeon's configured `telemetry_endpoint` URL, if it has one --
+  /// see `PigeonGraphs`' identical prop. A forwarding pigeon writes no
+  /// platform history, so the track is empty permanently rather than "not
+  /// in this range yet", which is what the unqualified empty state implies.
+  forwarding_to: Option<String>,
 ) -> Element {
   let mut range = use_signal(|| TimeRange::Last24h);
   let mut fixes: Signal<Option<Vec<GpsFix>>> = use_signal(|| None);
@@ -74,6 +79,7 @@ pub fn TrackWidget(
   }
 
   let position_line = current_position_line(&latest);
+  let has_position = position_line.is_some();
   let plot_w = CANVAS_W - 2.0 * MARGIN;
   let plot_h = CANVAS_H - 2.0 * MARGIN;
 
@@ -83,10 +89,26 @@ pub fn TrackWidget(
         span { class: "loading loading-spinner loading-md text-primary" }
       }
     },
-    Some(fx) if fx.is_empty() => rsx! {
-      div { class: "text-sm text-base-content/50 italic py-16 text-center",
-        "No GPS fixes reported in this range yet."
-      }
+    Some(fx) if fx.is_empty() => match forwarding_to.as_ref() {
+      Some(url) => rsx! {
+        div { class: "text-sm text-base-content/60 py-16 text-center flex flex-col gap-1",
+          p {
+            "No track to draw — this pigeon's telemetry is forwarded to "
+            span { class: "font-mono text-xs break-all", "{url}" }
+            " instead of being stored here."
+          }
+          if has_position {
+            p { class: "text-xs",
+              "The position above is still live — it comes from the latest report, not from history."
+            }
+          }
+        }
+      },
+      None => rsx! {
+        div { class: "text-sm text-base-content/50 italic py-16 text-center",
+          "No GPS fixes reported in this range yet."
+        }
+      },
     },
     Some(fx) => {
       let bounds = Bounds::of(fx).expect("checked non-empty above");

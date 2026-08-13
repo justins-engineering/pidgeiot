@@ -94,6 +94,16 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
             // doesn't get the card, rather than an always-empty one.
             let latest_vec = telemetry_latest().unwrap_or_default();
             let has_gps = gps_track::latest_has_gps_fix(&latest_vec);
+            // A pigeon with a telemetry endpoint has its reports forwarded
+            // there instead of written to our own history table, so every
+            // history-backed widget below is empty for it permanently.
+            // Handing them the URL lets each say that rather than "nothing
+            // reported yet", which reads as a device problem.
+            let forwarding_to = pd
+                .pigeon
+                .telemetry_endpoint
+                .as_ref()
+                .map(|e| e.url.clone());
             rsx! {
               header { class: "w-full flex flex-row items-center justify-between",
                 Link {
@@ -146,6 +156,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                       pigeon_id: pigeon_id.clone(),
                       latest: latest_vec.clone(),
                       on_quick_add: move |def: GraphDef| quick_add_graph.set(Some(def)),
+                      forwarding_to: forwarding_to.clone(),
                     }
                   }
                 }
@@ -154,6 +165,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     pigeon_id: pigeon_id.clone(),
                     interval_secs,
                     quick_add: quick_add_graph,
+                    forwarding_to: forwarding_to.clone(),
                   }
                 }
                 section { id: "pigeonAlerts",
