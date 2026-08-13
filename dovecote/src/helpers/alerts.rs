@@ -3,7 +3,7 @@ use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
-  AlertScope, AlertStatus, ConnectionStateKind, JsonString,
+  AlertScope, AlertState, AlertStatus, ConnectionStateKind, JsonString,
 };
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -102,6 +102,21 @@ fn row_to_alert_definition_row(row: &Row) -> AlertDefinitionRow {
     enabled: row.get("enabled"),
     created_at: row.get("created_at"),
     updated_at: row.get("updated_at"),
+  }
+}
+
+/// `capsules::AlertState` has no `*Row` variant (see its doc comment --
+/// Postgres hands back a native `OffsetDateTime` for every `TIMESTAMPTZ`
+/// column here, same as `Flock`/`FirmwareImage`), so this reads straight
+/// into the public API shape, same as `list_flock_firmware`'s row mapping.
+fn row_to_alert_state(row: &Row) -> AlertState {
+  let status_str: String = row.get("status");
+  AlertState {
+    alert_definition_id: row.get("alert_definition_id"),
+    pigeon_id: row.get("pigeon_id"),
+    status: status_str.parse().unwrap_or_default(),
+    first_true_at: row.get("first_true_at"),
+    last_notified_at: row.get("last_notified_at"),
   }
 }
 
@@ -301,6 +316,71 @@ pub async fn list_flock_alerts(
       .map(AlertDefinition::from)
       .collect(),
   )
+}
+
+/// Backs `GET /pigeons/:pigeon_id/alerts/state` -- the current fired/ok
+/// status of every alert scoped directly to this pigeon (design doc §2.3,
+/// gap G3). Same scope restriction as `list_pigeon_alerts`: flock-scoped
+/// alerts that happen to cover this pigeon are not included here either,
+/// so a caller wanting both reads `list_pigeon_alerts`/`list_flock_alerts`
+/// (or their `/state` counterparts) side by side, same as the existing
+/// pair. A definition the evaluator has never run against has no
+/// `alert_state` row yet and so is simply absent from this list -- callers
+/// counting firing alerts don't need a special case for "never evaluated",
+/// since an absent row can't be `Firing`.
+pub async fn list_pigeon_alert_state(
+  client: &Client,
+  access: &PigeonAccess,
+) -> Result<Vec<AlertState>> {
+  ensure_alert_tables(client).await?;
+
+  let pigeon_id = access.pigeon_id();
+  let rows = client
+    .query_typed(
+      "SELECT s.alert_definition_id, s.pigeon_id, s.status, s.first_true_at, s.last_notified_at
+       FROM alert_state s
+       JOIN alert_definitions d ON d.id = s.alert_definition_id
+       WHERE d.pigeon_id = $1;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Alert state list error (pigeon scope): {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.iter().map(row_to_alert_state).collect())
+}
+
+/// Backs `GET /flocks/:flock_id/alerts/state`. A flock-scoped alert can
+/// carry several rows here -- one per pigeon in the flock the evaluator has
+/// run it against, since it fires/clears independently per pigeon (see
+/// `capsules::AlertState`'s doc comment) -- so this is not 1:1 with
+/// `list_flock_alerts`'s definition count. Counting `Firing` rows is what a
+/// fleet/flock "open alerts" KPI wants, not counting definitions.
+pub async fn list_flock_alert_state(
+  client: &Client,
+  access: &FlockAccess,
+) -> Result<Vec<AlertState>> {
+  ensure_alert_tables(client).await?;
+
+  let flock_uuid = Uuid::parse_str(access.flock_id())
+    .map_err(|e| Error::RustError(format!("Invalid flock_id format: {e}")))?;
+  let rows = client
+    .query_typed(
+      "SELECT s.alert_definition_id, s.pigeon_id, s.status, s.first_true_at, s.last_notified_at
+       FROM alert_state s
+       JOIN alert_definitions d ON d.id = s.alert_definition_id
+       WHERE d.flock_id = $1;",
+      &[(&flock_uuid, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Alert state list error (flock scope): {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.iter().map(row_to_alert_state).collect())
 }
 
 /// Backs `PUT /alerts/:alert_id` -- `COALESCE`/partial-update semantics,

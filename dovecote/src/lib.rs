@@ -5,14 +5,14 @@ use crate::helpers::{
   delete_organization_if_empty, delete_pigeon_pg_db, get_db_client, get_flock_with_pigeons,
   get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
   insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
-  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alerts,
-  list_user_organizations, load_org_roles, mint_invite_token, org_role_of,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
-  rename_organization, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
-  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do,
+  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
+  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
+  load_org_roles, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
+  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
+  verify_cf_access, verify_device_via_do,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -2171,6 +2171,42 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::from_json(&alerts)?.with_cors(&cors)
       },
     )
+    // Current fired/ok status per alert (gap G3) -- deliberately a
+    // separate route rather than folded into the definitions list above:
+    // a flock-scoped alert can carry several `AlertState` rows (one per
+    // pigeon it currently fires/clears for, see the type's own doc
+    // comment), so there is no single state value to attach to one
+    // `AlertDefinition`. Same auth as the list route it sits beside.
+    .get_async(
+      "/pigeons/:pigeon_id/alerts/state",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        let authz_result =
+          check_pigeon_authz(req, &principal.user_id, principal.org_roles_header(), &obj_id, &pigeon_id).await?;
+        let access = match authz_result {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(states) = list_pigeon_alert_state(&client, &access).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&states)?.with_cors(&cors)
+      },
+    )
     .post_async(
       "/flocks/:flock_id/alerts",
       |mut req, ctx: RouteContext<()>| async move {
@@ -2283,6 +2319,56 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         Response::from_json(&alerts)?.with_cors(&cors)
+      },
+    )
+    // Flock counterpart of the pigeon `/alerts/state` route above -- same
+    // reasoning (a flock-scoped alert's state is per-pigeon, not
+    // per-definition) and the same `FlockAction::View` auth as the
+    // definitions list it sits beside.
+    .get_async(
+      "/flocks/:flock_id/alerts/state",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(owner) = crate::helpers::authorize_flock(
+          &client,
+          &flock_id,
+          &principal,
+          crate::helpers::FlockAction::View,
+        )
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(flock_access) = owner else {
+          return Response::error("Forbidden: You do not have access to this flock", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(states) = list_flock_alert_state(&client, &flock_access).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&states)?.with_cors(&cors)
       },
     )
     .put_async(

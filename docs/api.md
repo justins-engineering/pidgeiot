@@ -273,7 +273,7 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Invite members (`POST /orgs/:id/invites`), view/revoke invites | yes | yes (but cannot invite an `owner`) | no |
 | Change member roles (`PUT /orgs/:id/members/:user_id`) | yes | no | no |
 | Remove members (`DELETE /orgs/:id/members/:user_id`) | yes | yes (but never an `owner`) | self-removal (leave) only |
-| Org-owned flocks: view (list, pigeons list, telemetry history, firmware list, alerts list) | yes | yes | yes |
+| Org-owned flocks: view (list, pigeons list, telemetry history, firmware list, alerts list/state) | yes | yes | yes |
 | Org-owned flocks: manage (create pigeons, upload firmware, create alerts, be a transfer target) | yes | yes | no |
 | Org-shared pigeons: member-level routes (read, shadow get/put, telemetry, logs) | yes | yes | yes |
 | Org-shared pigeons: owner-level routes (delete, token refresh, ACL changes, shell) | yes | yes | no |
@@ -905,6 +905,165 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/log-dictionary \
 Removes the stored dictionary. Returns `200` with an empty body; idempotent (deleting when
 none exists is still `200`). Deleting the pigeon itself also best-effort removes its stored
 dictionary.
+
+### Alerts
+
+User-defined threshold/state alerts, evaluated both at telemetry-ingest time and by a five-minute
+Cron Trigger sweep (for the absence-of-signal conditions below), with an at-most-one email per
+fired/cleared transition. An alert is scoped to exactly one **pigeon** or one **flock** — never
+both — chosen by which of the two create/list route pairs below you call; scope is never read
+from the request body. A flock-scoped alert evaluates independently per pigeon currently in that
+flock, not once for the flock as a whole.
+
+`capsules::AlertCondition`/`AlertChannel`/`AlertScope` are plain Rust enums with no `#[serde(tag =
+...)]` attribute, so they serialize the default serde way — **externally tagged, one key named
+for the exact Rust variant** — not the `{"type": "...", ...}` shape other fields on this page use.
+`capsules::AlertCondition` (the `condition` field below) is one of:
+
+- `{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}}` — a telemetry key crosses a bound
+  (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`).
+- `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
+  classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
+  this long.
+- `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
+  this long.
+- `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
+  moved by more than `max_delta` since its previous report, within an optional time window.
+
+`capsules::AlertChannel` is `{"Email":{"to":null}}` (deliver to the owning flock's stored
+`owner_email`) or `{"Email":{"to":"you@example.com"}}` — an explicit override, which must match
+one of the caller's own **verified** Kratos email addresses (`400` otherwise, so open signup
+can't turn this into an arbitrary spam relay).
+
+#### `POST /pigeons/:pigeon_id/alerts` — member
+
+Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel }`;
+`severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`).
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"High temp","condition":{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}},"channel":{"Email":{"to":null}}}'
+```
+
+```json
+{
+  "id": "b3f1...",
+  "user_id": "a7e2...",
+  "scope": { "Pigeon": "59d0c929f912..." },
+  "name": "High temp",
+  "condition": { "Threshold": { "key": "temp", "comparator": "Gt", "value": 30.0 } },
+  "severity": "Warning",
+  "channel": { "Email": { "to": null } },
+  "enabled": true,
+  "created_at": "2026-07-17T15:21:08Z",
+  "updated_at": "2026-07-17T15:21:08Z"
+}
+```
+
+(`capsules::AlertDefinition`, `201`. A flock-scoped alert's `scope` is `{"Flock":"<flock_uuid>"}`
+instead.)
+
+#### `GET /pigeons/:pigeon_id/alerts` — member
+
+Every alert scoped directly to this pigeon, newest first — **not** flock-scoped alerts that
+happen to cover it (see [`GET /flocks/:flock_id/alerts`](#get-flocksflock_idalerts) for those).
+Same per-item shape as the `POST` response above, as `Vec<capsules::AlertDefinition>`.
+
+```sh
+curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `GET /pigeons/:pigeon_id/alerts/state` — member
+
+Current fired/cleared status for every alert scoped directly to this pigeon — a separate route
+from the definitions list above because state (`capsules::AlertState`) and definitions
+(`capsules::AlertDefinition`) are different rows with different lifecycles: a freshly created
+alert has no state row until the evaluator has run against it at least once, and a flock-scoped
+alert's state is per-*pigeon* (see below), not something that would fit as a single field
+embedded onto one `AlertDefinition`. Absence of a row for a given `alert_definition_id` means the
+same thing as `"Ok"` for counting purposes — it has never fired.
+
+```sh
+curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts/state \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+```json
+[
+  {
+    "alert_definition_id": "b3f1...",
+    "pigeon_id": "59d0c929f912...",
+    "status": "Firing",
+    "first_true_at": "2026-08-11T15:20:08Z",
+    "last_notified_at": "2026-08-11T15:21:08Z"
+  }
+]
+```
+
+(`Vec<capsules::AlertState>`. `status` is `"Ok"` or `"Firing"` — note this is the derived-Serialize
+casing, distinct from the lowercase `"ok"`/`"firing"` `alert_state.status` is stored as in
+Postgres; `first_true_at`/`last_notified_at` are `null` while `"Ok"` and never having fired.)
+
+#### `POST /flocks/:flock_id/alerts` — flock: manage
+
+Same body/response shape as the pigeon-scoped `POST` above, with `scope: {"Flock":"<flock_id>"}`
+in the response. Stricter than pigeon-scoped creation: only a flock **manager** (personal owner,
+or an `owner`/`admin` org role on an org-owned flock) may create a flock-scoped alert, whereas any
+ACL'd pigeon member may create a pigeon-scoped one.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/alerts \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Fleet offline","condition":{"DeviceState":{"state":"Offline","min_duration_secs":300}},"severity":"Critical","channel":{"Email":{"to":null}}}'
+```
+
+#### `GET /flocks/:flock_id/alerts` — flock: view
+
+Every alert scoped to this flock, newest first, as `Vec<capsules::AlertDefinition>`.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `GET /flocks/:flock_id/alerts/state` — flock: view
+
+Flock counterpart of the pigeon-scoped state route above. A flock-scoped alert can appear more
+than once here — one `AlertState` row per pigeon currently in the flock that the evaluator has
+run it against, since it fires and clears independently per pigeon. Counting rows where
+`status == "Firing"` (across this route and the pigeon-scoped one) is the "open alerts" count —
+there is currently no single fleet-wide alert route, so a fleet-wide total still costs one call
+per flock, same limitation `GET /flocks/:flock_id/alerts` already has for definitions.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts/state \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `PUT /alerts/:alert_id` — alert owner
+
+Partial update — an omitted field keeps its current value. Body:
+`capsules::AlertDefinitionUpdateRequest` (`{ name?, condition?, severity?, channel?, enabled? }`).
+Gated by a direct `alert_definitions.user_id` check (whoever created the alert), regardless of
+whether it's pigeon- or flock-scoped — **not** the pigeon's ACL or the flock's ownership. The
+`enabled`-only body is also how the dashboard's list-view toggle flips an alert on/off without a
+full edit.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/alerts/<alert_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false}'
+```
+
+#### `DELETE /alerts/:alert_id` — alert owner
+
+Same ownership gate as `PUT` above. Returns `200` with an empty body. `alert_state` rows for this
+definition cascade-delete via the table's own foreign key.
 
 ### Feedback
 
