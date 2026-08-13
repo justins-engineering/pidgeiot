@@ -164,6 +164,12 @@ PAGES = {
     "/features/": ("IoT Platform Features — Shadows, Telemetry, OTA | PidgeIoT",
         "Device shadows with report-back, telemetry with queryable history, email alerts, "
         "OTA firmware updates, device logs, and a remote diagnostic shell."),
+    "/how-it-works/": ("How It Works — Device to Dashboard in 5 Steps | PidgeIoT",
+        "How a reading travels from a device to your dashboard: provisioning and per-device "
+        "keys, transports, telemetry reports, shadow convergence, alerts and OTA."),
+    "/use-cases/": ("Use Cases — Asset Tracking, Monitoring, OTA | PidgeIoT",
+        "Five shapes of device fleet on one platform: GPS asset tracking, environmental "
+        "alerting, remote firmware updates, bring-your-own-database, and small fleets."),
     "/pricing/": ("Pricing — Free During Early Access | PidgeIoT",
         "All of PidgeIoT is free during early access, no credit card required. Fair, "
         "simple pricing for larger fleets will come later — one product, one price."),

@@ -37,6 +37,10 @@
   Link: </llms.txt>; rel="llms-txt"; type="text/plain"
 /features/
   Link: </features/index.md>; rel="alternate"; type="text/markdown"
+/how-it-works/
+  Link: </how-it-works/index.md>; rel="alternate"; type="text/markdown"
+/use-cases/
+  Link: </use-cases/index.md>; rel="alternate"; type="text/markdown"
 /pricing/
   Link: </pricing/index.md>; rel="alternate"; type="text/markdown"
 /documentation/
