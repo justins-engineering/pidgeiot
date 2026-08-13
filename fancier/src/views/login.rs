@@ -73,42 +73,42 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
     }
     match &*get_flow.read() {
       Some(Ok(res)) => {
-      let error_messages = extract_ui_messages(&res.ui);
+        let error_messages = extract_ui_messages(&res.ui);
 
-      rsx! {
-        h1 { class: "text-center text-2xl mt-10", "Sign In" }
-        div { class: "mx-auto w-full max-w-lg",
-          div { class: "mt-10",
-            if !error_messages.is_empty() {
-              div { class: "flex flex-col gap-2 mb-4",
-                for (variant , msg) in error_messages {
-                  Alert { variant, persistent: false, "{msg}" }
+        rsx! {
+          h1 { class: "text-center text-2xl mt-10", "Sign In" }
+          div { class: "mx-auto w-full max-w-lg",
+            div { class: "mt-10",
+              if !error_messages.is_empty() {
+                div { class: "flex flex-col gap-2 mb-4",
+                  for (variant , msg) in error_messages {
+                    Alert { variant, persistent: false, "{msg}" }
+                  }
                 }
               }
-            }
 
-            // Pure HTML submission. Browser handles the POST, strategy injection, and 303 Redirect.
-            FormBuilder { ui: *res.ui.to_owned() }
-            p { class: "text-sm leading-6 mt-4",
-              "Don't have an account? "
-              Link {
-                to: Route::RegisterFlow { flow: None },
-                class: "link-primary link-hover",
-                "Register →"
+              // Pure HTML submission. Browser handles the POST, strategy injection, and 303 Redirect.
+              FormBuilder { ui: *res.ui.to_owned() }
+              p { class: "text-sm leading-6 mt-4",
+                "Don't have an account? "
+                Link {
+                  to: Route::RegisterFlow { flow: None },
+                  class: "link-primary link-hover",
+                  "Register →"
+                }
               }
             }
           }
         }
       }
-    }
-    Some(Err(err_elem)) => rsx! {
-      div { class: "mx-auto max-w-lg mt-10", {err_elem.clone()} }
-    },
-    None => rsx! {
-      div { class: "flex justify-center mt-10",
-        p { class: "animate-pulse", "Loading login flow..." }
-      }
-    },
+      Some(Err(err_elem)) => rsx! {
+        div { class: "mx-auto max-w-lg mt-10", {err_elem.clone()} }
+      },
+      None => rsx! {
+        div { class: "flex justify-center mt-10",
+          p { class: "animate-pulse", "Loading login flow..." }
+        }
+      },
     }
   }
 }
