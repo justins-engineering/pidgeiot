@@ -8,19 +8,36 @@ use dioxus::prelude::*;
 use std::collections::HashMap;
 use wasm_bindgen_futures::JsFuture;
 
-pub async fn list(pigeon_ids: &[String]) -> Option<()> {
-  let body = serde_json::to_string(pigeon_ids).ok()?;
-  let body = serde_wasm_bindgen::to_value(&body).ok()?;
-  let response = fetch_json("POST", "/pigeons/batch", Some(&body)).await?;
-  let json = JsFuture::from(response.json().ok()?).await.ok()?;
-  let pigeons_array = serde_wasm_bindgen::from_value::<Vec<Pigeon>>(json).ok()?;
-  let pigeons_map: HashMap<String, Pigeon> = pigeons_array
-    .into_iter()
-    .map(|pigeon| (pigeon.id.clone(), pigeon))
-    .collect();
+// dovecote's POST /pigeons/batch caps a single request at 48 ids
+// (dovecote/src/lib.rs -- `pigeon_ids.len() > 48` -- a Workers subrequest
+// fan-out limit, not a business rule), so a flock past that size has to be
+// split into multiple requests here or every id past #48 is silently
+// dropped from the flock's pigeon list.
+const BATCH_LIMIT: usize = 48;
 
+pub async fn list(pigeon_ids: &[String]) -> Option<()> {
+  let mut fetched: HashMap<String, Pigeon> = HashMap::with_capacity(pigeon_ids.len());
+
+  for chunk in pigeon_ids.chunks(BATCH_LIMIT) {
+    let body = serde_json::to_string(chunk).ok()?;
+    let body = serde_wasm_bindgen::to_value(&body).ok()?;
+    let response = fetch_json("POST", "/pigeons/batch", Some(&body)).await?;
+    let json = JsFuture::from(response.json().ok()?).await.ok()?;
+    let pigeons_array = serde_wasm_bindgen::from_value::<Vec<Pigeon>>(json).ok()?;
+    fetched.extend(
+      pigeons_array
+        .into_iter()
+        .map(|pigeon| (pigeon.id.clone(), pigeon)),
+    );
+  }
+
+  // Only merge into the shared cache once every chunk has succeeded --
+  // writing after a partial failure would show a subset of the flock as
+  // if it were the complete list, which is indistinguishable from a
+  // genuinely smaller flock and is exactly the silent-failure shape this
+  // function exists to avoid.
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
-  pigeon_list.extend(pigeons_map);
+  pigeon_list.extend(fetched);
   pigeon_list.write();
   Some(())
 }

@@ -6,7 +6,7 @@ use crate::{Route, api};
 use capsules::{CoapConfig, Connector, HttpsConfig, Pigeon, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
+use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTriangleAlert, LdX};
 use std::collections::HashMap;
 #[cfg(feature = "web")]
 use wasm_bindgen_futures::JsFuture;
@@ -35,6 +35,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   let nav = use_navigator();
   let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
     use_signal(HashMap::new);
+  // Distinguishes "this flock genuinely has no pigeons" from "the fetch
+  // failed" -- the two used to render identically (an empty
+  // LocalSession.pigeons cache either way), which is the exact silent
+  // failure a flock past the batch-request cap used to hit.
+  let mut list_failed = use_signal(|| false);
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -44,7 +49,8 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         guard.get(&flock_id).map(|flock| flock.pigeon_ids.clone())
       };
       if let Some(pigeon_ids) = ids_to_fetch {
-        api::pigeons::list(&pigeon_ids).await;
+        let ok = api::pigeons::list(&pigeon_ids).await.is_some();
+        list_failed.set(!ok);
       };
     }
   });
@@ -164,7 +170,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         }
 
         if total == 0 {
-          EmptyPigeonsState {}
+          if list_failed() {
+            ErrorPigeonsState {}
+          } else {
+            EmptyPigeonsState {}
+          }
         } else if filtered.is_empty() {
           div { class: "flex flex-col items-center text-center gap-2 bg-base-100 border border-base-content/10 rounded-box p-12 mb-10 max-w-xl mx-auto",
             h2 { class: "text-lg font-semibold", "No pigeons match \"{search}\"" }
@@ -356,6 +366,24 @@ fn EmptyPigeonsState() -> Element {
       h2 { class: "text-lg font-semibold", "No pigeons in this flock yet" }
       p { class: "text-base-content/60 max-w-sm",
         "Register a pigeon to mint its device keypair and get a one-time bearer token you can bake into firmware."
+      }
+    }
+  }
+}
+
+#[component]
+fn ErrorPigeonsState() -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-error/30 rounded-box p-12 mb-10 max-w-xl mx-auto",
+      Icon {
+        width: 40,
+        height: 40,
+        icon: LdTriangleAlert,
+        class: "text-error/60",
+      }
+      h2 { class: "text-lg font-semibold", "Couldn't load pigeons" }
+      p { class: "text-base-content/60 max-w-sm",
+        "Something went wrong fetching this flock's devices. Refresh the page to try again."
       }
     }
   }
