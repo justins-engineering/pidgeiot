@@ -29,6 +29,11 @@ mod views;
 #[derive(Clone, Copy)]
 struct Session {
   state: Signal<AuthState>,
+  // True only when an established session ended on its own -- expired, or
+  // revoked server-side -- as opposed to a deliberate logout or a visitor
+  // who was never signed in. The login view reads it to explain why it is
+  // being shown instead of the page that was asked for.
+  signed_out: Signal<bool>,
 }
 
 trait Create {
@@ -150,6 +155,9 @@ async fn static_routes() -> Result<Vec<String>, ServerFnError> {
 #[component]
 fn AuthGuard() -> Element {
   let session = use_context::<Session>();
+  // Hoisted above the match: a hook called from only one arm would shift
+  // this scope's hook indices as the auth state resolves.
+  let nav = use_navigator();
 
   match (session.state)() {
     AuthState::Authenticated => {
@@ -158,8 +166,15 @@ fn AuthGuard() -> Element {
       }
     }
     AuthState::Unauthenticated => {
-      let nav = use_navigator();
-      nav.replace(Route::Unauthorized {});
+      if (session.signed_out)() {
+        // A session that lapsed mid-visit lands on the login form, which
+        // says so. The bare 401 page is the honest answer only for
+        // someone who was never signed in at all -- shown after an
+        // expiry it reads as a bug rather than as a session ending.
+        nav.replace(Route::LoginFlow { flow: None });
+      } else {
+        nav.replace(Route::Unauthorized {});
+      }
       rsx! {}
     }
     AuthState::Pending => {
@@ -197,6 +212,7 @@ pub fn App() -> Element {
   // 1. Initialize context with the Pending state
   let mut session = use_context_provider(|| Session {
     state: Signal::new(AuthState::Pending),
+    signed_out: Signal::new(false),
   });
 
   // 2. Fire the async check. This future runs automatically on mount.

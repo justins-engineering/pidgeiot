@@ -29,6 +29,9 @@ pub fn SetSessionCookie(state: bool) -> Element {
         Ok(kratos_session) => {
           if let Some(expires_at) = kratos_session.expires_at {
             write_session_hint_cookie(&expires_at);
+            // A fresh session is no longer a lapsed one, so the login
+            // view stops explaining a sign-out that has been undone.
+            session.signed_out.set(false);
             session.state.set(AuthState::Authenticated);
             nav.replace(Route::Dashboard {});
           } else {
@@ -49,6 +52,9 @@ pub fn SetSessionCookie(state: bool) -> Element {
       // state = false: Kratos redirect after logout.
       // Tear down the UI hint and global state.
       remove_session_cookie();
+      // Logging out on purpose is not being signed out, so the login form
+      // must not greet a returning user with an expiry notice.
+      session.signed_out.set(false);
       session.state.set(AuthState::Unauthenticated);
       nav.replace(Route::Index {});
     }

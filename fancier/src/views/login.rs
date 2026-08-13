@@ -1,11 +1,19 @@
 use crate::components::{Alert, FormBuilder};
 use crate::helpers::{DisplayError, extract_ui_messages, url_query_param};
-use crate::{Configuration, Create, Route};
+use crate::models::AlertVariant;
+use crate::{Configuration, Create, Route, Session};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{create_browser_login_flow, get_login_flow};
 
 #[component]
 pub fn LoginFlow(flow: Option<String>) -> Element {
+  // Someone sent here by their session lapsing gets told that, rather than
+  // being dropped on a login form with no explanation for why the page
+  // they asked for went away. Read outside the flow-fetch match so the
+  // notice is up while the flow is still loading, not just after.
+  let session = use_context::<Session>();
+  let signed_out = (session.signed_out)();
+
   // 1. Fetch or initialize the flow natively
   let get_flow = use_resource(move || {
     let flow_param = flow.clone();
@@ -55,8 +63,16 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
   });
 
   // 2. Render the UI
-  match &*get_flow.read() {
-    Some(Ok(res)) => {
+  rsx! {
+    if signed_out {
+      div { class: "mx-auto w-full max-w-lg mt-10",
+        Alert { variant: AlertVariant::Warning,
+          "Your session ended, so you were signed out. Sign in again to pick up where you left off."
+        }
+      }
+    }
+    match &*get_flow.read() {
+      Some(Ok(res)) => {
       let error_messages = extract_ui_messages(&res.ui);
 
       rsx! {
@@ -93,5 +109,6 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
         p { class: "animate-pulse", "Loading login flow..." }
       }
     },
+    }
   }
 }

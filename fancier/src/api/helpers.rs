@@ -3,6 +3,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestCredentials, RequestInit, RequestMode, Response};
 
+/// dovecote's router answers 401 in exactly one situation -- the Kratos
+/// session cookie no longer resolves to a user -- and uses 403 for an
+/// authenticated caller who simply isn't on a pigeon's ACL. So a 401 on
+/// any route is an unambiguous "this tab's session is gone", and nothing
+/// else is.
+const UNAUTHORIZED: u16 = 401;
+
 /// Shared request dispatch for both `fetch_json` and `fetch_bytes` below --
 /// method/mode/credentials/headers/body wiring and the JS `fetch()` round
 /// trip are identical either way; only the headers (JSON vs. raw-bytes
@@ -29,10 +36,27 @@ async fn dispatch(
 
   let request = Request::new_with_str_and_init(&location, &request_init).ok()?;
   let window = web_sys::window()?;
+  // A dropped connection, DNS failure or CORS rejection fails the fetch
+  // promise itself and leaves with `None` right here, never reaching the
+  // status check below -- which is the whole reason that check can treat a
+  // 401 as authoritative. Only a real HTTP response the browser accepted
+  // gets a say in whether the session is still alive.
   let resp_value = JsFuture::from(window.fetch_with_request(&request))
     .await
     .ok()?;
-  resp_value.dyn_into::<Response>().ok()
+  let response = resp_value.dyn_into::<Response>().ok()?;
+
+  // Every caller below eventually collapses a failed request to `None`,
+  // which the views render as "nothing here" -- so without this an expired
+  // session looks exactly like an account that owns no flocks, no pigeons
+  // and no alerts. Catching it once at the single point every dovecote
+  // request passes through is what keeps that from having to be remembered
+  // at each of the call sites.
+  if response.status() == UNAUTHORIZED {
+    crate::helpers::session_lost();
+  }
+
+  Some(response)
 }
 
 pub async fn fetch_json(method: &str, path: &str, body: Option<&JsValue>) -> Option<Response> {
