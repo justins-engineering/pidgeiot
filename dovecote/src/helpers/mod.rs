@@ -16,6 +16,18 @@ pub use crypto::constant_time_eq;
 // re-exporting names nothing imports would only add warnings.
 mod stripe_api;
 
+mod stripe_webhook;
+pub use stripe_webhook::STRIPE_WEBHOOK_SECRET;
+pub use stripe_webhook::StripeWebhookEvent;
+pub use stripe_webhook::verify_webhook_signature;
+
+mod billing;
+pub use billing::WebhookClaim;
+pub use billing::apply_subscription;
+pub use billing::claim_webhook_event;
+pub use billing::ensure_billing_tables;
+pub use billing::mark_webhook_event_processed;
+
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;

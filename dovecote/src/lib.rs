@@ -1,18 +1,20 @@
 use crate::helpers::{
-  PigeonAccess, Principal, accept_invite, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_pigeon_authz, constant_time_eq, create_flock_alert,
-  create_invite, create_organization, create_pigeon_alert, create_user_flock,
-  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
-  grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
-  is_demo_pigeon, list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
-  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_org_roles, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent, WebhookClaim, accept_invite,
+  apply_subscription, authenticate_browser, backfill_owner_email, build_invite_url,
+  change_member_role, check_pigeon_authz, claim_webhook_event, constant_time_eq,
+  create_flock_alert, create_invite, create_organization, create_pigeon_alert, create_user_flock,
+  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
+  ensure_billing_tables, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn,
+  get_organization, get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
+  is_allowed_coap_service_ip, is_demo_pigeon, list_flock_alert_state, list_flock_alerts,
+  list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
+  list_pigeon_alerts, list_user_organizations, load_org_roles, mark_webhook_event_processed,
+  mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
   send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
   update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do,
+  verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -3157,6 +3159,138 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         }
         Err(msg) => Response::error(msg, 409).unwrap().with_cors(&cors),
       }
+    })
+    // Stripe's delivery target. Unauthenticated by design -- the HMAC over
+    // the raw body IS the authentication, so nothing here consults a Kratos
+    // session or a device token. Registered as an exact path with no
+    // trailing-slash variant: Stripe counts a 3xx as a failed delivery and
+    // would retry for three days against a redirect.
+    .post_async("/billing/webhook", |mut req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let Ok(secret) = ctx.env.secret(STRIPE_WEBHOOK_SECRET).map(|s| s.to_string()) else {
+        console_error!("Stripe webhook: {STRIPE_WEBHOOK_SECRET} is not configured");
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let Ok(Some(signature)) = req.headers().get("Stripe-Signature") else {
+        return Response::error("Bad Request: missing Stripe-Signature", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      // Raw bytes, never req.json() -- the signature covers exactly these
+      // bytes, and any reparse-and-reserialize round trip invalidates it.
+      let Ok(body) = req.bytes().await else {
+        return Response::error("Bad Request: could not read body", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let now = (Date::now().as_millis() / 1000) as i64;
+      if let Err(e) = verify_webhook_signature(&secret, &signature, &body, now).await {
+        console_error!("Stripe webhook: rejected -- {e}");
+        return Response::error("Bad Request: signature verification failed", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let Ok(event) = serde_json::from_slice::<StripeWebhookEvent>(&body) else {
+        console_error!("Stripe webhook: signature valid but envelope did not parse");
+        return Response::error("Bad Request: unrecognized event envelope", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let Ok(event_created) = time::OffsetDateTime::from_unix_timestamp(event.created) else {
+        console_error!("Stripe webhook: event {} has an unusable created time", event.id);
+        return Response::error("Bad Request: unusable event timestamp", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+
+      if ensure_billing_tables(&client).await.is_err() {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let Ok(claim) = claim_webhook_event(
+        &client,
+        &event.id,
+        &event.kind,
+        event_created,
+        event.livemode,
+        event.api_version.as_deref(),
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      if claim == WebhookClaim::AlreadyProcessed {
+        console_log!(
+          "Stripe webhook: {} ({}) already applied, acking redelivery",
+          event.id,
+          event.kind
+        );
+        return Response::from_json(&serde_json::json!({"received": true, "duplicate": true}))?
+          .with_cors(&cors);
+      }
+
+      // Applied inline rather than enqueued: this is one indexed UPDATE,
+      // far inside Stripe's delivery timeout. Anything heavier belongs on
+      // the existing queue, with the 200 returned before the work.
+      if event.kind.starts_with("customer.subscription.") {
+        let Ok(subscription) =
+          serde_json::from_value::<capsules::StripeSubscriptionRow>(event.data.object.clone())
+        else {
+          console_error!(
+            "Stripe webhook: {} carried an unreadable subscription object",
+            event.id
+          );
+          return Response::error("Bad Request: unreadable subscription object", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let billing: capsules::OrganizationBilling = subscription.into();
+        let Ok(applied) = apply_subscription(&client, &billing, event_created).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if !applied {
+          // Either no org claims this Stripe customer, or a newer event
+          // already wrote this row. Both are ack-worthy -- retrying cannot
+          // change either -- but the first means provisioning and Stripe
+          // have diverged, so it must be visible.
+          console_error!(
+            "Stripe webhook: {} ({}) matched no organization row",
+            event.id,
+            event.kind
+          );
+        }
+      }
+
+      if mark_webhook_event_processed(&client, &event.id).await.is_err() {
+        // The state change already landed. Reporting failure would earn a
+        // redelivery that the idempotency row can no longer suppress, so
+        // ack and leave the row visible in the unprocessed index instead.
+        console_error!(
+          "Stripe webhook: {} applied but could not be marked processed",
+          event.id
+        );
+      }
+
+      Response::from_json(&serde_json::json!({"received": true}))?.with_cors(&cors)
     })
     .or_else_any_method_async("/*any", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
