@@ -1,7 +1,8 @@
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::components::{
   BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, GraphDef,
-  JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal, TrackWidget,
+  JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal, TelemetryStatTiles,
+  TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::gps_track;
@@ -149,6 +150,9 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     telemetry_endpoint: pd.pigeon.telemetry_endpoint.clone(),
                     show_modal: show_telemetry_endpoint_modal,
                   }
+                }
+                section { id: "telemetryLatest",
+                  TelemetryStatTiles { latest: latest_vec.clone() }
                 }
                 if has_gps {
                   section { id: "gpsTrack",

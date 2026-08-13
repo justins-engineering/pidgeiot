@@ -27,6 +27,9 @@ pub use json_view::JsonViewer;
 mod connector_badge;
 pub use connector_badge::ConnectorBadge;
 
+mod stat_tiles;
+pub use stat_tiles::TelemetryStatTiles;
+
 mod telemetry_chart;
 pub use telemetry_chart::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 
