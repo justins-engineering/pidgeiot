@@ -1,65 +1,33 @@
 use crate::Route;
 use dioxus::prelude::*;
-use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
-use dioxus_free_icons::icons::ld_icons::{LdChevronsDown, LdRocket};
 
 #[component]
 pub fn Home() -> Element {
   rsx! {
-    section { id: "home", class: "front-page animate-slide-in",
-      h1 { class: "text-center text-4xl md:text-6xl lg:text-7xl font-bold leading-tight",
-        span { class: "italic", "The" }
-        span { class: "gradient-text font-extrabold block", "No Compromise" }
-        "IoT Platform*"
-      }
-      p { class: "text-center text-xs text-base-content/70", "* Life is full of compromises" }
-      article { class: "flex flex-col space-y-4 @min-[22rem]:space-y-8 text-xl text-pretty text-center leading-relaxed",
-        p {
-          "An open-source, distributed, and efficient IoT platform. Built in "
-          span { class: "text-orange-700 dark:text-orange-400", "Rust" }
-          ", from front to back. Designed with security, privacy, and flexibility in mind."
+    section { class: "pt-20 pb-14 text-center",
+      div { class: "max-w-5xl mx-auto",
+        h1 { class: "text-5xl md:text-7xl font-extrabold tracking-tight max-w-4xl mx-auto text-pretty",
+          "Carrier pigeons for your sensors."
+          br {}
+          span { class: "text-primary", "Considerably faster." }
         }
-        p {
-          span { class: "text-primary", " Your data." }
-          span { class: "text-secondary", " Your control." }
+        p { class: "mt-7 text-xl md:text-2xl leading-relaxed max-w-2xl mx-auto text-base-content/80 text-pretty",
+          "An open-source platform that provisions your devices, keeps their config and firmware current, and brings their readings home."
         }
-      }
-      div { class: "flex flex-col sm:flex-row sm:space-x-6 space-y-4 sm:space-y-0 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-64",
-        Link {
-          class: "grow btn btn-xl btn-glow font-bold",
-          to: Route::RegisterFlow { flow: None },
-          Icon {
-            icon: LdRocket,
-            class: "mr-2 animate-bounce-slow",
-            title: "Rocket icon",
+        div { class: "flex flex-col sm:flex-row justify-center gap-3 mt-9",
+          Link { class: "btn btn-primary btn-lg font-bold", to: Route::DemoPage {},
+            "Try the live demo"
           }
-          "Get Started Free"
-        }
-        a {
-          class: "grow btn btn-xl btn-special font-bold",
-          href: "https://github.com/justins-engineering",
-          Icon { icon: FaGithub, class: "mr-2", title: "GitHub logo" }
-          "View on GitHub"
-        }
-      }
-      p { class: "text-center text-base text-base-content/70",
-        "New to IoT? "
-        Link {
-          class: "link link-secondary",
-          to: Route::GettingStartedPage {},
-          "Try it without hardware first →"
-        }
-      }
-      div { class: "mx-auto",
-        a {
-          href: "/#features",
-          aria_label: "Scroll to features section",
-          Icon {
-            icon: LdChevronsDown,
-            class: "size-15 mx-auto stroke-primary animate-pulse-slow",
-            title: "Scroll for more info",
+          a {
+            class: "btn btn-outline btn-lg font-bold",
+            href: "https://github.com/justins-engineering",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            "Read the source"
           }
+        }
+        p { class: "mt-5 text-sm text-base-content/60 font-mono",
+          "no signup · no hardware · AGPL-3.0"
         }
       }
     }

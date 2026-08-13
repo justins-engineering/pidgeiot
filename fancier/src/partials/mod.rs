@@ -1,17 +1,17 @@
 mod home;
 pub use home::Home;
 
-mod features;
-pub use features::Features;
+mod dashboard_preview;
+pub use dashboard_preview::DashboardPreview;
 
-mod code_showcase;
-pub use code_showcase::CodeShowcase;
+mod route_stops;
+pub use route_stops::RouteStops;
 
-mod connectivity;
-pub use connectivity::Connectivity;
+mod use_case_strip;
+pub use use_case_strip::UseCaseStrip;
 
-mod infrastructure;
-pub use infrastructure::Infrastructure;
+mod open_source;
+pub use open_source::OpenSource;
 
 mod why;
 pub use why::Why;

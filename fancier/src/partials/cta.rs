@@ -1,48 +1,32 @@
 use crate::Route;
 use dioxus::prelude::*;
-use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdFileCode, LdGift, LdPlay};
 
 #[component]
 pub fn Cta() -> Element {
   rsx! {
-    section { id: "cta", class: "front-page",
-      div { class: "bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 border border-neutral-content rounded-3xl p-8 md:p-12 text-center shadow-2xl",
-        h2 { class: "text-3xl md:text-4xl lg:text-5xl font-bold mb-6",
-          "Ready to Build Secure IoT Solutions?"
+    section { class: "my-16",
+      div {
+        class: "max-w-6xl mx-auto rounded-3xl bg-primary px-6 md:px-12 py-16 text-center",
+        style: "color:var(--color-primary-content)",
+        h2 { class: "text-4xl md:text-5xl font-extrabold tracking-tight", "Send up your first bird" }
+        // The design said "the demo flock is already flying"; the public
+        // demo is a single allowlisted device.
+        p { class: "text-lg md:text-xl mt-4",
+          "A real device is already reporting. Ten minutes, no hardware, no card."
         }
-        p { class: "text-xl mb-10 leading-relaxed",
-          "Provision a device, push config, and watch telemetry land — in about ten minutes, no hardware required."
-        }
-        div { class: "flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-6 mb-8",
+        div { class: "flex flex-col sm:flex-row justify-center gap-3 mt-8",
           Link {
-            class: "btn btn-xl btn-glow sm:w-1/2 grow font-bold",
-            to: Route::RegisterFlow { flow: None },
-            Icon {
-              icon: LdPlay,
-              class: "mr-2 animate-pulse-slow",
-              title: "Start Now",
-            }
-            "Start Now"
+            class: "btn btn-lg font-bold border-0",
+            style: "background:var(--color-primary-content);color:var(--color-primary)",
+            to: Route::DemoPage {},
+            "Try the live demo"
           }
-          a {
-            class: "btn btn-xl btn-special sm:w-1/2 grow font-bold",
-            href: "https://github.com/justins-engineering",
-            Icon {
-              icon: LdFileCode,
-              class: "mr-2",
-              title: "Explore the Source",
-            }
-            "Explore the Code"
+          Link {
+            class: "btn btn-lg btn-outline font-bold",
+            style: "background:transparent;border-color:var(--color-primary-content);color:var(--color-primary-content)",
+            to: Route::DocumentationPage {},
+            "Read the docs"
           }
-        }
-        div { class: "inline-flex items-center px-4 py-2 rounded-full bg-base-300/30 border border-primary/30",
-          Icon {
-            icon: LdGift,
-            class: "size-10 sm:size-5 mr-2 stroke-primary",
-            title: "Gift",
-          }
-          p { class: "text-sm", "No credit card required." }
         }
       }
     }
