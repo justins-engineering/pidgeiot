@@ -8,6 +8,13 @@
 
 **/node_modules/
 
+# A local override for build.rs's compile-time config, picked up by running
+# `FANCIER_ENV=local dx serve` (see build.rs). Useful when the standard dev
+# ports are already taken and this build needs its own API_HOST. Named
+# explicitly rather than as .env.* so the tracked .env.dev/.env.release stay
+# tracked.
+.env.local
+
 .wrangler
 build/
 dist
