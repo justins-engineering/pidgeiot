@@ -38,7 +38,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
           },
           title: "Pick a transport that suits the hardware",
-          body: "The same device API is reachable three ways, and a pigeon's connector decides which. Plain HTTPS is the simplest and works anywhere. A long-lived WebSocket suits mains-powered or WiFi devices that want config pushed to them the instant it changes, instead of waiting on a poll. And for hardware too constrained to carry a full HTTPS stack, a dedicated terminator speaks CoAP on both DTLS/UDP and RFC 8323 TLS/TCP, each authenticated by its own per-device pre-shared key, proxied into the very same ingestion API. There is no unencrypted path on any of the three.",
+          body: "The same device API is reachable three ways. Plain HTTPS is the simplest and works anywhere. A device on mains power or WiFi can instead hold one long-lived WebSocket, so config reaches it the instant you push it rather than at the next poll — same credential, same routes, just a persistent channel. And for hardware too constrained to carry a full HTTPS stack, a pigeon can be given a CoAP connector instead: a dedicated terminator speaks both DTLS/UDP and RFC 8323 TLS/TCP, each authenticated by its own per-device pre-shared key, and proxies into the very same ingestion API. There is no unencrypted path on any of the three.",
           code: None,
         }
 
