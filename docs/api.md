@@ -166,7 +166,7 @@ applies at the platform level). The limits that do exist are:
 | `POST /pigeons/batch` — pigeon IDs per request | 48 | `lib.rs` (Workers subrequest budget) |
 | `POST /device/pigeons/:id/logs` — bytes per chunk | 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`) | `objects/pigeons.rs::report_logs_device`, `413` over the cap |
 | Stored log chunks per pigeon | 200 (oldest silently pruned, not an error) | `objects/pigeons.rs::MAX_STORED_LOG_CHUNKS` |
-| `GET .../telemetry/history` rows per query | 5000 (silently truncated, not an error) | `helpers/telemetry.rs` |
+| `GET .../telemetry/history` points per query | 5000 (`capsules::TELEMETRY_HISTORY_MAX_POINTS`) — the range's **newest** 5000, flagged by `X-Telemetry-Truncated`, not an error | `helpers/telemetry.rs` |
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
@@ -740,11 +740,16 @@ Time-series read from Postgres. All query params are optional:
 | Param | Type | Meaning |
 |---|---|---|
 | `key` | string | filter to one metric key; omit for all keys |
+| `keys` | comma-separated strings | filter to several keys at once, e.g. `keys=gps_lat,gps_lon`. Merged with `key` if both are sent; blank entries are ignored, so `keys=` behaves as no filter |
 | `since` | RFC 3339 timestamp | inclusive lower bound on `reported_at` |
 | `until` | RFC 3339 timestamp | inclusive upper bound on `reported_at` |
 
+Filtering to the keys you actually intend to draw is worth doing: the row cap below is spent on
+whatever keys come back, so an unfiltered fetch spends it on every unrelated key the device
+reports.
+
 ```sh
-curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?key=temp" \
+curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps_lat,gps_lon" \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
@@ -760,7 +765,22 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?key=temp
 ]
 ```
 
-(`Vec<capsules::TelemetryHistoryPoint>`, capped at 5000 rows, oldest first.)
+(`Vec<capsules::TelemetryHistoryPoint>`, oldest first, capped at
+`capsules::TELEMETRY_HISTORY_MAX_POINTS` = 5000 points.)
+
+**When a range holds more than the cap, you get its newest 5000 points, not its oldest** — the
+window always ends at the end of the range you asked for, so the live edge of a chart is never
+the part that gets dropped. Because history stores one row per reported key, a handful of keys
+at a short interval passes 5000 within a day, so this applies to ordinary ranges, not just
+long ones. Every response says which case it was:
+
+| Header | Meaning |
+|---|---|
+| `X-Telemetry-Truncated: false` | the full range fits; you have all of it |
+| `X-Telemetry-Truncated: true` | the range held more; you have its newest 5000 points |
+
+The header is listed in `Access-Control-Expose-Headers`, so a browser client can read it. Narrow
+the range or the key set to see the rest.
 
 **Backing store (task #26, revised by the Postgres consolidation).** This route reads from
 whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`

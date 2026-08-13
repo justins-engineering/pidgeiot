@@ -1,4 +1,4 @@
-use capsules::TelemetryHistoryPoint;
+use capsules::{TELEMETRY_HISTORY_MAX_POINTS, TelemetryHistoryPoint};
 use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
@@ -117,37 +117,77 @@ pub async fn write_telemetry_history(
   Ok(())
 }
 
+/// One history read's worth of points, plus whether the range held more
+/// than `TELEMETRY_HISTORY_MAX_POINTS` and was cut down to its newest
+/// slice. A chart drawn from a silently cut range misreads as a complete
+/// one, so the flag rides alongside the points rather than being inferred
+/// from their count.
+pub struct TelemetryHistoryPage {
+  pub points: Vec<TelemetryHistoryPoint>,
+  pub truncated: bool,
+}
+
+impl TelemetryHistoryPage {
+  /// Takes the newest `TELEMETRY_HISTORY_MAX_POINTS` of an
+  /// ascending-by-time slice, which is the end a chart actually plots --
+  /// dropping from the front, since the excess is at the old end.
+  pub(crate) fn from_ascending(mut points: Vec<TelemetryHistoryPoint>) -> Self {
+    let truncated = points.len() > TELEMETRY_HISTORY_MAX_POINTS;
+    if truncated {
+      points.drain(..points.len() - TELEMETRY_HISTORY_MAX_POINTS);
+    }
+    Self { points, truncated }
+  }
+}
+
+/// One more row than the cap, so a full page can be told apart from a
+/// range that merely ends exactly on it.
+fn history_probe_limit() -> i64 {
+  TELEMETRY_HISTORY_MAX_POINTS as i64 + 1
+}
+
 /// Backs `GET /pigeons/:id/telemetry/history`. Takes a `PigeonAccess` proof
 /// rather than a bare `pigeon_id` -- only constructible via
 /// `check_pigeon_authz` (`helpers/pigeons.rs`), which ACL-gates against
 /// the DO's `/pigeon/authz/check` route, so a caller can't reach this
 /// query without that check having already run.
+///
+/// The cap is applied to the newest end of the range and the result handed
+/// back oldest-first. Selecting the oldest rows instead would drop the
+/// live edge -- the part of a range a chart exists to show -- and a few
+/// keys reported every minute exceed the cap inside a day, so even a
+/// day-long range depends on which end is kept.
 pub async fn query_telemetry_history_for_pigeon(
   client: &Client,
   access: &PigeonAccess,
-  key: Option<&str>,
+  keys: Option<&[String]>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
-) -> Result<Vec<TelemetryHistoryPoint>> {
+) -> Result<TelemetryHistoryPage> {
   ensure_telemetry_history_table(client).await?;
 
   let pigeon_id = access.pigeon_id();
+  let limit = history_probe_limit();
 
   let rows = client
     .query_typed(
-      "SELECT pigeon_id, key, value, value_num, reported_at
-       FROM pigeon_telemetry_history
-       WHERE pigeon_id = $1
-         AND ($2::TEXT IS NULL OR key = $2)
-         AND ($3::TIMESTAMPTZ IS NULL OR reported_at >= $3)
-         AND ($4::TIMESTAMPTZ IS NULL OR reported_at <= $4)
-       ORDER BY reported_at ASC
-       LIMIT 5000;",
+      "SELECT pigeon_id, key, value, value_num, reported_at FROM (
+         SELECT pigeon_id, key, value, value_num, reported_at
+         FROM pigeon_telemetry_history
+         WHERE pigeon_id = $1
+           AND ($2::TEXT[] IS NULL OR key = ANY($2))
+           AND ($3::TIMESTAMPTZ IS NULL OR reported_at >= $3)
+           AND ($4::TIMESTAMPTZ IS NULL OR reported_at <= $4)
+         ORDER BY reported_at DESC
+         LIMIT $5
+       ) newest
+       ORDER BY reported_at ASC;",
       &[
         (&pigeon_id, Type::TEXT),
-        (&key, Type::TEXT),
+        (&keys, Type::TEXT_ARRAY),
         (&since, Type::TIMESTAMPTZ),
         (&until, Type::TIMESTAMPTZ),
+        (&limit, Type::INT8),
       ],
     )
     .await
@@ -156,7 +196,7 @@ pub async fn query_telemetry_history_for_pigeon(
       worker::Error::RustError("Internal Server Error".into())
     })?;
 
-  Ok(
+  Ok(TelemetryHistoryPage::from_ascending(
     rows
       .into_iter()
       .map(|row| TelemetryHistoryPoint {
@@ -167,7 +207,7 @@ pub async fn query_telemetry_history_for_pigeon(
         reported_at: row.get("reported_at"),
       })
       .collect(),
-  )
+  ))
 }
 
 /// Pigeon-ID list for one flock -- the Postgres round-trip
@@ -206,10 +246,10 @@ pub async fn get_flock_pigeon_ids(client: &Client, access: &FlockAccess) -> Resu
 pub async fn query_telemetry_history_for_flock(
   client: &Client,
   access: &FlockAccess,
-  key: Option<&str>,
+  keys: Option<&[String]>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
-) -> Result<Vec<TelemetryHistoryPoint>> {
+) -> Result<TelemetryHistoryPage> {
   ensure_telemetry_history_table(client).await?;
 
   let flock_id_str = access.flock_id();
@@ -217,23 +257,28 @@ pub async fn query_telemetry_history_for_flock(
     console_error!("Invalid flock_id format: {e}");
     worker::Error::RustError("Bad Request: Invalid flock_id".into())
   })?;
+  let limit = history_probe_limit();
 
   let rows = client
     .query_typed(
-      "SELECT h.pigeon_id, h.key, h.value, h.value_num, h.reported_at
-       FROM pigeon_telemetry_history h
-       JOIN pigeons p ON p.id = h.pigeon_id
-       WHERE p.flock_id = $1
-         AND ($2::TEXT IS NULL OR h.key = $2)
-         AND ($3::TIMESTAMPTZ IS NULL OR h.reported_at >= $3)
-         AND ($4::TIMESTAMPTZ IS NULL OR h.reported_at <= $4)
-       ORDER BY h.reported_at ASC
-       LIMIT 5000;",
+      "SELECT pigeon_id, key, value, value_num, reported_at FROM (
+         SELECT h.pigeon_id, h.key, h.value, h.value_num, h.reported_at
+         FROM pigeon_telemetry_history h
+         JOIN pigeons p ON p.id = h.pigeon_id
+         WHERE p.flock_id = $1
+           AND ($2::TEXT[] IS NULL OR h.key = ANY($2))
+           AND ($3::TIMESTAMPTZ IS NULL OR h.reported_at >= $3)
+           AND ($4::TIMESTAMPTZ IS NULL OR h.reported_at <= $4)
+         ORDER BY h.reported_at DESC
+         LIMIT $5
+       ) newest
+       ORDER BY reported_at ASC;",
       &[
         (&flock_uuid, Type::UUID),
-        (&key, Type::TEXT),
+        (&keys, Type::TEXT_ARRAY),
         (&since, Type::TIMESTAMPTZ),
         (&until, Type::TIMESTAMPTZ),
+        (&limit, Type::INT8),
       ],
     )
     .await
@@ -242,7 +287,7 @@ pub async fn query_telemetry_history_for_flock(
       worker::Error::RustError("Internal Server Error".into())
     })?;
 
-  Ok(
+  Ok(TelemetryHistoryPage::from_ascending(
     rows
       .into_iter()
       .map(|row| TelemetryHistoryPoint {
@@ -253,7 +298,7 @@ pub async fn query_telemetry_history_for_flock(
         reported_at: row.get("reported_at"),
       })
       .collect(),
-  )
+  ))
 }
 
 /// Idempotently ensures the `pigeons.telemetry_endpoint` column exists on

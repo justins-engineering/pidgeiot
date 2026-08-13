@@ -443,17 +443,97 @@ pub struct TelemetryHistoryPoint {
   pub reported_at: OffsetDateTime,
 }
 
+/// Most points either history read route will return for one request.
+/// History stores one row per reported key, so a handful of keys at a
+/// short interval reaches this within a day -- the cap is spent on the
+/// newest points in range, and a response that hit it says so via
+/// `TELEMETRY_HISTORY_TRUNCATED_HEADER`.
+pub const TELEMETRY_HISTORY_MAX_POINTS: usize = 5000;
+
+/// Set to `true`/`false` on every history response. The body stays a bare
+/// `TelemetryHistoryPoint` array, so this is the only way a caller can
+/// tell a complete range from the newest slice of a longer one -- an
+/// absent header means a backend too old to report either way.
+pub const TELEMETRY_HISTORY_TRUNCATED_HEADER: &str = "X-Telemetry-Truncated";
+
 // Query params shared by both history read routes (GET
 // /pigeons/:id/telemetry/history, GET /flocks/:id/telemetry/history).
-// All optional: no `key` returns every key, no range returns everything
-// within the implicit LIMIT the route applies.
+// All optional: no key filter returns every key, no range returns
+// everything within `TELEMETRY_HISTORY_MAX_POINTS`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct TelemetryHistoryQuery {
   pub key: Option<String>,
+  /// Comma-separated keys, for a caller drawing several series at once (a
+  /// GPS track needs `gps_lat,gps_lon` and nothing else). Separate from
+  /// `key` rather than replacing it because query strings deserialize
+  /// through `serde_urlencoded`, which has no repeated-parameter form --
+  /// and because `key` is already a shipped parameter.
+  pub keys: Option<String>,
   #[serde(default, with = "time::serde::rfc3339::option")]
   pub since: Option<OffsetDateTime>,
   #[serde(default, with = "time::serde::rfc3339::option")]
   pub until: Option<OffsetDateTime>,
+}
+
+impl TelemetryHistoryQuery {
+  /// The union of `key` and `keys` as one filter list, or `None` for "every
+  /// key". Blank entries are dropped so a trailing comma or an empty
+  /// `keys=` behaves like no filter at all rather than matching a key named
+  /// "" and returning nothing.
+  pub fn key_list(&self) -> Option<Vec<String>> {
+    let mut keys: Vec<String> = self
+      .key
+      .iter()
+      .map(String::as_str)
+      .chain(self.keys.iter().flat_map(|k| k.split(',')))
+      .map(str::trim)
+      .filter(|k| !k.is_empty())
+      .map(str::to_string)
+      .collect();
+    keys.sort();
+    keys.dedup();
+    (!keys.is_empty()).then_some(keys)
+  }
+}
+
+#[cfg(test)]
+mod telemetry_history_query_tests {
+  use super::*;
+
+  fn query(key: Option<&str>, keys: Option<&str>) -> TelemetryHistoryQuery {
+    TelemetryHistoryQuery {
+      key: key.map(str::to_string),
+      keys: keys.map(str::to_string),
+      ..Default::default()
+    }
+  }
+
+  #[test]
+  fn no_filter_means_every_key() {
+    assert_eq!(query(None, None).key_list(), None);
+  }
+
+  #[test]
+  fn blank_entries_do_not_become_a_filter() {
+    assert_eq!(query(None, Some("")).key_list(), None);
+    assert_eq!(query(None, Some(" , ,")).key_list(), None);
+  }
+
+  #[test]
+  fn csv_is_split_and_trimmed() {
+    assert_eq!(
+      query(None, Some("gps_lat, gps_lon ,")).key_list(),
+      Some(vec!["gps_lat".to_string(), "gps_lon".to_string()])
+    );
+  }
+
+  #[test]
+  fn single_key_and_csv_merge_without_duplicates() {
+    assert_eq!(
+      query(Some("gps_lat"), Some("gps_lon,gps_lat")).key_list(),
+      Some(vec!["gps_lat".to_string(), "gps_lon".to_string()])
+    );
+  }
 }
 
 // --- Device logs ---

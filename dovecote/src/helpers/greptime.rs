@@ -1,5 +1,7 @@
 use capsules::TelemetryHistoryPoint;
 use std::collections::HashMap;
+
+use crate::helpers::telemetry::TelemetryHistoryPage;
 use time::OffsetDateTime;
 use worker::{Env, Fetch, Method, Request, RequestInit, Result, console_error};
 
@@ -330,10 +332,18 @@ fn build_history_sql(
     ));
   }
   // Row-level cap, not point-level: each row can pivot into multiple
-  // points (one per reported key), so the final Vec is truncated to 5000
-  // again after pivoting to preserve the same "at most 5000 points"
-  // contract the Postgres-backed read path has always had.
-  sql.push_str(" ORDER BY greptime_timestamp ASC LIMIT 5000;");
+  // points (one per reported key), so the final Vec is capped again after
+  // pivoting to preserve the same "at most TELEMETRY_HISTORY_MAX_POINTS"
+  // contract the Postgres-backed read path has always had. Newest-first
+  // for the same reason that path selects its newest window -- the caller
+  // re-sorts ascending after pivoting. One row past the cap so that a
+  // range longer than the cap always pivots to more points than the cap
+  // and is reported as cut; a key filter applied after the pivot can still
+  // shrink it back under, which under-reports rather than over-reports.
+  sql.push_str(&format!(
+    " ORDER BY greptime_timestamp DESC LIMIT {};",
+    capsules::TELEMETRY_HISTORY_MAX_POINTS + 1
+  ));
   sql
 }
 
@@ -466,14 +476,14 @@ async fn query_greptime_sql(env: &Env, sql: &str) -> Result<Vec<TelemetryHistory
 pub async fn query_greptime_history_for_pigeon(
   env: &Env,
   pigeon_id: &str,
-  key: Option<&str>,
+  keys: Option<&[String]>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
-) -> Result<Vec<TelemetryHistoryPoint>> {
+) -> Result<TelemetryHistoryPage> {
   query_greptime_history_for_pigeons(
     env,
     std::slice::from_ref(&pigeon_id.to_string()),
-    key,
+    keys,
     since,
     until,
   )
@@ -489,12 +499,15 @@ pub async fn query_greptime_history_for_pigeon(
 pub async fn query_greptime_history_for_pigeons(
   env: &Env,
   pigeon_ids: &[String],
-  key: Option<&str>,
+  keys: Option<&[String]>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
-) -> Result<Vec<TelemetryHistoryPoint>> {
+) -> Result<TelemetryHistoryPage> {
   if pigeon_ids.is_empty() {
-    return Ok(Vec::new());
+    return Ok(TelemetryHistoryPage {
+      points: Vec::new(),
+      truncated: false,
+    });
   }
 
   for id in pigeon_ids {
@@ -509,10 +522,9 @@ pub async fn query_greptime_history_for_pigeons(
   let sql = build_history_sql(pigeon_ids, since, until);
   let mut points = query_greptime_sql(env, &sql).await?;
 
-  if let Some(k) = key {
-    points.retain(|p| p.key == k);
+  if let Some(keys) = keys {
+    points.retain(|p| keys.iter().any(|k| *k == p.key));
   }
-  points.truncate(5000);
 
-  Ok(points)
+  Ok(TelemetryHistoryPage::from_ascending(points))
 }

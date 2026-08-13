@@ -1,7 +1,7 @@
 use crate::helpers::{
-  PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent, WebhookClaim, accept_invite,
-  apply_subscription, authenticate_browser, backfill_owner_email, build_invite_url,
-  change_member_role, check_pigeon_authz, claim_webhook_event, constant_time_eq,
+  PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent, TelemetryHistoryPage,
+  WebhookClaim, accept_invite, apply_subscription, authenticate_browser, backfill_owner_email,
+  build_invite_url, change_member_role, check_pigeon_authz, claim_webhook_event, constant_time_eq,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert, create_user_flock,
   delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
   ensure_billing_tables, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn,
@@ -22,7 +22,7 @@ use capsules::{
   FlockCreateRequest, OrgRole, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TelemetryEndpoint, TelemetryHistoryQuery,
+  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryQuery,
 };
 use futures::future::join_all;
 use worker::{
@@ -66,8 +66,20 @@ fn build_cors(env: &Env, req: &Request) -> worker::Cors {
       Method::Options,
     ])
     .with_allowed_headers(vec!["Content-Type", "Accept", "Authorization"])
-    .with_exposed_headers(vec!["Location"])
+    .with_exposed_headers(vec!["Location", TELEMETRY_HISTORY_TRUNCATED_HEADER])
     .with_credentials(true)
+}
+
+/// History responses keep a bare `TelemetryHistoryPoint` array as their
+/// body -- the newest-window cap rides in a header instead, so a dashboard
+/// build that doesn't know about it yet keeps parsing these unchanged.
+fn telemetry_history_response(page: TelemetryHistoryPage) -> worker::Result<Response> {
+  let mut response = Response::from_json(&page.points)?;
+  response.headers_mut().set(
+    TELEMETRY_HISTORY_TRUNCATED_HEADER,
+    if page.truncated { "true" } else { "false" },
+  )?;
+  Ok(response)
 }
 
 /// RFC 9727 API catalog handler for `/.well-known/api-catalog`, shared by
@@ -1468,17 +1480,19 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // Greptime-first, PG-fallback-on-error -- see helpers/greptime.rs
         // for the full reasoning. `greptime_origin` returning `None`
         // (unconfigured for this env) skips straight to the PG path below.
+        let keys = query.key_list();
+
         if crate::helpers::greptime_origin(&ctx.env).is_some() {
           match crate::helpers::query_greptime_history_for_pigeon(
             &ctx.env,
             &pigeon_id,
-            query.key.as_deref(),
+            keys.as_deref(),
             query.since,
             query.until,
           )
           .await
           {
-            Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+            Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
             Err(e) => console_error!(
               "Greptime history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
             ),
@@ -1487,16 +1501,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         get_db!(ctx.env, client, &cors);
 
-        let points = query_telemetry_history_for_pigeon(
+        let page = query_telemetry_history_for_pigeon(
           &client,
           &access,
-          query.key.as_deref(),
+          keys.as_deref(),
           query.since,
           query.until,
         )
         .await?;
 
-        Response::from_json(&points)?.with_cors(&cors)
+        telemetry_history_response(page)?.with_cors(&cors)
       },
     )
     .get_async(
@@ -1547,19 +1561,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
+        let keys = query.key_list();
+
         if crate::helpers::greptime_origin(&ctx.env).is_some() {
           match crate::helpers::get_flock_pigeon_ids(&client, &flock_access).await {
             Ok(pigeon_ids) => {
               match crate::helpers::query_greptime_history_for_pigeons(
                 &ctx.env,
                 &pigeon_ids,
-                query.key.as_deref(),
+                keys.as_deref(),
                 query.since,
                 query.until,
               )
               .await
               {
-                Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+                Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
                 Err(e) => console_error!(
                   "Greptime flock history query failed for flock {flock_id}, falling back to PG: {e}"
                 ),
@@ -1571,16 +1587,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
         }
 
-        let points = query_telemetry_history_for_flock(
+        let page = query_telemetry_history_for_flock(
           &client,
           &flock_access,
-          query.key.as_deref(),
+          keys.as_deref(),
           query.since,
           query.until,
         )
         .await?;
 
-        Response::from_json(&points)?.with_cors(&cors)
+        telemetry_history_response(page)?.with_cors(&cors)
       },
     )
     // --- Public Demo Routes ---
@@ -1633,18 +1649,19 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // specifically so query_telemetry_history_for_pigeon still can't
         // be called from a call site that skipped some form of check.
         let access = PigeonAccess::from_demo_allowlist(&pigeon_id);
+        let keys = query.key_list();
 
         if crate::helpers::greptime_origin(&ctx.env).is_some() {
           match crate::helpers::query_greptime_history_for_pigeon(
             &ctx.env,
             &pigeon_id,
-            query.key.as_deref(),
+            keys.as_deref(),
             query.since,
             query.until,
           )
           .await
           {
-            Ok(points) => return Response::from_json(&points)?.with_cors(&cors),
+            Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
             Err(e) => console_error!(
               "Greptime demo history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
             ),
@@ -1653,16 +1670,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         get_db!(ctx.env, client, &cors);
 
-        let points = query_telemetry_history_for_pigeon(
+        let page = query_telemetry_history_for_pigeon(
           &client,
           &access,
-          query.key.as_deref(),
+          keys.as_deref(),
           query.since,
           query.until,
         )
         .await?;
 
-        Response::from_json(&points)?.with_cors(&cors)
+        telemetry_history_response(page)?.with_cors(&cors)
       },
     )
     // --- Firmware Routes ---
