@@ -198,6 +198,11 @@ struct LocalSession {
   // `scope` locally (see `components::AlertsPanel`) instead of needing a
   // second, scope-keyed cache.
   alerts: Signal<HashMap<Uuid, AlertDefinition>>,
+  // Whether the last attempt to fill `flocks` failed. An empty map on its
+  // own cannot tell "this account owns no flocks" from "the request did
+  // not come back", and the two need to say different things -- the same
+  // distinction views::Pigeons already draws for a flock's pigeon list.
+  flocks_load_failed: Signal<bool>,
 }
 
 #[component]
@@ -228,15 +233,17 @@ pub fn App() -> Element {
     });
   });
 
-  let _local_session = use_context_provider(|| LocalSession {
+  let mut local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),
     pigeons: Signal::new(HashMap::new()),
     alerts: Signal::new(HashMap::new()),
+    flocks_load_failed: Signal::new(false),
   });
 
   use_resource(move || async move {
     if (session.state)() == AuthState::Authenticated {
-      api::flocks::list().await;
+      let loaded = api::flocks::list().await.is_some();
+      local_session.flocks_load_failed.set(!loaded);
     }
   });
 

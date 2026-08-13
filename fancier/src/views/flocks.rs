@@ -2,13 +2,15 @@ use crate::{Route, api};
 use capsules::{Flock, FlockCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdCopy, LdX};
+use dioxus_free_icons::icons::ld_icons::{LdCopy, LdTriangleAlert, LdX};
 use uuid::Uuid;
 
 #[component]
 pub fn Flocks() -> Element {
   let mut search = use_signal(String::new);
-  let all_flocks = use_context::<crate::LocalSession>().flocks;
+  let local_session = use_context::<crate::LocalSession>();
+  let all_flocks = local_session.flocks;
+  let load_failed = (local_session.flocks_load_failed)();
   let total = all_flocks.read().len();
   let filtered: Vec<(Uuid, Flock)> = all_flocks
     .read()
@@ -61,7 +63,9 @@ pub fn Flocks() -> Element {
           }
         }
 
-        if total == 0 {
+        if total == 0 && load_failed {
+          FlocksUnavailableState {}
+        } else if total == 0 {
           EmptyFlocksState {}
         } else if filtered.is_empty() {
           NoSearchMatchesState { query: search() }
@@ -97,6 +101,29 @@ fn EmptyFlocksState() -> Element {
       h2 { class: "text-lg font-semibold", "No flocks yet" }
       p { class: "text-base-content/60 max-w-sm",
         "A flock groups pigeons under one owner — think of it as a project or a fleet. Create your first one to start provisioning devices."
+      }
+    }
+  }
+}
+
+/// Shown when the flock list came back empty because the request failed,
+/// not because the account owns nothing. An expired session is handled
+/// before it can reach here (it signs the tab out), so what lands on this
+/// state is a server error or a dropped connection -- worth saying so
+/// rather than inviting someone to create a flock they may already have.
+#[component]
+fn FlocksUnavailableState() -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-base-200 rounded-box p-12 mb-16 max-w-xl mx-auto",
+      Icon {
+        width: 40,
+        height: 40,
+        icon: LdTriangleAlert,
+        class: "text-warning",
+      }
+      h2 { class: "text-lg font-semibold", "Couldn't load your flocks" }
+      p { class: "text-base-content/60 max-w-sm",
+        "This is a problem reaching the API, not an empty account — reload to try again."
       }
     }
   }
