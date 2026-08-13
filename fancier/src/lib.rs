@@ -240,6 +240,17 @@ pub fn App() -> Element {
     }
   });
 
+  // Without this an idle tab keeps its signed-in chrome until the user
+  // clicks something, which is the first request that gets a 401. Reading
+  // `session.state` first is what re-arms the watch on each sign-in and
+  // drops it on each sign-out -- see `watch_session_expiry` for why it
+  // costs no network and what it deliberately does not detect.
+  use_resource(move || async move {
+    if (session.state)() == AuthState::Authenticated {
+      crate::helpers::watch_session_expiry().await;
+    }
+  });
+
   rsx! {
     document::Meta {
       name: "description",
