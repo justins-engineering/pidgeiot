@@ -200,11 +200,58 @@ CREATE TABLE IF NOT EXISTS alert_state (
 -- dovecote's helpers/orgs.rs. A flock is EXACTLY one of user-owned
 -- (org_id NULL) or org-owned (org_id set); org-owned flocks' pigeons also
 -- carry a pigeon_acl row whose entity_id IS the org id.
+-- Billing hangs off the org rather than the flock: an org is the only
+-- entity that survives a change of individual owner and can hold a team's
+-- payment relationship. Everything Stripe owns lives in these columns;
+-- usage aggregation stays in our own tables, with Stripe's meter as a
+-- reporting sink. `billing_event_at` is the Stripe event timestamp that
+-- last wrote this row -- Stripe delivers events unordered, so an older
+-- event must not overwrite a newer one (see dovecote's
+-- helpers/billing.rs::apply_subscription). See capsules::BillingPlan /
+-- SubscriptionStatus for the vocabularies `plan` and
+-- `subscription_status` hold.
 CREATE TABLE IF NOT EXISTS organizations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
+  stripe_customer_id TEXT,
+  stripe_subscription_id TEXT,
+  plan TEXT NOT NULL DEFAULT 'perch',
+  subscription_status TEXT NOT NULL DEFAULT 'none',
+  current_period_start TIMESTAMPTZ,
+  current_period_end TIMESTAMPTZ,
+  cancel_at_period_end BOOLEAN NOT NULL DEFAULT false,
+  billing_event_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Idempotent for pre-existing databases that created `organizations`
+-- before billing existed.
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'perch';
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS subscription_status TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS billing_event_at TIMESTAMPTZ;
+
+-- Webhook idempotency. Stripe retries a delivery for up to three days and
+-- can send the same event more than once even after a 2xx, so every
+-- delivery is recorded here before anything is applied and `processed_at`
+-- is set only once the apply succeeded -- a delivery that dies mid-apply
+-- is therefore retried rather than being suppressed by its own claim.
+-- `redelivery_count` is incremented by the claiming upsert, making a
+-- repeatedly-failing event visible without a separate log trawl.
+CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  event_created TIMESTAMPTZ NOT NULL,
+  livemode BOOLEAN NOT NULL DEFAULT false,
+  api_version TEXT,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at TIMESTAMPTZ,
+  redelivery_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS organization_members (
@@ -267,3 +314,9 @@ CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_id ON pigeon_acl(id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported ON pigeon_telemetry_history(pigeon_id, reported_at);
 CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_key ON pigeon_telemetry_history(key);
+-- Unique so a Stripe customer/subscription can never map to two orgs --
+-- the webhook applies state by matching on these, and an ambiguous match
+-- would bill the wrong tenant.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_customer ON organizations(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_subscription ON organizations(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_unprocessed ON stripe_webhook_events(received_at) WHERE processed_at IS NULL;
