@@ -37,60 +37,44 @@ pub fn Navbar() -> Element {
 
         // --- Navbar Center: Desktop Links (Hidden when logged in) ---
         if !is_logged_in {
-          // Seven marketing links plus the two auth buttons need ~1190px;
-          // below xl they collapse into the mobile menu together, which
-          // already carries the same set.
-          div { class: "navbar-center hidden xl:flex",
-            ul { class: "menu menu-horizontal px-1 gap-2 text-base font-medium",
-              // Conversion-oriented links, ordered by visitor intent: what
-              // it does, how it works, who it's for, then see it and build
-              // it. Home is the logo's job; About Us lives in the footer.
-              li {
-                Link {
-                  to: Route::HowItWorksPage {},
-                  class: "hover:text-primary transition-colors duration-300",
-                  "How It Works"
-                }
-              }
+          // Four links plus the three buttons fit a 1024px viewport with room
+          // to spare; below lg they collapse into the mobile menu, which
+          // carries the full set including the pages that aren't up here.
+          div { class: "navbar-center hidden lg:flex",
+            // daisyUI pins this row to the geometric centre while the button
+            // cluster is flush right, so the slack all pools on the logo side
+            // and can't separate the last link from the first button. Narrow
+            // padding on each link buys that separation back.
+            ul { class: "menu menu-horizontal menu-sm p-0 gap-0 text-sm font-medium",
+              // Ordered by visitor intent: what it does, who it's for, what
+              // it costs, how to build on it. How It Works and Getting
+              // Started are reachable from the homepage and the footer;
+              // Live Demo sits with the other calls to action on the right.
               li {
                 Link {
                   to: Route::FeaturesPage {},
-                  class: "hover:text-primary transition-colors duration-300",
+                  class: "px-2 hover:text-primary transition-colors duration-300",
                   "Features"
                 }
               }
               li {
                 Link {
                   to: Route::UseCasesPage {},
-                  class: "hover:text-primary transition-colors duration-300",
+                  class: "px-2 hover:text-primary transition-colors duration-300",
                   "Use Cases"
                 }
               }
               li {
                 Link {
-                  to: Route::DemoPage {},
-                  class: "hover:text-primary transition-colors duration-300",
-                  "Live Demo"
-                }
-              }
-              li {
-                Link {
-                  to: Route::GettingStartedPage {},
-                  class: "hover:text-primary transition-colors duration-300",
-                  "Getting Started"
-                }
-              }
-              li {
-                Link {
                   to: Route::PricingPage {},
-                  class: "hover:text-primary transition-colors duration-300",
+                  class: "px-2 hover:text-primary transition-colors duration-300",
                   "Pricing"
                 }
               }
               li {
                 Link {
                   to: Route::DocumentationPage {},
-                  class: "hover:text-primary transition-colors duration-300",
+                  class: "px-2 hover:text-primary transition-colors duration-300",
                   "Docs"
                 }
               }
@@ -99,9 +83,9 @@ pub fn Navbar() -> Element {
         }
 
         // --- Navbar End: Auth, Theme Toggle & Mobile Menu ---
-        div { class: "navbar-end flex items-center gap-2 lg:gap-4",
+        div { class: "navbar-end flex items-center gap-1 lg:gap-2",
           // Desktop Auth Actions
-          div { class: "hidden xl:flex items-center gap-4",
+          div { class: "hidden lg:flex items-center gap-2",
             if is_logged_in {
               // --- User Profile Dropdown ---
               div { class: "dropdown dropdown-end",
@@ -163,18 +147,30 @@ pub fn Navbar() -> Element {
                 }
               }
             } else {
+              // The demo is a call to action, not a reference page, so it
+              // sits with the other two rather than in the link row.
               Link {
-                class: "btn btn-ghost btn-special font-semibold",
+                class: "btn btn-sm btn-outline btn-secondary font-semibold",
+                to: Route::DemoPage {},
+                Icon {
+                  icon: LdRadio,
+                  title: "Live Demo",
+                  class: "size-4 mr-1",
+                }
+                "Live Demo"
+              }
+              Link {
+                class: "btn btn-sm btn-ghost btn-special font-semibold",
                 to: Route::LoginFlow { flow: None },
                 Icon {
                   icon: LdLogIn,
                   title: "Login",
-                  class: "size-5 mr-1",
+                  class: "size-4 mr-1",
                 }
                 "Login"
               }
               Link {
-                class: "btn btn-glow font-semibold",
+                class: "btn btn-sm btn-glow font-semibold",
                 to: Route::RegisterFlow { flow: None },
                 "Get Started"
               }
@@ -185,7 +181,7 @@ pub fn Navbar() -> Element {
           ThemeController {}
 
           // --- Mobile Menu Toggle Button ---
-          div { class: "xl:hidden",
+          div { class: "lg:hidden",
             button {
               class: "btn btn-ghost btn-circle swap swap-rotate",
               class: if is_menu_open() { "swap-active" },
@@ -200,7 +196,7 @@ pub fn Navbar() -> Element {
 
       // --- Mobile Menu Dropdown Overlay ---
       if is_menu_open() {
-        div { class: "xl:hidden bg-base-200/95 backdrop-blur-md border-t border-base-300 shadow-xl absolute w-full left-0",
+        div { class: "lg:hidden bg-base-200/95 backdrop-blur-md border-t border-base-300 shadow-xl absolute w-full left-0",
           ul { class: "menu menu-lg w-full p-4 gap-2",
             // Marketing links (Hidden when logged in)
             if !is_logged_in {
