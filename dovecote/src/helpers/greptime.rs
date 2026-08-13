@@ -256,7 +256,7 @@ pub async fn write_telemetry_default(
     }
   }
 
-  crate::helpers::write_telemetry_history(env, pigeon_id, metrics).await
+  crate::helpers::write_telemetry_history(env, pigeon_id, metrics, reported_at_ms).await
 }
 
 #[derive(serde::Deserialize)]

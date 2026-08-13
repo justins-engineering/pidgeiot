@@ -44,33 +44,75 @@ pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
 /// reported key; `value_num` is populated only when the raw string parses
 /// as an `f64`, so range queries can filter numeric series without a cast
 /// at query time.
+///
+/// Every row of one report carries the same `reported_at`, taken from the
+/// report itself rather than from each statement's own arrival time. A
+/// reader has no other way to tell which rows belong together: `fancier`'s
+/// GPS track reassembles a fix by grouping rows on `reported_at` and drops
+/// any group missing a coordinate, so letting the column default per row
+/// would split a fix in two whenever the writes straddled a boundary and
+/// lose it entirely. `metrics` iterates in `HashMap` order, so which keys
+/// land on which side of such a split is arbitrary.
+///
+/// Writing all rows in a single statement is what makes one timestamp
+/// natural, and collapses a round trip per key into one for the report.
 pub async fn write_telemetry_history(
   env: &Env,
   pigeon_id: &str,
   metrics: &std::collections::HashMap<String, String>,
+  reported_at_ms: u64,
 ) -> Result<()> {
+  if metrics.is_empty() {
+    return Ok(());
+  }
+
   let client = get_db_client(env).await?;
   ensure_telemetry_history_table(&client).await?;
 
-  for (key, value) in metrics {
-    let value_num: Option<f64> = value.parse().ok();
-    client
-      .execute_typed(
-        "INSERT INTO pigeon_telemetry_history (pigeon_id, key, value, value_num)
-         VALUES ($1, $2, $3, $4);",
-        &[
-          (&pigeon_id, Type::TEXT),
-          (key, Type::TEXT),
-          (value, Type::TEXT),
-          (&value_num, Type::FLOAT8),
-        ],
-      )
-      .await
-      .map_err(|e| {
-        console_error!("Telemetry history insert error for key '{key}': {e}");
-        worker::Error::RustError("Internal Server Error".into())
-      })?;
+  let reported_at = OffsetDateTime::from_unix_timestamp_nanos(
+    i128::from(reported_at_ms) * 1_000_000,
+  )
+  .map_err(|e| {
+    console_error!("Telemetry history: unrepresentable reported_at {reported_at_ms}ms: {e}");
+    worker::Error::RustError("Internal Server Error".into())
+  })?;
+
+  // Owned first so the borrows handed to `execute_typed` below outlive the
+  // parameter list.
+  let rows: Vec<(&String, &String, Option<f64>)> = metrics
+    .iter()
+    .map(|(key, value)| (key, value, value.parse::<f64>().ok()))
+    .collect();
+
+  let mut params: Vec<(&(dyn tokio_postgres::types::ToSql + Sync), Type)> =
+    Vec::with_capacity(rows.len() * 3 + 2);
+  params.push((&pigeon_id, Type::TEXT));
+  params.push((&reported_at, Type::TIMESTAMPTZ));
+
+  let mut sql = String::from(
+    "INSERT INTO pigeon_telemetry_history (pigeon_id, key, value, value_num, reported_at) VALUES ",
+  );
+  for (i, (key, value, value_num)) in rows.iter().enumerate() {
+    if i > 0 {
+      sql.push(',');
+    }
+    let base = i * 3 + 3;
+    sql.push_str(&format!(
+      "($1, ${}, ${}, ${}, $2)",
+      base,
+      base + 1,
+      base + 2
+    ));
+    params.push((*key, Type::TEXT));
+    params.push((*value, Type::TEXT));
+    params.push((value_num, Type::FLOAT8));
   }
+  sql.push(';');
+
+  client.execute_typed(&sql, &params).await.map_err(|e| {
+    console_error!("Telemetry history insert error for pigeon {pigeon_id}: {e}");
+    worker::Error::RustError("Internal Server Error".into())
+  })?;
 
   Ok(())
 }
