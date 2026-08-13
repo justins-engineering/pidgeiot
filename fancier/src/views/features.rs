@@ -1,214 +1,236 @@
 use crate::Route;
-use crate::components::{Maturity, MaturityBadge};
 use dioxus::prelude::*;
-use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{
-  LdCodeXml, LdDatabase, LdHardDriveDownload, LdKeyRound, LdLineChart, LdLockKeyhole,
-  LdMailWarning, LdMapPin, LdNetwork, LdPlay, LdRadio, LdScrollText, LdShieldAlert,
-  LdSquareTerminal, LdWifi,
-};
 
 #[component]
 pub fn FeaturesPage() -> Element {
   rsx! {
-    section { class: "py-24 md:py-32 text-center",
-      div { class: "max-w-4xl mx-auto px-4 md:px-8",
-        h1 { class: "text-5xl md:text-6xl font-extrabold tracking-tighter mb-6 text-balance",
-          "Everything a Device Fleet Actually Needs"
+    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+      div { class: "max-w-6xl mx-auto",
+        p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4", "Features" }
+        h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
+          "Six things every fleet needs. All of them on day one."
         }
-        p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-3xl mx-auto text-balance",
-          "PidgeIoT isn't a pile of primitives you have to wire together. Every piece below ships together, in the same repo, driven by the same shadow model."
+        p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-2xl text-base-content/80 text-pretty",
+          "Not a box of primitives to wire together — identity, config, firmware, telemetry, alerts and logs designed against each other in one codebase."
         }
       }
     }
 
-    section { class: "pb-16 md:pb-24",
-      div { class: "max-w-6xl mx-auto px-4 md:px-8 space-y-20",
+    section { class: "px-4 md:px-10 py-14",
+      div { class: "max-w-6xl mx-auto flex flex-col gap-12",
 
-        // Configuration
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdDatabase, class: "size-8 stroke-primary", title: "Database icon" }
+        // 01 — Identity. The design claimed the keypair is minted on the
+        // device and the private half never leaves it; mint_device_credential
+        // generates it server-side in the pigeon's own Durable Object, signs
+        // one token and drops the private key, so the copy says that instead.
+        FeatureRow {
+          eyebrow: "01 — Identity",
+          title: "A key per device, minted where its state lives",
+          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot — only the public key is ever stored. That token is 69 bytes: version, expiry, signature. Authentication costs almost nothing on a metered link.",
+          body_secondary: rsx! {
+            "Refreshing a token overwrites the old public key, which means rotation "
+            span { class: "italic", "is" }
+            " revocation. There's no fleet-wide secret to leak and no revocation list to sync."
           },
-          eyebrow: "For anyone tired of config drift",
-          title: "One Shadow, Always in Sync",
-          body: "Every pigeon has a desired state and a reported state, versioned independently. Push a target_config, and the device confirms back exactly what it applied and when — so you always know whether a fleet has actually converged, not just whether you told it to.",
-          maturity: None,
-        }
-
-        // Security
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdKeyRound, class: "size-8 stroke-primary", title: "Key icon" }
-          },
-          eyebrow: "For anyone who's had to rotate a leaked API key at 2am",
-          title: "Per-Device Keys, Not Shared Secrets",
-          body: "Every pigeon gets its own Ed25519 keypair, generated on device creation — only the public key is ever stored, and the private key signs one token before it's discarded. Devices authenticate with a 69-byte binary bearer token, not a JWT. Refreshing a device's token mints a brand-new keypair on the spot, which permanently invalidates the old one; there's no separate revocation list to maintain because overwriting the verification key is the revocation.",
-          maturity: None,
-        }
-
-        // Telemetry
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdLineChart, class: "size-8 stroke-primary", title: "Line chart icon" }
-          },
-          eyebrow: "For anyone who's outgrown a spreadsheet of sensor readings",
-          title: "Telemetry With Real History, On Your Terms",
-          body: "Devices report flat key/value telemetry over HTTPS or the WebSocket channel — captured as a latest-value snapshot and a full queryable history, so you can build graphs against any key, over any pigeon or an entire flock, with time ranges you pick. Want the time series living somewhere else? Point a pigeon's telemetry endpoint at your own InfluxDB-line-protocol-compatible database (InfluxDB, GreptimeDB, and friends) and reports are forwarded straight there instead of into the platform's history store. We still keep the latest value of each key — that's what the dashboard renders and what alerts evaluate against — but the history accumulates in your database, not ours.",
-          maturity: None,
-        }
-
-        // GPS tracks
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdMapPin, class: "size-8 stroke-primary", title: "Map pin icon" }
-          },
-          eyebrow: "For anyone whose devices don't stay put",
-          title: "GPS Tracks From Ordinary Telemetry",
-          body: "Report GPS fixes as plain telemetry keys — gps_lat, gps_lon, and friends — and the pigeon's detail page draws its track over any time range you pick: start marker, pulsing live position, nearest-point hover readout. Rendered as self-contained SVG straight from your telemetry history, with no map-tile service and no new dependencies.",
-          maturity: None,
-        }
-
-        // Alerts
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdMailWarning, class: "size-8 stroke-primary", title: "Mail warning icon" }
-          },
-          eyebrow: "For anyone who finds out about outages from their customers",
-          title: "Alerts That Watch So You Don't Have To",
-          body: "Define a condition once and get an email when it trips: a telemetry key crossing a threshold, a reading jumping further between reports than it plausibly should, a device sitting stale or offline, or a pigeon that's simply stopped reporting altogether. Value conditions are checked the moment a report arrives; silence conditions run on a scheduled sweep, because \"nothing arrived\" can't be observed at ingest time. Notifications go to the flock owner by default, or to any address you set per alert.",
-          maturity: None,
-        }
-
-        // Logging
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdScrollText, class: "size-8 stroke-primary", title: "Scroll icon" }
-          },
-          eyebrow: "For anyone debugging a device that's three states away",
-          title: "Dictionary-Compressed Device Logs",
-          body: "The Zephyr device library ships structured logs as dictionary-compressed codes instead of raw strings — a fraction of the bytes over a cellular link. They land in a rolling per-device buffer, and the dashboard's log viewer decodes them back against the firmware's own dictionary, so you get readable log lines without the wire cost.",
-          maturity: None,
-        }
-
-        // OTA
-        FeatureBlock {
-          icon: rsx! {
-            Icon {
-              icon: LdHardDriveDownload,
-              class: "size-8 stroke-primary",
-              title: "Download icon",
+          reverse: false,
+          visual: rsx! {
+            div { class: "mockup-code text-sm w-full max-w-full overflow-x-auto",
+              pre { class: "px-5",
+                code { class: "text-base-content/50", "// the entire device auth path" }
+              }
+              pre { class: "px-5",
+                code { class: "text-primary", "pub fn " }
+                code { "verify_device_token(token: &str, key_b64: &str) -> bool {{" }
+              }
+              pre { class: "px-5",
+                code { "    let Ok(raw) = URL_SAFE_NO_PAD.decode(token) else {{ .. }};" }
+              }
+              pre { class: "px-5", code { "    if raw.len() != 69 {{ return false }}" } }
+              pre { class: "px-5",
+                code { "    let (payload, sig) = raw.split_at(5);  // ver + expiry" }
+              }
+              pre { class: "px-5", code { "    key.verify(payload, &sig).is_ok()" } }
+              pre { class: "px-5", code { "}}" } }
             }
           },
-          eyebrow: "For anyone who's bricked a device pushing firmware",
-          title: "OTA Updates That Can't Land on the Wrong Hardware",
-          body: "Firmware images are content-addressed by SHA-256, stored in R2, and catalogued per flock — assigned to a pigeon through the same shadow model as config. Downloads use Range requests straight into the MCUboot secondary slot, so a device can resume a large image instead of restarting it. Every image and every pigeon carries a board tag, and an assignment is rejected outright unless they match — a fail-closed check against a real incident, not a hypothetical one. Hardware-verified end to end on both the nRF9160 and the nRF9151.",
-          maturity: None,
         }
 
-        // Connectivity
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
+        FeatureRow {
+          eyebrow: "02 — Config",
+          title: "Set what you want. See what landed.",
+          body: "Every device carries a desired state and a reported state. You push the first; the device confirms the second with exactly what it applied — so \"configured\" is a fact, not an assumption.",
+          body_secondary: rsx! {
+            "Over a live socket it lands in about a second. Devices that sleep pick it up on their next check-in and confirm then."
           },
-          eyebrow: "For anyone whose hardware can't afford a full HTTPS stack",
-          title: "CoAP-over-DTLS for Constrained Hardware",
-          body: "For hardware too constrained for a full HTTPS stack, devices can connect over CoAP instead — a dedicated terminator handles both DTLS/UDP (the primary, cheapest-to-wake transport for cellular devices) and RFC 8323 CoAP-over-TLS/TCP, each authenticated by its own per-device PSK on the connector, proxied into the same ingestion API HTTPS and WebSocket devices use. No bare unencrypted UDP path, ever.",
-          maturity: None,
+          reverse: true,
+          visual: rsx! {
+            div { class: "rounded-2xl border border-base-300 bg-base-200 p-5 md:p-7 flex flex-col gap-4",
+              div { class: "flex items-center gap-3 flex-wrap",
+                span { class: "font-mono text-sm text-base-content/60", "pigeon-0417" }
+                span { class: "badge badge-success badge-sm ml-auto", "converged" }
+              }
+              div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 min-w-0",
+                  p { class: "text-xs uppercase tracking-widest text-base-content/50", "Desired" }
+                  p { class: "font-mono text-sm truncate", "report_interval: 60s" }
+                  p { class: "font-mono text-sm truncate", "gps_enabled: true" }
+                }
+                div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 min-w-0",
+                  p { class: "text-xs uppercase tracking-widest text-base-content/50", "Reported" }
+                  p { class: "font-mono text-sm text-success truncate", "report_interval: 60s ✓" }
+                  p { class: "font-mono text-sm text-success truncate", "gps_enabled: true ✓" }
+                }
+              }
+              p { class: "text-xs font-mono text-base-content/50",
+                "applied 1.1s after push · live over WebSocket, no polling"
+              }
+            }
+          },
         }
 
-        // Connection state
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdShieldAlert, class: "size-8 stroke-primary", title: "Shield icon" }
+        // 03 — Firmware. The design paired this with a fleet rollout
+        // aggregate ("39 of 42 on latest", "2 downloading"); nothing reports
+        // a device's running firmware version back to us, so there is no
+        // such number to render and the widget is left out.
+        FeatureRow {
+          eyebrow: "03 — Firmware",
+          title: "OTA that refuses to brick the wrong board",
+          body: "Upload an image once and roll it out per device or per flock. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
+          body_secondary: rsx! {
+            "Images live content-addressed by their own SHA-256, and devices resume interrupted downloads with Range requests instead of starting the whole file again."
           },
-          eyebrow: "For anyone who's had a device go dark without noticing",
-          title: "At-a-Glance Connection State",
-          body: "Every pigeon shows Online, Stale, or Offline right on its card — self-calibrated from that pigeon's own reporting interval, not a single fixed timeout across your whole fleet. No extra device traffic, no new route to wire up; it's derived entirely from data the dashboard already has.",
-          maturity: None,
+          reverse: false,
+          visual: rsx! {
+            div { class: "rounded-2xl border border-base-300 bg-base-200 p-5 md:p-7 flex flex-col gap-4",
+              div { class: "flex items-center gap-3 flex-wrap",
+                p { class: "font-bold text-lg", "firmware · v1.4.2" }
+                span { class: "badge badge-ghost font-mono text-[11px] ml-auto", "board: nrf9160" }
+              }
+              div { class: "rounded-xl bg-base-100 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/75 overflow-x-auto",
+                p { class: "whitespace-nowrap", "sha256  9f2c…a41b   612 KiB" }
+                p { class: "whitespace-nowrap",
+                  "assign → pigeon-0417  "
+                  span { class: "text-success", "board matches ✓" }
+                }
+                p { class: "whitespace-nowrap",
+                  "assign → pigeon-0902  "
+                  span { class: "text-error", "board mismatch — refused" }
+                }
+              }
+              p { class: "text-xs font-mono text-base-content/50",
+                "resumable · Range requests straight into the secondary slot"
+              }
+            }
+          },
         }
 
-        // Identity
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdLockKeyhole, class: "size-8 stroke-primary", title: "Lock icon" }
-          },
-          eyebrow: "For anyone who doesn't want to run their own auth stack",
-          title: "Self-Hosted Identity, Not a Third-Party Login Box",
-          body: "Dashboard accounts run on a self-hosted Ory Kratos instance — your users' credentials never leave infrastructure you control, and account emails (verification, recovery) are sent under our own branding, not a generic template. Device identity is completely separate: a pigeon's Ed25519 keypair proves control of that pigeon, full stop, with no Kratos identity involved at all.",
-          maturity: None,
-        }
+        div { class: "grid grid-cols-1 md:grid-cols-3 gap-6",
 
-        // WebSocket
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdWifi, class: "size-8 stroke-primary", title: "WiFi icon" }
-          },
-          eyebrow: "For anyone tired of waiting on the next poll interval",
-          title: "A Persistent Channel for Config Pushes That Land Instantly",
-          body: "WiFi and mains-powered devices can hold one long-lived WebSocket connection instead of polling — a shadow update reaches the device the moment you push it, and telemetry can ride the same socket. Built on Durable Object hibernation, so an idle connection survives without keeping anything warm. Hardware-verified end to end in production: connect, sub-second config pushes, telemetry ingestion, and autonomous reconnect, all on a real device against the live API.",
-          maturity: None,
-        }
+          FeatureCard {
+            eyebrow: "04 — Telemetry",
+            title: "Graphs and tracks, no setup",
+            body: "Devices report flat key/value pairs. You get a latest-value snapshot, queryable history, a graph against any numeric key, and a GPS track when the keys are a fix.",
+            visual: rsx! {
+              svg {
+                view_box: "0 0 320 90",
+                width: "100%",
+                height: "90",
+                role: "img",
+                "aria-label": "Example telemetry chart",
+                rect { x: "0", y: "0", width: "320", height: "90", rx: "8", fill: "var(--chart-surface)" }
+                g { stroke: "var(--chart-grid)", stroke_width: "1",
+                  line { x1: "0", y1: "30", x2: "320", y2: "30" }
+                  line { x1: "0", y1: "60", x2: "320", y2: "60" }
+                }
+                path {
+                  d: "M10 70 L48 60 L86 66 L124 44 L162 50 L200 30 L238 38 L276 22 L310 28",
+                  fill: "none",
+                  stroke: "var(--chart-series-1)",
+                  stroke_width: "2.5",
+                  stroke_linecap: "round",
+                }
+                path {
+                  d: "M10 78 L48 74 L86 80 L124 70 L162 74 L200 62 L238 68 L276 56 L310 60",
+                  fill: "none",
+                  stroke: "var(--chart-series-2)",
+                  stroke_width: "2.5",
+                  stroke_linecap: "round",
+                }
+              }
+            },
+          }
 
-        // Remote shell
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdSquareTerminal, class: "size-8 stroke-primary", title: "Terminal icon" }
-          },
-          eyebrow: "For anyone who's wanted to poke a device without a physical console",
-          title: "Owner-Gated Remote Diagnostic Shell",
-          body: "Run one diagnostic command on a WebSocket-connected device and get its output back over an ordinary dashboard request — relayed through that device's existing socket, gated to the pigeon's owner, with whatever the device's own command allowlist permits. Rides the same live production WebSocket channel described above, verified on real hardware.",
-          maturity: None,
-        }
+          FeatureCard {
+            eyebrow: "05 — Alerts",
+            title: "Email when it matters",
+            body: "Thresholds, rate-of-change and heartbeats on your own keys, scoped to one device or a whole flock — mailed when they fire and again when they clear.",
+            visual: rsx! {
+              div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
+                p { class: "whitespace-nowrap",
+                  span { class: "text-error", "FIRING" }
+                  " temp_c > 30 for 5m · pigeon-0440"
+                }
+                p { class: "whitespace-nowrap",
+                  span { class: "text-success", "CLEARED" }
+                  " battery_v < 3.4 · pigeon-0421"
+                }
+                p { class: "whitespace-nowrap",
+                  span { class: "text-warning", "HEARTBEAT" }
+                  " no report in 2h · pigeon-0440"
+                }
+              }
+            },
+          }
 
-        // Codebase
-        FeatureBlock {
-          icon: rsx! {
-            Icon { icon: LdCodeXml, class: "size-8 stroke-primary", title: "Code icon" }
-          },
-          eyebrow: "For anyone who's read a JS backend's node_modules folder and wept",
-          title: "Rust and WebAssembly, End to End",
-          body: "The edge router, the dashboard, and the shared wire types are all Rust — the backend compiles to a Cloudflare Worker, the frontend compiles to WebAssembly. One language, one type system, shared structs between frontend and backend so they can't drift apart. AGPL-3.0 licensed and developed in the open.",
-          maturity: None,
+          FeatureCard {
+            eyebrow: "06 — Logs",
+            title: "Remote logs that fit the link",
+            body: "Structured Zephyr logs ship as dictionary-compressed codes — a fraction of the bytes over cellular — into a rolling per-device buffer you pull on demand.",
+            visual: rsx! {
+              div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
+                p { class: "whitespace-nowrap", "12:04:18 <inf> modem: attach ok, rsrp -91" }
+                p { class: "whitespace-nowrap", "12:04:19 <dbg> pigeon: token ok (69 B)" }
+                p { class: "whitespace-nowrap", "12:04:21 <wrn> sensor: retry 1/3" }
+              }
+            },
+          }
         }
       }
     }
 
-    // Roadmap
-    section { class: "pb-24 md:pb-32",
-      div { class: "max-w-6xl mx-auto px-4 md:px-8",
-        div { class: "text-center mb-12",
-          h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight", "On the Roadmap" }
-          p { class: "text-lg text-base-content/70 max-w-2xl mx-auto",
-            "Designed, not yet built. Nothing here is reachable in the product today — listed so you know what's coming, not what to expect right now."
+    section { class: "px-4 md:px-10 py-12 bg-base-200 border-y border-base-300",
+      div { class: "max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-10 items-center",
+        div { class: "lg:col-span-7 flex flex-col gap-3",
+          h2 { class: "text-2xl md:text-3xl font-bold", "What isn't here yet" }
+          p { class: "text-lg leading-relaxed text-base-content/80",
+            "A user-authored rule engine — your own logic running against incoming telemetry at the edge — is designed and not built. We'd rather list it here than imply it ships today. Everything else on this page is running now."
           }
         }
-        div { class: "grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto",
-          RoadmapCard {
-            icon: rsx! {
-              Icon { icon: LdDatabase, class: "size-7 stroke-primary", title: "Database icon" }
-            },
-            title: "Per-Flock Database Isolation",
-            body: "Dedicated storage per flock or user, instead of shared multi-tenant tables.",
-          }
-          RoadmapCard {
-            icon: rsx! {
-              Icon { icon: LdNetwork, class: "size-7 stroke-primary", title: "Network icon" }
-            },
-            title: "User-Authored Rule Engine",
-            body: "Run your own data-processing logic against incoming telemetry, on Workers for Platforms.",
-          }
+        div { class: "lg:col-span-5 flex flex-wrap gap-3",
+          span { class: "badge badge-ghost font-mono", "rule engine · planned" }
+          span { class: "badge badge-ghost font-mono", "beta · pre-revenue" }
         }
       }
     }
 
-    section { class: "pb-24 md:pb-32 text-center",
-      div { class: "max-w-3xl mx-auto px-4 md:px-8",
-        Link {
-          class: "btn btn-primary btn-lg px-10 rounded-full",
-          to: Route::RegisterFlow { flow: None },
-          Icon { icon: LdPlay, class: "mr-2", title: "Start now" }
-          "Start Building"
+    section { class: "px-4 md:px-10 py-14",
+      div { class: "max-w-6xl mx-auto flex flex-col md:flex-row md:items-center gap-8",
+        div {
+          h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight mb-2",
+            "Easier to see than to read about."
+          }
+          // The public demo is one real allowlisted device, not a flock.
+          p { class: "text-lg md:text-xl text-base-content/70",
+            "A real device is reporting into the demo page right now — live, no signup."
+          }
+        }
+        div { class: "md:ml-auto flex flex-col sm:flex-row gap-3 shrink-0",
+          Link { class: "btn btn-primary btn-lg font-bold", to: Route::DemoPage {},
+            "Try the live demo"
+          }
+          Link { class: "btn btn-outline btn-lg font-bold", to: Route::DocumentationPage {},
+            "Read the docs"
+          }
         }
       }
     }
@@ -216,42 +238,46 @@ pub fn FeaturesPage() -> Element {
 }
 
 #[component]
-fn FeatureBlock(
-  icon: Element,
+fn FeatureRow(
   eyebrow: &'static str,
   title: &'static str,
   body: &'static str,
-  maturity: Option<Maturity>,
+  body_secondary: Element,
+  visual: Element,
+  reverse: bool,
 ) -> Element {
   rsx! {
-    div { class: "flex flex-col md:flex-row gap-8 items-start",
-      div { class: "shrink-0 p-4 rounded-2xl bg-base-300 border border-base-content/10",
-        {icon}
+    div { class: "grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center",
+      div {
+        class: "lg:col-span-5 flex flex-col gap-3 min-w-0",
+        class: if reverse { "lg:order-2" },
+        span { class: "font-mono text-xs uppercase tracking-widest text-primary", "{eyebrow}" }
+        h2 { class: "text-2xl md:text-3xl font-bold", "{title}" }
+        p { class: "text-lg leading-relaxed text-base-content/80", "{body}" }
+        p { class: "text-base leading-relaxed text-base-content/75", {body_secondary} }
       }
       div {
-        p { class: "text-sm uppercase tracking-wide text-base-content/50 mb-2", "{eyebrow}" }
-        div { class: "flex items-center gap-3 flex-wrap mb-3",
-          h2 { class: "text-2xl md:text-3xl font-bold", "{title}" }
-          if let Some(m) = maturity {
-            MaturityBadge { maturity: m }
-          }
-        }
-        p { class: "text-lg text-base-content/70 leading-relaxed max-w-3xl", "{body}" }
+        class: "lg:col-span-7 w-full min-w-0",
+        class: if reverse { "lg:order-1" },
+        {visual}
       }
     }
   }
 }
 
 #[component]
-fn RoadmapCard(icon: Element, title: &'static str, body: &'static str) -> Element {
+fn FeatureCard(
+  eyebrow: &'static str,
+  title: &'static str,
+  body: &'static str,
+  visual: Element,
+) -> Element {
   rsx! {
-    div { class: "p-6 rounded-2xl bg-base-300/50 border border-base-content/10",
-      div { class: "flex items-center gap-3 mb-3",
-        div { class: "shrink-0 p-2 rounded-xl bg-base-300", {icon} }
-        h3 { class: "text-lg font-bold", "{title}" }
-        MaturityBadge { maturity: Maturity::Planned }
-      }
-      p { class: "text-base-content/70 leading-relaxed", "{body}" }
+    div { class: "rounded-2xl border border-base-300 bg-base-200 p-5 md:p-7 flex flex-col gap-3 min-w-0",
+      span { class: "font-mono text-xs uppercase tracking-widest text-primary", "{eyebrow}" }
+      h3 { class: "text-xl md:text-2xl font-bold", "{title}" }
+      p { class: "leading-relaxed text-base-content/80", "{body}" }
+      {visual}
     }
   }
 }

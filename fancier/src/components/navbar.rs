@@ -47,16 +47,16 @@ pub fn Navbar() -> Element {
               // it. Home is the logo's job; About Us lives in the footer.
               li {
                 Link {
-                  to: Route::FeaturesPage {},
+                  to: Route::HowItWorksPage {},
                   class: "hover:text-primary transition-colors duration-300",
-                  "Features"
+                  "How It Works"
                 }
               }
               li {
                 Link {
-                  to: Route::HowItWorksPage {},
+                  to: Route::FeaturesPage {},
                   class: "hover:text-primary transition-colors duration-300",
-                  "How It Works"
+                  "Features"
                 }
               }
               li {
