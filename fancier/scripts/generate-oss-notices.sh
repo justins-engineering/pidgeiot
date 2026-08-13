@@ -16,6 +16,21 @@ if ! command -v cargo-about &>/dev/null; then
   exit 1
 fi
 
+# cargo-about's own bundled template has changed how it emits anchor/id
+# strings across releases before (0.6.3 reworked the example template's
+# anchor generation to stop colliding ids) -- an unpinned install means two
+# machines regenerating the identical dependency graph can produce
+# differently-formatted output, which looks exactly like drift but isn't.
+# Pin and check rather than let that surface as an unexplained dirty tree
+# on every release build.
+REQUIRED_CARGO_ABOUT_VERSION="0.9.1"
+actual_cargo_about_version="$(cargo about --version | awk '{print $2}')"
+if [[ "$actual_cargo_about_version" != "$REQUIRED_CARGO_ABOUT_VERSION" ]]; then
+  echo "generate-oss-notices.sh: cargo-about $REQUIRED_CARGO_ABOUT_VERSION required, found $actual_cargo_about_version." >&2
+  echo "Install the pinned version with: cargo install cargo-about --version $REQUIRED_CARGO_ABOUT_VERSION --locked --features cli" >&2
+  exit 1
+fi
+
 TEMPLATE="fancier/scripts/oss-licenses.hbs"
 
 # fancier is the requirement (its wasm bundle is what ships to a browser);
