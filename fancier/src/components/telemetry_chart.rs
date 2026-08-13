@@ -131,6 +131,40 @@ pub struct ChartSeries {
   pub points: Vec<(i64, f64)>,
 }
 
+/// A horizontal line at a fixed value -- an alert threshold, today. Dashed
+/// on purpose: gridlines and axes here are solid hairlines precisely so
+/// that a dashed rule is never mistaken for chrome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartReference {
+  pub value: f64,
+  pub label: String,
+  /// The alert is currently firing. Carried by a status colour *and* by the
+  /// label saying so -- a status never means anything by hue alone.
+  pub firing: bool,
+}
+
+/// How far outside the plotted data a reference may sit and still be worth
+/// putting on the axis. A threshold set near the operating range is the
+/// point of drawing it; one set orders of magnitude away would flatten the
+/// series into a straight line at the edge, so past this it is reported in
+/// words instead of silently wrecking the chart.
+const REFERENCE_RANGE_TOLERANCE: f64 = 2.0;
+
+/// Splits references into the ones the axis can accommodate and the ones
+/// too far outside the data to draw without destroying it.
+fn partition_references(
+  references: &[ChartReference],
+  v_min: f64,
+  v_max: f64,
+) -> (Vec<ChartReference>, Vec<ChartReference>) {
+  let span = (v_max - v_min).abs().max(f64::EPSILON);
+  let slack = span * REFERENCE_RANGE_TOLERANCE;
+  references
+    .iter()
+    .cloned()
+    .partition(|r| r.value >= v_min - slack && r.value <= v_max + slack)
+}
+
 fn series_color_class(index: usize) -> &'static str {
   // Capped at the palette's 8 validated slots — see tailwind.css. A 9th
   // series folds into an "+N more" note rather than generating a new hue.
@@ -405,8 +439,13 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
 }
 
 #[component]
-pub fn TelemetryChart(series: Vec<ChartSeries>, kind: Option<ChartKind>) -> Element {
+pub fn TelemetryChart(
+  series: Vec<ChartSeries>,
+  kind: Option<ChartKind>,
+  references: Option<Vec<ChartReference>>,
+) -> Element {
   let kind = kind.unwrap_or_default();
+  let references = references.unwrap_or_default();
   let mut show_table = use_signal(|| false);
   let mut hover_time = use_signal(|| None::<i64>);
 
@@ -462,20 +501,27 @@ pub fn TelemetryChart(series: Vec<ChartSeries>, kind: Option<ChartKind>) -> Elem
     .flat_map(|s| s.points.iter().map(|p| p.1))
     .fold(f64::NEG_INFINITY, f64::max);
 
+  // A threshold only means something next to the data it gates, so the ones
+  // near enough to draw go on the axis; the rest are named in words below
+  // rather than compressing the series into a flat line at the edge.
+  let (drawn_refs, distant_refs) = partition_references(&references, v_min_raw, v_max_raw);
+
   // Area and bar measure from zero, so zero has to be on the axis -- and
   // the end zero anchors gets no padding, or the bars float above their own
   // baseline.
   let zero_baseline = kind.needs_zero_baseline();
-  let lo = if zero_baseline {
-    v_min_raw.min(0.0)
-  } else {
-    v_min_raw
-  };
-  let hi = if zero_baseline {
-    v_max_raw.max(0.0)
-  } else {
-    v_max_raw
-  };
+  let ref_lo = drawn_refs
+    .iter()
+    .map(|r| r.value)
+    .fold(f64::INFINITY, f64::min);
+  let ref_hi = drawn_refs
+    .iter()
+    .map(|r| r.value)
+    .fold(f64::NEG_INFINITY, f64::max);
+  let lo = v_min_raw.min(ref_lo);
+  let hi = v_max_raw.max(ref_hi);
+  let lo = if zero_baseline { lo.min(0.0) } else { lo };
+  let hi = if zero_baseline { hi.max(0.0) } else { hi };
   let pad = ((hi - lo).abs() * 0.1).max(1.0);
   let v_min = if zero_baseline && lo == 0.0 {
     0.0
@@ -609,6 +655,31 @@ pub fn TelemetryChart(series: Vec<ChartSeries>, kind: Option<ChartKind>) -> Elem
                 y2: "{y_zero}",
                 stroke: "var(--chart-axis)",
                 stroke_width: "1",
+              }
+            }
+
+            // Alert thresholds. Dashed, so they read as a boundary rather
+            // than as more chrome, and drawn under the series so data is
+            // never hidden behind its own threshold.
+            for (i , r) in drawn_refs.iter().enumerate() {
+              g { key: "threshold-{i}",
+                line {
+                  x1: "{MARGIN_LEFT}",
+                  x2: "{CANVAS_W - MARGIN_RIGHT}",
+                  y1: "{y_of(r.value)}",
+                  y2: "{y_of(r.value)}",
+                  stroke: if r.firing { "var(--chart-status-critical)" } else { "var(--chart-ink-secondary)" },
+                  stroke_width: "1.5",
+                  stroke_dasharray: "5 4",
+                }
+                text {
+                  x: "{CANVAS_W - MARGIN_RIGHT - 2.0}",
+                  y: "{(y_of(r.value) - 4.0).max(MARGIN_TOP + 8.0)}",
+                  text_anchor: "end",
+                  font_size: "9",
+                  fill: "var(--chart-ink-secondary)",
+                  "{r.label}"
+                }
               }
             }
 
@@ -820,6 +891,12 @@ pub fn TelemetryChart(series: Vec<ChartSeries>, kind: Option<ChartKind>) -> Elem
 
       if let Some(note) = transform_note {
         div { class: "text-[11px] text-base-content/50", "{note}" }
+      }
+
+      for (i , r) in distant_refs.iter().enumerate() {
+        div { key: "distant-{i}", class: "text-[11px] text-base-content/50",
+          "{r.label} sits at {format_value(r.value)}, too far outside this range to plot without flattening it."
+        }
       }
 
       if dropped > 0 {

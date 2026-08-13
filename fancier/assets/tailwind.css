@@ -94,6 +94,11 @@
   --chart-series-6: #eb6834;
   --chart-series-7: #4a3aa7;
   --chart-series-8: #e34948;
+  /* Reserved status step, deliberately not one of the eight series slots
+     so a firing threshold can never be mistaken for a series. Clears 3:1
+     on both surfaces, which is why it is the same value in both themes.
+     Never carries meaning alone -- the label beside it says "firing". */
+  --chart-status-critical: #d03b3b;
 }
 
 [data-theme=dark] {

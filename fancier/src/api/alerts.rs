@@ -6,7 +6,9 @@
 // `components::Alert`/`models::AlertVariant` (see docs/design/alerts-triggers.md
 // §0) -- this module never imports either of those.
 use crate::api::fetch_json;
-use capsules::{AlertDefinition, AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest};
+use capsules::{
+  AlertDefinition, AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, AlertState,
+};
 use dioxus::prelude::*;
 use uuid::Uuid;
 use wasm_bindgen_futures::JsFuture;
@@ -59,6 +61,26 @@ pub async fn list_pigeon(pigeon_id: &str) -> Option<Vec<AlertDefinition>> {
     cache(alert);
   }
   Some(alerts)
+}
+
+/// `GET /pigeons/:pigeon_id/alerts/state` -- current fired/cleared status
+/// for the alerts scoped to this pigeon. Not cached in `LocalSession`
+/// alongside the definitions: state and definition are separate rows with
+/// separate lifecycles (an alert has no state row until the evaluator has
+/// run once), and a missing row means "never fired", so a stale cached copy
+/// would be worse than a fresh read.
+///
+/// The flock counterpart is deliberately absent here -- that route belongs
+/// to the dashboard's firing-alert count and is being added there.
+pub async fn state_pigeon(pigeon_id: &str) -> Option<Vec<AlertState>> {
+  let mut path = String::with_capacity(96);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/alerts/state");
+
+  let response = fetch_json("GET", &path, None).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  serde_wasm_bindgen::from_value(json).ok()
 }
 
 /// `POST /flocks/:flock_id/alerts` -- flock-owner-gated server-side (only

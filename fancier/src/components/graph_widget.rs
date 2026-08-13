@@ -7,12 +7,12 @@
 // review; a real pigeon that's just quiet gets an honest empty state
 // instead (see `SeriesOutcome`).
 use crate::LocalSession;
-use crate::api::telemetry;
+use crate::api::{alerts, telemetry};
 use crate::components::telemetry_chart::format_duration;
-use crate::components::{ChartKind, ChartSeries, TelemetryChart};
+use crate::components::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 use crate::helpers::graph_store::{self, GraphScope};
 use crate::helpers::{connection_state, gps_track, is_page_hidden, sleep_ms};
-use capsules::{TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{AlertCondition, AlertStatus, Comparator, TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdRefreshCw;
@@ -121,6 +121,68 @@ fn recommended_kind(interval_secs: Option<i64>) -> Option<(ChartKind, String)> {
       format_duration(secs)
     ),
   ))
+}
+
+/// A threshold alert flattened into what a chart needs: which key it
+/// watches, where the line goes, and whether it is currently firing. Only
+/// `AlertCondition::Threshold` produces one -- the other three conditions
+/// (device state, missing report, rate of change) have no single value on a
+/// telemetry axis to draw, and inventing a position for them would be
+/// worse than leaving them off.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThresholdAlert {
+  key: String,
+  value: f64,
+  label: String,
+  firing: bool,
+}
+
+fn comparator_symbol(comparator: Comparator) -> &'static str {
+  match comparator {
+    Comparator::Gt => ">",
+    Comparator::Gte => "≥",
+    Comparator::Lt => "<",
+    Comparator::Lte => "≤",
+    Comparator::Eq => "=",
+  }
+}
+
+/// Alert definitions plus their current state, reduced to the thresholds a
+/// chart can draw. An alert with no state row has simply never fired (see
+/// `api::alerts::state_pigeon`), so a missing row reads as not firing
+/// rather than as unknown.
+fn thresholds_from_alerts(
+  definitions: &[capsules::AlertDefinition],
+  states: &[capsules::AlertState],
+) -> Vec<ThresholdAlert> {
+  definitions
+    .iter()
+    .filter(|d| d.enabled)
+    .filter_map(|d| match &d.condition {
+      AlertCondition::Threshold {
+        key,
+        comparator,
+        value,
+      } => {
+        let firing = states
+          .iter()
+          .any(|s| s.alert_definition_id == d.id && s.status == AlertStatus::Firing);
+        Some(ThresholdAlert {
+          key: key.clone(),
+          value: *value,
+          label: format!(
+            "{} · {key} {} {}{}",
+            d.name,
+            comparator_symbol(*comparator),
+            value,
+            if firing { " · firing" } else { "" }
+          ),
+          firing,
+        })
+      }
+      _ => None,
+    })
+    .collect()
 }
 
 /// Deterministic per-key pseudo-random walk so the same key always renders
@@ -345,6 +407,21 @@ pub fn PigeonGraphs(
   let mut show_add = use_signal(|| false);
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
+  let mut thresholds: Signal<Vec<ThresholdAlert>> = use_signal(Vec::new);
+
+  // Only this pigeon's own alerts, matching how `PigeonAlerts` and
+  // `FlockAlerts` stay two separate sections rather than one merged list.
+  {
+    let pigeon_id = pigeon_id.clone();
+    use_resource(move || {
+      let pigeon_id = pigeon_id.clone();
+      async move {
+        let definitions = alerts::list_pigeon(&pigeon_id).await.unwrap_or_default();
+        let states = alerts::state_pigeon(&pigeon_id).await.unwrap_or_default();
+        thresholds.set(thresholds_from_alerts(&definitions, &states));
+      }
+    });
+  }
 
   {
     let scope = scope.clone();
@@ -418,6 +495,7 @@ pub fn PigeonGraphs(
             source: scope.clone(),
             interval_secs,
             forwarding_to: forwarding_to.clone(),
+            thresholds: thresholds(),
             on_remove: {
                 let scope = scope.clone();
                 move |id: String| {
@@ -525,6 +603,10 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
             key: "{graph.id}-{graph.range:?}-{graph.keys.join(\",\")}",
             def: graph.clone(),
             source: scope.clone(),
+            // Flock alerts evaluate per-pigeon, so one flock chart plotting
+            // a series per pigeon has no single threshold state to draw --
+            // the same reason `interval_secs` has nothing to pass here.
+            thresholds: Vec::new(),
             // No single pigeon interval at flock scope -- falls back to
             // poll_interval_ms's fixed default. Nor one telemetry endpoint:
             // forwarding is per-pigeon, and a flock chart would need every
@@ -608,6 +690,9 @@ fn GraphCard(
   source: GraphScope,
   interval_secs: Option<i64>,
   forwarding_to: Option<String>,
+  /// Every threshold alert on this scope; the card keeps the ones watching
+  /// a key it actually plots.
+  thresholds: Vec<ThresholdAlert>,
   on_remove: EventHandler<String>,
   on_update: EventHandler<GraphDef>,
 ) -> Element {
@@ -645,6 +730,18 @@ fn GraphCard(
       }
     });
   }
+
+  // Only thresholds watching a key this graph actually draws -- a line for
+  // some other key would sit on an axis it has no relationship to.
+  let references: Vec<ChartReference> = thresholds
+    .iter()
+    .filter(|t| def.keys.contains(&t.key))
+    .map(|t| ChartReference {
+      value: t.value,
+      label: t.label.clone(),
+      firing: t.firing,
+    })
+    .collect();
 
   rsx! {
     div { class: "border border-base-content/10 rounded-box p-4 flex flex-col gap-3",
@@ -741,7 +838,11 @@ fn GraphCard(
                 "Newest {capsules::TELEMETRY_HISTORY_MAX_POINTS} points only — this range holds more than one response can carry, so its earliest part isn't drawn. Pick a shorter range to see a complete window."
               }
             }
-            TelemetryChart { series: series.clone(), kind: def.kind }
+            TelemetryChart {
+              series: series.clone(),
+              kind: def.kind,
+              references: references.clone(),
+            }
           },
           Some(SeriesOutcome::Empty) | None => match forwarding_to.as_ref() {
             Some(url) => rsx! {
@@ -920,9 +1021,110 @@ fn AddGraphModal(
 
 #[cfg(test)]
 mod tests {
-  use super::{numeric_keys_from_history, numeric_keys_from_latest};
-  use capsules::{TelemetryHistoryPoint, TelemetryLatest};
+  use super::{
+    ChartKind, GraphDef, TimeRange, numeric_keys_from_history, numeric_keys_from_latest,
+    recommended_kind, thresholds_from_alerts,
+  };
+  use capsules::{
+    AlertChannel, AlertCondition, AlertDefinition, AlertScope, AlertSeverity, AlertState,
+    AlertStatus, Comparator, TelemetryHistoryPoint, TelemetryLatest,
+  };
   use time::OffsetDateTime;
+  use uuid::Uuid;
+
+  fn threshold_alert(name: &str, key: &str, value: f64, enabled: bool) -> AlertDefinition {
+    AlertDefinition {
+      id: Uuid::now_v7(),
+      user_id: Uuid::nil(),
+      scope: AlertScope::Pigeon("p1".to_string()),
+      name: name.to_string(),
+      condition: AlertCondition::Threshold {
+        key: key.to_string(),
+        comparator: Comparator::Lt,
+        value,
+      },
+      severity: AlertSeverity::Warning,
+      channel: AlertChannel::default(),
+      enabled,
+      created_at: OffsetDateTime::UNIX_EPOCH,
+      updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
+  }
+
+  fn firing_state(definition_id: Uuid) -> AlertState {
+    AlertState {
+      alert_definition_id: definition_id,
+      pigeon_id: "p1".to_string(),
+      status: AlertStatus::Firing,
+      first_true_at: None,
+      last_notified_at: None,
+    }
+  }
+
+  /// Only a threshold has a value to put on a telemetry axis; the other
+  /// conditions would need a position invented for them.
+  #[test]
+  fn thresholds_ignore_conditions_with_no_value_on_the_axis() {
+    let mut device_state = threshold_alert("Offline", "battery_mv", 0.0, true);
+    device_state.condition = AlertCondition::MissingReport {
+      max_silence_secs: 600,
+    };
+    let alerts = vec![
+      threshold_alert("Battery low", "battery_mv", 3200.0, true),
+      device_state,
+    ];
+    let thresholds = thresholds_from_alerts(&alerts, &[]);
+    assert_eq!(thresholds.len(), 1);
+    assert_eq!(thresholds[0].value, 3200.0);
+  }
+
+  #[test]
+  fn thresholds_skip_disabled_alerts() {
+    let alerts = vec![threshold_alert("Battery low", "battery_mv", 3200.0, false)];
+    assert!(thresholds_from_alerts(&alerts, &[]).is_empty());
+  }
+
+  /// A missing state row means "has never fired", not "unknown" -- see the
+  /// state route's own documentation.
+  #[test]
+  fn a_threshold_with_no_state_row_is_not_firing() {
+    let alerts = vec![threshold_alert("Battery low", "battery_mv", 3200.0, true)];
+    let thresholds = thresholds_from_alerts(&alerts, &[]);
+    assert!(!thresholds[0].firing);
+    assert!(!thresholds[0].label.contains("firing"));
+  }
+
+  #[test]
+  fn a_firing_threshold_says_so_in_words_not_only_in_colour() {
+    let alerts = vec![threshold_alert("Battery low", "battery_mv", 3200.0, true)];
+    let thresholds = thresholds_from_alerts(&alerts, &[firing_state(alerts[0].id)]);
+    assert!(thresholds[0].firing);
+    assert!(
+      thresholds[0].label.contains("firing"),
+      "{}",
+      thresholds[0].label
+    );
+  }
+
+  #[test]
+  fn step_is_recommended_only_for_sparse_reporters() {
+    assert!(recommended_kind(Some(30)).is_none());
+    assert!(recommended_kind(None).is_none());
+    let (kind, reason) = recommended_kind(Some(900)).expect("15 min is sparse");
+    assert_eq!(kind, ChartKind::Step);
+    assert!(reason.contains("15 min"), "{reason}");
+  }
+
+  /// The whole reason `GraphDef::kind` carries `#[serde(default)]`: a graph
+  /// saved before the field existed has to survive the round trip, because
+  /// `local_storage::load` turns any deserialize failure into "no graphs".
+  #[test]
+  fn a_graph_saved_before_chart_kinds_still_loads() {
+    let saved = r#"{"id":"g1","title":"Battery","keys":["battery_mv"],"range":"Last24h"}"#;
+    let def: GraphDef = serde_json::from_str(saved).expect("must still deserialize");
+    assert_eq!(def.kind, ChartKind::Line);
+    assert_eq!(def.range, TimeRange::Last24h);
+  }
 
   fn latest(key: &str, value: &str) -> TelemetryLatest {
     TelemetryLatest {
