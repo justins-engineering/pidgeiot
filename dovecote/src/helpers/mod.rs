@@ -11,6 +11,11 @@ pub use access::verify_cf_access;
 mod crypto;
 pub use crypto::constant_time_eq;
 
+// No `pub use` yet -- the checkout-session, customer-portal and
+// meter-reporting routes that call this client are a later phase, and
+// re-exporting names nothing imports would only add warnings.
+mod stripe_api;
+
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
