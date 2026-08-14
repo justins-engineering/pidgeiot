@@ -10,7 +10,7 @@
 // for an anonymous visitor to configure.
 use crate::Route;
 use crate::api::demo;
-use crate::components::{ChartSeries, TelemetryChart};
+use crate::components::{ChartKind, ChartSeries, TelemetryChart};
 use crate::config::DEMO_PIGEON_ID;
 use crate::helpers::sleep_ms;
 use capsules::{TelemetryHistoryPoint, TelemetryLatest};
@@ -29,16 +29,56 @@ const REFRESH_MS: i32 = 30_000;
 /// cap (helpers/telemetry.rs, dovecote).
 const HISTORY_HOURS: i64 = 6;
 
-/// (key, chart title, unit suffix for the latest-value stat tile).
-/// Matches what the demo pigeon actually reports (temp_c/humidity_pct/
-/// light_lux every 30s, plus soil_moisture_pct and uptime_s). Only the
-/// first three get their own chart -- three numeric
-/// series compared cleanly fits the page without a key picker; the other
-/// two still show in the latest-value strip.
-const CHART_KEYS: [(&str, &str, &str); 3] = [
-  ("temp_c", "Temperature", "°C"),
-  ("humidity_pct", "Humidity", "%"),
-  ("light_lux", "Light", "lux"),
+/// (key, label, unit, chart kind, why that kind suits this reading).
+///
+/// Every kind the chart component offers appears exactly once, matched to
+/// the reading it is honest for rather than rotated for variety. The
+/// pairings come from what each kind actually claims: area and bar measure
+/// from zero, so they go to quantities whose zero means something; step
+/// refuses to interpolate, so it goes to the slowest mover; scatter draws
+/// the cadence itself, so it goes to the one series where a connecting line
+/// would invent a value that never existed.
+///
+/// These are the five keys the demo pigeon really reports every 30s. Two
+/// further keys exist on the account (`probe_manual`, `waf_verify`) but
+/// were last written weeks ago during testing, so charting them would show
+/// a flat line from stale data.
+const DEMO_READINGS: [(&str, &str, &str, ChartKind, &str); 5] = [
+  (
+    "temp_c",
+    "Temperature",
+    "°C",
+    ChartKind::Line,
+    "A line suits a quantity that genuinely varies continuously: between two readings the temperature really did pass through the values the line draws. Zero is not meaningful here, so the axis is free to frame the range the readings actually occupy.",
+  ),
+  (
+    "humidity_pct",
+    "Humidity",
+    "%",
+    ChartKind::Area,
+    "Area fills to zero, which only means something when zero does. Relative humidity is a proportion of a maximum, so the filled height reads as \"how much of the way up\" — and forcing the axis to include zero is correct rather than wasteful.",
+  ),
+  (
+    "soil_moisture_pct",
+    "Soil Moisture",
+    "%",
+    ChartKind::Scatter,
+    "One mark per reading and nothing between them, so the spread of the samples and the gaps in reporting are both visible instead of being smoothed away by a line. Every dot here is a measurement that actually happened.",
+  ),
+  (
+    "light_lux",
+    "Light",
+    "lux",
+    ChartKind::Bar,
+    "Bars average each time bucket and draw from zero, which fits a reading that swings hard between samples: the bucket mean is the useful summary, and darkness is a real zero rather than an arbitrary floor.",
+  ),
+  (
+    "uptime_s",
+    "Uptime",
+    "s",
+    ChartKind::Step,
+    "A counter holds its value between reports rather than easing toward the next one, and step draws exactly that. It also refuses to invent the descent a line would draw across a reboot, through seconds the counter never counted.",
+  ),
 ];
 
 fn now() -> time::OffsetDateTime {
@@ -63,6 +103,17 @@ fn latest_value<'a>(latest: &'a [TelemetryLatest], key: &str) -> Option<&'a str>
     .iter()
     .find(|l| l.key == key)
     .map(|l| l.value.as_str())
+}
+
+/// The tile's value: the raw reading with its unit, except uptime, which
+/// is a second count nobody reads at a glance. The chart below keeps the
+/// raw seconds -- an axis needs a real number, not a duration string.
+fn strip_value(latest: &[TelemetryLatest], key: &str, unit: &str) -> String {
+  match latest_value(latest, key) {
+    Some(v) if key == "uptime_s" => format_uptime(v),
+    Some(v) => format!("{v}{unit}"),
+    None => "--".to_string(),
+  }
 }
 
 /// `uptime_s` reads far more clearly as "12m 34s" than a raw second count.
@@ -175,35 +226,11 @@ fn DemoContent() -> Element {
         // and packs every reading into one row -- at 390px the labels landed
         // on top of each other rather than wrapping.
         div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-2 sm:grid-cols-3 lg:grid-cols-5",
-          for (key , label , unit) in CHART_KEYS {
+          for (key , label , unit , _kind , _why) in DEMO_READINGS {
             div { key: "{key}", class: "stat",
               div { class: "stat-title", "{label}" }
               div { class: "stat-value text-primary text-2xl",
-                {
-                    latest_value(&latest_vals, key)
-                        .map(|v| format!("{v}{unit}"))
-                        .unwrap_or_else(|| "--".to_string())
-                }
-              }
-            }
-          }
-          div { class: "stat",
-            div { class: "stat-title", "Soil Moisture" }
-            div { class: "stat-value text-primary text-2xl",
-              {
-                  latest_value(&latest_vals, "soil_moisture_pct")
-                      .map(|v| format!("{v}%"))
-                      .unwrap_or_else(|| "--".to_string())
-              }
-            }
-          }
-          div { class: "stat",
-            div { class: "stat-title", "Uptime" }
-            div { class: "stat-value text-primary text-2xl",
-              {
-                  latest_value(&latest_vals, "uptime_s")
-                      .map(format_uptime)
-                      .unwrap_or_else(|| "--".to_string())
+                {strip_value(&latest_vals, key, unit)}
               }
             }
           }
@@ -226,13 +253,25 @@ fn DemoContent() -> Element {
     // + the 220px CANVAS_H svg) so the swap-in is not itself a shift.
     section { class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8 flex flex-col gap-6",
-        for (key , title , _unit) in CHART_KEYS {
+        for (key , title , _unit , kind , why) in DEMO_READINGS {
           div {
             key: "{key}",
             class: "border border-base-content/10 rounded-box p-4 flex flex-col gap-3 bg-base-100",
-            h3 { class: "font-semibold text-lg", "{title}" }
+            div { class: "flex items-baseline gap-2 flex-wrap",
+              h3 { class: "font-semibold text-lg", "{title}" }
+              span { class: "badge badge-sm badge-outline font-mono tracking-wide",
+                "{kind.label()}"
+              }
+            }
+            // The point of the demo is that the kind is a claim about the
+            // data, not a style choice, so each card says which claim it is
+            // making and why this reading supports it.
+            p { class: "text-sm text-base-content/70 leading-relaxed", "{why}" }
             if loaded_once() {
-              TelemetryChart { series: vec![series_for_key(key, &history())] }
+              TelemetryChart {
+                series: vec![series_for_key(key, &history())],
+                kind,
+              }
             } else {
               div { class: "w-full flex flex-col gap-2",
                 div { class: "h-6" }
