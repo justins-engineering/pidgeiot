@@ -9,7 +9,7 @@ use dioxus_free_icons::icons::ld_icons::{
 #[component]
 pub fn DocumentationPage() -> Element {
   rsx! {
-    section { class: "py-24 md:py-32",
+    section { id: "docs-hero", class: "py-24 md:py-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8 text-center",
         Icon {
           icon: LdBookOpen,
@@ -32,7 +32,7 @@ pub fn DocumentationPage() -> Element {
     }
 
     // Getting started
-    section { class: "pb-16 md:pb-24",
+    section { id: "docs-getting-started", class: "pb-16 md:pb-24",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight", "Getting Started" }
         div { class: "space-y-6",
@@ -80,7 +80,7 @@ pub fn DocumentationPage() -> Element {
     }
 
     // Reference & source
-    section { class: "pb-24 md:pb-32",
+    section { id: "docs-reference", class: "pb-24 md:pb-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight", "Reference & Source" }
         div { class: "grid grid-cols-1 md:grid-cols-2 gap-6",

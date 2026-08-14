@@ -150,7 +150,7 @@ fn MembersSection(
   let caller_role = detail.caller_role;
 
   rsx! {
-    section { class: "mb-10",
+    section { id: "org-members", class: "mb-10",
       h2 { class: "text-lg font-semibold mb-3", "Members ({detail.members.len()})" }
       div { class: "overflow-x-auto rounded-box border border-base-content/10 shadow-sm bg-base-100",
         table { class: "table table-zebra w-full",
@@ -270,7 +270,7 @@ fn InvitesSection(
   let mut is_sending = use_signal(|| false);
 
   rsx! {
-    section { class: "mb-10",
+    section { id: "org-invite", class: "mb-10",
       h2 { class: "text-lg font-semibold mb-3", "Invite a member" }
       form {
         class: "flex flex-col sm:flex-row gap-3 items-stretch sm:items-end bg-base-100 border border-base-content/10 rounded-box p-4 mb-6",

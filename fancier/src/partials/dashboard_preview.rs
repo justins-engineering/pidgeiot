@@ -58,7 +58,7 @@ fn status_class(state: &str) -> &'static str {
 #[component]
 pub fn DashboardPreview() -> Element {
   rsx! {
-    section { class: "pt-14 pb-16",
+    section { id: "home-dashboard", class: "pt-14 pb-16",
       div { class: "max-w-6xl mx-auto",
         div { class: "text-center mb-9",
           h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight",

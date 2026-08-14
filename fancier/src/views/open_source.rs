@@ -51,7 +51,7 @@ pub fn OpenSourcePage() -> Element {
   let dovecote_html = use_memo(|| render_markdown(DOVECOTE_OSS_MD));
 
   rsx! {
-    section { class: "py-16 md:py-24",
+    section { id: "open-source-attribution", class: "py-16 md:py-24",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h1 { class: "text-4xl md:text-5xl font-extrabold tracking-tighter mb-3", "Open Source" }
         p { class: "text-lg text-base-content/70 leading-relaxed mb-4",

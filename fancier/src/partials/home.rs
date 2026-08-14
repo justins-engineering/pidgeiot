@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn Home() -> Element {
   rsx! {
-    section { class: "pt-20 pb-14 text-center",
+    section { id: "home-hero", class: "pt-20 pb-14 text-center",
       div { class: "max-w-5xl mx-auto",
         h1 { class: "text-5xl md:text-7xl font-extrabold tracking-tight max-w-4xl mx-auto text-pretty",
           "Carrier pigeons for your sensors."

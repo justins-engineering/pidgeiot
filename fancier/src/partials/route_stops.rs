@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn RouteStops() -> Element {
   rsx! {
-    section { class: "py-16",
+    section { id: "home-route", class: "py-16",
       div { class: "max-w-6xl mx-auto",
         h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight text-center",
           "The whole trip, three stops"

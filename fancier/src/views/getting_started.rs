@@ -11,7 +11,7 @@ pub fn GettingStartedPage() -> Element {
     // Header matches the other public pages (eyebrow, left-aligned h1 on
     // base-200) rather than the centred hero this page used to carry, so the
     // marketing set reads as one thing.
-    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+    section { id: "getting-started-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4",
           "Getting started"
@@ -31,7 +31,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-16",
+    section { id: "getting-started-overview", class: "pb-16",
       div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
         p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
           "The whole flow in under a minute"
@@ -46,7 +46,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-16",
+    section { id: "getting-started-outcome", class: "pb-16",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         div { class: "flex gap-4 items-start bg-primary/10 border border-primary/30 rounded-2xl p-6",
           Icon {
@@ -68,7 +68,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-16 md:pb-20",
+    section { id: "getting-started-dashboard", class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
           "Set up in the dashboard"
@@ -111,7 +111,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-16 md:pb-20",
+    section { id: "getting-started-simulator", class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
           "Run the simulator on your machine"
@@ -166,7 +166,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-16 md:pb-20",
+    section { id: "getting-started-expected", class: "pb-16 md:pb-20",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
           "What you should see"
@@ -222,7 +222,7 @@ pub fn GettingStartedPage() -> Element {
       }
     }
 
-    section { class: "pb-24 md:pb-32",
+    section { id: "getting-started-next", class: "pb-24 md:pb-32",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
           "Where to go next"

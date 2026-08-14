@@ -8,7 +8,7 @@ use dioxus_free_icons::icons::ld_icons::{
 #[component]
 pub fn HowItWorksPage() -> Element {
   rsx! {
-    section { class: "py-24 md:py-32 text-center",
+    section { id: "how-it-works-hero", class: "py-24 md:py-32 text-center",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h1 { class: "text-5xl md:text-6xl font-extrabold tracking-tighter mb-6 text-balance",
           "How a Reading Gets From a Device to Your Dashboard"
@@ -19,7 +19,7 @@ pub fn HowItWorksPage() -> Element {
       }
     }
 
-    section { class: "pb-16 md:pb-24",
+    section { id: "how-it-works-stops", class: "pb-16 md:pb-24",
       div { class: "max-w-5xl mx-auto px-4 md:px-8 space-y-16",
 
         Stop {
@@ -74,7 +74,7 @@ pub fn HowItWorksPage() -> Element {
       }
     }
 
-    section { class: "pb-24 md:pb-32 text-center",
+    section { id: "how-it-works-cta", class: "pb-24 md:pb-32 text-center",
       div { class: "max-w-3xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
           "You can run all five without owning hardware"

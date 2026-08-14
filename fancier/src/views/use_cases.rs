@@ -7,7 +7,7 @@ pub fn UseCasesPage() -> Element {
   let mut feedback = use_context::<FeedbackForm>();
 
   rsx! {
-    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+    section { id: "use-cases-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4", "Use cases" }
         h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
@@ -19,7 +19,7 @@ pub fn UseCasesPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "use-cases-list", class: "px-4 md:px-10 py-14",
       div { class: "max-w-6xl mx-auto flex flex-col",
 
         UseCase {
@@ -230,7 +230,7 @@ pub fn UseCasesPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 pb-14",
+    section { id: "use-cases-cta", class: "px-4 md:px-10 pb-14",
       div {
         class: "max-w-6xl mx-auto rounded-3xl bg-primary px-6 md:px-12 py-14 text-center",
         style: "color:var(--color-primary-content)",

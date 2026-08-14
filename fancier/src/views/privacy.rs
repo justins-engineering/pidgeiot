@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn PrivacyPage() -> Element {
   rsx! {
-    section { class: "py-16 md:py-24",
+    section { id: "privacy-policy", class: "py-16 md:py-24",
       div { class: "max-w-3xl mx-auto px-4 md:px-8",
         h1 { class: "text-4xl md:text-5xl font-extrabold tracking-tighter mb-3", "Privacy Policy" }
         p { class: "text-sm text-base-content/50 mb-10", "Last updated: July 26, 2026" }

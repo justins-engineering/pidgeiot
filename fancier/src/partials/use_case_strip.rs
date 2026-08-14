@@ -42,7 +42,7 @@ const CARDS: [Card; 5] = [
 #[component]
 pub fn UseCaseStrip() -> Element {
   rsx! {
-    section { class: "py-16",
+    section { id: "home-use-cases", class: "py-16",
       div { class: "max-w-6xl mx-auto",
         h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight",
           "Where it earns its keep"

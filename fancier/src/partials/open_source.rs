@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn OpenSource() -> Element {
   rsx! {
-    section { class: "py-16",
+    section { id: "home-open-source", class: "py-16",
       div { class: "max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8",
 
         div { class: "flex flex-col gap-3 min-w-0",

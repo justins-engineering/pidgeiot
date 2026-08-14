@@ -55,7 +55,7 @@ pub fn ApiReferencePage() -> Element {
   let rendered = use_memo(|| render_markdown(API_MD));
 
   rsx! {
-    section { class: "py-16 md:py-24",
+    section { id: "api-reference-doc", class: "py-16 md:py-24",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         p { class: "text-sm uppercase tracking-wide text-base-content/50 mb-2",
           "Rendered directly from docs/api.md in the repository"

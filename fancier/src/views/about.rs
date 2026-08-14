@@ -9,7 +9,7 @@ use dioxus_free_icons::icons::ld_icons::{
 pub fn AboutUs() -> Element {
   rsx! {
     // Hero Section: The Belief
-    section {
+    section { id: "about-intro",
       aria_label: "Introduction to our mission",
       class: "py-32 md:py-48 flex flex-col items-center text-center",
 
@@ -29,7 +29,7 @@ pub fn AboutUs() -> Element {
     }
 
     // What This Actually Is
-    section {
+    section { id: "about-what-it-is",
       aria_label: "What PidgeIoT actually is",
       class: "py-24 md:py-32 bg-base-200/50",
 
@@ -92,7 +92,7 @@ pub fn AboutUs() -> Element {
     }
 
     // Three Things We Can Prove
-    section { aria_label: "What backs this platform's claims", class: "py-32 bg-base-100/50",
+    section { id: "about-evidence", aria_label: "What backs this platform's claims", class: "py-32 bg-base-100/50",
 
       div { class: "max-w-7xl mx-auto px-4 md:px-8",
         div { class: "mb-20 max-w-2xl",
@@ -152,7 +152,7 @@ pub fn AboutUs() -> Element {
     }
 
     // Final Mission CTA
-    section {
+    section { id: "about-cta",
       aria_label: "Call to action to join the community",
       class: "py-32 bg-base-200/50 text-center",
 

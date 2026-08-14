@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn FeaturesPage() -> Element {
   rsx! {
-    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+    section { id: "features-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4", "Features" }
         h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
@@ -16,7 +16,7 @@ pub fn FeaturesPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "features-list", class: "px-4 md:px-10 py-14",
       div { class: "max-w-6xl mx-auto flex flex-col gap-12",
 
         // 01 — Identity. The design claimed the keypair is minted on the
@@ -198,7 +198,7 @@ pub fn FeaturesPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-12 bg-base-200 border-y border-base-300",
+    section { id: "features-roadmap", class: "px-4 md:px-10 py-12 bg-base-200 border-y border-base-300",
       div { class: "max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-10 items-center",
         div { class: "lg:col-span-7 flex flex-col gap-3",
           h2 { class: "text-2xl md:text-3xl font-bold", "What isn't here yet" }
@@ -214,7 +214,7 @@ pub fn FeaturesPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "features-cta", class: "px-4 md:px-10 py-14",
       div { class: "max-w-6xl mx-auto flex flex-col md:flex-row md:items-center gap-8",
         div {
           h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight mb-2",

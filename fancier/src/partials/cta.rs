@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn Cta() -> Element {
   rsx! {
-    section { class: "my-16",
+    section { id: "home-cta", class: "my-16",
       div {
         class: "max-w-6xl mx-auto rounded-3xl bg-primary px-6 md:px-12 py-16 text-center",
         style: "color:var(--color-primary-content)",
