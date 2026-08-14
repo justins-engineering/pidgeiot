@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
-use worker::{Env, Error, Fetch, Method, Request, RequestInit, Result, console_error};
+use worker::{Env, Error, Fetch, Method, Request, RequestInit, Result, console_error, console_log};
 
 /// Column list shared by every `alert_definitions` read/RETURNING statement
 /// -- `condition`/`channel` are cast to `::text` rather than read as native
@@ -1147,12 +1147,18 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
 
   let req = Request::new_with_init("https://app.usesend.com/api/v1/emails", &init)?;
   let resp = Fetch::Request(req).send().await?;
+  let status = resp.status_code();
 
-  if resp.status_code() >= 400 {
-    console_error!(
-      "Resend send to {to} returned HTTP {} (subject: {subject})",
-      resp.status_code()
-    );
+  if status >= 400 {
+    console_error!("useSend send to {to} returned HTTP {status} (subject: {subject})");
+  } else {
+    // The only positive signal on this path, and the reason it exists: every
+    // other branch here logs exclusively on failure, so mail that went out
+    // and mail that was never attempted are indistinguishable in a tail.
+    // Confirming that alert delivery worked at all took a mailbox rather
+    // than a log line. "Accepted" rather than "sent" on purpose -- a 2xx is
+    // useSend taking custody, not the message reaching an inbox.
+    console_log!("useSend accepted mail to {to} (subject: {subject})");
   }
 
   Ok(())
