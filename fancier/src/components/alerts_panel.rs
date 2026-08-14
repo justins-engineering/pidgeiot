@@ -666,7 +666,15 @@ fn AlertFormModal(
 
             div {
               label { class: "fieldset-legend text-xs font-semibold mb-1", "Scope" }
-              div { class: "text-sm bg-base-200 rounded px-3 py-2 font-mono", "{scope_label}" }
+              // break-all because this carries a 64-character pigeon id with
+              // nothing to break on. Without it the id sets the modal's
+              // minimum width, and DaisyUI's .modal-box sets only overflow-y
+              // -- which makes the other axis compute to auto -- so the whole
+              // dialog gains a horizontal scrollbar and every field below is
+              // cut off at the right edge.
+              div { class: "text-sm bg-base-200 rounded px-3 py-2 font-mono break-all",
+                "{scope_label}"
+              }
             }
 
             div {
