@@ -377,11 +377,19 @@ pub fn Dashboard() -> Element {
               }
             }
 
-            // `Beta`, not badge-free: only Threshold conditions are actually
-            // evaluated today (device-state alerts save but don't fire yet,
-            // see `components::alerts_panel`'s own doc comment), and this
-            // count is currently-firing, flock-scoped alerts only -- there's
-            // no "every alert this user owns" route to total up per-pigeon
+            // `Beta`, not badge-free: every condition type is evaluated --
+            // Threshold and RateOfChange at ingest, DeviceState and
+            // MissingReport on dovecote's cron sweep -- but no alert has yet
+            // fired and been delivered in production, so the last mile
+            // (resolving the flock's `owner_email`, then actually sending)
+            // is unobserved rather than known-good. It is worth a badge
+            // because that mile fails silently when it fails: mail goes out
+            // best-effort and logged, so an unroutable alert looks exactly
+            // like a quiet fleet. Drop the badge once one has arrived.
+            //
+            // Separately, and true regardless of the above: this count is
+            // currently-firing, flock-scoped alerts only -- there's no
+            // "every alert this user owns" route to total up per-pigeon
             // alert state too without an expensive per-pigeon fan-out (see
             // the `flock_firing_alert_counts` comment above).
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
