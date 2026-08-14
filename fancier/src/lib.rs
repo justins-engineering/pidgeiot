@@ -23,7 +23,6 @@ mod config;
 mod helpers;
 mod local_storage;
 mod models;
-mod partials;
 mod views;
 
 #[derive(Clone, Copy)]
