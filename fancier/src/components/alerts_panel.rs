@@ -819,8 +819,15 @@ fn AlertFormModal(
                   oninput: move |e| max_silence_input.set(e.value()),
                 }
               }
+              // Both halves are earned. The cadence note matches the
+              // device-state field's, since the two ride the same sweep and
+              // only one used to say so. The interval warning is here
+              // because a window shorter than a pigeon's reporting interval
+              // does not fail loudly -- it sits firing and flips to cleared
+              // whenever a sweep happens to land just after a report, mailing
+              // on every transition, about a device that is behaving fine.
               p { class: "text-xs text-base-content/60 -mt-2",
-                "Fires when no telemetry (any key) has been reported for this pigeon in at least this many minutes."
+                "Fires when no telemetry (any key) has been reported for this pigeon in at least this many minutes (checked every few minutes, not instantly). Keep it comfortably longer than the pigeon's reporting interval, or it will fire and clear on ordinary gaps."
               }
               if !max_silence_valid && !max_silence_input.read().is_empty() {
                 p { class: "text-error text-xs -mt-2", "Enter a whole number of minutes greater than 0." }
