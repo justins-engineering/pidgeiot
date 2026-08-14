@@ -2,24 +2,25 @@ use crate::Route;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdCircleCheckBig, LdCode, LdFileText, LdKeyRound, LdPlay, LdRadio, LdRocket,
+  LdCircleCheckBig, LdCode, LdFileText, LdKeyRound, LdMessagesSquare, LdPlay, LdRadio,
 };
 
 #[component]
 pub fn GettingStartedPage() -> Element {
   rsx! {
-    section { class: "py-24 md:py-32",
-      div { class: "max-w-4xl mx-auto px-4 md:px-8 text-center",
-        Icon {
-          icon: LdRocket,
-          class: "w-12 h-12 mx-auto mb-8",
-          title: "Rocket",
+    // Header matches the other public pages (eyebrow, left-aligned h1 on
+    // base-200) rather than the centred hero this page used to carry, so the
+    // marketing set reads as one thing.
+    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+      div { class: "max-w-6xl mx-auto",
+        p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4",
+          "Getting started"
         }
-        h1 { class: "text-5xl md:text-6xl font-extrabold tracking-tighter mb-6 text-balance",
-          "Getting Started"
+        h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
+          "Ten minutes to first telemetry. No hardware required."
         }
-        p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-3xl mx-auto text-balance",
-          "See the whole platform work end to end before you touch any hardware. In about ten minutes you'll have a simulated device reporting real telemetry to your dashboard."
+        p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
+          "Set it up in the dashboard, run a simulated device on your own machine, and swap in a real board whenever one lands on your desk."
         }
         Link {
           class: "inline-flex items-center gap-1.5 mt-6 text-sm font-semibold text-primary hover:underline",
@@ -226,7 +227,7 @@ pub fn GettingStartedPage() -> Element {
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
           "Where to go next"
         }
-        div { class: "grid grid-cols-1 md:grid-cols-3 gap-6",
+        div { class: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
           GsLink {
             icon: rsx! {
               Icon { icon: LdCode, class: "size-7 stroke-primary", title: "Code" }
@@ -234,6 +235,15 @@ pub fn GettingStartedPage() -> Element {
             title: "Flash real hardware",
             body: "Board-level samples for ESP32-C6 and Nordic nRF91 boards in the same pigeon-examples repository.",
             href: Some("https://github.com/justins-engineering/pigeon-examples"),
+            route: None,
+          }
+          GsLink {
+            icon: rsx! {
+              Icon { icon: LdMessagesSquare, class: "size-7 stroke-secondary", title: "Chat" }
+            },
+            title: "Stuck?",
+            body: "Discord is where the maintainers actually are. Bug reports go to the issue tracker and get answered by the people who wrote the line.",
+            href: Some("https://discord.gg/W2vjtpeP"),
             route: None,
           }
           GsLink {

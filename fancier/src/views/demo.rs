@@ -85,14 +85,28 @@ fn format_uptime(raw: &str) -> String {
 #[component]
 pub fn DemoPage() -> Element {
   rsx! {
-    section { class: "py-20 md:py-28",
-      div { class: "max-w-4xl mx-auto px-4 md:px-8 text-center",
-        Icon { icon: LdRadio, class: "w-12 h-12 mx-auto mb-8 stroke-primary", title: "Live" }
-        h1 { class: "text-5xl md:text-6xl font-extrabold tracking-tighter mb-6 text-balance",
-          "Live Demo"
+    // The design for this page described a flock of twelve with a config
+    // push, an alert to trip and a log to read. Only two demo routes exist,
+    // both GET and both telemetry, against a single pigeon -- so the copy
+    // promises exactly what the routes deliver and nothing more.
+    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+      div { class: "max-w-6xl mx-auto",
+        p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4",
+          "Live demo"
         }
-        p { class: "text-xl md:text-2xl text-base-content/70 leading-relaxed max-w-2xl mx-auto text-balance",
-          "This is live data from a real PidgeIoT device account -- no signup, no mock data. What's below is the actual platform, reporting in real time."
+        h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
+          "A device reporting right now, with nothing between you and it."
+        }
+        p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
+          "Read-only, no signup, no mock data. This is a real pigeon on a real account, and what's below is the same telemetry pipeline your own devices would use."
+        }
+        Link {
+          class: "inline-flex items-center gap-1.5 mt-6 text-sm font-semibold text-primary hover:underline",
+          to: Route::GettingStartedPage {},
+          // shrink-0: this label wraps to two lines at 390px, and without it
+          // the flex item compresses into the first word.
+          Icon { icon: LdRadio, class: "size-4 shrink-0", title: "Start" }
+          "Want to push config and trip alerts? Run your own in ten minutes →"
         }
       }
     }
