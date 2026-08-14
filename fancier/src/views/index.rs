@@ -7,84 +7,350 @@
 // turned out to be used exactly once, here. Inlined so the whole page, and
 // every section id on it, is visible by reading one file.
 
+use super::dashboard::{FlockConnStats, device_card_theme, flock_status_summary};
 use crate::Route;
-use crate::components::{Maturity, MaturityBadge};
+use crate::components::{ConnectorBadge, Maturity, MaturityBadge};
+use crate::helpers::connection_state::{ConnectionState, ConnectionStateStyle};
+use capsules::{CoapConfig, Connector};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdKeyRound, LdMail, LdScrollText, LdServer};
+use dioxus_free_icons::icons::ld_icons::{
+  LdBird, LdKeyRound, LdLayoutGrid, LdMail, LdScrollText, LdServer, LdTriangleAlert, LdWifi,
+};
 
-// Marketing depiction of the signed-in dashboard. It deliberately mirrors
-// what the real dashboard shows today rather than the design's mockup: the
-// design drew a tabbed flock shell (Overview/Devices/Firmware/Alerts/Logs)
-// that doesn't exist, and a firmware rollout aggregate that can't exist
-// until devices report the version they're actually running. Claiming
-// "this is the whole dashboard" only works if the picture is the product.
+// The heading over this depiction claims the picture is the product, so it
+// has to stay one: `DashboardMock` mirrors `views::dashboard` panel for
+// panel, and wherever that page has presentation logic this borrows it
+// rather than restating it -- `ConnectionStateStyle` for what a state is
+// called and coloured, `ConnectorBadge` for the transport chip,
+// `flock_status_summary` for which single status a flock shows,
+// `device_card_theme` for a card's tint. The two can drift in layout and
+// wording; they cannot drift in what the product calls things. Anything the
+// real dashboard grows belongs here too.
 
-/// One device row in the illustrative list. `state` names the same four
-/// connection states `capsules::connection_state::classify` produces --
-/// the design drew only three and had no treatment for a device that has
-/// never reported.
-struct DeviceRow {
-  id: &'static str,
-  state: &'static str,
-  age: &'static str,
+/// One flock in the illustrative fleet. Only its per-state counts are
+/// written down: the flock's own pigeon count, and every headline number
+/// above it, are summed back out of these, so no two parts of the picture
+/// can disagree about how big the fleet is.
+struct MockFlock {
+  name: &'static str,
+  stats: FlockConnStats,
 }
 
-const DEVICES: [DeviceRow; 5] = [
-  DeviceRow {
-    id: "pigeon-0417",
-    state: "online",
-    age: "3s",
+impl MockFlock {
+  fn pigeons(&self) -> usize {
+    self.stats.online + self.stats.stale + self.stats.offline + self.stats.unknown
+  }
+}
+
+const FLOCKS: [MockFlock; 4] = [
+  MockFlock {
+    name: "West Fleet",
+    stats: FlockConnStats {
+      online: 17,
+      stale: 0,
+      offline: 1,
+      unknown: 0,
+    },
   },
-  DeviceRow {
-    id: "pigeon-0418",
-    state: "online",
-    age: "11s",
+  MockFlock {
+    name: "North Barn",
+    stats: FlockConnStats {
+      online: 10,
+      stale: 2,
+      offline: 0,
+      unknown: 0,
+    },
   },
-  DeviceRow {
-    id: "pigeon-0421",
-    state: "stale",
-    age: "6m",
+  MockFlock {
+    name: "Riverside",
+    stats: FlockConnStats {
+      online: 10,
+      stale: 0,
+      offline: 0,
+      unknown: 0,
+    },
   },
-  DeviceRow {
-    id: "pigeon-0433",
-    state: "unknown",
-    age: "never",
-  },
-  DeviceRow {
-    id: "pigeon-0440",
-    state: "offline",
-    age: "4h",
+  MockFlock {
+    name: "Bench",
+    stats: FlockConnStats {
+      online: 0,
+      stale: 0,
+      offline: 0,
+      unknown: 2,
+    },
   },
 ];
 
-fn status_class(state: &str) -> &'static str {
-  match state {
-    "online" => "status status-success",
-    "stale" => "status status-warning",
-    "offline" => "status status-error",
-    // Never-reported deliberately avoids DaisyUI's neutral, which is
-    // invisible against this theme's base in both light and dark.
-    _ => "status bg-base-content/40",
+/// The head of the device grid. Ordered worst-first, the way the real page
+/// sorts it, and covering all four states -- including the device that has
+/// never reported at all, which is the one a three-state picture always
+/// leaves out.
+struct MockDevice {
+  id: &'static str,
+  flock: &'static str,
+  state: ConnectionState,
+  coap: bool,
+  seen: &'static str,
+}
+
+const DEVICES: [MockDevice; 4] = [
+  MockDevice {
+    id: "pigeon-0440",
+    flock: "West Fleet",
+    state: ConnectionState::Offline,
+    coap: true,
+    seen: "4h ago",
+  },
+  MockDevice {
+    id: "pigeon-0421",
+    flock: "North Barn",
+    state: ConnectionState::Stale,
+    coap: false,
+    seen: "6m ago",
+  },
+  MockDevice {
+    id: "pigeon-0433",
+    flock: "Bench",
+    state: ConnectionState::Unknown,
+    coap: false,
+    seen: "Never seen",
+  },
+  MockDevice {
+    id: "pigeon-0417",
+    flock: "West Fleet",
+    state: ConnectionState::Online,
+    coap: true,
+    seen: "just now",
+  },
+];
+
+/// `ConnectorBadge` renders from a real `Connector`, so the picture gets a
+/// real one. The configs are empty because only the variant reaches the
+/// badge, and an illustration has no endpoint or credential to name.
+fn mock_connector(coap: bool) -> Connector {
+  if coap {
+    Connector::Coap(CoapConfig::default())
+  } else {
+    Connector::default()
   }
 }
 
+/// Every control here is a `span`, never a `Link`: a visitor reading this is
+/// not signed in, so a real button would only bounce them off to the login
+/// page from inside what is meant to be a picture.
 #[component]
-fn Kpi(label: &'static str, value: &'static str, tone: &'static str) -> Element {
-  rsx! {
-    div {
-      p { class: "text-xs uppercase tracking-widest text-base-content/50", "{label}" }
-      p { class: "text-4xl font-extrabold mt-1 {tone}", "{value}" }
-    }
-  }
-}
+fn DashboardMock() -> Element {
+  let online: usize = FLOCKS.iter().map(|f| f.stats.online).sum();
+  let stale: usize = FLOCKS.iter().map(|f| f.stats.stale).sum();
+  let offline: usize = FLOCKS.iter().map(|f| f.stats.offline).sum();
+  let unknown: usize = FLOCKS.iter().map(|f| f.stats.unknown).sum();
+  let total_pigeons = online + stale + offline + unknown;
+  let total_flocks = FLOCKS.len();
+  let needs_attention = stale + offline;
+  let pct = |n: usize| (n as f64 / total_pigeons as f64) * 100.0;
 
-#[component]
-fn Legend(color: &'static str, label: &'static str) -> Element {
   rsx! {
-    span { class: "flex items-center gap-1.5",
-      span { class: "size-2 rounded-full", style: "background:{color}" }
-      "{label}"
+    section { id: "home-dashboard", class: "pt-14 pb-16",
+      div { class: "max-w-6xl mx-auto",
+        div { class: "text-center mb-9",
+          h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight",
+            "This is the whole dashboard"
+          }
+          p { class: "text-lg text-base-content/70 mt-2",
+            "No modules to buy, no widgets to assemble. Every device shows up here the moment it checks in."
+          }
+        }
+
+        div { class: "rounded-2xl border border-base-300 bg-base-200 p-3",
+          div { class: "flex items-center gap-2 px-2 py-2",
+            span { class: "size-2.5 rounded-full bg-error" }
+            span { class: "size-2.5 rounded-full bg-warning" }
+            span { class: "size-2.5 rounded-full bg-success" }
+            span { class: "ml-3 text-xs font-mono text-base-content/50 truncate",
+              "pidgeiot.com/dashboard"
+            }
+          }
+
+          div { class: "rounded-xl bg-base-100 border border-base-300 p-4 md:p-6",
+
+            header { class: "flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8",
+              div { class: "min-w-0",
+                h3 { class: "text-2xl font-bold", "Fleet Overview" }
+                p { class: "text-base-content/60 text-sm mt-1",
+                  "{total_pigeons} pigeons across {total_flocks} flocks"
+                }
+              }
+              span { class: "btn btn-outline btn-primary sm:px-6 pointer-events-none",
+                "Manage Flocks"
+              }
+            }
+
+            div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 mb-8",
+              div { class: "stat",
+                div { class: "stat-figure text-secondary",
+                  Icon { width: 28, height: 28, icon: LdLayoutGrid, title: "Flocks" }
+                }
+                div { class: "stat-title", "Flocks" }
+                div { class: "stat-value text-secondary", "{total_flocks}" }
+                div { class: "stat-desc", "Groups you own" }
+              }
+              div { class: "stat",
+                div { class: "stat-figure text-primary",
+                  Icon { width: 28, height: 28, icon: LdBird, title: "Pigeons" }
+                }
+                div { class: "stat-title", "Pigeons" }
+                div { class: "stat-value text-primary", "{total_pigeons}" }
+                div { class: "stat-desc", "Registered devices" }
+              }
+              div { class: "stat",
+                div { class: "stat-figure text-success",
+                  Icon { width: 26, height: 26, icon: LdWifi, title: "Online" }
+                }
+                div { class: "stat-title", "Online" }
+                div { class: "stat-value text-success", "{online}" }
+                div { class: "stat-desc", "Seen within cadence" }
+              }
+              div { class: "stat",
+                div { class: "stat-figure text-warning",
+                  Icon {
+                    width: 26,
+                    height: 26,
+                    icon: LdTriangleAlert,
+                    title: "Needs attention",
+                  }
+                }
+                div { class: "stat-title", "Needs Attention" }
+                div { class: "stat-value text-warning", "{needs_attention}" }
+                div { class: "stat-desc", "Stale or offline" }
+              }
+            }
+
+            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+              div { class: "lg:col-span-2 flex flex-col gap-6 min-w-0",
+
+                div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
+                  h4 { class: "text-lg font-bold mb-4", "Fleet Health" }
+                  div { class: "w-full h-3 rounded-full overflow-hidden flex bg-base-300",
+                    div { class: "h-full bg-success", style: "width: {pct(online)}%" }
+                    div { class: "h-full bg-warning", style: "width: {pct(stale)}%" }
+                    div { class: "h-full bg-error", style: "width: {pct(offline)}%" }
+                    div { class: "h-full bg-base-content/20", style: "width: {pct(unknown)}%" }
+                  }
+                  div { class: "flex flex-wrap gap-x-6 gap-y-2 mt-4 text-sm",
+                    div { class: "flex items-center gap-2",
+                      span { class: "status status-success" }
+                      "Online "
+                      span { class: "font-semibold", "{online}" }
+                    }
+                    div { class: "flex items-center gap-2",
+                      span { class: "status status-warning" }
+                      "Stale "
+                      span { class: "font-semibold", "{stale}" }
+                    }
+                    div { class: "flex items-center gap-2",
+                      span { class: "status status-error" }
+                      "Offline "
+                      span { class: "font-semibold", "{offline}" }
+                    }
+                    div { class: "flex items-center gap-2",
+                      span { class: "status" }
+                      "Unknown "
+                      span { class: "font-semibold", "{unknown}" }
+                    }
+                  }
+                }
+
+                div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
+                  div { class: "flex items-center justify-between gap-3 mb-4",
+                    h4 { class: "text-lg font-bold", "Devices" }
+                    span { class: "text-xs text-base-content/50 text-right",
+                      "Sorted by status · showing {DEVICES.len()} of {total_pigeons}"
+                    }
+                  }
+                  div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                    for device in DEVICES.iter() {
+                      div {
+                        key: "{device.id}",
+                        class: "border {device_card_theme(device.state)} rounded-box p-4 flex flex-col gap-2 min-w-0",
+                        div { class: "flex items-center justify-between gap-2",
+                          span { class: "font-semibold text-primary truncate", "{device.id}" }
+                          div { class: "badge {device.state.badge_class()} gap-1.5 shrink-0",
+                            span { class: "{device.state.status_class()}" }
+                            "{device.state.label()}"
+                          }
+                        }
+                        div { class: "flex items-center gap-2 text-xs text-base-content/60 min-w-0",
+                          ConnectorBadge { connector: mock_connector(device.coap) }
+                          span { class: "truncate", "{device.flock}" }
+                        }
+                        div { class: "flex items-center justify-between gap-2 text-xs",
+                          span { class: "text-base-content/50", "{device.seen}" }
+                          span { class: "text-base-content/60", "View →" }
+                        }
+                      }
+                    }
+                  }
+                  div { class: "flex justify-end mt-4",
+                    span { class: "btn btn-ghost btn-sm text-base-content/60 pointer-events-none",
+                      "View all pigeons by flock →"
+                    }
+                  }
+                }
+              }
+
+              div { class: "flex flex-col gap-6 min-w-0",
+
+                div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
+                  div { class: "flex items-center justify-between gap-3 mb-4",
+                    h4 { class: "text-lg font-bold", "Flocks" }
+                    span { class: "text-xs text-base-content/60", "View all →" }
+                  }
+                  div { class: "flex flex-col gap-3",
+                    for flock in FLOCKS.iter() {
+                      div {
+                        key: "{flock.name}",
+                        class: "flex items-center justify-between gap-3 rounded-box border border-base-content/10 p-3",
+                        div { class: "min-w-0",
+                          div { class: "font-semibold text-secondary text-sm truncate", "{flock.name}" }
+                          div { class: "text-xs text-base-content/50 mt-0.5",
+                            "{flock.pigeons()} pigeons"
+                          }
+                        }
+                        if let Some((dot_class, label)) = flock_status_summary(flock.stats) {
+                          div { class: "flex items-center gap-1 shrink-0",
+                            span { class: "status {dot_class}" }
+                            span { class: "text-xs text-base-content/60", "{label}" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
+                  div { class: "flex items-center justify-between gap-3 mb-3",
+                    h4 { class: "text-lg font-bold", "Alerts" }
+                    MaturityBadge { maturity: Maturity::Beta }
+                  }
+                  div { class: "flex flex-col gap-2",
+                    div { class: "flex items-center justify-between gap-3 text-sm",
+                      span { class: "text-base-content/70", "Flock-level alerts firing" }
+                      span { class: "font-semibold", "1" }
+                    }
+                    p { class: "text-xs text-base-content/50",
+                      "Per-pigeon alerts aren't counted here — open a pigeon's own page to see those."
+                    }
+                    span { class: "text-xs text-base-content/60 mt-2",
+                      "Manage alerts in a flock →"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -184,121 +450,7 @@ pub fn Index() -> Element {
       }
     }
 
-    section { id: "home-dashboard", class: "pt-14 pb-16",
-      div { class: "max-w-6xl mx-auto",
-        div { class: "text-center mb-9",
-          h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight",
-            "This is the whole dashboard"
-          }
-          p { class: "text-lg text-base-content/70 mt-2",
-            "No modules to buy, no widgets to assemble. Every device looks like this the moment it checks in."
-          }
-        }
-
-        div { class: "rounded-2xl border border-base-300 bg-base-200 p-3",
-          div { class: "flex items-center gap-2 px-2 py-2",
-            span { class: "size-2.5 rounded-full bg-error" }
-            span { class: "size-2.5 rounded-full bg-warning" }
-            span { class: "size-2.5 rounded-full bg-success" }
-            span { class: "ml-3 text-xs font-mono text-base-content/50 truncate",
-              "pidgeiot.com / flock: west-fleet"
-            }
-          }
-
-          div { class: "rounded-xl bg-base-100 border border-base-300",
-            // Three KPIs, not the design's four: "On latest firmware"
-            // needs a per-device running version nothing reports back.
-            div { class: "grid grid-cols-1 sm:grid-cols-3 gap-6 px-4 md:px-6 py-6 border-b border-base-300",
-              Kpi { label: "Devices", value: "42", tone: "" }
-              Kpi { label: "Reporting", value: "38", tone: "text-success" }
-              Kpi { label: "Open alerts", value: "1", tone: "text-error" }
-            }
-
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6 px-4 md:px-6 py-6",
-              div { class: "lg:col-span-2 flex flex-col gap-3 min-w-0",
-                div { class: "flex items-center gap-3 flex-wrap",
-                  h3 { class: "font-bold text-lg", "Telemetry" }
-                  span { class: "ml-auto flex flex-wrap gap-3 text-xs font-mono text-base-content/60",
-                    Legend { color: "var(--chart-series-1)", label: "temp_c" }
-                    Legend { color: "var(--chart-series-2)", label: "battery_v" }
-                    Legend { color: "var(--chart-series-3)", label: "soil_pct" }
-                  }
-                }
-                svg {
-                  view_box: "0 0 640 200",
-                  width: "100%",
-                  height: "200",
-                  role: "img",
-                  "aria-label": "Telemetry over 24 hours",
-                  rect { x: "0", y: "0", width: "640", height: "200", rx: "10", fill: "var(--chart-surface)" }
-                  g { stroke: "var(--chart-grid)", stroke_width: "1",
-                    line { x1: "40", y1: "30", x2: "632", y2: "30" }
-                    line { x1: "40", y1: "72", x2: "632", y2: "72" }
-                    line { x1: "40", y1: "114", x2: "632", y2: "114" }
-                    line { x1: "40", y1: "156", x2: "632", y2: "156" }
-                  }
-                  g {
-                    fill: "var(--chart-ink-secondary)",
-                    font_size: "10",
-                    font_family: "ui-monospace,monospace",
-                    text { x: "8", y: "34", "30" }
-                    text { x: "8", y: "76", "20" }
-                    text { x: "8", y: "118", "10" }
-                    text { x: "8", y: "160", "0" }
-                    text { x: "44", y: "188", "00:00" }
-                    text { x: "190", y: "188", "06:00" }
-                    text { x: "336", y: "188", "12:00" }
-                    text { x: "482", y: "188", "18:00" }
-                    text { x: "596", y: "188", "now" }
-                  }
-                  line { x1: "40", y1: "170", x2: "632", y2: "170", stroke: "var(--chart-axis)", stroke_width: "1" }
-                  path {
-                    d: "M44 140 L100 132 L156 136 L212 112 L268 118 L324 84 L380 92 L436 62 L492 72 L548 46 L604 52 L628 44",
-                    fill: "none",
-                    stroke: "var(--chart-series-1)",
-                    stroke_width: "2.5",
-                    stroke_linecap: "round",
-                    stroke_linejoin: "round",
-                  }
-                  path {
-                    d: "M44 156 L100 152 L156 158 L212 146 L268 150 L324 138 L380 144 L436 130 L492 136 L548 124 L604 128 L628 122",
-                    fill: "none",
-                    stroke: "var(--chart-series-2)",
-                    stroke_width: "2.5",
-                    stroke_linecap: "round",
-                    stroke_linejoin: "round",
-                  }
-                  path {
-                    d: "M44 106 L100 114 L156 100 L212 108 L268 96 L324 104 L380 90 L436 98 L492 86 L548 94 L604 82 L628 88",
-                    fill: "none",
-                    stroke: "var(--chart-series-3)",
-                    stroke_width: "2.5",
-                    stroke_linecap: "round",
-                    stroke_linejoin: "round",
-                  }
-                }
-              }
-
-              div { class: "flex flex-col gap-3 min-w-0",
-                h3 { class: "font-bold text-lg", "Devices" }
-                div { class: "flex flex-col",
-                  for (i , d) in DEVICES.iter().enumerate() {
-                    div {
-                      key: "{d.id}",
-                      class: "flex items-center gap-3 py-2.5",
-                      class: if i + 1 < DEVICES.len() { "border-b border-base-300" },
-                      span { class: status_class(d.state) }
-                      span { class: "font-mono text-sm grow truncate", "{d.id}" }
-                      span { class: "text-xs text-base-content/50 shrink-0", "{d.age}" }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    DashboardMock {}
 
     section { id: "home-route", class: "py-16",
       div { class: "max-w-6xl mx-auto",

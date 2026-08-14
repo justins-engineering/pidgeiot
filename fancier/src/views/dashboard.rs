@@ -213,7 +213,13 @@ pub fn Dashboard() -> Element {
         // grid-auto-flow: column, which wins over the explicit column count
         // and packs every tile into a single row, overlapping their labels
         // at narrow widths.
-        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-2 lg:grid-cols-4 mb-8",
+        //
+        // One tile per row below `sm` for a related reason: `stat-figure`
+        // sits at a fixed offset past the value rather than shrinking with
+        // its tile, so a two-column split on a phone pushes each icon up to
+        // 29px outside its own tile and onto the neighbouring tile's number
+        // (measured at 390px; it only clears around 500px).
+        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 mb-8",
           div { class: "stat",
             div { class: "stat-figure text-secondary",
               Icon { width: 28, height: 28, icon: LdLayoutGrid, title: "Flocks" }
@@ -449,16 +455,17 @@ fn NoFlocksState() -> Element {
 }
 
 /// Per-flock rollup of the same classification the main fleet grid computes,
-/// used only by the sidebar's `FlockNavItem` -- kept separate from the
-/// fleet-wide `online`/`stale`/`offline`/`unknown` counters above since a
-/// glance at one flock's health shouldn't require re-deriving it from the
-/// full pigeon list.
+/// used by the sidebar's `FlockNavItem` and by the landing page's depiction
+/// of this dashboard (`views::index`) -- kept separate from the fleet-wide
+/// `online`/`stale`/`offline`/`unknown` counters above since a glance at one
+/// flock's health shouldn't require re-deriving it from the full pigeon
+/// list.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct FlockConnStats {
-  online: usize,
-  stale: usize,
-  offline: usize,
-  unknown: usize,
+pub(crate) struct FlockConnStats {
+  pub(crate) online: usize,
+  pub(crate) stale: usize,
+  pub(crate) offline: usize,
+  pub(crate) unknown: usize,
 }
 
 /// Picks the single most-informative status to show next to a flock in the
@@ -468,7 +475,7 @@ struct FlockConnStats {
 /// pigeons, or the fleet-wide fetch hasn't resolved) so the caller can omit
 /// the indicator entirely rather than assert a state with no data behind
 /// it.
-fn flock_status_summary(stats: FlockConnStats) -> Option<(&'static str, String)> {
+pub(crate) fn flock_status_summary(stats: FlockConnStats) -> Option<(&'static str, String)> {
   if stats.offline > 0 {
     Some(("status-error", format!("{} offline", stats.offline)))
   } else if stats.stale > 0 {
@@ -506,6 +513,19 @@ fn FlockNavItem(flock: Flock, stats: FlockConnStats) -> Element {
   }
 }
 
+/// Border and wash for a device card, tinted by how worrying its state is.
+/// Shared with the landing page's depiction of this dashboard
+/// (`views::index`) so the marketing picture cannot colour a state
+/// differently from the product.
+pub(crate) fn device_card_theme(state: ConnectionState) -> &'static str {
+  match state {
+    ConnectionState::Offline => "border-error/30 bg-error/5",
+    ConnectionState::Stale => "border-warning/30 bg-warning/5",
+    ConnectionState::Unknown => "border-base-content/10 bg-base-200/40",
+    ConnectionState::Online => "border-base-content/10",
+  }
+}
+
 #[component]
 fn DeviceCard(
   pigeon: Pigeon,
@@ -514,12 +534,7 @@ fn DeviceCard(
   last_seen: Option<OffsetDateTime>,
 ) -> Element {
   let now = OffsetDateTime::now_utc();
-  let card_theme = match state {
-    ConnectionState::Offline => "border-error/30 bg-error/5",
-    ConnectionState::Stale => "border-warning/30 bg-warning/5",
-    ConnectionState::Unknown => "border-base-content/10 bg-base-200/40",
-    ConnectionState::Online => "border-base-content/10",
-  };
+  let card_theme = device_card_theme(state);
   let flock_id = pigeon.flock_id;
   let pigeon_id = pigeon.id.clone();
   let display_name = pigeon.name.clone().unwrap_or_else(|| pigeon.id.clone());
