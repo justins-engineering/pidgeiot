@@ -35,7 +35,7 @@ not_found_handling = "single-page-application"
 # fallbacks for unknown routes, ...) keeps wrangler's zero-worker direct
 # asset serving. Both slash forms are listed so a no-trailing-slash agent
 # request negotiates immediately instead of only after the 307 redirect.
-# KEEP IN SYNC with build-release.sh's PAGES map (which decides which
+# KEEP IN SYNC with page-meta.json's `pages` map (which decides which
 # routes get an index.md variant + Link header advertisement).
 run_worker_first = [
   "/",

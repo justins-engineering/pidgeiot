@@ -1,0 +1,74 @@
+{
+  "note": [
+    "Per-page titles and descriptions for the indexable marketing/docs pages.",
+    "Two consumers read this file and they must not be allowed to disagree:",
+    "scripts/build-release.sh bakes the title, description, canonical, og/twitter",
+    "tags, sitemap and markdown variants into each prerendered page, and",
+    "src/helpers/page_meta.rs reads the same titles so a client-side navigation",
+    "sets the browser tab to exactly what a cold load of that URL would show.",
+    "A route absent from `pages` is noindex, and falls back to the landing",
+    "page's title, which is the brand line and so is not written down twice.",
+    "Keep '/' first: the sitemap is emitted in this order. Search-result bands,",
+    "which build-release.sh fails the build over: title <= 60 characters,",
+    "description 120-160."
+  ],
+  "base": "https://pidgeiot.com",
+  "pages": {
+    "/": {
+      "title": "PidgeIoT — Open-Source IoT Device Management",
+      "description": "Open-source IoT device management: config push, OTA updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Free while in beta."
+    },
+    "/features/": {
+      "title": "IoT Platform Features — Shadows, Telemetry, OTA | PidgeIoT",
+      "description": "Device shadows with report-back, telemetry with queryable history, email alerts, OTA firmware updates, device logs, and a remote diagnostic shell."
+    },
+    "/how-it-works/": {
+      "title": "How It Works — Device to Dashboard in 5 Steps | PidgeIoT",
+      "description": "How a reading travels from a device to your dashboard: provisioning and per-device keys, transports, telemetry reports, shadow convergence, alerts and OTA."
+    },
+    "/use-cases/": {
+      "title": "Use Cases — Asset Tracking, Monitoring, OTA | PidgeIoT",
+      "description": "Five shapes of device fleet on one platform: GPS asset tracking, environmental alerting, remote firmware updates, bring-your-own-database, and small fleets."
+    },
+    "/pricing/": {
+      "title": "Pricing — Free During Early Access | PidgeIoT",
+      "description": "All of PidgeIoT is free during early access, no credit card required. Fair, simple pricing for larger fleets will come later — one product, one price."
+    },
+    "/documentation/": {
+      "title": "Documentation — Connect Your First Device | PidgeIoT",
+      "description": "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, tokens, shadows, telemetry, alerts, and over-the-air firmware updates."
+    },
+    "/api-reference/": {
+      "title": "API Reference — Dashboard & Device HTTP APIs | PidgeIoT",
+      "description": "The complete PidgeIoT HTTP surface: dashboard routes, device routes, Ed25519 bearer tokens, shadows, telemetry, logs, firmware, and WebSocket frames."
+    },
+    "/architecture/": {
+      "title": "Architecture — Edge-Native IoT, Rust End to End | PidgeIoT",
+      "description": "How PidgeIoT is built: Cloudflare Workers and Durable Objects at the edge, a WASM dashboard, managed PostgreSQL, and self-hosted Ory Kratos identity."
+    },
+    "/getting-started/": {
+      "title": "Getting Started — Try It With No Hardware | PidgeIoT",
+      "description": "Go from zero to live telemetry in about ten minutes using a simulated Zephyr device on your own machine — no board, no radio, no hardware required."
+    },
+    "/demo/": {
+      "title": "Live Demo — Real Device Data, No Signup | PidgeIoT",
+      "description": "Watch live telemetry from a real PidgeIoT device account right now: no signup, no mock data. Charts and latest values straight from the platform API."
+    },
+    "/open-source/": {
+      "title": "Open Source — Licenses & Attribution | PidgeIoT",
+      "description": "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license texts for every open-source component the platform ships, auto-generated."
+    },
+    "/about/": {
+      "title": "About — Justin's Engineering Services | PidgeIoT",
+      "description": "PidgeIoT is built by Justin's Engineering Services, a small Massachusetts engineering company that got tired of IoT platforms punishing small fleets."
+    },
+    "/privacy/": {
+      "title": "Privacy Policy | PidgeIoT",
+      "description": "What PidgeIoT collects, where it lives, and what we deliberately don't do with it: no selling data, no ad tracking, and no tracking cookies."
+    },
+    "/terms/": {
+      "title": "Terms of Service | PidgeIoT",
+      "description": "The terms for using PidgeIoT during early access: acceptable use, account responsibility, licensing, and how changes to the service are communicated."
+    }
+  }
+}

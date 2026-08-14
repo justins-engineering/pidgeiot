@@ -148,59 +148,24 @@ cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
 python3 - "$PUBLIC_DIR" <<'PYEOF'
 import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
-BASE = "https://pidgeiot.com"
-BRAND_TITLE = "PidgeIoT — Open-Source IoT Device Management"
-BRAND_DESC = ("Open-source IoT device management: config push, OTA updates, telemetry graphs, "
-              "GPS tracks, and email alerts for ESP32 and nRF91 fleets. Free while in beta.")
 
-# Indexable marketing/docs pages: per-page title (<=60 chars) + description
-# (120-160 chars) so search results don't collapse into one duplicate
-# title. Anything NOT in this map gets the brand title plus a noindex
-# robots meta -- that covers the auth-gated app shells (/dashboard,
-# /flocks, ...), the Kratos flow pages, and /error//unauthorized, none of
-# which belong in an index (they prerender as placeholder shells anyway).
-PAGES = {
-    "/": (BRAND_TITLE, BRAND_DESC),
-    "/features/": ("IoT Platform Features — Shadows, Telemetry, OTA | PidgeIoT",
-        "Device shadows with report-back, telemetry with queryable history, email alerts, "
-        "OTA firmware updates, device logs, and a remote diagnostic shell."),
-    "/how-it-works/": ("How It Works — Device to Dashboard in 5 Steps | PidgeIoT",
-        "How a reading travels from a device to your dashboard: provisioning and per-device "
-        "keys, transports, telemetry reports, shadow convergence, alerts and OTA."),
-    "/use-cases/": ("Use Cases — Asset Tracking, Monitoring, OTA | PidgeIoT",
-        "Five shapes of device fleet on one platform: GPS asset tracking, environmental "
-        "alerting, remote firmware updates, bring-your-own-database, and small fleets."),
-    "/pricing/": ("Pricing — Free During Early Access | PidgeIoT",
-        "All of PidgeIoT is free during early access, no credit card required. Fair, "
-        "simple pricing for larger fleets will come later — one product, one price."),
-    "/documentation/": ("Documentation — Connect Your First Device | PidgeIoT",
-        "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, "
-        "tokens, shadows, telemetry, alerts, and over-the-air firmware updates."),
-    "/api-reference/": ("API Reference — Dashboard & Device HTTP APIs | PidgeIoT",
-        "The complete PidgeIoT HTTP surface: dashboard routes, device routes, Ed25519 "
-        "bearer tokens, shadows, telemetry, logs, firmware, and WebSocket frames."),
-    "/architecture/": ("Architecture — Edge-Native IoT, Rust End to End | PidgeIoT",
-        "How PidgeIoT is built: Cloudflare Workers and Durable Objects at the edge, a "
-        "WASM dashboard, managed PostgreSQL, and self-hosted Ory Kratos identity."),
-    "/getting-started/": ("Getting Started — Try It With No Hardware | PidgeIoT",
-        "Go from zero to live telemetry in about ten minutes using a simulated Zephyr "
-        "device on your own machine — no board, no radio, no hardware required."),
-    "/demo/": ("Live Demo — Real Device Data, No Signup | PidgeIoT",
-        "Watch live telemetry from a real PidgeIoT device account right now: no signup, "
-        "no mock data. Charts and latest values straight from the platform API."),
-    "/open-source/": ("Open Source — Licenses & Attribution | PidgeIoT",
-        "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license "
-        "texts for every open-source component the platform ships, auto-generated."),
-    "/about/": ("About — Justin's Engineering Services | PidgeIoT",
-        "PidgeIoT is built by Justin's Engineering Services, a small Massachusetts "
-        "engineering company that got tired of IoT platforms punishing small fleets."),
-    "/privacy/": ("Privacy Policy | PidgeIoT",
-        "What PidgeIoT collects, where it lives, and what we deliberately don't do "
-        "with it: no selling data, no ad tracking, and no tracking cookies."),
-    "/terms/": ("Terms of Service | PidgeIoT",
-        "The terms for using PidgeIoT during early access: acceptable use, account "
-        "responsibility, licensing, and how changes to the service are communicated."),
-}
+# Indexable marketing/docs pages: per-page title + description so search
+# results don't collapse into one duplicate title. The map lives in
+# page-meta.json rather than here because fancier reads the same titles at
+# runtime (src/helpers/page_meta.rs) to name the browser tab on client-side
+# navigation -- a page's tab and its <title> would otherwise be written in
+# two languages in two files, free to disagree, with nothing to catch it.
+# Anything NOT in the map gets the brand title plus a noindex robots meta:
+# that covers the auth-gated app shells (/dashboard, /flocks, ...), the
+# Kratos flow pages, and /error//unauthorized, none of which belong in an
+# index (they prerender as placeholder shells anyway).
+META = json.loads(pathlib.Path("page-meta.json").read_text())
+BASE = META["base"]
+PAGES = {route: (page["title"], page["description"])
+         for route, page in META["pages"].items()}
+# The landing page's own title IS the brand line, so the noindex fallback
+# reuses it instead of keeping a second copy in step with it.
+BRAND_TITLE, BRAND_DESC = PAGES["/"]
 
 # JSON-LD on the landing page only: Organization + WebSite +
 # SoftwareApplication -- the structured answers engines actually consume.
@@ -222,9 +187,18 @@ JSONLD = json.dumps({
     ],
 })
 
-for title, desc in PAGES.values():
-    if not (len(title) <= 60 and 120 <= len(desc) <= 160):
-        print(f"WARNING seo band violation: {len(title)}/{len(desc)} {title!r}")
+# Fail the build rather than warn: a warning this far into a long release
+# build scrolls past unread, and an over-length title is truncated by the
+# search engine rather than rejected, so nothing downstream would ever
+# report it either.
+violations = [(route, len(title), len(desc))
+              for route, (title, desc) in PAGES.items()
+              if not (len(title) <= 60 and 120 <= len(desc) <= 160)]
+if violations:
+    for route, title_len, desc_len in violations:
+        print(f"page-meta.json {route}: title {title_len} (max 60), "
+              f"description {desc_len} (need 120-160)")
+    sys.exit("seo band violations in page-meta.json")
 
 # Cloudflare Web Analytics (RUM), installed manually: baked into the
 # artifact instead of edge auto-injection so served HTML is byte-identical
@@ -247,14 +221,17 @@ for f in root.rglob("index.html"):
     html = f.read_text()
     if "og:title" in html:
         continue
-    # The prerender emits its own generic <title> (Dioxus.toml) and meta
-    # description (lib.rs document::Meta, which DOES materialize during the
-    # SSG pass, unlike at launch when it was client-only) -- leaving them in
-    # alongside the injected per-page pair means two titles/descriptions per
-    # page, and Google may pick the generic one. Strip the shell's pair
-    # before injecting ours.
-    html = re.sub(r"<title>.*?</title>", "", html, count=1)
-    html = re.sub(r'<meta name="description"[^>]*/?>', "", html, count=1)
+    # The prerender emits titles and a meta description of its own: the
+    # generic shell title (Dioxus.toml), the real per-page title that
+    # views::wrapper's PageTitle renders (document::Title materializes during
+    # the SSG pass, same as document::Meta does), and lib.rs's brand
+    # description. Leaving any of them in alongside the injected pair means a
+    # page with two titles or two descriptions, and Google may pick the
+    # generic one. Strip ALL of them, not just the first: which ones a given
+    # page carries depends on what rendered, and a count would silently leave
+    # the rest behind.
+    html = re.sub(r"<title>.*?</title>", "", html)
+    html = re.sub(r'<meta name="description"[^>]*/?>', "", html)
     route = "/" + str(f.parent.relative_to(root)).replace("\\", "/").lstrip(".")
     route = "/" if route in ("/", "/.") else route.rstrip("/") + "/"
     indexable = route in PAGES

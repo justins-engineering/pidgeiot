@@ -1,6 +1,24 @@
 use crate::Route;
 use crate::components::{FeedbackForm, FeedbackModal, Footer, Navbar};
+use crate::helpers::page_title;
 use dioxus::prelude::*;
+
+/// Keeps the browser tab named after the page you are actually on.
+///
+/// Nothing else does: the per-page <title> in a prerendered page is static
+/// HTML, so once the app hydrates, every client-side navigation used to leave
+/// the tab reading whatever page happened to be loaded first. Its own
+/// component rather than a line in `Wrapper` so that a navigation re-renders
+/// six lines instead of the whole chrome.
+#[component]
+fn PageTitle() -> Element {
+  let route = use_route::<Route>();
+  let title = page_title(&route);
+
+  rsx! {
+    document::Title { "{title}" }
+  }
+}
 
 #[component]
 pub fn Wrapper() -> Element {
@@ -12,6 +30,7 @@ pub fn Wrapper() -> Element {
   let mut feedback_open = use_context_provider(|| FeedbackForm(Signal::new(false))).0;
 
   rsx! {
+    PageTitle {}
     Navbar {}
     main { Outlet::<Route> {} }
     Footer {}

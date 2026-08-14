@@ -43,6 +43,9 @@ pub mod gps_track;
 
 pub mod graph_store;
 
+mod page_meta;
+pub use page_meta::page_title;
+
 mod timer;
 pub use timer::sleep_ms;
 
