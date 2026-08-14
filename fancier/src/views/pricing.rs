@@ -118,7 +118,6 @@ pub fn PricingPage() -> Element {
                 "300K pooled messages/mo".into(),
                 "7 days in our history store".into(),
                 "1 seat · 1 alert".into(),
-                "Telemetry forwarding to your own store".into(),
             ],
             featured: true,
             cta: rsx! {
@@ -226,7 +225,7 @@ pub fn PricingPage() -> Element {
     }
 
     section { class: "px-4 md:px-10 pb-14",
-      div { class: "max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6",
+      div { class: "max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
         NeverCard {
           label: "Not billing yet",
           value: "$0.30",

@@ -221,8 +221,8 @@ pub fn DemoPage() -> Element {
     }
 
     if DEMO_PIGEON_ID.is_empty() {
-      section { class: "pb-24",
-        div { class: "max-w-2xl mx-auto px-4 md:px-8 text-center",
+      section { class: "px-4 md:px-10 pb-14",
+        div { class: "max-w-6xl mx-auto",
           p { class: "text-base-content/60 italic",
             "The live demo isn't configured in this environment."
           }
@@ -232,8 +232,8 @@ pub fn DemoPage() -> Element {
       DemoContent {}
     }
 
-    section { class: "pb-24 md:pb-32",
-      div { class: "max-w-2xl mx-auto px-4 md:px-8 text-center",
+    section { class: "px-4 md:px-10 pb-24",
+      div { class: "max-w-4xl mx-auto text-center",
         Link {
           class: "btn btn-lg btn-glow font-bold",
           to: Route::RegisterFlow { flow: None },
@@ -284,8 +284,8 @@ fn DemoContent() -> Element {
   let latest_vals = latest();
 
   rsx! {
-    section { class: "py-16",
-      div { class: "max-w-4xl mx-auto px-4 md:px-8",
+    section { class: "px-4 md:px-10 py-14",
+      div { class: "max-w-6xl mx-auto",
         // grid-flow-row is load-bearing: DaisyUI's `stats` sets
         // grid-auto-flow: column, which overrides the explicit column count
         // and packs every reading into one row -- at 390px the labels landed
@@ -328,8 +328,8 @@ fn DemoContent() -> Element {
     // prerender pass emits the full page layout in the static HTML. The
     // skeleton mirrors TelemetryChart's real footprint (a ~24px toolbar row
     // + the 220px CANVAS_H svg) so the swap-in is not itself a shift.
-    section { class: "pb-16 md:pb-20",
-      div { class: "max-w-4xl mx-auto px-4 md:px-8 flex flex-col gap-6",
+    section { class: "px-4 md:px-10 pb-14",
+      div { class: "max-w-6xl mx-auto flex flex-col gap-6",
         for (key , title , _unit , kind , why) in DEMO_READINGS {
           div {
             key: "{key}",
@@ -343,7 +343,7 @@ fn DemoContent() -> Element {
             // The point of the demo is that the kind is a claim about the
             // data, not a style choice, so each card says which claim it is
             // making and why this reading supports it.
-            p { class: "text-sm text-base-content/70 leading-relaxed", "{why}" }
+            p { class: "text-sm text-base-content/70 leading-relaxed max-w-3xl", "{why}" }
             if loaded_once() {
               TelemetryChart {
                 series: vec![series_for_key(key, &history())],

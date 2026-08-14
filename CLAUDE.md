@@ -105,6 +105,8 @@ Plain serde structs with no Worker/Dioxus dependencies, consumed by both other c
 
 ## Conventions worth knowing
 
+- **Every `section` in `fancier` carries an `id`.** Two reasons, both load-bearing: it makes any part of a page linkable (`/pricing/#pricing-faq`), and it gives a section a name to refer to in conversation, so "section `demo-charts` needs this edit" beats describing a position on a page. Rules: kebab-case, named for what the section *is* rather than where it sits (`pricing-faq`, never `pricing-section-4`); prefixed with the page it belongs to, which both keeps ids unique and makes them self-describing out of context. Uniqueness must hold for the *rendered document*, not the source file — the landing page composes several `partials/*`, so those must not collide with each other or with `views/index.rs`, and anything rendered on every page (navbar, footer) needs an id that is safe everywhere. Treat an id as a public URL surface once it ships: renaming one breaks any link that points at it.
+
 - 2-space indentation (`rustfmt.toml`), consistent across all crates.
 - No `?`-based early return inside the Worker route closures in `dovecote/src/lib.rs` — use explicit `let Ok(x) = ... else { return ... }` so failures always produce a CORS-wrapped error `Response` rather than silently 500ing through the framework's generic error path.
 - Every response returned from the top-level router must call `.with_cors(&cors)`, where `cors` is that route's own `build_cors(&ctx.env, &req)` result (see `dovecote` architecture notes above) — there is no shared/global CORS instance to reference.
