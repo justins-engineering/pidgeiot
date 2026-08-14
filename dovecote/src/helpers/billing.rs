@@ -1,4 +1,4 @@
-use capsules::OrganizationBilling;
+use capsules::{BillingPlan, OrganizationBilling, SubscriptionStatus};
 use time::OffsetDateTime;
 use tokio_postgres::Client;
 use tokio_postgres::types::Type;
@@ -143,7 +143,22 @@ pub async fn apply_subscription(
   };
 
   let status = billing.status.as_str();
-  let plan = billing.plan.map(|plan| plan.as_str());
+
+  // A cancelled subscription stops conferring its tier. Stripe's final
+  // snapshot still lists the items it was billing, so the parsed plan is
+  // the paid one right up to the end -- carrying that through would leave
+  // a paid tier sitting beside a dead subscription, and anything that
+  // consults `plan` without first checking `subscription_status` would
+  // read it as entitlement. Cancellation is terminal, so the tier drops to
+  // free here rather than being left for every reader to compensate for.
+  // The recoverable non-entitled states are deliberately not included: a
+  // past-due or unpaid subscription can still come back, and forgetting
+  // which tier it was on would be worse than remembering.
+  let plan = if billing.status == SubscriptionStatus::Canceled {
+    Some(BillingPlan::Perch.as_str())
+  } else {
+    billing.plan.map(|plan| plan.as_str())
+  };
 
   let rows = client
     .query_typed(
