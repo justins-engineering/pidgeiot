@@ -30,6 +30,17 @@ pub use connector_badge::ConnectorBadge;
 mod stat_tiles;
 pub use stat_tiles::TelemetryStatTiles;
 
+mod gauge_strip;
+pub use gauge_strip::{GaugeReading, GaugeStrip};
+
+mod occupancy_grid;
+// Deliberately unwired: the fleet view that would feed it does not fetch
+// per-pigeon telemetry yet, and the public demo serves a single pigeon so
+// it cannot show this honestly. Exported and tested so the shape is settled
+// before anything depends on it -- not dead code to be tidied away.
+#[allow(unused_imports)]
+pub use occupancy_grid::{OccupancyCell, OccupancyGrid};
+
 mod telemetry_chart;
 pub use telemetry_chart::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 
