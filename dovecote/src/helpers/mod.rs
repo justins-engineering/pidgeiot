@@ -117,6 +117,7 @@ pub use alerts::create_pigeon_alert;
 pub use alerts::delete_alert_definition;
 pub use alerts::evaluate_scheduled_alerts;
 pub use alerts::is_alert_owner;
+pub use alerts::list_demo_pigeon_alerts;
 pub use alerts::list_flock_alert_state;
 pub use alerts::list_flock_alerts;
 pub use alerts::list_pigeon_alert_state;

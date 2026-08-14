@@ -1125,7 +1125,7 @@ There is no per-IP rate limiting in-route (none exists anywhere in dovecote — 
 
 ## Public Demo API
 
-Two routes, both **read-only** and **unauthenticated** — no Kratos session, no device bearer
+Three routes, all **read-only** and **unauthenticated** — no Kratos session, no device bearer
 token, no `X-User-Id`, nothing. They back `fancier`'s public `/demo` page (a live, no-signup
 preview of the platform) and exist for that page alone: no shadow, no logs, no listing route, no
 write path of any kind is reachable here.
@@ -1158,6 +1158,52 @@ Greptime-first/Postgres-fallback), just without the ACL probe.
 
 ```sh
 curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/history?key=temp_c"
+```
+
+### `GET /demo/pigeons/:pigeon_id/alerts`
+
+The alerts the platform is really enforcing on the demo pigeon, so the demo page can draw a
+threshold line from the rule itself rather than from a number written into the page.
+
+Unlike the two routes above, this one does **not** share the dashboard's response shape. The
+dashboard returns `capsules::AlertDefinition`, which carries `user_id` (the owner's account UUID)
+and `channel` (an `AlertChannel::Email` holding a real recipient address) — neither of which may
+appear on a route that answers anyone. This route returns `Vec<capsules::DemoAlert>`, a separate
+type holding only the six fields below, and `helpers/alerts.rs::list_demo_pigeon_alerts` never
+selects the excluded columns from Postgres in the first place.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | The alert's own name |
+| `severity` | `"Warning"` \| `"Critical"` | |
+| `status` | `"Ok"` \| `"Firing"` | Current state for this pigeon; `Ok` if never evaluated |
+| `key` | string \| null | Telemetry key the threshold watches |
+| `comparator` | `"Gt"` \| `"Gte"` \| `"Lt"` \| `"Lte"` \| `"Eq"` \| null | |
+| `value` | number \| null | The threshold itself |
+
+`key`, `comparator` and `value` are non-null only for an `AlertCondition::Threshold` — the one
+condition with a number a chart can draw a line at. Other conditions are still listed, with all
+three null, so the page can show that an alert exists without inventing a line for it.
+
+Only **pigeon-scoped, enabled** definitions appear. A flock-scoped alert is shared configuration
+that also governs pigeons which are not on the demo allowlist, and a disabled definition would
+draw a threshold nothing is actually checking.
+
+```sh
+curl -s https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/alerts
+```
+
+```json
+[
+  {
+    "name": "Greenhouse too warm",
+    "severity": "Warning",
+    "status": "Ok",
+    "key": "temp_c",
+    "comparator": "Gt",
+    "value": 30.0
+  }
+]
 ```
 
 ---

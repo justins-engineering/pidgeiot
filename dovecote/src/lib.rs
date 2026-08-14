@@ -6,15 +6,16 @@ use crate::helpers::{
   delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
   ensure_billing_tables, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn,
   get_organization, get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_demo_pigeon, list_flock_alert_state, list_flock_alerts,
-  list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
-  list_pigeon_alerts, list_user_organizations, load_org_roles, mark_webhook_event_processed,
-  mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
-  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
+  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
+  list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_roles,
+  mark_webhook_event_processed, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do,
+  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
+  rename_organization, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
+  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -1682,6 +1683,38 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         telemetry_history_response(page)?.with_cors(&cors)
       },
     )
+    // Lets the demo page draw its threshold line from the alert that is
+    // really enforcing it rather than from a number typed into the page.
+    //
+    // Answers with `DemoAlert`, never `AlertDefinition` -- see that type's
+    // doc comment and `list_demo_pigeon_alerts`. The definition carries a
+    // recipient email address and the owner's account UUID, and this route
+    // has no session to withhold them from.
+    .get_async("/demo/pigeons/:pigeon_id/alerts", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let Some(pigeon_id) = ctx.param("pigeon_id").cloned() else {
+        return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+      };
+      if !is_demo_pigeon(&ctx.env, &pigeon_id) {
+        return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+      }
+
+      // Alerts live only in Postgres, so unlike the demo telemetry route
+      // beside this one there is no DO to proxy to. Same allowlist-as-proof
+      // construction the demo history route uses.
+      let access = PigeonAccess::from_demo_allowlist(&pigeon_id);
+
+      get_db!(ctx.env, client, &cors);
+
+      let Ok(alerts) = list_demo_pigeon_alerts(&client, &access).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      Response::from_json(&alerts)?.with_cors(&cors)
+    })
     // --- Firmware Routes ---
     .post_async(
       "/flocks/:flock_id/firmware",

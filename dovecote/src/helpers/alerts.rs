@@ -3,7 +3,7 @@ use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
-  AlertScope, AlertState, AlertStatus, ConnectionStateKind, JsonString,
+  AlertScope, AlertState, AlertStatus, ConnectionStateKind, DemoAlert, JsonString,
 };
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -381,6 +381,66 @@ pub async fn list_flock_alert_state(
     })?;
 
   Ok(rows.iter().map(row_to_alert_state).collect())
+}
+
+/// Backs the public, unauthenticated `GET /demo/pigeons/:pigeon_id/alerts`.
+///
+/// The column list is deliberately not `ALERT_DEFINITION_COLUMNS`: this
+/// response goes to anyone who asks, so `user_id` (an account UUID) and
+/// `channel` (an `AlertChannel::Email` holding a real address) are never
+/// read out of the database on this path at all. Nothing between here and
+/// the response body holds a value it has to remember not to serialize.
+///
+/// Pigeon-scoped definitions only, though a flock-scoped alert can govern
+/// this pigeon too: a flock alert is shared configuration, so publishing it
+/// here would describe a rule covering pigeons that are not on the demo
+/// allowlist. Disabled definitions are excluded for a different reason —
+/// the demo's whole claim is that the platform is really enforcing the line
+/// on the chart, and a disabled alert is a threshold nothing checks.
+///
+/// The `LEFT JOIN` is what makes an alert that has never been evaluated
+/// report `Ok` rather than vanishing from the list.
+pub async fn list_demo_pigeon_alerts(
+  client: &Client,
+  access: &PigeonAccess,
+) -> Result<Vec<DemoAlert>> {
+  ensure_alert_tables(client).await?;
+
+  let pigeon_id = access.pigeon_id();
+  let rows = client
+    .query_typed(
+      "SELECT d.name, d.condition::text AS condition, d.severity,
+              COALESCE(s.status, 'ok') AS status
+       FROM alert_definitions d
+       LEFT JOIN alert_state s
+         ON s.alert_definition_id = d.id AND s.pigeon_id = $1
+       WHERE d.pigeon_id = $1 AND d.enabled = true
+       ORDER BY d.created_at DESC;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Demo alert list error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(
+    rows
+      .iter()
+      .map(|row| {
+        let condition_json: String = row.get("condition");
+        let severity: String = row.get("severity");
+        let status: String = row.get("status");
+
+        DemoAlert::project(
+          row.get("name"),
+          severity.parse().unwrap_or_default(),
+          status.parse().unwrap_or_default(),
+          &serde_json::from_str(&condition_json).unwrap_or_default(),
+        )
+      })
+      .collect(),
+  )
 }
 
 /// Backs `PUT /alerts/:alert_id` -- `COALESCE`/partial-update semantics,
