@@ -1032,6 +1032,148 @@ pub struct AlertState {
   pub last_notified_at: Option<OffsetDateTime>,
 }
 
+/// Everything the public demo page is allowed to know about an alert, and
+/// nothing else.
+///
+/// A separate struct rather than `AlertDefinition` with fields skipped:
+/// that type carries `user_id` (a real account UUID) and `channel` (an
+/// `AlertChannel::Email` holding a real address), and the demo route
+/// answers anyone who asks it, with no session. A `#[serde(skip)]` leaves
+/// those one careless edit away from being published; a struct that never
+/// holds them cannot publish them at all. Same reasoning as the connector
+/// token stripping the pigeon `GET` routes already do.
+///
+/// `key`/`comparator`/`value` are `Some` only for `AlertCondition::
+/// Threshold`, the one condition carrying a number a chart can draw a line
+/// at. Other conditions are still listed, with all three `None`, so the
+/// page can say an alert exists rather than inventing a line for it or
+/// pretending it isn't there.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct DemoAlert {
+  pub name: String,
+  pub severity: AlertSeverity,
+  pub status: AlertStatus,
+  pub key: Option<String>,
+  pub comparator: Option<Comparator>,
+  pub value: Option<f64>,
+}
+
+impl DemoAlert {
+  /// Takes the individual fields rather than an `AlertDefinition` so that
+  /// this function has no access to the ones that must not be published —
+  /// the restriction is in the signature, not in the author's memory.
+  pub fn project(
+    name: String,
+    severity: AlertSeverity,
+    status: AlertStatus,
+    condition: &AlertCondition,
+  ) -> Self {
+    let (key, comparator, value) = match condition {
+      AlertCondition::Threshold {
+        key,
+        comparator,
+        value,
+      } => (Some(key.clone()), Some(*comparator), Some(*value)),
+      _ => (None, None, None),
+    };
+
+    Self {
+      name,
+      severity,
+      status,
+      key,
+      comparator,
+      value,
+    }
+  }
+}
+
+#[cfg(test)]
+mod demo_alert_tests {
+  use super::*;
+
+  fn threshold() -> AlertCondition {
+    AlertCondition::Threshold {
+      key: "temp_c".into(),
+      comparator: Comparator::Gt,
+      value: 30.0,
+    }
+  }
+
+  #[test]
+  fn threshold_projects_the_numbers_a_chart_draws() {
+    let alert = DemoAlert::project(
+      "Too hot".into(),
+      AlertSeverity::Warning,
+      AlertStatus::Firing,
+      &threshold(),
+    );
+
+    assert_eq!(alert.key.as_deref(), Some("temp_c"));
+    assert_eq!(alert.comparator, Some(Comparator::Gt));
+    assert_eq!(alert.value, Some(30.0));
+    assert_eq!(alert.status, AlertStatus::Firing);
+  }
+
+  #[test]
+  fn conditions_with_no_drawable_number_are_still_listed() {
+    for condition in [
+      AlertCondition::MissingReport {
+        max_silence_secs: 600,
+      },
+      AlertCondition::DeviceState {
+        state: ConnectionStateKind::Offline,
+        min_duration_secs: None,
+      },
+      AlertCondition::RateOfChange {
+        key: "temp_c".into(),
+        max_delta: 5.0,
+        window_secs: None,
+      },
+    ] {
+      let alert = DemoAlert::project(
+        "Went quiet".into(),
+        AlertSeverity::Critical,
+        AlertStatus::Ok,
+        &condition,
+      );
+
+      assert_eq!(alert.name, "Went quiet");
+      assert!(alert.key.is_none(), "{condition:?} leaked a key");
+      assert!(alert.comparator.is_none(), "{condition:?} leaked an op");
+      assert!(alert.value.is_none(), "{condition:?} leaked a value");
+    }
+  }
+
+  /// A tripwire rather than a shape assertion. The route serving this type
+  /// is unauthenticated, so any field added here is published to whoever
+  /// asks; comparing the whole key set means a new field fails this test
+  /// and has to be justified here before it can ship.
+  #[test]
+  fn serialized_form_carries_no_account_or_recipient_identifiers() {
+    let json = serde_json::to_value(DemoAlert::project(
+      "Too hot".into(),
+      AlertSeverity::Warning,
+      AlertStatus::Firing,
+      &threshold(),
+    ))
+    .expect("DemoAlert serializes");
+
+    let mut keys: Vec<&str> = json
+      .as_object()
+      .expect("DemoAlert serializes to a JSON object")
+      .keys()
+      .map(String::as_str)
+      .collect();
+    keys.sort_unstable();
+
+    assert_eq!(
+      keys,
+      ["comparator", "key", "name", "severity", "status", "value"]
+    );
+  }
+}
+
 // --- Organizations & RBAC ---
 //
 // Shared-org access for teams (the PVTA departure-board case): individual
