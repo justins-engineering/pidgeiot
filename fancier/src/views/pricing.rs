@@ -116,8 +116,9 @@ pub fn PricingPage() -> Element {
             features: vec![
                 "10 devices".into(),
                 "300K pooled messages/mo".into(),
-                "7 days of history".into(),
+                "7 days in our history store".into(),
                 "1 seat · 1 alert".into(),
+                "Telemetry forwarding to your own store".into(),
             ],
             featured: true,
             cta: rsx! {
@@ -139,9 +140,8 @@ pub fn PricingPage() -> Element {
             features: vec![
                 "50 devices".into(),
                 "1.5M pooled messages/mo".into(),
-                "90 days of history".into(),
+                "30 days in our history store".into(),
                 "3 seats · 10 alerts · 1 org".into(),
-                "Telemetry forwarding to your own store".into(),
             ],
             featured: false,
             cta: rsx! {
@@ -159,7 +159,7 @@ pub fn PricingPage() -> Element {
             features: vec![
                 "250 devices".into(),
                 "7.5M pooled messages/mo".into(),
-                "180 days of history".into(),
+                "90 days in our history store".into(),
                 "Unlimited seats, orgs and alerts".into(),
                 "Priority email support".into(),
             ],
@@ -179,7 +179,7 @@ pub fn PricingPage() -> Element {
             features: vec![
                 "1,500 devices".into(),
                 "45M pooled messages/mo".into(),
-                "12 months of history".into(),
+                "13 months in our history store".into(),
                 "Unlimited seats, orgs and alerts".into(),
                 "SSO · priority support with SLA".into(),
             ],
@@ -214,6 +214,14 @@ pub fn PricingPage() -> Element {
             a { class: "btn btn-outline font-bold", href: "mailto:code@jes.contact", "Talk to us" }
           }
         }
+
+        // Exclusive, which is the US convention and the one every comparable
+        // platform follows. Saying so is the cheap half: an inclusive figure
+        // cannot be computed for a reader whose VAT rate we do not know, and
+        // silence is what leaves someone assuming the number is final.
+        p { class: "mt-6 text-sm text-base-content/60",
+          "Prices in USD, exclusive of any applicable sales tax or VAT."
+        }
       }
     }
 
@@ -236,6 +244,12 @@ pub fn PricingPage() -> Element {
           value: "Idle devices",
           note: "",
           body: "You're charged for devices that connected at least once in the month. The 400 units sitting in a warehouse are free.",
+        }
+        NeverCard {
+          label: "No limit",
+          value: "Your own store",
+          note: "",
+          body: "Retention applies to history we keep for you. Point a pigeon's telemetry endpoint at your own database and it goes straight there instead — for as long as you keep it, at whatever resolution you like.",
         }
       }
     }
@@ -300,6 +314,10 @@ pub fn PricingPage() -> Element {
           Answer {
             question: "What happens if I go over?",
             body: "Nothing is billed in beta, and nothing is metered yet either. When paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts will pause ingestion instead, warned well before the cap — no surprise invoice, ever.",
+          }
+          Answer {
+            question: "How long do you keep my data?",
+            body: "As long as your tier's retention says — 7 days on the free tier, up to 13 months on Scale. Thirteen rather than twelve on purpose: comparing this month to the same month last year needs both of them, and a twelve-month window is one month short of that. Those limits are on the history we store for you. Telemetry forwarded to your own store has no limit from us at all, because we never hold a copy of it.",
           }
           Answer {
             question: "Is anything locked behind a tier?",
