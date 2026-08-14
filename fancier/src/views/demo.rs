@@ -10,10 +10,12 @@
 // for an anonymous visitor to configure.
 use crate::Route;
 use crate::api::demo;
-use crate::components::{ChartKind, ChartSeries, TelemetryChart};
+use crate::components::{
+  ChartKind, ChartReference, ChartSeries, GaugeReading, GaugeStrip, TelemetryChart,
+};
 use crate::config::DEMO_PIGEON_ID;
 use crate::helpers::sleep_ms;
-use capsules::{TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{AlertStatus, Comparator, DemoAlert, TelemetryHistoryPoint, TelemetryLatest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdPlay, LdRadio};
@@ -80,6 +82,62 @@ const DEMO_READINGS: [(&str, &str, &str, ChartKind, &str); 5] = [
     "A counter holds its value between reports rather than easing toward the next one, and step draws exactly that. It also refuses to invent the descent a line would draw across a reboot, through seconds the counter never counted.",
   ),
 ];
+
+/// (key, label, unit, min, max) for the readings whose range is known from
+/// the domain rather than from the data. Only these get a bar: a gauge for
+/// `temp_c` would need bounds nobody declared, and `light_lux` has no upper
+/// limit at all, so a full bar would mean whatever the author guessed.
+const GAUGE_RANGES: [(&str, &str, &str, f64, f64); 2] = [
+  ("humidity_pct", "Humidity", "%", 0.0, 100.0),
+  ("soil_moisture_pct", "Soil Moisture", "%", 0.0, 100.0),
+];
+
+fn gauge_readings(latest: &[TelemetryLatest]) -> Vec<GaugeReading> {
+  GAUGE_RANGES
+    .iter()
+    .filter_map(|(key, label, unit, min, max)| {
+      let value = latest_value(latest, key)?.trim().parse::<f64>().ok()?;
+      Some(GaugeReading {
+        key: (*key).to_string(),
+        label: (*label).to_string(),
+        unit: (*unit).to_string(),
+        value,
+        min: *min,
+        max: *max,
+      })
+    })
+    .collect()
+}
+
+/// The alerts governing one key, as chart references. A threshold alert is
+/// a line the chart can draw; every other condition kind (device state,
+/// missing report, rate of change) is a real rule with no single value on
+/// this axis, so it contributes nothing here rather than being forced into
+/// a number it does not have.
+///
+/// The label carries the comparator rather than just the value, because a
+/// bare line at 30 does not say which side of it is the problem.
+fn references_for_key(alerts: &[DemoAlert], key: &str) -> Vec<ChartReference> {
+  alerts
+    .iter()
+    .filter(|a| a.key.as_deref() == Some(key))
+    .filter_map(|a| {
+      let value = a.value?;
+      let comparator = match a.comparator? {
+        Comparator::Gt => ">",
+        Comparator::Gte => "≥",
+        Comparator::Lt => "<",
+        Comparator::Lte => "≤",
+        Comparator::Eq => "=",
+      };
+      Some(ChartReference {
+        value,
+        label: format!("{} ({comparator} {value})", a.name),
+        firing: a.status == AlertStatus::Firing,
+      })
+    })
+    .collect()
+}
 
 fn now() -> time::OffsetDateTime {
   time::OffsetDateTime::now_utc()
@@ -191,6 +249,7 @@ pub fn DemoPage() -> Element {
 fn DemoContent() -> Element {
   let mut latest: Signal<Vec<TelemetryLatest>> = use_signal(Vec::new);
   let mut history: Signal<Vec<TelemetryHistoryPoint>> = use_signal(Vec::new);
+  let mut alerts: Signal<Vec<DemoAlert>> = use_signal(Vec::new);
   let mut loaded_once = use_signal(|| false);
 
   // Fetches immediately on mount, then every REFRESH_MS thereafter, for as
@@ -210,6 +269,12 @@ fn DemoContent() -> Element {
       if let Some(h) = demo::get_history(since, until).await {
         history.set(h);
       }
+      // Refetched on the same cadence as the readings: an alert's firing
+      // state changes with them, so a stale one would draw a line claiming
+      // a status that no longer holds.
+      if let Some(a) = demo::get_alerts().await {
+        alerts.set(a);
+      }
       loaded_once.set(true);
 
       sleep_ms(REFRESH_MS).await;
@@ -219,7 +284,7 @@ fn DemoContent() -> Element {
   let latest_vals = latest();
 
   rsx! {
-    section { class: "pb-16",
+    section { class: "py-16",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         // grid-flow-row is load-bearing: DaisyUI's `stats` sets
         // grid-auto-flow: column, which overrides the explicit column count
@@ -232,6 +297,18 @@ fn DemoContent() -> Element {
               div { class: "stat-value text-primary text-2xl",
                 {strip_value(&latest_vals, key, unit)}
               }
+            }
+          }
+        }
+
+        // Beside the strip rather than instead of it: the strip answers
+        // "what is it now", the gauge answers "where is that in its range".
+        // Only the readings whose bounds are known from the domain appear.
+        if !gauge_readings(&latest_vals).is_empty() {
+          div { class: "mt-6",
+            GaugeStrip {
+              readings: gauge_readings(&latest_vals),
+              caption: "Only readings with a range the domain defines get a bar. Temperature and light have no declared bounds, so drawing one would mean inventing the scale.",
             }
           }
         }
@@ -271,6 +348,7 @@ fn DemoContent() -> Element {
               TelemetryChart {
                 series: vec![series_for_key(key, &history())],
                 kind,
+                references: references_for_key(&alerts(), key),
               }
             } else {
               div { class: "w-full flex flex-col gap-2",

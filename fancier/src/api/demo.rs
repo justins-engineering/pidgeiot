@@ -13,7 +13,7 @@
 // gate, dovecote's src/helpers/demo.rs).
 use crate::api::fetch_json;
 use crate::config::DEMO_PIGEON_ID;
-use capsules::{TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{DemoAlert, TelemetryHistoryPoint, TelemetryLatest};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use wasm_bindgen_futures::JsFuture;
@@ -62,6 +62,27 @@ pub async fn get_history(
   path.push_str(&rfc3339_query_value(since));
   path.push_str("&until=");
   path.push_str(&rfc3339_query_value(until));
+
+  let response = fetch_json("GET", &path, None).await?;
+  let json = JsFuture::from(response.json().ok()?).await.ok()?;
+  serde_wasm_bindgen::from_value(json).ok()
+}
+
+/// GET /demo/pigeons/:id/alerts -- the alert definitions governing the demo
+/// pigeon, as `DemoAlert`: a deliberately narrow projection that never
+/// carries the owning user's id or the notification channel (which holds an
+/// email address). Pigeon-scoped and enabled-only, so what comes back is
+/// exactly the set of rules actually being evaluated against the readings
+/// on the page.
+pub async fn get_alerts() -> Option<Vec<DemoAlert>> {
+  if DEMO_PIGEON_ID.is_empty() {
+    return None;
+  }
+
+  let mut path = String::with_capacity(64);
+  path.push_str("/demo/pigeons/");
+  path.push_str(DEMO_PIGEON_ID);
+  path.push_str("/alerts");
 
   let response = fetch_json("GET", &path, None).await?;
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
