@@ -90,7 +90,7 @@ fn Answer(question: String, body: String) -> Element {
 #[component]
 pub fn PricingPage() -> Element {
   rsx! {
-    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+    section { id: "pricing-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4", "Pricing" }
         h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
@@ -102,7 +102,7 @@ pub fn PricingPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "pricing-tiers", class: "px-4 md:px-10 py-14",
       div { class: "max-w-6xl mx-auto",
         div { class: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
 
@@ -224,7 +224,7 @@ pub fn PricingPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 pb-14",
+    section { id: "pricing-never-billed", class: "px-4 md:px-10 pb-14",
       div { class: "max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
         NeverCard {
           label: "Not billing yet",
@@ -253,7 +253,7 @@ pub fn PricingPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14 bg-base-200 border-y border-base-300",
+    section { id: "pricing-example", class: "px-4 md:px-10 py-14 bg-base-200 border-y border-base-300",
       div { class: "max-w-4xl mx-auto",
         h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight",
           "1,000 devices, reporting every five minutes"
@@ -302,7 +302,7 @@ pub fn PricingPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "pricing-faq", class: "px-4 md:px-10 py-14",
       div { class: "max-w-4xl mx-auto",
         h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight mb-8", "Straight answers" }
         div { class: "flex flex-col gap-8",
@@ -338,7 +338,7 @@ pub fn PricingPage() -> Element {
       }
     }
 
-    section { class: "px-4 md:px-10 pb-24",
+    section { id: "pricing-cta", class: "px-4 md:px-10 pb-24",
       div { class: "max-w-4xl mx-auto rounded-3xl border border-neutral-content bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 p-10 text-center shadow-2xl",
         h2 { class: "text-2xl md:text-3xl font-bold mb-3", "Everything's free while we're in beta." }
         p { class: "text-lg mb-8 leading-relaxed",

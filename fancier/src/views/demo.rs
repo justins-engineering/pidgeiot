@@ -198,7 +198,7 @@ pub fn DemoPage() -> Element {
     // push, an alert to trip and a log to read. Only two demo routes exist,
     // both GET and both telemetry, against a single pigeon -- so the copy
     // promises exactly what the routes deliver and nothing more.
-    section { class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
+    section { id: "demo-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4",
           "Live demo"
@@ -221,7 +221,7 @@ pub fn DemoPage() -> Element {
     }
 
     if DEMO_PIGEON_ID.is_empty() {
-      section { class: "px-4 md:px-10 pb-14",
+      section { id: "demo-unconfigured", class: "px-4 md:px-10 pb-14",
         div { class: "max-w-6xl mx-auto",
           p { class: "text-base-content/60 italic",
             "The live demo isn't configured in this environment."
@@ -232,7 +232,7 @@ pub fn DemoPage() -> Element {
       DemoContent {}
     }
 
-    section { class: "px-4 md:px-10 pb-24",
+    section { id: "demo-cta", class: "px-4 md:px-10 pb-24",
       div { class: "max-w-4xl mx-auto text-center",
         Link {
           class: "btn btn-lg btn-glow font-bold",
@@ -284,7 +284,7 @@ fn DemoContent() -> Element {
   let latest_vals = latest();
 
   rsx! {
-    section { class: "px-4 md:px-10 py-14",
+    section { id: "demo-readings", class: "px-4 md:px-10 py-14",
       div { class: "max-w-6xl mx-auto",
         // grid-flow-row is load-bearing: DaisyUI's `stats` sets
         // grid-auto-flow: column, which overrides the explicit column count
@@ -328,7 +328,7 @@ fn DemoContent() -> Element {
     // prerender pass emits the full page layout in the static HTML. The
     // skeleton mirrors TelemetryChart's real footprint (a ~24px toolbar row
     // + the 220px CANVAS_H svg) so the swap-in is not itself a shift.
-    section { class: "px-4 md:px-10 pb-14",
+    section { id: "demo-charts", class: "px-4 md:px-10 pb-14",
       div { class: "max-w-6xl mx-auto flex flex-col gap-6",
         for (key , title , _unit , kind , why) in DEMO_READINGS {
           div {
