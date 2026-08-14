@@ -156,7 +156,11 @@ fn DemoContent() -> Element {
   rsx! {
     section { class: "pb-16",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
-        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5",
+        // grid-flow-row is load-bearing: DaisyUI's `stats` sets
+        // grid-auto-flow: column, which overrides the explicit column count
+        // and packs every reading into one row -- at 390px the labels landed
+        // on top of each other rather than wrapping.
+        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-2 sm:grid-cols-3 lg:grid-cols-5",
           for (key , label , unit) in CHART_KEYS {
             div { key: "{key}", class: "stat",
               div { class: "stat-title", "{label}" }

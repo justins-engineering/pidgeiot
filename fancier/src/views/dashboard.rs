@@ -209,7 +209,11 @@ pub fn Dashboard() -> Element {
           }
         }
 
-        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-cols-2 lg:grid-cols-4 mb-8",
+        // grid-flow-row is load-bearing: DaisyUI's `stats` sets
+        // grid-auto-flow: column, which wins over the explicit column count
+        // and packs every tile into a single row, overlapping their labels
+        // at narrow widths.
+        div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-2 lg:grid-cols-4 mb-8",
           div { class: "stat",
             div { class: "stat-figure text-secondary",
               Icon { width: 28, height: 28, icon: LdLayoutGrid, title: "Flocks" }
