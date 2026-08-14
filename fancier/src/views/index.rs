@@ -328,15 +328,9 @@ fn DashboardMock() -> Element {
                   }
                 }
 
-                // This badge is the dashboard's, not a marketing judgement:
-                // it comes off here the moment it comes off there, or the
-                // picture starts hedging about something the product no
-                // longer hedges about. See the Alerts card in
-                // `views::dashboard` for what it is waiting on.
                 div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
                   div { class: "flex items-center justify-between gap-3 mb-3",
                     h4 { class: "text-lg font-bold", "Alerts" }
-                    MaturityBadge { maturity: Maturity::Beta }
                   }
                   div { class: "flex flex-col gap-2",
                     div { class: "flex items-center justify-between gap-3 text-sm",

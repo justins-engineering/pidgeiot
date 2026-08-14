@@ -3,7 +3,7 @@
 // list) stays reachable at its own `/flocks` route and via the links this
 // page renders; this view is a summary layer on top of it, not a
 // replacement.
-use crate::components::{ConnectorBadge, Maturity, MaturityBadge};
+use crate::components::ConnectorBadge;
 use crate::helpers::connection_state::{self, ConnectionState, ConnectionStateStyle};
 use crate::{Route, api};
 use capsules::{AlertStatus, Flock, Pigeon};
@@ -377,25 +377,22 @@ pub fn Dashboard() -> Element {
               }
             }
 
-            // `Beta`, not badge-free: every condition type is evaluated --
-            // Threshold and RateOfChange at ingest, DeviceState and
-            // MissingReport on dovecote's cron sweep -- but no alert has yet
-            // fired and been delivered in production, so the last mile
-            // (resolving the flock's `owner_email`, then actually sending)
-            // is unobserved rather than known-good. It is worth a badge
-            // because that mile fails silently when it fails: mail goes out
-            // best-effort and logged, so an unroutable alert looks exactly
-            // like a quiet fleet. Drop the badge once one has arrived.
+            // No maturity badge: every condition type is evaluated (Threshold
+            // and RateOfChange at ingest, DeviceState and MissingReport on
+            // dovecote's cron sweep), and the delivery path has been observed
+            // end to end in production -- a MissingReport alert fired from
+            // the sweep and its mail arrived, through `to: None`, which is
+            // the `flocks.owner_email` branch rather than an override.
             //
-            // Separately, and true regardless of the above: this count is
-            // currently-firing, flock-scoped alerts only -- there's no
-            // "every alert this user owns" route to total up per-pigeon
-            // alert state too without an expensive per-pigeon fan-out (see
-            // the `flock_firing_alert_counts` comment above).
+            // What remains true, and is a scoping note rather than a maturity
+            // one: this count is currently-firing, flock-scoped alerts only
+            // -- there's no "every alert this user owns" route to total up
+            // per-pigeon alert state too without an expensive per-pigeon
+            // fan-out (see the `flock_firing_alert_counts` comment above).
+            // The card says so itself, which is where that belongs.
             div { class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-6",
               div { class: "flex items-center justify-between mb-3",
                 h2 { class: "text-lg font-bold", "Alerts" }
-                MaturityBadge { maturity: Maturity::Beta }
               }
               if !fleet_data_loaded() {
                 div { class: "flex justify-center py-6",
