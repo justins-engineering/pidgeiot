@@ -28,6 +28,9 @@ pub use billing::claim_webhook_event;
 pub use billing::ensure_billing_tables;
 pub use billing::mark_webhook_event_processed;
 
+mod usage;
+pub use usage::count_billable_message;
+
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;

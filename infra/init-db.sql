@@ -254,6 +254,28 @@ CREATE TABLE IF NOT EXISTS stripe_webhook_events (
   redelivery_count INTEGER NOT NULL DEFAULT 0
 );
 
+-- Billable-message usage aggregation -- one row per billing account per
+-- billing period. Our Postgres is the source of truth for usage; Stripe's
+-- meters are a reporting sink fed from these rows (dovecote's
+-- helpers/usage.rs). The account is either an organization (org-owned
+-- flocks) or a bare user (personal flocks -- no org, no subscription,
+-- always free tier). Period anchoring: the org's Stripe current_period
+-- bounds while a live subscription covers now(); calendar month otherwise.
+-- warned_at/paused_at are the free-tier fuse's once-per-period bookkeeping
+-- (80% warning email sent / allowance first crossed), claimed atomically so
+-- concurrent queue consumers can't double-send.
+CREATE TABLE IF NOT EXISTS billing_usage_periods (
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('org', 'user')),
+  owner_id UUID NOT NULL,
+  period_start TIMESTAMPTZ NOT NULL,
+  period_end TIMESTAMPTZ NOT NULL,
+  billable_messages BIGINT NOT NULL DEFAULT 0,
+  warned_at TIMESTAMPTZ,
+  paused_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_kind, owner_id, period_start)
+);
+
 CREATE TABLE IF NOT EXISTS organization_members (
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,

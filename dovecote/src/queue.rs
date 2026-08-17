@@ -6,7 +6,8 @@ use worker::{
 
 use crate::helpers::write_telemetry_default;
 use crate::helpers::{
-  build_line_protocol, check_telemetry_alerts, post_line_protocol, url_encode_component,
+  build_line_protocol, check_telemetry_alerts, count_billable_message, post_line_protocol,
+  url_encode_component,
 };
 use crate::objects::pigeons::{
   PreviousTelemetryValue, TelemetryEndpointLookup, TelemetryWriteResult,
@@ -343,6 +344,14 @@ async fn store_and_alert(
   previous_values: &std::collections::HashMap<String, PreviousTelemetryValue>,
   reported_at_ms: u64,
 ) {
+  // Billable-message tally -- one device report is one message, regardless
+  // of which store the report lands in below (our history OR a forwarding
+  // endpoint both cost the customer the same report). Counted here in the
+  // consumer, off the device path; internally best-effort, so a failed
+  // increment undercounts in the customer's favour rather than failing or
+  // delaying ingestion.
+  count_billable_message(env, pigeon_id).await;
+
   match telemetry_endpoint {
     Some(endpoint) => {
       if let Err(e) = forward_line_protocol(endpoint, pigeon_id, metrics, reported_at_ms).await {
