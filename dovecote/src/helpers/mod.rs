@@ -15,6 +15,7 @@ mod stripe_api;
 pub use stripe_api::StripeCheckoutSessionRow;
 pub use stripe_api::create_checkout_session;
 pub use stripe_api::create_customer;
+pub use stripe_api::create_portal_session;
 pub use stripe_api::fetch_subscription;
 pub use stripe_api::resolve_checkout_prices;
 pub use stripe_api::stripe_configured;

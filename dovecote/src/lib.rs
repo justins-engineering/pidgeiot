@@ -4,16 +4,16 @@ use crate::helpers::{
   attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
   change_member_role, check_perch_ingest_fuse, check_pigeon_authz, claim_webhook_event,
   constant_time_eq, create_checkout_session, create_customer, create_flock_alert, create_invite,
-  create_organization, create_pigeon_alert, create_user_flock, delete_alert_definition,
-  delete_organization_if_empty, delete_pigeon_pg_db, ensure_billing_tables,
-  ensure_billing_usage_tables, fetch_subscription, get_db_client, get_flock_with_pigeons,
-  get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
-  grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
-  is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts,
-  list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
-  list_pigeon_alerts, list_user_organizations, load_org_billing_overview, load_org_roles,
-  mark_webhook_event_processed, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do,
-  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  create_organization, create_pigeon_alert, create_portal_session, create_user_flock,
+  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
+  ensure_billing_tables, ensure_billing_usage_tables, fetch_subscription, get_db_client,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer, get_organization,
+  get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
+  is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
+  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
+  list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
+  load_org_roles, mark_webhook_event_processed, mint_invite_token, org_role_of,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
   rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
@@ -3530,6 +3530,82 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Ok(url) => url,
           Err(e) => {
             console_error!("Checkout session create failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        Response::from_json(&BillingSessionUrl { url })?.with_cors(&cors)
+      },
+    )
+    .post_async(
+      "/orgs/:org_id/billing/portal",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if !caller_role.is_some_and(|r| r.is_manager()) {
+          return Response::error("Forbidden: only owners/admins can manage billing", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let customer_id = match get_org_stripe_customer(&client, &org_id).await {
+          Ok(Some(Some(customer_id))) => customer_id,
+          // No Stripe customer yet: nothing for the portal to manage --
+          // checkout is the flow that creates one.
+          Ok(Some(None)) => {
+            return Response::error(
+              "Conflict: this organization has no billing account yet",
+              409,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          Ok(None) => {
+            return Response::error("Not Found: no such organization", 404)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          Err(_) => {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let root_url = ctx
+          .env
+          .var("ROOT_URL")
+          .map(|v| v.to_string())
+          .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
+        let return_url = format!("{root_url}/orgs/{org_id}");
+
+        let url = match create_portal_session(&ctx.env, &customer_id, &return_url).await {
+          Ok(url) => url,
+          Err(e) => {
+            console_error!("Portal session create failed for org {org_id}: {e}");
             return Response::error("Bad Gateway: billing provider unavailable", 502)
               .unwrap()
               .with_cors(&cors);

@@ -403,6 +403,29 @@ pub async fn create_checkout_session(
     .ok_or_else(|| StripeError::transport("checkout session created but carried no redirect URL"))
 }
 
+#[derive(Deserialize)]
+struct StripePortalSession {
+  url: String,
+}
+
+/// Mints a hosted Billing Portal session for an existing customer -- plan
+/// changes, card updates and cancellation all happen on Stripe's page, so
+/// none of those flows need building here.
+pub async fn create_portal_session(
+  env: &Env,
+  customer_id: &str,
+  return_url: &str,
+) -> Result<String, StripeError> {
+  let session: StripePortalSession = stripe_post(
+    env,
+    "/v1/billing_portal/sessions",
+    &[("customer", customer_id), ("return_url", return_url)],
+    None,
+  )
+  .await?;
+  Ok(session.url)
+}
+
 /// The slice of a `checkout.session.completed` webhook object the handler
 /// needs: who paid (customer), what it bought (subscription), and which
 /// org started the session.

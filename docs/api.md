@@ -277,6 +277,8 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Org-owned flocks: manage (create pigeons, upload firmware, create alerts, be a transfer target) | yes | yes | no |
 | Org-shared pigeons: member-level routes (read, shadow get/put, telemetry, logs) | yes | yes | yes |
 | Org-shared pigeons: owner-level routes (delete, token refresh, ACL changes, shell) | yes | yes | no |
+| View billing overview (`GET /orgs/:id/billing`) | yes | yes | yes |
+| Manage billing (`POST /orgs/:id/billing/checkout`, `POST /orgs/:id/billing/portal`) | yes | yes | no |
 
 Last-owner protection: an org must always retain at least one `owner` — demoting or removing
 the only owner is refused with `409`, regardless of who asks.
@@ -396,6 +398,13 @@ request time by `lookup_key` (never pinned ids): the licensed tier, the pooled
 `message-overage` meter price, and that tier's own `device-overage-<tier>` meter price.
 Creates (and remembers) the org's Stripe customer on first use. `502` when Stripe itself is
 unreachable or the catalog is missing a price.
+
+#### `POST /orgs/:org_id/billing/portal` — org: manage
+
+Mints a Stripe Billing Portal session for the org's existing customer and returns
+`capsules::BillingSessionUrl` (`{ url }`) — plan changes, card updates, invoice history and
+cancellation all happen on Stripe's hosted page. `409` if the org has no billing account yet
+(checkout is the flow that creates one); `502` when Stripe is unreachable.
 
 #### `POST /billing/webhook` — Stripe signature required
 
