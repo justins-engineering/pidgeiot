@@ -1689,11 +1689,27 @@ pub struct StripeSubscriptionRow {
 }
 
 impl StripeSubscriptionRow {
+  /// The item selling the licensed tier -- the one whose price
+  /// `lookup_key` names a `BillingPlan`. A checkout-created subscription
+  /// also carries metered overage items (message overage, device overage),
+  /// and Stripe guarantees nothing about item order, so "the first item"
+  /// can be a meter: tier resolution has to select by lookup_key, never by
+  /// position.
+  fn licensed_item(&self) -> Option<&StripeSubscriptionItemRow> {
+    self.items.data.iter().find(|item| {
+      item
+        .price
+        .lookup_key
+        .as_deref()
+        .is_some_and(|key| key.parse::<BillingPlan>().is_ok())
+    })
+  }
+
   /// Which tier this subscription sells, from `metadata.plan` first and the
-  /// first item's price `lookup_key` second. `None` means the subscription
-  /// named neither, in which case the caller must leave the org's stored
-  /// plan alone -- guessing would silently downgrade a paying customer on a
-  /// provisioning typo.
+  /// licensed item's price `lookup_key` second. `None` means the
+  /// subscription named neither, in which case the caller must leave the
+  /// org's stored plan alone -- guessing would silently downgrade a paying
+  /// customer on a provisioning typo.
   pub fn plan(&self) -> Option<BillingPlan> {
     self
       .metadata
@@ -1701,37 +1717,46 @@ impl StripeSubscriptionRow {
       .and_then(|raw| raw.parse().ok())
       .or_else(|| {
         self
-          .items
-          .data
-          .first()
+          .licensed_item()
           .and_then(|item| item.price.lookup_key.as_deref())
           .and_then(|key| key.parse().ok())
       })
   }
 
-  /// When the current billing period started, per `plan`'s same
-  /// item-first-then-top-level convention: Stripe API version
+  /// When the current billing period started. Stripe API version
   /// 2026-07-29.dahlia stopped sending this on the subscription itself and
-  /// moved it onto the first item, but an account still pinned to an older
-  /// API version sends it only at the top level, so that's the fallback.
+  /// moved it onto the items, so this reads the licensed item first (the
+  /// item this subscription's tier actually rides on), then any item that
+  /// carries the field, then the subscription's own top level -- the only
+  /// place an account still pinned to a pre-dahlia API version sends it.
   /// `items.data` being empty (or lacking the field) falls through the same
   /// way, rather than panicking.
   pub fn period_start(&self) -> Option<i64> {
     self
-      .items
-      .data
-      .first()
+      .licensed_item()
       .and_then(|item| item.current_period_start)
+      .or_else(|| {
+        self
+          .items
+          .data
+          .iter()
+          .find_map(|item| item.current_period_start)
+      })
       .or(self.current_period_start)
   }
 
   /// See `period_start`.
   pub fn period_end(&self) -> Option<i64> {
     self
-      .items
-      .data
-      .first()
+      .licensed_item()
       .and_then(|item| item.current_period_end)
+      .or_else(|| {
+        self
+          .items
+          .data
+          .iter()
+          .find_map(|item| item.current_period_end)
+      })
       .or(self.current_period_end)
   }
 }
@@ -1852,6 +1877,50 @@ mod billing_tests {
       subscription_json(r#","items":{"data":[{"price":{"id":"price_1"}}]}"#).plan(),
       None
     );
+    // Only meters, no licensed tier item: still a refusal to guess.
+    assert_eq!(
+      subscription_json(
+        r#","items":{"data":[
+          {"price":{"id":"price_1","lookup_key":"message-overage"}},
+          {"price":{"id":"price_2","lookup_key":"device-overage-growth"}}]}"#
+      )
+      .plan(),
+      None
+    );
+  }
+
+  #[test]
+  fn plan_and_period_come_from_the_licensed_item_not_slot_zero() {
+    // Checkout puts the metered overage prices on the same subscription,
+    // and Stripe guarantees nothing about item order -- a meter in slot 0
+    // must not decide the tier or the billing period.
+    let row = subscription_json(
+      r#","items":{"data":[
+        {"price":{"id":"price_m","lookup_key":"message-overage"},
+         "current_period_start":1,"current_period_end":2},
+        {"price":{"id":"price_g","lookup_key":"growth"},
+         "current_period_start":1754956800,"current_period_end":1757635200},
+        {"price":{"id":"price_d","lookup_key":"device-overage-growth"}}]}"#,
+    );
+    assert_eq!(row.plan(), Some(BillingPlan::Growth));
+    assert_eq!(row.period_start(), Some(1754956800));
+    assert_eq!(row.period_end(), Some(1757635200));
+  }
+
+  #[test]
+  fn period_without_a_licensed_item_falls_back_to_any_item_carrying_it() {
+    // No tier item at all (metadata named the plan instead): the period is
+    // still better read from an item than dropped, since only pre-dahlia
+    // accounts send it at the top level.
+    let row = subscription_json(
+      r#","metadata":{"plan":"scale"},
+         "items":{"data":[
+        {"price":{"id":"price_m","lookup_key":"message-overage"},
+         "current_period_start":1754956800,"current_period_end":1757635200}]}"#,
+    );
+    assert_eq!(row.plan(), Some(BillingPlan::Scale));
+    assert_eq!(row.period_start(), Some(1754956800));
+    assert_eq!(row.period_end(), Some(1757635200));
   }
 
   #[test]
