@@ -55,7 +55,7 @@ pub fn build_http_endpoint(env: &Env, do_id: &str) -> String {
 /// Host minted into `coaps://` endpoints. `COAP_DEVICE_HOST`
 /// ([vars]/[env.*.vars], wrangler.toml) when set and non-empty -- the CoAP
 /// terminator (`loft`) is a separate deployment from the HTTP edge, on its
-/// own DNS-only hostname (docs/infra/coap-terminator.md) -- with the
+/// own DNS-only hostname (runbook in the loft repo) -- with the
 /// pre-terminator fallback to `DEVICE_API_HOST` for any env that leaves it
 /// empty (e.g. staging until a staging terminator exists).
 fn coap_device_host(env: &Env) -> String {

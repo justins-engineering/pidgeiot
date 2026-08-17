@@ -393,8 +393,8 @@ device endpoint URL and credential).
 > RFC 7252 `coaps://` (DTLS/UDP) form because the device validates the scheme against its
 > compiled transport and fails loudly on a mismatch — a TLS/TCP device build uses the same
 > authority and substitutes the `coaps+tcp://` scheme. See
-> [CoAP device surface](#coap-device-surface-via-the-loft-terminator) below and
-> `docs/infra/coap-terminator.md` for deployment. `board` (task #20, phase 1) is optional — the pigeon's own
+> [CoAP device surface](#coap-device-surface-via-the-loft-terminator) below, and the `loft`
+> repo's `docs/infra/coap-terminator.md` for deployment. `board` (task #20, phase 1) is optional — the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
 never be assigned firmware over the shadow route (see [Shadow](#shadow) above's fail-closed
 board-compatibility check) until it's tagged, either here or via a later `PUT`.
@@ -1538,9 +1538,9 @@ rely on the `shadow_update` push for the shadow side.
 
 ## CoAP device surface (via the `loft` terminator)
 
-The five HTTP device routes above are also reachable over CoAP, terminated by `loft` (the
-workspace's native CoAP terminator crate) at `coap.pidgeiot.com:5684` — **not** by the edge
-Worker. Two transports, same port, same resources:
+The five HTTP device routes above are also reachable over CoAP, terminated by `loft` (a
+first-party Rust service in its own repo, `github.com/justins-engineering/loft`) at
+`coap.pidgeiot.com:5684` — **not** by the edge Worker. Two transports, same port, same resources:
 
 | Transport | Scheme | Notes |
 |---|---|---|
@@ -1609,7 +1609,7 @@ coap-client -m post -u <pigeon_id> -k '<tls_psk_secret>' \
 a PSM/NAT'd cellular device whose NAT mapping dies during sleep can keep its DTLS association
 across an address/port rebind instead of paying a fresh handshake (~2 RTT with these PSK
 suites) on every wake. Devices that offer no CID negotiate a plain session and work unchanged.
-The terminator's own repository documents the deployment posture.
+The `loft` repo's `docs/infra/coap-terminator.md` documents the deployment posture.
 
 ---
 

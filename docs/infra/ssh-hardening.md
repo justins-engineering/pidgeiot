@@ -1,8 +1,8 @@
 # SSH hardening: fail2ban replacing the connection-count throttle
 
-The production VPS's `INPUT` chain (documented in
-[`coap-terminator.md`](./coap-terminator.md#firewall) as the shared host
-baseline) throttles SSH with the kernel's `xt_recent` module: six new
+The production VPS's `INPUT` chain (documented as the shared host baseline
+in the `loft` repo's `docs/infra/coap-terminator.md`, "Firewall" — that
+service shares this box) throttles SSH with the kernel's `xt_recent` module: six new
 connections to port 22 from one source inside sixty seconds gets dropped.
 That counts TCP *connections*, not authentication *failures* — a burst of
 several short-lived, legitimate SSH sessions (a few automation invocations

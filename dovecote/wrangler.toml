@@ -57,8 +57,8 @@ head_sampling_rate = 0
 # Set via `wrangler secret put <NAME> --env <env>`.
 # COAP_DEVICE_HOST (all three [vars]/[env.*.vars] blocks) -- the host
 # minted into a Coap-connector pigeon's `coaps://` endpoint
-# (objects/pigeons.rs::coap_device_host). The CoAP terminator (`loft`,
-# docs/infra/coap-terminator.md) is a separate deployment from this
+# (objects/pigeons.rs::coap_device_host). The CoAP terminator (`loft`, its
+# own repo, runbook at docs/infra/coap-terminator.md there) is a separate deployment from this
 # Worker: coap.pidgeiot.com must be a DNS-only (grey-cloud) record --
 # Cloudflare's proxy carries neither raw UDP nor port 5684. Empty/unset
 # falls back to DEVICE_API_HOST (the pre-terminator behavior; staging
@@ -103,8 +103,8 @@ GREPTIMEDB_ENDPOINT = ""
 # loft's egress on the VPS -- the same box coap.pidgeiot.com's A record
 # points at, which has no IPv6 egress, so this single v4 address is the
 # only one Cloudflare can ever see the terminator arrive from. Must move
-# with the VPS (docs/infra/coap-terminator.md, "Internal PSK route
-# allowlist").
+# with the VPS (the loft repo's docs/infra/coap-terminator.md, "Internal
+# PSK route allowlist").
 COAP_SERVICE_ALLOWED_IPS = "15.204.254.3"
 
 [[hyperdrive]]
@@ -243,7 +243,8 @@ crons = ["*/5 * * * *"]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
 ROOT_URL = "http://127.0.0.1:4455"
 DEVICE_API_HOST = "127.0.0.1:8787"
-# Local `cargo run -p loft` terminator (defaults to 0.0.0.0:5684; the coaps
+# Local terminator from the loft repo (`cargo run -p loft` there; defaults
+# to 0.0.0.0:5684, and the coaps
 # port 5684 is implied by the scheme, so no port suffix here).
 COAP_DEVICE_HOST = "127.0.0.1"
 # No demo pigeon in dev -- empty, not unset, matching the other per-env

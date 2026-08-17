@@ -738,8 +738,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .await?
         .with_cors(&cors)
     })
-    // Service-internal PSK resolution for the CoAP terminator (`loft`,
-    // docs/infra/coap-terminator.md). NOT a device or dashboard route: the
+    // Service-internal PSK resolution for the CoAP terminator (`loft`, its
+    // own repo). NOT a device or dashboard route: the
     // only legitimate caller is the terminator itself, gated by two
     // independent layers -- a source-address allowlist
     // (COAP_SERVICE_ALLOWED_IPS, the terminator's egress addresses) and
