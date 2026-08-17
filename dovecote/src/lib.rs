@@ -1,22 +1,22 @@
 use crate::helpers::{
-  PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent, TelemetryHistoryPage,
-  WebhookClaim, accept_invite, apply_subscription, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_pigeon_authz, claim_webhook_event, constant_time_eq,
-  create_flock_alert, create_invite, create_organization, create_pigeon_alert, create_user_flock,
-  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
-  ensure_billing_tables, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn,
-  get_organization, get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
-  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
-  list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_roles,
-  mark_webhook_event_processed, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do,
-  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
-  rename_organization, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
-  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do, verify_webhook_signature,
+  IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent,
+  TelemetryHistoryPage, WebhookClaim, accept_invite, apply_subscription, authenticate_browser,
+  backfill_owner_email, build_invite_url, change_member_role, check_perch_ingest_fuse,
+  check_pigeon_authz, claim_webhook_event, constant_time_eq, create_flock_alert, create_invite,
+  create_organization, create_pigeon_alert, create_user_flock, delete_alert_definition,
+  delete_organization_if_empty, delete_pigeon_pg_db, ensure_billing_tables, get_db_client,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
+  grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
+  is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts,
+  list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
+  list_pigeon_alerts, list_user_organizations, load_org_roles, mark_webhook_event_processed,
+  mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
+  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
+  verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -562,6 +562,24 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           verify_device_via_do(auth_header, &obj_id, "/device/telemetry/verify").await?;
         if verify_resp.status_code() >= 400 {
           return verify_resp.with_cors(&cors);
+        }
+
+        // Free-tier fuse, checked after auth so only a real device ever
+        // sees it: a free account past its monthly message allowance gets
+        // a 429 -- the pigeon library backs off and keeps unsent readings
+        // queued, so data is delayed rather than lost. Deliberately never
+        // 401 (that status is reserved for "session gone") and fail-open
+        // inside the check, so a lookup failure can't brick ingestion.
+        if matches!(
+          check_perch_ingest_fuse(&ctx.env, &pigeon_id).await,
+          IngestFuse::Pause
+        ) {
+          return Response::error(
+            "Too Many Requests: free tier message allowance exhausted for this billing period",
+            429,
+          )
+          .unwrap()
+          .with_cors(&cors);
         }
 
         // Pre-serialize the metrics map here: a HashMap round-tripped

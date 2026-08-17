@@ -336,6 +336,81 @@ async fn resolve_billing_recipient(
   }
 }
 
+/// The ingest-path fuse decision. `Pause` maps to a 429 at the route --
+/// deliberately NOT a 401 (a 401 anywhere is the dashboard's
+/// session-expired signal) and not a 403 (the device's token is valid;
+/// this is a quota, and 429 is the status retrying clients back off on).
+pub enum IngestFuse {
+  Allow,
+  Pause,
+}
+
+/// Whether a device report should be refused because its account is a
+/// free-tier one that has exhausted this month's message allowance. Paid,
+/// entitled tiers always pass -- their over-allowance usage bills as
+/// metered overage instead of stopping.
+///
+/// Fail-open on every error path (connection, missing tables, missing
+/// mirror row): an infrastructure blip must never brick ingestion for the
+/// fleet. The query's shape is constant so Hyperdrive's ~60s result cache
+/// absorbs the per-report cost; the same caching means the pause can
+/// engage up to a minute after the allowance is crossed, which is fine for
+/// a monthly quota.
+pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
+  let client = match get_db_client(env).await {
+    Ok(client) => client,
+    Err(e) => {
+      console_error!("Perch fuse check skipped for '{pigeon_id}' (failing open): {e}");
+      return IngestFuse::Allow;
+    }
+  };
+
+  // The usage join only needs the calendar-month period: an account is
+  // only pausable when it resolves to the free tier, and free-tier usage
+  // is always month-anchored (see record_billable_message).
+  let rows = match client
+    .query_typed(
+      "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+              u.billable_messages
+       FROM pigeons p
+       JOIN flocks f ON f.id = p.flock_id
+       LEFT JOIN organizations o ON o.id = f.org_id
+       LEFT JOIN billing_usage_periods u
+         ON u.owner_kind = CASE WHEN f.org_id IS NULL THEN 'user' ELSE 'org' END
+        AND u.owner_id = COALESCE(f.org_id, f.user_id)
+        AND u.period_start = date_trunc('month', now())
+       WHERE p.id = $1;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Perch fuse check failed for '{pigeon_id}' (failing open): {e}");
+      return IngestFuse::Allow;
+    }
+  };
+
+  // No Postgres mirror row: no account to meter against, so nothing to
+  // pause either -- consistent with the tally's own undercount direction.
+  let Some(row) = rows.first() else {
+    return IngestFuse::Allow;
+  };
+
+  let org_plan: Option<String> = row.get("org_plan");
+  let org_status: Option<String> = row.get("org_status");
+  if effective_plan(org_plan.as_deref(), org_status.as_deref()) != BillingPlan::Perch {
+    return IngestFuse::Allow;
+  }
+
+  let billable: Option<i64> = row.get("billable_messages");
+  if billable.unwrap_or(0) >= BillingPlan::Perch.included_messages() {
+    IngestFuse::Pause
+  } else {
+    IngestFuse::Allow
+  }
+}
+
 // --- Stripe meter reporting ---
 //
 // Our Postgres rows above are the source of truth for usage; Stripe's

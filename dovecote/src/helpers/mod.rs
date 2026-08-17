@@ -29,6 +29,8 @@ pub use billing::ensure_billing_tables;
 pub use billing::mark_webhook_event_processed;
 
 mod usage;
+pub use usage::IngestFuse;
+pub use usage::check_perch_ingest_fuse;
 pub use usage::count_billable_message;
 pub use usage::report_billing_meters;
 

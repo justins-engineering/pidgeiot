@@ -1335,6 +1335,13 @@ typed values; this matches the wire shape the `pigeon` Zephyr device library's
 `pigeon_set_shadow_param()`/`pigeon_shadow_flush()` calls produce. `400` if the body is empty
 or not a flat string map.
 
+**Free-tier allowance fuse.** On a free-tier account that has exhausted its monthly pooled
+message allowance, this route answers `429 Too Many Requests` (after the bearer token has been
+verified) for the rest of the billing period — the `pigeon` device library backs off and keeps
+unsent readings queued, so data is delayed rather than lost. Paid, entitled tiers are never
+paused; their over-allowance usage bills as metered overage instead. The check fails open: a
+usage-lookup failure never blocks ingestion.
+
 ```sh
 curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
   -H 'Authorization: Bearer <device_token>' \
