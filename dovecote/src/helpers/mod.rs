@@ -50,7 +50,11 @@ pub use pigeons::upsert_acl_pg_db;
 pub use pigeons::verify_device_via_do;
 
 mod demo;
+pub use demo::demo_pigeon_ids;
 pub use demo::is_demo_pigeon;
+
+mod retention;
+pub use retention::sweep_telemetry_history_retention;
 
 mod coap_service;
 pub use coap_service::is_allowed_coap_service_ip;

@@ -16,12 +16,43 @@ const DEMO_PIGEON_IDS_VAR: &str = "DEMO_PIGEON_IDS";
 /// returns a plain 404 (not 403) on failure -- don't confirm or deny
 /// existence to an unauthenticated caller.
 pub fn is_demo_pigeon(env: &Env, pigeon_id: &str) -> bool {
+  demo_pigeon_ids(env).iter().any(|id| id == pigeon_id)
+}
+
+/// The parsed form of `DEMO_PIGEON_IDS` -- also consulted by the
+/// telemetry-history retention sweep (`helpers/retention.rs`) to exclude
+/// the demo pigeon's rows from deletion. Same allowlist, same "empty means
+/// none" default as `is_demo_pigeon`; reused rather than re-parsed so the
+/// two call sites can't drift on what counts as "the demo pigeon".
+pub fn demo_pigeon_ids(env: &Env) -> Vec<String> {
   let Ok(raw) = env.var(DEMO_PIGEON_IDS_VAR) else {
-    return false;
+    return Vec::new();
   };
+  parse_ids(&raw.to_string())
+}
+
+fn parse_ids(raw: &str) -> Vec<String> {
   raw
-    .to_string()
     .split(',')
     .map(str::trim)
-    .any(|id| !id.is_empty() && id == pigeon_id)
+    .filter(|id| !id.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::parse_ids;
+
+  #[test]
+  fn splits_trims_and_drops_empties() {
+    assert_eq!(parse_ids("a, b ,c"), vec!["a", "b", "c"]);
+    assert_eq!(parse_ids("solo"), vec!["solo"]);
+  }
+
+  #[test]
+  fn empty_or_blank_yields_no_ids() {
+    assert_eq!(parse_ids(""), Vec::<String>::new());
+    assert_eq!(parse_ids(" , , "), Vec::<String>::new());
+  }
 }

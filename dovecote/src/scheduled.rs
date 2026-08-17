@@ -1,6 +1,8 @@
 use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, event};
 
-use crate::helpers::{evaluate_scheduled_alerts, probe_kratos_health};
+use crate::helpers::{
+  evaluate_scheduled_alerts, probe_kratos_health, sweep_telemetry_history_retention,
+};
 
 /// Cron-Trigger entry point (`[triggers] crons`, `wrangler.toml`) for the
 /// missing-heartbeat / device-state alert sweep -- absence-of-data
@@ -29,4 +31,12 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // (production [vars] only), so staging/dev invocations don't double-probe
   // or double-email. Internally best-effort/logged, same as the sweep above.
   probe_kratos_health(&env).await;
+
+  // Telemetry-history retention sweep (helpers/retention.rs, task #66) --
+  // same "ride the existing cron" reasoning as the probe above, and the
+  // same crash-proofing as the alert sweep: internally best-effort/logged,
+  // so a DB hiccup here doesn't take out the two invocations above it.
+  if let Err(e) = sweep_telemetry_history_retention(&env).await {
+    console_error!("Telemetry history retention sweep failed: {e}");
+  }
 }
