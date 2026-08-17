@@ -166,7 +166,7 @@ applies at the platform level). The limits that do exist are:
 | `POST /pigeons/batch` — pigeon IDs per request | 48 | `lib.rs` (Workers subrequest budget) |
 | `POST /device/pigeons/:id/logs` — bytes per chunk | 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`) | `objects/pigeons.rs::report_logs_device`, `413` over the cap |
 | Stored log chunks per pigeon | 200 (oldest silently pruned, not an error) | `objects/pigeons.rs::MAX_STORED_LOG_CHUNKS` |
-| `GET .../telemetry/history` points per query | 5000 (`capsules::TELEMETRY_HISTORY_MAX_POINTS`) — the range's **newest** 5000, flagged by `X-Telemetry-Truncated`, not an error | `helpers/telemetry.rs` |
+| `GET .../telemetry/history` points per query | bucketed by default (`capsules::TELEMETRY_HISTORY_BUCKET_TARGET` = 360 buckets, unlimited range, no cap); `raw=true` caps at 5000 (`capsules::TELEMETRY_HISTORY_MAX_POINTS`) — the range's **newest** 5000, flagged by `X-Telemetry-Truncated`, not an error | `helpers/telemetry.rs` |
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
@@ -741,15 +741,54 @@ Time-series read from Postgres. All query params are optional:
 |---|---|---|
 | `key` | string | filter to one metric key; omit for all keys |
 | `keys` | comma-separated strings | filter to several keys at once, e.g. `keys=gps_lat,gps_lon`. Merged with `key` if both are sent; blank entries are ignored, so `keys=` behaves as no filter |
-| `since` | RFC 3339 timestamp | inclusive lower bound on `reported_at` |
-| `until` | RFC 3339 timestamp | inclusive upper bound on `reported_at` |
+| `since` | RFC 3339 timestamp | inclusive lower bound on `reported_at` (bucketed mode: defaults to `until` minus 24h if omitted) |
+| `until` | RFC 3339 timestamp | inclusive upper bound on `reported_at` (bucketed mode: defaults to now if omitted) |
+| `raw` | `true`/omit | see [Raw mode](#raw-mode) below |
 
-Filtering to the keys you actually intend to draw is worth doing: the row cap below is spent on
-whatever keys come back, so an unfiltered fetch spends it on every unrelated key the device
-reports.
+**Default (bucketed) response.** A point is one key at one timestamp, so a device reporting more
+than a couple of keys blows past any fixed response cap within a day or so regardless of how long
+a range was asked for — truncating a response at a row count always hits that wall eventually,
+just later. This route avoids it by bucketing instead: the requested range is divided into
+`capsules::TELEMETRY_HISTORY_BUCKET_TARGET` (360) buckets and aggregated in SQL, so the response
+size is roughly constant no matter the range or key count, and every range is fully drawable.
 
 ```sh
 curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps_lat,gps_lon" \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+```json
+[
+  {
+    "pigeon_id": "59d0c929f912...",
+    "key": "temp",
+    "bucket_start": "2026-07-17T15:30:00Z",
+    "min": 21.1,
+    "max": 21.8,
+    "mean": 21.5,
+    "last": "21.5",
+    "count": 12
+  }
+]
+```
+
+(`Vec<capsules::TelemetryHistoryBucket>`, ascending by `bucket_start`.) `min`/`max`/`mean` are
+`null` for a bucket whose values never parsed as numeric (e.g. a firmware version string) — `last`
+(the most recent raw value in the bucket) is always present, since a bucket always has at least
+one report backing it. `count` is how many reports landed in the bucket, not how many of those
+were numeric. There is no truncation here and no `X-Telemetry-Truncated` header: bucketing bounds
+the response by construction, so there's nothing to cut.
+
+#### Raw mode
+
+`?raw=true` gets the pre-bucketing shape instead: a flat `TelemetryHistoryPoint` per key per
+report, capped at `capsules::TELEMETRY_HISTORY_MAX_POINTS` = 5000 points, byte-identical to this
+route's behavior before bucketing existed. Meant for a caller that needs real per-report values
+rather than a bucket's aggregate — pairing `gps_lat`/`gps_lon` from the same report is the
+motivating case, since a bucket's mean can't reconstruct a track.
+
+```sh
+curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?raw=true&keys=gps_lat,gps_lon" \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
@@ -765,14 +804,14 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps
 ]
 ```
 
-(`Vec<capsules::TelemetryHistoryPoint>`, oldest first, capped at
-`capsules::TELEMETRY_HISTORY_MAX_POINTS` = 5000 points.)
+(`Vec<capsules::TelemetryHistoryPoint>`, oldest first.)
 
 **When a range holds more than the cap, you get its newest 5000 points, not its oldest** — the
 window always ends at the end of the range you asked for, so the live edge of a chart is never
-the part that gets dropped. Because history stores one row per reported key, a handful of keys
-at a short interval passes 5000 within a day, so this applies to ordinary ranges, not just
-long ones. Every response says which case it was:
+the part that gets dropped. Because a single report can carry several keys, each one becomes its
+own point in the response, so a handful of keys at a short interval passes 5000 within a day —
+this is exactly the case bucketed (non-`raw`) mode above exists to avoid. Every raw-mode response
+says which case it was:
 
 | Header | Meaning |
 |---|---|
@@ -782,25 +821,27 @@ long ones. Every response says which case it was:
 The header is listed in `Access-Control-Expose-Headers`, so a browser client can read it. Narrow
 the range or the key set to see the rest.
 
-**Backing store (task #26, revised by the Postgres consolidation).** This route reads from
+**Backing store (task #26, revised by the Postgres consolidation).** Both modes read from
 whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`
-table by default. A GreptimeDB store remains supported per environment (when
-`GREPTIMEDB_ENDPOINT` is configured — see `helpers/greptime.rs`; no deployed environment
+table by default. A GreptimeDB store remains supported per environment for **raw mode only**
+(when `GREPTIMEDB_ENDPOINT` is configured — see `helpers/greptime.rs`; no deployed environment
 currently sets it, see `docs/infra/postgres-consolidation.md`), in which case reads go there
-first and fall back to Postgres on a query error. This is
-transparent to the caller — the response shape (`TelemetryHistoryPoint`) is identical either
-way. **Only populated for reports made while the pigeon had no `telemetry_endpoint` configured**
-— see the next section for the per-pigeon override, which still takes precedence over the
-platform default in both directions (write and, indirectly, read: an overridden pigeon's data
-never lands in the platform's own history store at all, only at the URL you configured).
+first and fall back to Postgres on a query error; bucketed mode always reads Postgres directly.
+This is transparent to the caller within a mode — the response shape is identical either way raw
+mode's own data came from. **Only populated for reports made while the pigeon had no
+`telemetry_endpoint` configured** — see the next section for the per-pigeon override, which still
+takes precedence over the platform default in both directions (write and, indirectly, read: an
+overridden pigeon's data never lands in the platform's own history store at all, only at the URL
+you configured).
 
 #### `GET /flocks/:flock_id/telemetry/history` — flock: view
 
-Same shape and query params as above, across every pigeon in the flock. Unlike the pigeon-scoped
-route, this checks *flock*-level access (`authorize_flock` — personal owner, or any org role
-on an org-owned flock), not any pigeon's ACL — so a pigeon shared with you via its own ACL,
-but living in a flock you have no flock-level access to, won't show up here even though
-`GET /pigeons/:pigeon_id/telemetry/history` would work for it directly.
+Same shape and query params as above (bucketed by default, `raw=true` for the flat/capped shape),
+across every pigeon in the flock. Unlike the pigeon-scoped route, this checks *flock*-level access
+(`authorize_flock` — personal owner, or any org role on an org-owned flock), not any pigeon's ACL
+— so a pigeon shared with you via its own ACL, but living in a flock you have no flock-level
+access to, won't show up here even though `GET /pigeons/:pigeon_id/telemetry/history` would work
+for it directly.
 
 ```sh
 curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026-07-17T00:00:00Z" \
@@ -1151,10 +1192,11 @@ curl -s https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry
 
 ### `GET /demo/pigeons/:pigeon_id/telemetry/history`
 
-History read — same query params and response shape as the dashboard's
-[`GET /pigeons/:pigeon_id/telemetry/history`](#get-pigeonspigeon_idtelemetryhistory) above
-(`?key=<string>&since=<RFC3339>&until=<RFC3339>`, `Vec<capsules::TelemetryHistoryPoint>`,
-Greptime-first/Postgres-fallback), just without the ACL probe.
+History read — same query params and response shape (bucketed by default,
+`Vec<capsules::TelemetryHistoryBucket>`; `raw=true` for the flat/capped
+`Vec<capsules::TelemetryHistoryPoint>`, Greptime-first/Postgres-fallback) as the dashboard's
+[`GET /pigeons/:pigeon_id/telemetry/history`](#get-pigeonspigeon_idtelemetryhistory) above, just
+without the ACL probe.
 
 ```sh
 curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/history?key=temp_c"
@@ -1626,8 +1668,9 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `JsonString`
 - `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)`), `CoapPskLookup` (service-internal,
   the `/internal/coap-psk/:pigeon_id` response)
-- `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryQuery`,
-  `TelemetryEndpoint`, `PigeonTelemetryEndpointUpdateRequest`
+- `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,
+  `TelemetryHistoryQuery`, `TELEMETRY_HISTORY_BUCKET_TARGET`, `TelemetryEndpoint`,
+  `PigeonTelemetryEndpointUpdateRequest`
 - `PigeonLogChunk` / `PigeonLogChunkRow`, `MAX_LOG_CHUNK_BYTES`
 - `LogDictionaryInfo`, `MAX_LOG_DICTIONARY_BYTES`
 - `FirmwareImage`, `FirmwareTarget`, `FirmwareUploadQuery`, `MAX_FIRMWARE_BYTES`
