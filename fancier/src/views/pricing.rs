@@ -1,4 +1,6 @@
-use crate::Route;
+use super::org::redirect_to;
+use crate::{Route, Session, api};
+use capsules::BillingPlan;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdCheck, LdPlay};
@@ -77,6 +79,72 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
   }
 }
 
+/// A paid tier card's call to action. Signed-out visitors keep the
+/// disabled "Free in beta" chip -- checkout is only offered to a signed-in
+/// visitor, and even then only resolves for someone who manages exactly
+/// one org with no live subscription (an entitled org changes plan in the
+/// Billing Portal from its own page instead, since a second Checkout would
+/// create a second subscription). Anyone else lands on the Organizations
+/// page to pick or create the org to bill.
+#[component]
+fn TierUpgradeCta(plan: BillingPlan) -> Element {
+  let session = use_context::<Session>();
+  let nav = use_navigator();
+  let mut busy = use_signal(|| false);
+  let mut cta_error = use_signal(|| Option::<String>::None);
+
+  if !(session.state)().is_authenticated() {
+    return rsx! {
+      div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+    };
+  }
+
+  rsx! {
+    button {
+      class: "btn btn-outline w-full font-bold",
+      disabled: busy(),
+      onclick: move |_| async move {
+          busy.set(true);
+          cta_error.set(None);
+          let managed: Vec<_> = api::orgs::list()
+              .await
+              .unwrap_or_default()
+              .into_iter()
+              .filter(|m| m.role.is_manager())
+              .collect();
+          match managed.as_slice() {
+              [only] => {
+                  let org_id = only.organization.id;
+                  match api::billing::overview(org_id).await {
+                      Some(o) if o.entitled => {
+                          nav.push(Route::OrgView { org_id });
+                      }
+                      _ => {
+                          match api::billing::checkout(org_id, plan).await {
+                              Ok(url) => redirect_to(&url),
+                              Err(msg) => cta_error.set(Some(msg)),
+                          }
+                      }
+                  }
+              }
+              _ => {
+                  nav.push(Route::Orgs {});
+              }
+          }
+          busy.set(false);
+      },
+      if busy() {
+        span { class: "loading loading-spinner loading-sm" }
+      } else {
+        "Upgrade"
+      }
+    }
+    if let Some(msg) = cta_error() {
+      p { class: "text-error text-xs mt-2", "{msg}" }
+    }
+  }
+}
+
 #[component]
 fn Answer(question: String, body: String) -> Element {
   rsx! {
@@ -144,7 +212,7 @@ pub fn PricingPage() -> Element {
             ],
             featured: false,
             cta: rsx! {
-              div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+              TierUpgradeCta { plan: BillingPlan::Builder }
             },
           }
 
@@ -164,7 +232,7 @@ pub fn PricingPage() -> Element {
             ],
             featured: false,
             cta: rsx! {
-              div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+              TierUpgradeCta { plan: BillingPlan::Growth }
             },
           }
 
@@ -184,7 +252,7 @@ pub fn PricingPage() -> Element {
             ],
             featured: false,
             cta: rsx! {
-              div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+              TierUpgradeCta { plan: BillingPlan::Scale }
             },
           }
         }

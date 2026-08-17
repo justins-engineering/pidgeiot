@@ -344,6 +344,16 @@ mod route_query_param_parsing {
       r
     );
   }
+
+  // Stripe Checkout returns to /orgs/:id?billing=success|cancelled -- the
+  // route declares no query params, so this proves an undeclared query
+  // string is ignored rather than falling through to the PageNotFound
+  // catch-all.
+  #[test]
+  fn org_view_ignores_undeclared_billing_query() {
+    let r = Route::from_str("/orgs/8b0e4c9e-05ff-4a3b-9d5e-111111111111?billing=success").unwrap();
+    assert!(matches!(r, Route::OrgView { .. }), "got {}", r);
+  }
 }
 
 // Public routes are annotated with trailing-slash paths so generated hrefs

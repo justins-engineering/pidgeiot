@@ -1838,7 +1838,7 @@ pub struct BillingSessionUrl {
 /// tier). Usage-period bounds are the org's Stripe period while a live
 /// subscription covers now, the calendar month otherwise -- matching how
 /// usage itself is tallied.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OrganizationBillingOverview {
   pub plan: BillingPlan,
   pub status: SubscriptionStatus,

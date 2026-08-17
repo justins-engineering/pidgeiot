@@ -6,7 +6,9 @@
 //! it carries a write-once secret, same reasoning as `TokenReveal`.
 
 use crate::{Create, Route, api};
-use capsules::{OrgRole, OrganizationDetail, OrganizationInviteCreated};
+use capsules::{
+  BillingPlan, OrgRole, OrganizationBillingOverview, OrganizationDetail, OrganizationInviteCreated,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
@@ -111,6 +113,11 @@ pub fn OrgView(org_id: Uuid) -> Element {
               action_error,
               invite_created,
             }
+          }
+          BillingSection {
+            org_id,
+            caller_role: d.caller_role,
+            action_error,
           }
           RenameOrgModal { org_id, refresh }
         },
@@ -385,6 +392,167 @@ fn InvitesSection(
                       }
                     }
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Navigates the whole tab to a Stripe-hosted page (Checkout or the
+/// Billing Portal) -- a full-page handoff on purpose, matching how the
+/// Kratos flows leave the SPA: the hosted page 303s back to us when done.
+pub(crate) fn redirect_to(url: &str) {
+  if let Some(window) = web_sys::window() {
+    let _ = window.location().set_href(url);
+  }
+}
+
+/// Plan, entitlement and usage-vs-allowance for this org, plus the
+/// manager-only session mints. Checkout buttons only render while the org
+/// has no live subscription: an entitled org changes plan through the
+/// Billing Portal instead, because a second Checkout would create a second
+/// subscription alongside the first, not replace it.
+#[component]
+fn BillingSection(
+  org_id: Uuid,
+  caller_role: OrgRole,
+  action_error: Signal<Option<String>>,
+) -> Element {
+  let overview_resource = use_resource(move || async move { api::billing::overview(org_id).await });
+  let overview = overview_resource.read().clone();
+
+  rsx! {
+    section { id: "org-billing", class: "mb-10",
+      h2 { class: "text-lg font-semibold mb-3", "Billing" }
+      match overview {
+        None => rsx! {
+          div { class: "flex justify-center p-6",
+            span { class: "loading loading-spinner loading-md" }
+          }
+        },
+        Some(None) => rsx! {
+          p { class: "text-base-content/60 text-sm",
+            "Billing information is unavailable right now."
+          }
+        },
+        Some(Some(o)) => rsx! {
+          BillingPanel { org_id, caller_role, action_error, overview: o }
+        },
+      }
+    }
+  }
+}
+
+#[component]
+fn BillingPanel(
+  org_id: Uuid,
+  caller_role: OrgRole,
+  action_error: Signal<Option<String>>,
+  overview: OrganizationBillingOverview,
+) -> Element {
+  let mut busy = use_signal(|| false);
+  let o = overview;
+  let usage_pct = if o.included_messages > 0 {
+    (o.billable_messages as f64 / o.included_messages as f64 * 100.0).min(100.0)
+  } else {
+    0.0
+  };
+
+  rsx! {
+    div { class: "bg-base-100 border border-base-content/10 rounded-box p-4 flex flex-col gap-4",
+      div { class: "flex items-center gap-3 flex-wrap",
+        span { class: "text-sm text-base-content/60", "Current plan" }
+        span { class: "badge badge-primary badge-outline font-mono", "{o.effective_plan}" }
+        if o.status != capsules::SubscriptionStatus::None {
+          span {
+            class: if o.entitled { "badge badge-success badge-sm" } else { "badge badge-ghost badge-sm" },
+            "{o.status}"
+          }
+        }
+        if o.plan != o.effective_plan {
+          span { class: "text-xs text-base-content/50", "({o.plan} subscription is {o.status})" }
+        }
+        if o.cancel_at_period_end {
+          span { class: "badge badge-warning badge-sm", "cancels at period end" }
+        }
+      }
+
+      div {
+        div { class: "flex justify-between text-sm mb-1",
+          span { "Messages this period" }
+          span { class: "font-mono", "{o.billable_messages} / {o.included_messages}" }
+        }
+        progress {
+          class: "progress progress-primary w-full",
+          value: usage_pct,
+          max: 100.0,
+        }
+      }
+
+      div { class: "text-sm text-base-content/70",
+        "Devices: "
+        span { class: "font-mono", "{o.device_count}" }
+        " of "
+        span { class: "font-mono", "{o.included_devices}" }
+        " included"
+      }
+
+      if caller_role.is_manager() {
+        div { class: "flex flex-wrap gap-2 items-center",
+          if o.entitled {
+            if o.has_billing_account {
+              button {
+                class: "btn btn-sm btn-primary",
+                disabled: busy(),
+                onclick: move |_| async move {
+                    busy.set(true);
+                    action_error.set(None);
+                    match api::billing::portal(org_id).await {
+                        Ok(url) => redirect_to(&url),
+                        Err(msg) => action_error.set(Some(msg)),
+                    }
+                    busy.set(false);
+                },
+                "Manage billing"
+              }
+              span { class: "text-xs text-base-content/50",
+                "Plan changes, card updates and cancellation happen in the Stripe portal."
+              }
+            }
+          } else {
+            for plan in [BillingPlan::Builder, BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
+              button {
+                class: "btn btn-sm btn-outline",
+                disabled: busy(),
+                onclick: move |_| async move {
+                    busy.set(true);
+                    action_error.set(None);
+                    match api::billing::checkout(org_id, plan).await {
+                        Ok(url) => redirect_to(&url),
+                        Err(msg) => action_error.set(Some(msg)),
+                    }
+                    busy.set(false);
+                },
+                "Upgrade to {plan}"
+              }
+            }
+            if o.has_billing_account {
+              button {
+                class: "btn btn-sm btn-ghost",
+                disabled: busy(),
+                onclick: move |_| async move {
+                    busy.set(true);
+                    action_error.set(None);
+                    match api::billing::portal(org_id).await {
+                        Ok(url) => redirect_to(&url),
+                        Err(msg) => action_error.set(Some(msg)),
+                    }
+                    busy.set(false);
+                },
+                "Billing history"
               }
             }
           }

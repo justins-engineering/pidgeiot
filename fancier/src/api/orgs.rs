@@ -20,19 +20,21 @@ use uuid::Uuid;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
-fn to_body<T: serde::Serialize>(value: &T) -> Option<JsValue> {
+pub(crate) fn to_body<T: serde::Serialize>(value: &T) -> Option<JsValue> {
   let body = serde_json::to_string(value).ok()?;
   serde_wasm_bindgen::to_value(&body).ok()
 }
 
-async fn parse<T: serde::de::DeserializeOwned>(response: web_sys::Response) -> Option<T> {
+pub(crate) async fn parse<T: serde::de::DeserializeOwned>(
+  response: web_sys::Response,
+) -> Option<T> {
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
   serde_wasm_bindgen::from_value::<T>(json).ok()
 }
 
 /// Reads a non-2xx response's plain-text body as the user-facing error
 /// (dovecote's error convention: text, not JSON).
-async fn error_text(response: &web_sys::Response) -> String {
+pub(crate) async fn error_text(response: &web_sys::Response) -> String {
   match response.text().ok() {
     Some(promise) => JsFuture::from(promise)
       .await
