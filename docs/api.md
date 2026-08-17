@@ -1383,6 +1383,11 @@ This also best-effort syncs the reported shadow into dovecote's Postgres mirror 
 side, so `fancier` doesn't need to poll the Durable Object directly to see a device's latest
 reported state.
 
+An accepted report-back counts as one billable device message against the owning account's
+message allowance, the same as a telemetry report. The free-tier allowance fuse (see the
+telemetry route below) never `429`s this route, though — a device can always confirm the
+config it applied.
+
 ### `POST /device/pigeons/:pigeon_id/telemetry`
 
 Reports telemetry. Body: a **flat JSON object of string key/value pairs** — no nesting, no
@@ -1395,7 +1400,8 @@ message allowance, this route answers `429 Too Many Requests` (after the bearer 
 verified) for the rest of the billing period — the `pigeon` device library backs off and keeps
 unsent readings queued, so data is delayed rather than lost. Paid, entitled tiers are never
 paused; their over-allowance usage bills as metered overage instead. The check fails open: a
-usage-lookup failure never blocks ingestion.
+usage-lookup failure never blocks ingestion. Only this route pauses: shadow report-backs and
+log uploads keep counting toward the same allowance but are never refused by the fuse.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
@@ -1440,6 +1446,9 @@ decoded host-side against the firmware's own dictionary/ELF.
 - `400` if the body is empty.
 - `413 Payload Too Large` if the body exceeds 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`).
 - `200` with an empty body on success.
+
+An accepted chunk counts as one billable device message against the owning account's message
+allowance, the same as a telemetry report; the free-tier allowance fuse never `429`s this route.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/logs \

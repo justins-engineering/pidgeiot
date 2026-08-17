@@ -1498,6 +1498,13 @@ async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportR
   };
 
   let pigeon_id = pigeons.state.id().to_string();
+
+  // An accepted report-back is one billable device message, matching the
+  // HTTP report-back route and the WS telemetry frame (whose tally rides
+  // the shared queue consumer). Same best-effort convention as the PG
+  // sync below: a failed tally undercounts, never disturbs the socket.
+  crate::helpers::count_billable_message(&pigeons.env, &pigeon_id).await;
+
   match crate::helpers::get_db_client(&pigeons.env).await {
     Ok(client) => {
       if let Err(e) = crate::helpers::update_shadow_pg_db(client, &pigeon_id, &shadow).await {

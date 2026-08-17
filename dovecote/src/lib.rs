@@ -3,8 +3,8 @@ use crate::helpers::{
   StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite, apply_subscription,
   attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
   change_member_role, check_device_cap, check_perch_ingest_fuse, check_pigeon_authz,
-  claim_webhook_event, constant_time_eq, create_checkout_session, create_customer,
-  create_flock_alert, create_invite, create_organization, create_pigeon_alert,
+  claim_webhook_event, constant_time_eq, count_billable_message, create_checkout_session,
+  create_customer, create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
   delete_pigeon_pg_db, ensure_billing_tables, ensure_billing_usage_tables, fetch_subscription,
   get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
@@ -477,6 +477,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         return do_response.with_cors(&cors);
       }
 
+      // An accepted report-back is one billable device message, same as a
+      // telemetry report. Telemetry defers its tally to the queue
+      // consumer, but this path has no queue leg, so it's tallied here --
+      // after the DO has verified the token and stored the report, so a
+      // rejected request never counts. Best-effort inside: a failed tally
+      // undercounts in the customer's favour, never fails the device's
+      // confirmation.
+      count_billable_message(&ctx.env, &pigeon_id).await;
+
       let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
 
       match get_db_client(&ctx.env).await {
@@ -631,9 +640,19 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // a raw binary dictionary-log chunk, not JSON — proxy_binary_to_pigeon_do
       // forwards it byte-for-byte instead of through proxy_to_pigeon_do's
       // text()-based forwarding, which would corrupt non-UTF-8 bytes.
-      proxy_binary_to_pigeon_do(req, &obj_id, "/device/logs")
-        .await?
-        .with_cors(&cors)
+      let do_response = proxy_binary_to_pigeon_do(req, &obj_id, "/device/logs").await?;
+      if do_response.status_code() >= 400 {
+        return do_response.with_cors(&cors);
+      }
+
+      // An accepted log chunk is one billable device message, same as a
+      // telemetry report. No queue leg on this path either, so it's
+      // tallied here, only after the DO has verified the token and stored
+      // the chunk; best-effort inside, so a failed tally undercounts
+      // rather than failing the upload.
+      count_billable_message(&ctx.env, &pigeon_id).await;
+
+      do_response.with_cors(&cors)
     })
     .get_async(
       "/device/pigeons/:pigeon_id/firmware",
