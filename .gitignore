@@ -3,8 +3,6 @@ secrets.env
 # wrangler local secrets (e.g. dovecote's COAP_SERVICE_SECRET for dev)
 .dev.vars
 .dev.vars.*
-# CoAP terminator's VPS env file (holds COAP_SERVICE_SECRET)
-infra/coap-terminator/loft.env
 .migration/
 kratos.yml
 
