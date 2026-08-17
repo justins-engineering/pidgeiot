@@ -633,7 +633,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.24.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.24.1](https://github.com/uuid-rs/uuid)
 
 
 ````text
