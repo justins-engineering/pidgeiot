@@ -1,7 +1,9 @@
 use crate::helpers::dict_log::{
   LogDictionary, LogEvent, decode_chunks, level_str, render_hexdump, render_plaintext,
 };
-use crate::helpers::{connection_state, decode_base64, download_bytes, is_page_hidden, sleep_ms};
+use crate::helpers::{
+  build_tar, connection_state, decode_base64, download_bytes, is_page_hidden, sleep_ms,
+};
 use crate::models::AlertVariant;
 use crate::{api, components::Alert};
 use dioxus::logger::tracing::error;
@@ -62,6 +64,11 @@ fn chunk_filename(pigeon_id: &str, chunk_id: i64) -> String {
 fn decoded_filename(pigeon_id: &str) -> String {
   let short_id = &pigeon_id[..12.min(pigeon_id.len())];
   format!("pigeon-{short_id}-logs.txt")
+}
+
+fn raw_archive_filename(pigeon_id: &str) -> String {
+  let short_id = &pigeon_id[..12.min(pigeon_id.len())];
+  format!("pigeon-{short_id}-logs.tar")
 }
 
 /// DaisyUI badge class per log level. `badge-ghost` (NOT `badge-neutral`)
@@ -353,15 +360,22 @@ pub fn LogViewer(
             if !chunks.is_empty() {
               button {
                 class: "btn btn-outline btn-sm",
+                title: "Download all raw chunks as one .tar archive",
                 onclick: move |_| {
                     let pigeon_id = download_all_id.clone();
-                    for chunk in &chunks {
-                        let filename = chunk_filename(&pigeon_id, chunk.id);
-                        download_bytes(&chunk.bytes, &filename, "application/octet-stream");
-                    }
+                    let entries: Vec<(String, Vec<u8>)> = chunks
+                        .iter()
+                        .map(|chunk| (chunk_filename(&pigeon_id, chunk.id), chunk.bytes.clone()))
+                        .collect();
+                    let archive = build_tar(&entries);
+                    download_bytes(
+                        &archive,
+                        &raw_archive_filename(&pigeon_id),
+                        "application/x-tar",
+                    );
                 },
                 Icon { icon: LdDownload, width: 16, height: 16 }
-                " Raw ({chunks.len()})"
+                " Raw ({chunks.len()}) .tar"
               }
             }
           }
