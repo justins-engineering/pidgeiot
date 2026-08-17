@@ -473,6 +473,20 @@ pub struct TelemetryHistoryQuery {
   pub since: Option<OffsetDateTime>,
   #[serde(default, with = "time::serde::rfc3339::option")]
   pub until: Option<OffsetDateTime>,
+  /// Opts into the pre-bucketing response shape: flat `TelemetryHistoryPoint`s
+  /// (one per key per report), capped at `TELEMETRY_HISTORY_MAX_POINTS` and
+  /// flagged via `TELEMETRY_HISTORY_TRUNCATED_HEADER` when a range holds
+  /// more. The default (this absent/false) is bucketed instead --
+  /// `TelemetryHistoryBucket`s, unbounded range, no truncation -- see that
+  /// type's doc comment. This backstop exists for callers that need real
+  /// per-report values rather than a bucket's aggregate: `fancier`'s GPS
+  /// track widget needs `gps_lat`/`gps_lon` paired from the same report,
+  /// which a bucket mean can't reconstruct, and the connection-badge
+  /// "last seen" check needs the true latest timestamp, not a bucket's
+  /// start. Both stay on `raw=true` deliberately -- see dovecote's
+  /// `helpers/telemetry.rs`.
+  #[serde(default)]
+  pub raw: bool,
 }
 
 impl TelemetryHistoryQuery {
@@ -533,6 +547,99 @@ mod telemetry_history_query_tests {
       query(Some("gps_lat"), Some("gps_lon,gps_lat")).key_list(),
       Some(vec!["gps_lat".to_string(), "gps_lon".to_string()])
     );
+  }
+}
+
+/// The default telemetry-history response bounds itself by BUCKETING
+/// instead of truncating: a point is one key at one timestamp, so a
+/// handful of keys reported every reporting cycle blows past
+/// `TELEMETRY_HISTORY_MAX_POINTS` within a day regardless of how long a
+/// range was asked for, and truncating always drops the same thing --
+/// everything before the newest slice. Downsampling to a fixed target
+/// bucket count instead makes every range drawable and the response size
+/// roughly constant, at the cost of the bucket's own width standing in for
+/// individual timestamps. `raw=true` (`TelemetryHistoryQuery::raw`) keeps
+/// the old flat/truncating shape for callers that need real per-report
+/// values.
+pub const TELEMETRY_HISTORY_BUCKET_TARGET: usize = 360;
+
+/// One time bucket's aggregate for one pigeon/key -- the bucketed history
+/// routes' response element (`Vec<TelemetryHistoryBucket>`, ascending by
+/// `bucket_start`, no cap and no truncation: see
+/// `TELEMETRY_HISTORY_BUCKET_TARGET`'s doc comment for why bucketing makes
+/// both unnecessary).
+///
+/// `min`/`max`/`mean` are `None` for a bucket whose values never parsed as
+/// numeric (a non-numeric key, e.g. a firmware version string) -- `last`
+/// still carries the raw string either way, since a bucket always has at
+/// least one report backing it. `count` is how many reports landed in the
+/// bucket, not how many of those were numeric.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TelemetryHistoryBucket {
+  pub pigeon_id: String,
+  pub key: String,
+  #[serde(with = "time::serde::rfc3339")]
+  pub bucket_start: OffsetDateTime,
+  pub min: Option<f64>,
+  pub max: Option<f64>,
+  pub mean: Option<f64>,
+  pub last: String,
+  pub count: i64,
+}
+
+/// Bucket width (seconds) for a since/until range, aimed at
+/// `TELEMETRY_HISTORY_BUCKET_TARGET` buckets across it. Floored at one
+/// second -- a sub-second span (or a defensively-handled inverted range,
+/// `until` before `since`) would otherwise divide down to zero or
+/// negative, which `date_bin` can't use as a stride. Pure so the bucket
+/// math is testable without a database; the SQL side (dovecote's
+/// `helpers/telemetry.rs`) passes this straight into Postgres's
+/// `make_interval(secs => ...)`.
+pub fn telemetry_bucket_width_secs(since: OffsetDateTime, until: OffsetDateTime) -> f64 {
+  let span = (until - since).as_seconds_f64();
+  (span / TELEMETRY_HISTORY_BUCKET_TARGET as f64).max(1.0)
+}
+
+#[cfg(test)]
+mod telemetry_bucket_width_tests {
+  use super::*;
+  use time::macros::datetime;
+
+  #[test]
+  fn one_day_divides_evenly() {
+    let since = datetime!(2026-08-17 00:00:00 UTC);
+    let until = datetime!(2026-08-18 00:00:00 UTC);
+    assert_eq!(telemetry_bucket_width_secs(since, until), 240.0);
+  }
+
+  #[test]
+  fn short_range_floors_at_one_second() {
+    let since = datetime!(2026-08-17 00:00:00 UTC);
+    let until = since + time::Duration::seconds(60);
+    assert_eq!(telemetry_bucket_width_secs(since, until), 1.0);
+  }
+
+  #[test]
+  fn zero_width_range_floors_at_one_second() {
+    let t = datetime!(2026-08-17 00:00:00 UTC);
+    assert_eq!(telemetry_bucket_width_secs(t, t), 1.0);
+  }
+
+  #[test]
+  fn inverted_range_floors_at_one_second_instead_of_going_negative() {
+    let since = datetime!(2026-08-17 00:00:00 UTC);
+    let until = since - time::Duration::seconds(60);
+    assert_eq!(telemetry_bucket_width_secs(since, until), 1.0);
+  }
+
+  #[test]
+  fn thirteen_months_stays_a_sane_width() {
+    let since = datetime!(2025-07-17 00:00:00 UTC);
+    let until = datetime!(2026-08-17 00:00:00 UTC);
+    let width = telemetry_bucket_width_secs(since, until);
+    // ~13 months / 360 buckets is on the order of a day -- just a sanity
+    // bound, not a pinned exact value that would break on leap-day drift.
+    assert!(width > 60.0 * 60.0 * 12.0 && width < 60.0 * 60.0 * 48.0);
   }
 }
 
