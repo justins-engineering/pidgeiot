@@ -1,6 +1,6 @@
-use capsules::{TELEMETRY_HISTORY_MAX_POINTS, TelemetryHistoryPoint};
-use time::OffsetDateTime;
-use tokio_postgres::{Client, types::Type};
+use capsules::{TELEMETRY_HISTORY_MAX_POINTS, TelemetryHistoryBucket, TelemetryHistoryPoint};
+use time::{Duration, OffsetDateTime};
+use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
 use worker::{Env, Result, console_error};
 
@@ -210,6 +210,112 @@ pub async fn query_telemetry_history_for_pigeon(
   ))
 }
 
+/// `since`/`until` are always both supplied by every real dashboard
+/// caller (`fancier` always sends a range for the routes that read this
+/// path), so this only matters defensively -- a caller that omits one or
+/// both gets the newest 24h rather than an unbounded (and therefore
+/// unwidenable-into-buckets) query. Mirrors the raw path's own
+/// `since`/`until IS NULL` behavior of "no bound" as closely as a bucketed
+/// query can: bucketing needs a concrete span to divide into
+/// `TELEMETRY_HISTORY_BUCKET_TARGET` buckets, which an open-ended range
+/// doesn't have.
+fn effective_bucket_range(
+  since: Option<OffsetDateTime>,
+  until: Option<OffsetDateTime>,
+) -> (OffsetDateTime, OffsetDateTime) {
+  let until = until.unwrap_or_else(OffsetDateTime::now_utc);
+  let since = since.unwrap_or(until - Duration::hours(24));
+  (since, until)
+}
+
+/// Maps one page of bucketed rows (shared column set between the
+/// pigeon-scoped and flock-scoped queries below) into
+/// `TelemetryHistoryBucket`s.
+fn rows_to_buckets(rows: &[Row]) -> Vec<TelemetryHistoryBucket> {
+  rows
+    .iter()
+    .map(|row| TelemetryHistoryBucket {
+      pigeon_id: row.get("pigeon_id"),
+      key: row.get("key"),
+      bucket_start: row.get("bucket_start"),
+      min: row.get("min"),
+      max: row.get("max"),
+      mean: row.get("mean"),
+      last: row.get("last"),
+      count: row.get("count"),
+    })
+    .collect()
+}
+
+/// Backs the default (non-`raw`) shape of `GET /pigeons/:id/telemetry/history`
+/// -- see `capsules::TELEMETRY_HISTORY_BUCKET_TARGET`'s doc comment for why
+/// bucketing replaces the old truncate-to-newest-5000 behavior. Aggregates
+/// happen in SQL (`GROUP BY ... date_bin(...)`), never by pulling raw rows
+/// into Rust to bucket by hand -- shipping every row into the Worker and
+/// back out again is exactly the cost bucketing exists to avoid, and
+/// Postgres already has to touch every matching row for the `WHERE` scan
+/// either way.
+///
+/// `min`/`max`/`mean` come back `NULL` from Postgres (so `None` here) for a
+/// bucket whose rows are all non-numeric -- `AVG`/`MIN`/`MAX` already
+/// ignore `NULL` `value_num` inputs and return `NULL` if every input in the
+/// group was, so no separate branch is needed to detect a non-numeric key.
+/// `last` (the most recent raw value in the bucket) comes from
+/// `ARRAY_AGG(value ORDER BY reported_at DESC)`'s first element -- Postgres
+/// has no plain `LAST(...)` aggregate, and this is the standard idiom for
+/// "last by some order" in a `GROUP BY`.
+///
+/// No `LIMIT` here, unlike the raw path: a bucketed response is already
+/// bounded by construction (at most `TELEMETRY_HISTORY_BUCKET_TARGET`
+/// buckets per key), so there's nothing to truncate and no `truncated` flag
+/// to report. Bounding the underlying table SCAN for a very wide range is
+/// a retention/partitioning concern (task #66), not this query's job.
+pub async fn query_telemetry_history_buckets_for_pigeon(
+  client: &Client,
+  access: &PigeonAccess,
+  keys: Option<&[String]>,
+  since: Option<OffsetDateTime>,
+  until: Option<OffsetDateTime>,
+) -> Result<Vec<TelemetryHistoryBucket>> {
+  ensure_telemetry_history_table(client).await?;
+
+  let pigeon_id = access.pigeon_id();
+  let (since, until) = effective_bucket_range(since, until);
+  let bucket_width_secs = capsules::telemetry_bucket_width_secs(since, until);
+
+  let rows = client
+    .query_typed(
+      "SELECT pigeon_id, key,
+         date_bin(make_interval(secs => $1::double precision), reported_at, $2::timestamptz) AS bucket_start,
+         MIN(value_num) AS min,
+         MAX(value_num) AS max,
+         AVG(value_num) AS mean,
+         (ARRAY_AGG(value ORDER BY reported_at DESC))[1] AS last,
+         COUNT(*) AS count
+       FROM pigeon_telemetry_history
+       WHERE pigeon_id = $3
+         AND ($4::TEXT[] IS NULL OR key = ANY($4))
+         AND reported_at >= $2
+         AND reported_at <= $5
+       GROUP BY pigeon_id, key, bucket_start
+       ORDER BY bucket_start ASC, key ASC;",
+      &[
+        (&bucket_width_secs, Type::FLOAT8),
+        (&since, Type::TIMESTAMPTZ),
+        (&pigeon_id, Type::TEXT),
+        (&keys, Type::TEXT_ARRAY),
+        (&until, Type::TIMESTAMPTZ),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Telemetry history bucket query error for pigeon {pigeon_id}: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows_to_buckets(&rows))
+}
+
 /// Pigeon-ID list for one flock -- the Postgres round-trip
 /// `query_greptime_history_for_pigeons` (`helpers/greptime.rs`) needs
 /// before it can query Greptime's SQL-over-HTTP API, since Greptime has no
@@ -299,6 +405,64 @@ pub async fn query_telemetry_history_for_flock(
       })
       .collect(),
   ))
+}
+
+/// Flock-scoped counterpart to `query_telemetry_history_buckets_for_pigeon`
+/// -- same SQL shape with the `pigeons` join `query_telemetry_history_for_flock`
+/// already uses for flock scoping, bucketed instead of capped. No
+/// one-line reason this should differ from the pigeon-scoped route: a
+/// flock-wide chart hits the exact same "too many keys/reports for
+/// TELEMETRY_HISTORY_MAX_POINTS" wall, just with more pigeons contributing
+/// rows instead of more keys.
+pub async fn query_telemetry_history_buckets_for_flock(
+  client: &Client,
+  access: &FlockAccess,
+  keys: Option<&[String]>,
+  since: Option<OffsetDateTime>,
+  until: Option<OffsetDateTime>,
+) -> Result<Vec<TelemetryHistoryBucket>> {
+  ensure_telemetry_history_table(client).await?;
+
+  let flock_id_str = access.flock_id();
+  let flock_uuid = Uuid::parse_str(flock_id_str).map_err(|e| {
+    console_error!("Invalid flock_id format: {e}");
+    worker::Error::RustError("Bad Request: Invalid flock_id".into())
+  })?;
+  let (since, until) = effective_bucket_range(since, until);
+  let bucket_width_secs = capsules::telemetry_bucket_width_secs(since, until);
+
+  let rows = client
+    .query_typed(
+      "SELECT h.pigeon_id AS pigeon_id, h.key AS key,
+         date_bin(make_interval(secs => $1::double precision), h.reported_at, $2::timestamptz) AS bucket_start,
+         MIN(h.value_num) AS min,
+         MAX(h.value_num) AS max,
+         AVG(h.value_num) AS mean,
+         (ARRAY_AGG(h.value ORDER BY h.reported_at DESC))[1] AS last,
+         COUNT(*) AS count
+       FROM pigeon_telemetry_history h
+       JOIN pigeons p ON p.id = h.pigeon_id
+       WHERE p.flock_id = $3
+         AND ($4::TEXT[] IS NULL OR h.key = ANY($4))
+         AND h.reported_at >= $2
+         AND h.reported_at <= $5
+       GROUP BY h.pigeon_id, h.key, bucket_start
+       ORDER BY bucket_start ASC, h.pigeon_id ASC, h.key ASC;",
+      &[
+        (&bucket_width_secs, Type::FLOAT8),
+        (&since, Type::TIMESTAMPTZ),
+        (&flock_uuid, Type::UUID),
+        (&keys, Type::TEXT_ARRAY),
+        (&until, Type::TIMESTAMPTZ),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Telemetry history bucket query error for flock {flock_id_str}: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows_to_buckets(&rows))
 }
 
 /// Idempotently ensures the `pigeons.telemetry_endpoint` column exists on

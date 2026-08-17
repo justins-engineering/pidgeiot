@@ -11,6 +11,7 @@ use crate::helpers::{
   list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_roles,
   mark_webhook_event_processed, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do,
   proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
   rename_organization, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
   update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
@@ -23,7 +24,8 @@ use capsules::{
   FlockCreateRequest, OrgRole, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryQuery,
+  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TelemetryHistoryQuery,
 };
 use futures::future::join_all;
 use worker::{
@@ -81,6 +83,18 @@ fn telemetry_history_response(page: TelemetryHistoryPage) -> worker::Result<Resp
     if page.truncated { "true" } else { "false" },
   )?;
   Ok(response)
+}
+
+/// The default (non-`raw`) history response -- a bare `TelemetryHistoryBucket`
+/// array, no truncation header. Unlike `telemetry_history_response`'s page,
+/// there is nothing to flag: bucketing bounds the response by construction
+/// (`capsules::TELEMETRY_HISTORY_BUCKET_TARGET`'s doc comment), so
+/// `truncated` would always be `false` and isn't worth a header no client
+/// needs to check.
+fn telemetry_history_bucket_response(
+  buckets: Vec<TelemetryHistoryBucket>,
+) -> worker::Result<Response> {
+  Response::from_json(&buckets)
 }
 
 /// RFC 9727 API catalog handler for `/.well-known/api-catalog`, shared by
@@ -1478,31 +1492,55 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(resp) => return resp.with_cors(&cors),
         };
 
-        // Greptime-first, PG-fallback-on-error -- see helpers/greptime.rs
-        // for the full reasoning. `greptime_origin` returning `None`
-        // (unconfigured for this env) skips straight to the PG path below.
         let keys = query.key_list();
 
-        if crate::helpers::greptime_origin(&ctx.env).is_some() {
-          match crate::helpers::query_greptime_history_for_pigeon(
-            &ctx.env,
-            &pigeon_id,
+        // `raw=true` keeps the old flat/truncating shape, Greptime-first
+        // fallback and all -- see TelemetryHistoryQuery::raw's doc comment
+        // for who still needs it. The default bucketed path below skips
+        // Greptime entirely: it's unconfigured everywhere but dev (see
+        // CLAUDE.md's Postgres-consolidation note), and bucketing it too
+        // would mean a second, parallel implementation over Greptime's own
+        // SQL dialect for a store this platform no longer writes to outside
+        // local dev.
+        if query.raw {
+          // Greptime-first, PG-fallback-on-error -- see helpers/greptime.rs
+          // for the full reasoning. `greptime_origin` returning `None`
+          // (unconfigured for this env) skips straight to the PG path
+          // below.
+          if crate::helpers::greptime_origin(&ctx.env).is_some() {
+            match crate::helpers::query_greptime_history_for_pigeon(
+              &ctx.env,
+              &pigeon_id,
+              keys.as_deref(),
+              query.since,
+              query.until,
+            )
+            .await
+            {
+              Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
+              Err(e) => console_error!(
+                "Greptime history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
+              ),
+            }
+          }
+
+          get_db!(ctx.env, client, &cors);
+
+          let page = query_telemetry_history_for_pigeon(
+            &client,
+            &access,
             keys.as_deref(),
             query.since,
             query.until,
           )
-          .await
-          {
-            Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
-            Err(e) => console_error!(
-              "Greptime history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
-            ),
-          }
+          .await?;
+
+          return telemetry_history_response(page)?.with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
 
-        let page = query_telemetry_history_for_pigeon(
+        let buckets = query_telemetry_history_buckets_for_pigeon(
           &client,
           &access,
           keys.as_deref(),
@@ -1511,7 +1549,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         )
         .await?;
 
-        telemetry_history_response(page)?.with_cors(&cors)
+        telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
     )
     .get_async(
@@ -1564,31 +1602,46 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let keys = query.key_list();
 
-        if crate::helpers::greptime_origin(&ctx.env).is_some() {
-          match crate::helpers::get_flock_pigeon_ids(&client, &flock_access).await {
-            Ok(pigeon_ids) => {
-              match crate::helpers::query_greptime_history_for_pigeons(
-                &ctx.env,
-                &pigeon_ids,
-                keys.as_deref(),
-                query.since,
-                query.until,
-              )
-              .await
-              {
-                Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
-                Err(e) => console_error!(
-                  "Greptime flock history query failed for flock {flock_id}, falling back to PG: {e}"
-                ),
+        // Same raw/bucketed split as the pigeon-scoped route above -- see
+        // its comment for why the bucketed default skips Greptime.
+        if query.raw {
+          if crate::helpers::greptime_origin(&ctx.env).is_some() {
+            match crate::helpers::get_flock_pigeon_ids(&client, &flock_access).await {
+              Ok(pigeon_ids) => {
+                match crate::helpers::query_greptime_history_for_pigeons(
+                  &ctx.env,
+                  &pigeon_ids,
+                  keys.as_deref(),
+                  query.since,
+                  query.until,
+                )
+                .await
+                {
+                  Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
+                  Err(e) => console_error!(
+                    "Greptime flock history query failed for flock {flock_id}, falling back to PG: {e}"
+                  ),
+                }
               }
+              Err(e) => console_error!(
+                "Flock pigeon-id lookup failed for {flock_id}, falling back to PG: {e}"
+              ),
             }
-            Err(e) => console_error!(
-              "Flock pigeon-id lookup failed for {flock_id}, falling back to PG: {e}"
-            ),
           }
+
+          let page = query_telemetry_history_for_flock(
+            &client,
+            &flock_access,
+            keys.as_deref(),
+            query.since,
+            query.until,
+          )
+          .await?;
+
+          return telemetry_history_response(page)?.with_cors(&cors);
         }
 
-        let page = query_telemetry_history_for_flock(
+        let buckets = query_telemetry_history_buckets_for_flock(
           &client,
           &flock_access,
           keys.as_deref(),
@@ -1597,7 +1650,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         )
         .await?;
 
-        telemetry_history_response(page)?.with_cors(&cors)
+        telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
     )
     // --- Public Demo Routes ---
@@ -1652,26 +1705,46 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let access = PigeonAccess::from_demo_allowlist(&pigeon_id);
         let keys = query.key_list();
 
-        if crate::helpers::greptime_origin(&ctx.env).is_some() {
-          match crate::helpers::query_greptime_history_for_pigeon(
-            &ctx.env,
-            &pigeon_id,
+        // Same raw/bucketed split as the authenticated pigeon-scoped route
+        // -- the demo pigeon is the exact case that motivated bucketing
+        // (5 keys at 30s, ~3.5h drawable under the old truncate-at-5000
+        // shape against a page that asks for 6h -- see capsules'
+        // TELEMETRY_HISTORY_BUCKET_TARGET doc comment).
+        if query.raw {
+          if crate::helpers::greptime_origin(&ctx.env).is_some() {
+            match crate::helpers::query_greptime_history_for_pigeon(
+              &ctx.env,
+              &pigeon_id,
+              keys.as_deref(),
+              query.since,
+              query.until,
+            )
+            .await
+            {
+              Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
+              Err(e) => console_error!(
+                "Greptime demo history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
+              ),
+            }
+          }
+
+          get_db!(ctx.env, client, &cors);
+
+          let page = query_telemetry_history_for_pigeon(
+            &client,
+            &access,
             keys.as_deref(),
             query.since,
             query.until,
           )
-          .await
-          {
-            Ok(page) => return telemetry_history_response(page)?.with_cors(&cors),
-            Err(e) => console_error!(
-              "Greptime demo history query failed for pigeon {pigeon_id}, falling back to PG: {e}"
-            ),
-          }
+          .await?;
+
+          return telemetry_history_response(page)?.with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
 
-        let page = query_telemetry_history_for_pigeon(
+        let buckets = query_telemetry_history_buckets_for_pigeon(
           &client,
           &access,
           keys.as_deref(),
@@ -1680,7 +1753,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         )
         .await?;
 
-        telemetry_history_response(page)?.with_cors(&cors)
+        telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
     )
     // Lets the demo page draw its threshold line from the alert that is
