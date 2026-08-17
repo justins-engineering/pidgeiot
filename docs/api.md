@@ -1605,11 +1605,11 @@ coap-client -m post -u <pigeon_id> -k '<tls_psk_secret>' \
   "coaps://coap.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry"
 ```
 
-**No Connection ID (RFC 9146) yet.** No production Rust DTLS stack exposes CID today (OpenSSL
-itself never implemented it for DTLS 1.2). Practical consequence for PSM/NAT'd cellular
-devices: when the NAT mapping dies during sleep, the next wake needs a fresh DTLS handshake
-(~2 RTT with these PSK suites) rather than resuming the old association. The upgrade path and
-current posture are documented in `docs/infra/coap-terminator.md`.
+**Connection ID (RFC 9146) is supported.** The DTLS listener runs mbedTLS with CID enabled, so
+a PSM/NAT'd cellular device whose NAT mapping dies during sleep can keep its DTLS association
+across an address/port rebind instead of paying a fresh handshake (~2 RTT with these PSK
+suites) on every wake. Devices that offer no CID negotiate a plain session and work unchanged.
+The terminator's own repository documents the deployment posture.
 
 ---
 
