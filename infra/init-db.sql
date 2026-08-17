@@ -276,6 +276,31 @@ CREATE TABLE IF NOT EXISTS billing_usage_periods (
   PRIMARY KEY (owner_kind, owner_id, period_start)
 );
 
+-- Claimed rollups reported to Stripe's billing meters (dovecote's
+-- helpers/usage.rs reporter). A row is a claim first and a delivery record
+-- second: claimed rows count toward "already reported" whether or not the
+-- POST landed, so a transient Stripe failure undercounts (logged) rather
+-- than ever double-billing. `meter` is our internal name; Stripe's own
+-- event_name is resolved at run time from the price catalog.
+CREATE TABLE IF NOT EXISTS billing_meter_reports (
+  org_id UUID NOT NULL,
+  period_start TIMESTAMPTZ NOT NULL,
+  report_day DATE NOT NULL,
+  meter TEXT NOT NULL CHECK (meter IN ('messages', 'devices')),
+  quantity BIGINT NOT NULL,
+  stripe_identifier TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  posted_at TIMESTAMPTZ,
+  PRIMARY KEY (org_id, period_start, report_day, meter)
+);
+
+-- Cadence gate for the meter reporter, which rides the existing 5-minute
+-- cron: one row, claimed once per ~day.
+CREATE TABLE IF NOT EXISTS billing_reporter_state (
+  id SMALLINT PRIMARY KEY,
+  last_run_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS organization_members (
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,

@@ -43,7 +43,37 @@ CREATE TABLE IF NOT EXISTS billing_usage_periods (
   PRIMARY KEY (owner_kind, owner_id, period_start)
 );
 
+-- Claimed rollups reported to Stripe's billing meters. A row is a claim
+-- first and a delivery record second: the reporter inserts the day's delta
+-- here, then marks posted_at as it hands the figure to Stripe -- claimed
+-- rows count toward "already reported" whether or not the POST landed, so
+-- a transient Stripe failure undercounts (logged) rather than ever
+-- double-billing. `meter` is our internal name ('messages' | 'devices');
+-- Stripe's own event_name is resolved at run time from the price catalog.
+CREATE TABLE IF NOT EXISTS billing_meter_reports (
+  org_id UUID NOT NULL,
+  period_start TIMESTAMPTZ NOT NULL,
+  report_day DATE NOT NULL,
+  meter TEXT NOT NULL CHECK (meter IN ('messages', 'devices')),
+  quantity BIGINT NOT NULL,
+  stripe_identifier TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  posted_at TIMESTAMPTZ,
+  PRIMARY KEY (org_id, period_start, report_day, meter)
+);
+
+-- Cadence gate for the reporter, which rides the existing 5-minute cron:
+-- one row, claimed once per ~day (see helpers/usage.rs::claim_reporter_run).
+CREATE TABLE IF NOT EXISTS billing_reporter_state (
+  id SMALLINT PRIMARY KEY,
+  last_run_at TIMESTAMPTZ NOT NULL
+);
+
 -- Ownership transfer -- see the header. Production:
 ALTER TABLE billing_usage_periods OWNER TO dovecote;
--- Staging (run this line instead, against the staging database):
+ALTER TABLE billing_meter_reports OWNER TO dovecote;
+ALTER TABLE billing_reporter_state OWNER TO dovecote;
+-- Staging (run these lines instead, against the staging database):
 -- ALTER TABLE billing_usage_periods OWNER TO dovecote_staging;
+-- ALTER TABLE billing_meter_reports OWNER TO dovecote_staging;
+-- ALTER TABLE billing_reporter_state OWNER TO dovecote_staging;

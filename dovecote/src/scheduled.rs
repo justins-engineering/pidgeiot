@@ -1,7 +1,8 @@
 use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, event};
 
 use crate::helpers::{
-  evaluate_scheduled_alerts, probe_kratos_health, sweep_telemetry_history_retention,
+  evaluate_scheduled_alerts, probe_kratos_health, report_billing_meters,
+  sweep_telemetry_history_retention,
 };
 
 /// Cron-Trigger entry point (`[triggers] crons`, `wrangler.toml`) for the
@@ -38,5 +39,13 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // so a DB hiccup here doesn't take out the two invocations above it.
   if let Err(e) = sweep_telemetry_history_retention(&env).await {
     console_error!("Telemetry history retention sweep failed: {e}");
+  }
+
+  // Stripe meter reporter (helpers/usage.rs) -- rides the same cron behind
+  // its own ~daily cadence claim (`billing_reporter_state`), for the same
+  // 5-cron-trigger account limit the probe above documents. Skips cleanly
+  // where STRIPE_SECRET_KEY isn't configured; internally best-effort/logged.
+  if let Err(e) = report_billing_meters(&env).await {
+    console_error!("Billing meter report failed: {e}");
   }
 }

@@ -30,6 +30,7 @@ pub use billing::mark_webhook_event_processed;
 
 mod usage;
 pub use usage::count_billable_message;
+pub use usage::report_billing_meters;
 
 mod flocks;
 pub use flocks::backfill_owner_email;

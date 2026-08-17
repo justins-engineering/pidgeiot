@@ -1,12 +1,3 @@
-// Nothing calls this client yet -- the checkout-session, customer-portal
-// and meter-reporting routes it exists for are deliberately not part of
-// the foundation, so a file-scoped allow keeps the rest of the crate's
-// dead-code warnings meaningful instead of scattering per-item
-// attributes. The mechanism itself is verified: a POST from this code
-// path, form-encoded and bearer-authenticated, was exercised against a
-// Stripe-shaped stub under `wrangler dev`.
-#![allow(dead_code)]
-
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use worker::{Env, Fetch, Method, Request, RequestInit};
@@ -216,6 +207,116 @@ async fn stripe_request<T: DeserializeOwned>(
     code: None,
     message: format!("could not parse Stripe response: {e}"),
   })
+}
+
+/// Whether outbound Stripe calls can work in this environment at all --
+/// lets cron-path callers skip cleanly (dev, or an env whose billing isn't
+/// provisioned yet) instead of failing per org.
+pub fn stripe_configured(env: &Env) -> bool {
+  env
+    .secret(STRIPE_SECRET_KEY)
+    .ok()
+    .is_some_and(|k| !k.to_string().trim().is_empty())
+}
+
+/// The generic `{ "data": [...] }` envelope Stripe list endpoints return.
+/// Only `data` is modeled; pagination is a caller concern (every caller
+/// here queries by explicit lookup_keys, well under one page).
+#[derive(Deserialize)]
+pub struct StripeList<T> {
+  pub data: Vec<T>,
+}
+
+#[derive(Deserialize)]
+pub struct StripePrice {
+  #[serde(default)]
+  pub lookup_key: Option<String>,
+  #[serde(default)]
+  pub recurring: Option<StripeRecurring>,
+}
+
+#[derive(Deserialize)]
+pub struct StripeRecurring {
+  /// The Billing Meter id a metered price reads from -- absent on licensed
+  /// (flat) prices.
+  #[serde(default)]
+  pub meter: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StripeMeter {
+  event_name: String,
+}
+
+/// Fetches the active prices for the given lookup_keys. Everything billing
+/// touches resolves through lookup_keys at run time -- prices can be
+/// recreated at new amounts without orphaning code that would otherwise
+/// have pinned their generated ids.
+pub async fn resolve_prices_by_lookup_keys(
+  env: &Env,
+  lookup_keys: &[&str],
+) -> Result<Vec<StripePrice>, StripeError> {
+  let mut path = String::from("/v1/prices?active=true");
+  for key in lookup_keys {
+    path.push('&');
+    path.push_str(&url_encode_component("lookup_keys[]"));
+    path.push('=');
+    path.push_str(&url_encode_component(key));
+  }
+  let list: StripeList<StripePrice> = stripe_get(env, &path).await?;
+  Ok(list.data)
+}
+
+/// Resolves the meter event_name behind a metered price: lookup_key ->
+/// price -> bound meter -> event_name. Two GETs, but it keeps the meter's
+/// name a property of the catalog rather than a constant here -- the same
+/// no-pinned-ids rule as `resolve_prices_by_lookup_keys`.
+pub async fn resolve_meter_event_name(
+  env: &Env,
+  price_lookup_key: &str,
+) -> Result<String, StripeError> {
+  let prices = resolve_prices_by_lookup_keys(env, &[price_lookup_key]).await?;
+  let Some(price) = prices
+    .into_iter()
+    .find(|p| p.lookup_key.as_deref() == Some(price_lookup_key))
+  else {
+    return Err(StripeError::transport(format!(
+      "no active price with lookup_key '{price_lookup_key}'"
+    )));
+  };
+  let Some(meter_id) = price.recurring.and_then(|r| r.meter) else {
+    return Err(StripeError::transport(format!(
+      "price '{price_lookup_key}' is not bound to a billing meter"
+    )));
+  };
+  let meter: StripeMeter = stripe_get(env, &format!("/v1/billing/meters/{meter_id}")).await?;
+  Ok(meter.event_name)
+}
+
+/// Posts one usage figure to a Stripe billing meter. `identifier` is the
+/// deduplication key: deterministic per (org, period, day) at the call
+/// sites, so a same-day replay of the same figure cannot double-bill.
+pub async fn post_meter_event(
+  env: &Env,
+  event_name: &str,
+  stripe_customer_id: &str,
+  value: i64,
+  identifier: &str,
+) -> Result<(), StripeError> {
+  let value = value.to_string();
+  stripe_post::<serde_json::Value>(
+    env,
+    "/v1/billing/meter_events",
+    &[
+      ("event_name", event_name),
+      ("payload[stripe_customer_id]", stripe_customer_id),
+      ("payload[value]", &value),
+      ("identifier", identifier),
+    ],
+    None,
+  )
+  .await
+  .map(|_| ())
 }
 
 #[cfg(test)]
