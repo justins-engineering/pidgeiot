@@ -1526,28 +1526,38 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
           get_db!(ctx.env, client, &cors);
 
-          let page = query_telemetry_history_for_pigeon(
+          let Ok(page) = query_telemetry_history_for_pigeon(
             &client,
             &access,
             keys.as_deref(),
             query.since,
             query.until,
           )
-          .await?;
+          .await
+          else {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          };
 
           return telemetry_history_response(page)?.with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
 
-        let buckets = query_telemetry_history_buckets_for_pigeon(
+        let Ok(buckets) = query_telemetry_history_buckets_for_pigeon(
           &client,
           &access,
           keys.as_deref(),
           query.since,
           query.until,
         )
-        .await?;
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
 
         telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
@@ -1629,26 +1639,36 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             }
           }
 
-          let page = query_telemetry_history_for_flock(
+          let Ok(page) = query_telemetry_history_for_flock(
             &client,
             &flock_access,
             keys.as_deref(),
             query.since,
             query.until,
           )
-          .await?;
+          .await
+          else {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          };
 
           return telemetry_history_response(page)?.with_cors(&cors);
         }
 
-        let buckets = query_telemetry_history_buckets_for_flock(
+        let Ok(buckets) = query_telemetry_history_buckets_for_flock(
           &client,
           &flock_access,
           keys.as_deref(),
           query.since,
           query.until,
         )
-        .await?;
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
 
         telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
@@ -1730,28 +1750,38 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
           get_db!(ctx.env, client, &cors);
 
-          let page = query_telemetry_history_for_pigeon(
+          let Ok(page) = query_telemetry_history_for_pigeon(
             &client,
             &access,
             keys.as_deref(),
             query.since,
             query.until,
           )
-          .await?;
+          .await
+          else {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          };
 
           return telemetry_history_response(page)?.with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
 
-        let buckets = query_telemetry_history_buckets_for_pigeon(
+        let Ok(buckets) = query_telemetry_history_buckets_for_pigeon(
           &client,
           &access,
           keys.as_deref(),
           query.since,
           query.until,
         )
-        .await?;
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
 
         telemetry_history_bucket_response(buckets)?.with_cors(&cors)
       },
