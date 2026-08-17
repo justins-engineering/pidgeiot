@@ -411,6 +411,67 @@ pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
   }
 }
 
+/// The pigeon-creation entitlement decision. Refusal blocks growth only --
+/// nothing about an existing device's ingestion changes here.
+pub enum DeviceCap {
+  Allow,
+  Refuse { device_count: i64, cap: i64 },
+}
+
+/// Whether the account owning `flock_id` may add another device. Only an
+/// account served at the free tier has a hard cap; a paid, entitled tier
+/// past its included device count is allowed through and billed per-device
+/// overage instead (the reporter's job). Status gates before plan, as
+/// everywhere.
+///
+/// Fail-open on lookup errors (logged): an infrastructure blip must not
+/// block provisioning, and the count is re-derived on the next attempt
+/// anyway.
+pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> DeviceCap {
+  let rows = match client
+    .query_typed(
+      "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+         (SELECT COUNT(*)::bigint
+            FROM pigeons p JOIN flocks f2 ON f2.id = p.flock_id
+            WHERE (f.org_id IS NOT NULL AND f2.org_id = f.org_id)
+               OR (f.org_id IS NULL AND f2.org_id IS NULL
+                   AND f2.user_id = f.user_id)) AS device_count
+       FROM flocks f
+       LEFT JOIN organizations o ON o.id = f.org_id
+       WHERE f.id = $1;",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Device cap check failed for flock {flock_id} (failing open): {e}");
+      return DeviceCap::Allow;
+    }
+  };
+
+  // Unknown flock: the route's own authorization already 403s that case;
+  // nothing for the cap to add.
+  let Some(row) = rows.first() else {
+    return DeviceCap::Allow;
+  };
+
+  let org_plan: Option<String> = row.get("org_plan");
+  let org_status: Option<String> = row.get("org_status");
+  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
+  if plan != BillingPlan::Perch {
+    return DeviceCap::Allow;
+  }
+
+  let device_count: i64 = row.get("device_count");
+  let cap = BillingPlan::Perch.included_devices();
+  if device_count >= cap {
+    DeviceCap::Refuse { device_count, cap }
+  } else {
+    DeviceCap::Allow
+  }
+}
+
 // --- Stripe meter reporting ---
 //
 // Our Postgres rows above are the source of truth for usage; Stripe's

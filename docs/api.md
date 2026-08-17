@@ -431,6 +431,12 @@ survives the creator leaving). Body: `capsules::PigeonCreateRequest`
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
 device endpoint URL and credential).
 
+**Device-count entitlement.** An account served at the free tier (no org, or an org whose
+subscription status isn't entitled) is capped at its included device count — creation past the
+cap answers `403` with an upgrade hint. Paid, entitled tiers are never refused here; devices
+past the included count bill as per-device overage instead. The check fails open on lookup
+errors, and a refusal only ever blocks *growth*: existing devices keep ingesting regardless.
+
 > **CoAP is terminated by a dedicated service (`loft`), not by the edge Worker.** The `Coap`
 > connector variant mints PSK credentials (`tls_psk_identity` = the pigeon's own id,
 > `tls_psk_secret` = a 32-char hex PSK minted alongside the bearer token — one mint/refresh

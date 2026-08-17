@@ -1,14 +1,14 @@
 use crate::helpers::{
-  IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow,
+  DeviceCap, IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow,
   StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite, apply_subscription,
   attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
-  change_member_role, check_perch_ingest_fuse, check_pigeon_authz, claim_webhook_event,
-  constant_time_eq, create_checkout_session, create_customer, create_flock_alert, create_invite,
-  create_organization, create_pigeon_alert, create_portal_session, create_user_flock,
-  delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
-  ensure_billing_tables, ensure_billing_usage_tables, fetch_subscription, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer, get_organization,
-  get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
+  change_member_role, check_device_cap, check_perch_ingest_fuse, check_pigeon_authz,
+  claim_webhook_event, constant_time_eq, create_checkout_session, create_customer,
+  create_flock_alert, create_invite, create_organization, create_pigeon_alert,
+  create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
+  delete_pigeon_pg_db, ensure_billing_tables, ensure_billing_usage_tables, fetch_subscription,
+  get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
+  get_organization, get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
   list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
   list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
@@ -996,6 +996,23 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       if !allowed {
         return Response::error(
           "Forbidden: Only the flock owner (or an org owner/admin) can create pigeons here",
+          403,
+        )
+        .unwrap()
+        .with_cors(&cors);
+      }
+
+      // Device-count entitlement, status-gated before plan inside
+      // check_device_cap. A refusal blocks growth only -- existing devices
+      // keep ingesting -- and the check fails open on lookup errors, so a
+      // Postgres blip can't block provisioning.
+      if let DeviceCap::Refuse { device_count, cap } =
+        check_device_cap(&client, &payload.flock_id).await
+      {
+        return Response::error(
+          format!(
+            "Forbidden: the free tier includes {cap} devices and this account already has {device_count} -- upgrade to add more"
+          ),
           403,
         )
         .unwrap()

@@ -36,7 +36,9 @@ pub use billing::load_org_billing_overview;
 pub use billing::mark_webhook_event_processed;
 
 mod usage;
+pub use usage::DeviceCap;
 pub use usage::IngestFuse;
+pub use usage::check_device_cap;
 pub use usage::check_perch_ingest_fuse;
 pub use usage::count_billable_message;
 pub use usage::ensure_billing_usage_tables;
