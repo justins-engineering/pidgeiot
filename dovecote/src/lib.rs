@@ -1,30 +1,34 @@
 use crate::helpers::{
-  IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeWebhookEvent,
-  TelemetryHistoryPage, WebhookClaim, accept_invite, apply_subscription, authenticate_browser,
-  backfill_owner_email, build_invite_url, change_member_role, check_perch_ingest_fuse,
-  check_pigeon_authz, claim_webhook_event, constant_time_eq, create_flock_alert, create_invite,
+  IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow,
+  StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite, apply_subscription,
+  attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
+  change_member_role, check_perch_ingest_fuse, check_pigeon_authz, claim_webhook_event,
+  constant_time_eq, create_checkout_session, create_customer, create_flock_alert, create_invite,
   create_organization, create_pigeon_alert, create_user_flock, delete_alert_definition,
-  delete_organization_if_empty, delete_pigeon_pg_db, ensure_billing_tables, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
+  delete_organization_if_empty, delete_pigeon_pg_db, ensure_billing_tables,
+  ensure_billing_usage_tables, fetch_subscription, get_db_client, get_flock_with_pigeons,
+  get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
   grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
   is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts,
   list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
-  list_pigeon_alerts, list_user_organizations, load_org_roles, mark_webhook_event_processed,
-  mint_invite_token, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
-  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, remove_member, rename_organization, revoke_invite,
-  send_feedback_email, send_invite_email, sha256_hex, update_alert_definition, update_pigeon_pg_db,
+  list_pigeon_alerts, list_user_organizations, load_org_billing_overview, load_org_roles,
+  mark_webhook_event_processed, mint_invite_token, org_role_of, proxy_binary_to_pigeon_do,
+  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
+  rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
+  send_invite_email, sha256_hex, stripe_configured, update_alert_definition, update_pigeon_pg_db,
   update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
   verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
-  AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, OrgRole, OrganizationCreateRequest, OrganizationDetail,
-  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
-  OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
+  BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest, OrgRole,
+  OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
+  OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
+  OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
+  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
   TelemetryHistoryQuery,
 };
 use futures::future::join_all;
@@ -3336,6 +3340,205 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // session or a device token. Registered as an exact path with no
     // trailing-slash variant: Stripe counts a 3xx as a failed delivery and
     // would retry for three days against a redirect.
+    // --- Billing (org-scoped) ---
+    // Read side is member-visible; the mutating session mints (checkout,
+    // and portal below) are manager-only, same split as the rest of the
+    // org surface. Stripe hosts every payment page -- these routes only
+    // mint redirect URLs, so card data never touches this Worker.
+    .get_async(
+      "/orgs/:org_id/billing",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if caller_role.is_none() {
+          return Response::error("Forbidden: not a member of this organization", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        // Both lazy-DDL bootstraps: the overview reads the billing columns
+        // AND the usage table, and this is a low-rate dashboard route where
+        // the belt-and-suspenders round trip is cheap.
+        if ensure_billing_tables(&client).await.is_err()
+          || ensure_billing_usage_tables(&client).await.is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        match load_org_billing_overview(&client, &org_id).await {
+          Ok(Some(overview)) => Response::from_json(&overview)?.with_cors(&cors),
+          Ok(None) => Response::error("Not Found: no such organization", 404)
+            .unwrap()
+            .with_cors(&cors),
+          Err(_) => Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors),
+        }
+      },
+    )
+    .post_async(
+      "/orgs/:org_id/billing/checkout",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(payload) = req.json::<BillingCheckoutRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if payload.plan == BillingPlan::Perch {
+          return Response::error("Bad Request: the free tier is not purchasable", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if !caller_role.is_some_and(|r| r.is_manager()) {
+          return Response::error("Forbidden: only owners/admins can manage billing", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        if ensure_billing_tables(&client).await.is_err() {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let existing_customer = match get_org_stripe_customer(&client, &org_id).await {
+          Ok(Some(existing)) => existing,
+          Ok(None) => {
+            return Response::error("Not Found: no such organization", 404)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          Err(_) => {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let customer_id = match existing_customer {
+          Some(id) => id,
+          None => {
+            let Ok(Some(org)) = get_organization(&client, &org_id).await else {
+              return Response::error("Internal Server Error", 500)
+                .unwrap()
+                .with_cors(&cors);
+            };
+            let created = match create_customer(
+              &ctx.env,
+              &org_id.to_string(),
+              &org.name,
+              auth.email.as_deref(),
+            )
+            .await
+            {
+              Ok(created) => created,
+              Err(e) => {
+                console_error!("Stripe customer create failed for org {org_id}: {e}");
+                return Response::error("Bad Gateway: billing provider unavailable", 502)
+                  .unwrap()
+                  .with_cors(&cors);
+              }
+            };
+            // Keep-the-first COALESCE decides the winner if two managers
+            // race; the loser's customer is an orphan on Stripe's side,
+            // harmless and visible there. An attach failure still lets
+            // this request proceed -- the webhook re-attaches via the
+            // session's client_reference_id.
+            match attach_stripe_customer(&client, &org_id, &created).await {
+              Ok(Some(winner)) => winner,
+              _ => created,
+            }
+          }
+        };
+
+        let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {
+          Ok(prices) => prices,
+          Err(e) => {
+            console_error!("Checkout price resolution failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let root_url = ctx
+          .env
+          .var("ROOT_URL")
+          .map(|v| v.to_string())
+          .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
+        let success_url = format!("{root_url}/orgs/{org_id}?billing=success");
+        let cancel_url = format!("{root_url}/orgs/{org_id}?billing=cancelled");
+
+        let url = match create_checkout_session(
+          &ctx.env,
+          &customer_id,
+          &org_id.to_string(),
+          payload.plan,
+          &prices,
+          &success_url,
+          &cancel_url,
+        )
+        .await
+        {
+          Ok(url) => url,
+          Err(e) => {
+            console_error!("Checkout session create failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        Response::from_json(&BillingSessionUrl { url })?.with_cors(&cors)
+      },
+    )
     .post_async("/billing/webhook", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
 
@@ -3448,6 +3651,71 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             event.id,
             event.kind
           );
+        }
+      } else if event.kind == "checkout.session.completed" {
+        let Ok(session) =
+          serde_json::from_value::<StripeCheckoutSessionRow>(event.data.object.clone())
+        else {
+          console_error!(
+            "Stripe webhook: {} carried an unreadable checkout session object",
+            event.id
+          );
+          return Response::error("Bad Request: unreadable checkout session object", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Bind the customer to the originating org first: the
+        // subscription lifecycle events can arrive in any order relative
+        // to this one, and they match org rows by customer id.
+        if let (Some(org_id), Some(customer_id)) = (
+          session
+            .client_reference_id
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok()),
+          session.customer.as_deref(),
+        ) && attach_stripe_customer(&client, &org_id, customer_id)
+          .await
+          .is_err()
+        {
+          console_error!(
+            "Stripe webhook: {} could not attach customer to org {org_id}",
+            event.id
+          );
+        }
+
+        match session.subscription.as_deref() {
+          Some(subscription_id) if stripe_configured(&ctx.env) => {
+            match fetch_subscription(&ctx.env, subscription_id).await {
+              Ok(subscription) => {
+                let billing: capsules::OrganizationBilling = subscription.into();
+                match apply_subscription(&client, &billing, event_created).await {
+                  Ok(true) => {}
+                  Ok(false) => console_error!(
+                    "Stripe webhook: {} checkout completion matched no organization row",
+                    event.id
+                  ),
+                  Err(_) => {
+                    return Response::error("Internal Server Error", 500)
+                      .unwrap()
+                      .with_cors(&cors);
+                  }
+                }
+              }
+              // The subscription's own lifecycle events carry the same
+              // state, so a fetch failure here is logged and acked rather
+              // than earning a retry loop.
+              Err(e) => console_error!(
+                "Stripe webhook: {} could not fetch its subscription: {e}",
+                event.id
+              ),
+            }
+          }
+          Some(_) => console_error!(
+            "Stripe webhook: {} names a subscription but STRIPE_SECRET_KEY is not configured -- relying on subscription events alone",
+            event.id
+          ),
+          None => {}
         }
       }
 

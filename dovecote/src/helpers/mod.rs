@@ -11,10 +11,13 @@ pub use access::verify_cf_access;
 mod crypto;
 pub use crypto::constant_time_eq;
 
-// No `pub use` yet -- the checkout-session, customer-portal and
-// meter-reporting routes that call this client are a later phase, and
-// re-exporting names nothing imports would only add warnings.
 mod stripe_api;
+pub use stripe_api::StripeCheckoutSessionRow;
+pub use stripe_api::create_checkout_session;
+pub use stripe_api::create_customer;
+pub use stripe_api::fetch_subscription;
+pub use stripe_api::resolve_checkout_prices;
+pub use stripe_api::stripe_configured;
 
 mod stripe_webhook;
 pub use stripe_webhook::STRIPE_WEBHOOK_SECRET;
@@ -24,14 +27,18 @@ pub use stripe_webhook::verify_webhook_signature;
 mod billing;
 pub use billing::WebhookClaim;
 pub use billing::apply_subscription;
+pub use billing::attach_stripe_customer;
 pub use billing::claim_webhook_event;
 pub use billing::ensure_billing_tables;
+pub use billing::get_org_stripe_customer;
+pub use billing::load_org_billing_overview;
 pub use billing::mark_webhook_event_processed;
 
 mod usage;
 pub use usage::IngestFuse;
 pub use usage::check_perch_ingest_fuse;
 pub use usage::count_billable_message;
+pub use usage::ensure_billing_usage_tables;
 pub use usage::report_billing_meters;
 
 mod flocks;

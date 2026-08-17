@@ -367,6 +367,46 @@ and the inviter's ability to revoke pending invites and remove members. The alte
 emails; if that ever matters more than invitee flexibility, the accept handler is the single
 place to add the check.
 
+### Billing
+
+Billing attaches to **organizations** (a personal, org-less account is always the free tier).
+Stripe hosts every payment surface — these routes mint redirect URLs and read state; card data
+never touches this API. The read side is member-visible; the session mints are manager-only
+(owner/admin), matching the rest of the org permission matrix.
+
+#### `GET /orgs/:org_id/billing` — org: member
+
+Returns `capsules::OrganizationBillingOverview`: the stored `plan`, `subscription_status`,
+whether that status is currently `entitled`, the **`effective_plan`** actually being served
+(entitlement-gated — a cancelled org shows its old `plan` but an `effective_plan` of the free
+tier), `cancel_at_period_end`, `has_billing_account` (whether a Stripe customer exists — the
+precondition for the portal), the usage-period bounds, and usage against allowance:
+`billable_messages` / `included_messages`, `device_count` / `included_devices`. Usage-period
+bounds are the org's Stripe billing period while a live subscription covers now, the calendar
+month otherwise — the same anchoring the usage tally itself uses. `403` for non-members,
+`404` for an unknown org.
+
+#### `POST /orgs/:org_id/billing/checkout` — org: manage
+
+Mints a Stripe Checkout session for a paid tier and returns
+`capsules::BillingSessionUrl` (`{ url }`) for the dashboard to redirect to. Body:
+`capsules::BillingCheckoutRequest` (`{ plan: builder|growth|scale|fleet }`) — `perch` is a
+`400` (the free tier is not purchasable). The session carries three prices, resolved at
+request time by `lookup_key` (never pinned ids): the licensed tier, the pooled
+`message-overage` meter price, and that tier's own `device-overage-<tier>` meter price.
+Creates (and remembers) the org's Stripe customer on first use. `502` when Stripe itself is
+unreachable or the catalog is missing a price.
+
+#### `POST /billing/webhook` — Stripe signature required
+
+The Stripe event sink (not a dashboard route; authenticated by `Stripe-Signature`
+HMAC verification against the endpoint signing secret, 5-minute replay window, `v1` scheme
+only). Handles `customer.subscription.*` (writes plan/status/period onto the owning org,
+idempotently, with out-of-order-event protection) and `checkout.session.completed` (binds the
+Stripe customer to the originating org and applies the purchased subscription's state).
+Deliveries are claimed in `stripe_webhook_events` before anything is applied, so replays and
+concurrent deliveries are acknowledged without being re-applied.
+
 ### Pigeons
 
 #### `POST /flock/pigeons` — flock: manage

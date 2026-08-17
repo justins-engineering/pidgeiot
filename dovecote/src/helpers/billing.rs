@@ -1,7 +1,8 @@
-use capsules::{BillingPlan, OrganizationBilling, SubscriptionStatus};
+use capsules::{BillingPlan, OrganizationBilling, OrganizationBillingOverview, SubscriptionStatus};
 use time::OffsetDateTime;
 use tokio_postgres::Client;
 use tokio_postgres::types::Type;
+use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
 /// Runtime schema bootstrap, same lazy-DDL convention as
@@ -116,6 +117,122 @@ pub async fn mark_webhook_event_processed(client: &Client, event_id: &str) -> Re
       console_error!("Stripe webhook processed-mark error: {e}");
       Error::RustError("Internal Server Error".into())
     })
+}
+
+/// The org's stored Stripe customer id, if any -- `None` (outer) when the
+/// org doesn't exist at all.
+pub async fn get_org_stripe_customer(
+  client: &Client,
+  org_id: &Uuid,
+) -> Result<Option<Option<String>>> {
+  let rows = client
+    .query_typed(
+      "SELECT stripe_customer_id FROM organizations WHERE id = $1;",
+      &[(org_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Org Stripe customer lookup error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+  Ok(rows.first().map(|row| row.get("stripe_customer_id")))
+}
+
+/// Binds a Stripe customer to an org, keeping any id already there --
+/// COALESCE so a lost race (or a replayed webhook) can never re-point an
+/// org at a second customer. Returns the id that actually won.
+pub async fn attach_stripe_customer(
+  client: &Client,
+  org_id: &Uuid,
+  customer_id: &str,
+) -> Result<Option<String>> {
+  let rows = client
+    .query_typed(
+      "UPDATE organizations
+       SET stripe_customer_id = COALESCE(stripe_customer_id, $2), updated_at = now()
+       WHERE id = $1
+       RETURNING stripe_customer_id;",
+      &[(org_id, Type::UUID), (&customer_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Org Stripe customer attach error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+  Ok(rows.first().and_then(|row| row.get("stripe_customer_id")))
+}
+
+/// One read of everything the dashboard's billing panel shows: the org's
+/// billing columns, the tallied usage for the period those columns anchor
+/// (Stripe period while a live subscription covers now, calendar month
+/// otherwise -- the same anchoring the tally itself uses), and the org's
+/// current device count. `None` if the org doesn't exist.
+pub async fn load_org_billing_overview(
+  client: &Client,
+  org_id: &Uuid,
+) -> Result<Option<OrganizationBillingOverview>> {
+  let rows = client
+    .query_typed(
+      "WITH anchored AS (
+         SELECT o.*,
+           (o.subscription_status IN ('trialing', 'active', 'past_due')
+             AND o.current_period_start IS NOT NULL
+             AND o.current_period_end IS NOT NULL
+             AND now() >= o.current_period_start
+             AND now() < o.current_period_end) AS use_org_period
+         FROM organizations o WHERE o.id = $1
+       )
+       SELECT a.plan, a.subscription_status, a.stripe_customer_id, a.cancel_at_period_end,
+         CASE WHEN a.use_org_period THEN a.current_period_start
+              ELSE date_trunc('month', now()) END AS usage_period_start,
+         CASE WHEN a.use_org_period THEN a.current_period_end
+              ELSE date_trunc('month', now()) + interval '1 month' END AS usage_period_end,
+         COALESCE(u.billable_messages, 0) AS billable_messages,
+         (SELECT COUNT(*)::bigint FROM pigeons p
+            JOIN flocks f ON f.id = p.flock_id
+            WHERE f.org_id = a.id) AS device_count
+       FROM anchored a
+       LEFT JOIN billing_usage_periods u
+         ON u.owner_kind = 'org' AND u.owner_id = a.id
+        AND u.period_start = CASE WHEN a.use_org_period THEN a.current_period_start
+                                  ELSE date_trunc('month', now()) END;",
+      &[(org_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Org billing overview error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let Some(row) = rows.first() else {
+    return Ok(None);
+  };
+
+  let plan_raw: String = row.get("plan");
+  let status_raw: String = row.get("subscription_status");
+  let customer_id: Option<String> = row.get("stripe_customer_id");
+
+  let plan: BillingPlan = plan_raw.parse().unwrap_or_default();
+  // Same conservative fallback the webhook conversion applies: an
+  // unknown status string reads as unentitled-but-subscribed, never as
+  // "never subscribed".
+  let status: SubscriptionStatus = status_raw.parse().unwrap_or(SubscriptionStatus::Incomplete);
+  let effective_plan = super::usage::effective_plan(Some(&plan_raw), Some(&status_raw));
+
+  Ok(Some(OrganizationBillingOverview {
+    plan,
+    status,
+    entitled: status.is_entitled(),
+    effective_plan,
+    cancel_at_period_end: row.get("cancel_at_period_end"),
+    has_billing_account: customer_id.is_some(),
+    usage_period_start: row.get("usage_period_start"),
+    usage_period_end: row.get("usage_period_end"),
+    billable_messages: row.get("billable_messages"),
+    included_messages: effective_plan.included_messages(),
+    device_count: row.get("device_count"),
+    included_devices: effective_plan.included_devices(),
+  }))
 }
 
 /// Writes a subscription's state onto the org that owns it, matching on

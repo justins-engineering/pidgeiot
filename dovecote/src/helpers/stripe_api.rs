@@ -229,6 +229,7 @@ pub struct StripeList<T> {
 
 #[derive(Deserialize)]
 pub struct StripePrice {
+  pub id: String,
   #[serde(default)]
   pub lookup_key: Option<String>,
   #[serde(default)]
@@ -291,6 +292,145 @@ pub async fn resolve_meter_event_name(
   };
   let meter: StripeMeter = stripe_get(env, &format!("/v1/billing/meters/{meter_id}")).await?;
   Ok(meter.event_name)
+}
+
+/// The three prices a paid-tier Checkout session carries: the licensed
+/// tier itself plus both metered overage prices (pooled message overage,
+/// and that tier's own per-device overage rate). Attached together at
+/// checkout so the subscription can bill overage without a later
+/// subscription edit.
+pub struct CheckoutPrices {
+  pub tier_price_id: String,
+  pub message_overage_price_id: String,
+  pub device_overage_price_id: String,
+}
+
+/// Resolves the three Checkout price ids for a tier by lookup_key, in one
+/// list call. Missing catalog entries are an error, not a guess -- a
+/// session created without its overage prices would silently sell
+/// unmetered usage.
+pub async fn resolve_checkout_prices(
+  env: &Env,
+  tier: capsules::BillingPlan,
+) -> Result<CheckoutPrices, StripeError> {
+  let tier_key = tier.as_str();
+  let device_key = format!("device-overage-{tier_key}");
+  let prices =
+    resolve_prices_by_lookup_keys(env, &[tier_key, "message-overage", &device_key]).await?;
+
+  let find = |key: &str| {
+    prices
+      .iter()
+      .find(|p| p.lookup_key.as_deref() == Some(key))
+      .map(|p| p.id.clone())
+      .ok_or_else(|| StripeError::transport(format!("no active price with lookup_key '{key}'")))
+  };
+
+  Ok(CheckoutPrices {
+    tier_price_id: find(tier_key)?,
+    message_overage_price_id: find("message-overage")?,
+    device_overage_price_id: find(&device_key)?,
+  })
+}
+
+#[derive(Deserialize)]
+struct StripeCustomer {
+  id: String,
+}
+
+/// Creates the Stripe customer an org's billing hangs off. Idempotency key
+/// is derived from the org id, so a retried request within Stripe's replay
+/// window returns the same customer instead of minting a duplicate; the
+/// caller still writes the id back with a keep-the-first COALESCE.
+pub async fn create_customer(
+  env: &Env,
+  org_id: &str,
+  org_name: &str,
+  email: Option<&str>,
+) -> Result<String, StripeError> {
+  let mut params = vec![("name", org_name), ("metadata[org_id]", org_id)];
+  if let Some(email) = email {
+    params.push(("email", email));
+  }
+  let idempotency_key = format!("customer-{org_id}");
+  let customer: StripeCustomer =
+    stripe_post(env, "/v1/customers", &params, Some(&idempotency_key)).await?;
+  Ok(customer.id)
+}
+
+#[derive(Deserialize)]
+struct StripeCheckoutSession {
+  #[serde(default)]
+  url: Option<String>,
+}
+
+/// Creates a subscription-mode Checkout session for a paid tier: licensed
+/// tier price plus both metered overage prices (metered items carry no
+/// quantity). `client_reference_id` and `subscription_data[metadata]` both
+/// name the org, so the webhook can bind the result even if the org row's
+/// customer id were somehow missing.
+pub async fn create_checkout_session(
+  env: &Env,
+  customer_id: &str,
+  org_id: &str,
+  tier: capsules::BillingPlan,
+  prices: &CheckoutPrices,
+  success_url: &str,
+  cancel_url: &str,
+) -> Result<String, StripeError> {
+  let session: StripeCheckoutSession = stripe_post(
+    env,
+    "/v1/checkout/sessions",
+    &[
+      ("mode", "subscription"),
+      ("customer", customer_id),
+      ("client_reference_id", org_id),
+      ("success_url", success_url),
+      ("cancel_url", cancel_url),
+      ("line_items[0][price]", &prices.tier_price_id),
+      ("line_items[0][quantity]", "1"),
+      ("line_items[1][price]", &prices.message_overage_price_id),
+      ("line_items[2][price]", &prices.device_overage_price_id),
+      ("subscription_data[metadata][plan]", tier.as_str()),
+      ("subscription_data[metadata][org_id]", org_id),
+    ],
+    None,
+  )
+  .await?;
+
+  session
+    .url
+    .ok_or_else(|| StripeError::transport("checkout session created but carried no redirect URL"))
+}
+
+/// The slice of a `checkout.session.completed` webhook object the handler
+/// needs: who paid (customer), what it bought (subscription), and which
+/// org started the session.
+#[derive(Deserialize, Debug)]
+pub struct StripeCheckoutSessionRow {
+  #[serde(default)]
+  pub customer: Option<String>,
+  #[serde(default)]
+  pub subscription: Option<String>,
+  #[serde(default)]
+  pub client_reference_id: Option<String>,
+}
+
+/// Fetches a subscription's current state -- used when a completed
+/// checkout names a subscription whose own lifecycle events may not have
+/// arrived yet (Stripe delivers events unordered).
+pub async fn fetch_subscription(
+  env: &Env,
+  subscription_id: &str,
+) -> Result<capsules::StripeSubscriptionRow, StripeError> {
+  stripe_get(
+    env,
+    &format!(
+      "/v1/subscriptions/{}",
+      url_encode_component(subscription_id)
+    ),
+  )
+  .await
 }
 
 /// Posts one usage figure to a Stripe billing meter. `identifier` is the

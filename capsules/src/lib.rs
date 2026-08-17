@@ -1815,6 +1815,49 @@ impl From<StripeSubscriptionRow> for OrganizationBilling {
   }
 }
 
+/// Body of `POST /orgs/:org_id/billing/checkout` -- which paid tier the
+/// caller wants a Stripe Checkout session for. The free tier is not
+/// purchasable, so `plan: perch` is a 400 at the route.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BillingCheckoutRequest {
+  pub plan: BillingPlan,
+}
+
+/// A hosted Stripe session URL (Checkout or the customer Billing Portal),
+/// minted server-side for the dashboard to redirect to. Card data never
+/// touches our own surfaces.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BillingSessionUrl {
+  pub url: String,
+}
+
+/// `GET /orgs/:org_id/billing` -- an org's billing state plus its usage
+/// against the allowance, in one read. `plan` is the stored tier;
+/// `effective_plan` is the tier actually served (entitlement-gated, so a
+/// cancelled org shows its old `plan` but an `effective_plan` of the free
+/// tier). Usage-period bounds are the org's Stripe period while a live
+/// subscription covers now, the calendar month otherwise -- matching how
+/// usage itself is tallied.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OrganizationBillingOverview {
+  pub plan: BillingPlan,
+  pub status: SubscriptionStatus,
+  pub entitled: bool,
+  pub effective_plan: BillingPlan,
+  pub cancel_at_period_end: bool,
+  /// Whether a Stripe customer exists for this org -- the precondition for
+  /// the Billing Portal button.
+  pub has_billing_account: bool,
+  #[serde(with = "time::serde::rfc3339")]
+  pub usage_period_start: OffsetDateTime,
+  #[serde(with = "time::serde::rfc3339")]
+  pub usage_period_end: OffsetDateTime,
+  pub billable_messages: i64,
+  pub included_messages: i64,
+  pub device_count: i64,
+  pub included_devices: i64,
+}
+
 /// Internal wire shape for the CoAP terminator's PSK resolution call --
 /// dovecote's `GET /internal/coap-psk/:identity` (service-secret gated,
 /// never CORS-exposed to browsers) returns this to `loft` (and only to
