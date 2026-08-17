@@ -13,7 +13,7 @@
 // gate, dovecote's src/helpers/demo.rs).
 use crate::api::fetch_json;
 use crate::config::DEMO_PIGEON_ID;
-use capsules::{DemoAlert, TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{DemoAlert, TelemetryHistoryBucket, TelemetryLatest};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use wasm_bindgen_futures::JsFuture;
@@ -45,12 +45,16 @@ pub async fn get_latest() -> Option<Vec<TelemetryLatest>> {
   serde_wasm_bindgen::from_value(json).ok()
 }
 
-/// GET /demo/pigeons/:id/telemetry/history -- same query params/response
-/// shape as the authenticated route (api/telemetry.rs::get_history).
+/// GET /demo/pigeons/:id/telemetry/history -- bucketed by default (no
+/// `raw=true`), same as `api::telemetry::get_history_buckets`. The demo
+/// pigeon (5 keys reported every 30s) is the case that most directly
+/// motivated bucketing: under the old flat/truncating shape, its 6h
+/// history request only ever drew ~3.5h before hitting
+/// `TELEMETRY_HISTORY_MAX_POINTS`.
 pub async fn get_history(
   since: OffsetDateTime,
   until: OffsetDateTime,
-) -> Option<Vec<TelemetryHistoryPoint>> {
+) -> Option<Vec<TelemetryHistoryBucket>> {
   if DEMO_PIGEON_ID.is_empty() {
     return None;
   }

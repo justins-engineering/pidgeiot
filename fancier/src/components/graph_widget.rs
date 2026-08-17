@@ -12,7 +12,7 @@ use crate::components::telemetry_chart::format_duration;
 use crate::components::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 use crate::helpers::graph_store::{self, GraphScope};
 use crate::helpers::{connection_state, gps_track, is_page_hidden, sleep_ms};
-use capsules::{AlertCondition, AlertStatus, Comparator, TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{AlertCondition, AlertStatus, Comparator, TelemetryHistoryBucket, TelemetryLatest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdRefreshCw;
@@ -209,24 +209,21 @@ fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
     .collect()
 }
 
-/// `telemetry::get_history`/`get_flock_history` return `None` only when the
-/// fetch itself failed (route missing, network error, bad JSON — see
-/// `fetch_json` in api/helpers.rs, which collapses all of those to `None`);
-/// a real pigeon with no telemetry yet still comes back `Some(vec![])`. The
-/// two must not be conflated: `Empty` gets TelemetryChart's own honest
-/// empty-range message, `Preview` gets the mock-data disclaimer — showing
-/// fabricated curves on a real, just-quiet pigeon would be actively
-/// misleading.
+/// `telemetry::get_history_buckets`/`get_flock_history_buckets` return
+/// `None` only when the fetch itself failed (route missing, network error,
+/// bad JSON — see `fetch_json` in api/helpers.rs, which collapses all of
+/// those to `None`); a real pigeon with no telemetry yet still comes back
+/// `Some(vec![])`. The two must not be conflated: `Empty` gets
+/// TelemetryChart's own honest empty-range message, `Preview` gets the
+/// mock-data disclaimer — showing fabricated curves on a real, just-quiet
+/// pigeon would be actively misleading.
+///
+/// No `truncated` flag any more (contrast the old flat/capped shape) --
+/// bucketing bounds the response by construction, so there's nothing the
+/// server could have cut. See `capsules::TELEMETRY_HISTORY_BUCKET_TARGET`'s
+/// doc comment.
 enum SeriesOutcome {
-  Live {
-    series: Vec<ChartSeries>,
-    /// The server hit its own per-response point cap, so this chart is
-    /// showing the newest slice of a longer window than its range claims.
-    /// `TelemetryHistory::truncated`'s "backend didn't say" case collapses
-    /// to `false` here — the warning is only worth showing when we
-    /// positively know the range was cut.
-    truncated: bool,
-  },
+  Live { series: Vec<ChartSeries> },
   Empty,
   Preview(Vec<ChartSeries>),
 }
@@ -236,28 +233,28 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
   let since = until - time::Duration::seconds(def.range.seconds());
 
   match source {
-    GraphScope::Pigeon(pigeon_id) => match telemetry::get_history(pigeon_id, since, until).await {
-      Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
-        series: series_from_history(&def.keys, &history.points),
-        truncated: history.truncated.unwrap_or(false),
-      },
-      Some(_) => SeriesOutcome::Empty,
-      None => SeriesOutcome::Preview(
-        def
-          .keys
-          .iter()
-          .map(|k| ChartSeries {
-            key: k.clone(),
-            points: mock_points(k, since.unix_timestamp(), until.unix_timestamp()),
-          })
-          .collect(),
-      ),
-    },
+    GraphScope::Pigeon(pigeon_id) => {
+      match telemetry::get_history_buckets(pigeon_id, since, until).await {
+        Some(buckets) if !buckets.is_empty() => SeriesOutcome::Live {
+          series: series_from_history(&def.keys, &buckets),
+        },
+        Some(_) => SeriesOutcome::Empty,
+        None => SeriesOutcome::Preview(
+          def
+            .keys
+            .iter()
+            .map(|k| ChartSeries {
+              key: k.clone(),
+              points: mock_points(k, since.unix_timestamp(), until.unix_timestamp()),
+            })
+            .collect(),
+        ),
+      }
+    }
     GraphScope::Flock(flock_id) => {
-      match telemetry::get_flock_history(flock_id, since, until).await {
-        Some(history) if !history.points.is_empty() => SeriesOutcome::Live {
-          series: series_from_flock_history(&def.keys, &history.points),
-          truncated: history.truncated.unwrap_or(false),
+      match telemetry::get_flock_history_buckets(flock_id, since, until).await {
+        Some(buckets) if !buckets.is_empty() => SeriesOutcome::Live {
+          series: series_from_flock_history(&def.keys, &buckets),
         },
         Some(_) => SeriesOutcome::Empty,
         None => {
@@ -280,18 +277,26 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
   }
 }
 
-/// Pigeon-scoped rendering: one series per requested key. `points` already
-/// carries `pigeon_id` (capsules' `TelemetryHistoryPoint` is shared with the
-/// flock-scoped route, see api/telemetry.rs), but every row here is the
-/// same pigeon so it's ignored — filtering by key alone is enough.
-fn series_from_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec<ChartSeries> {
+/// Pigeon-scoped rendering: one series per requested key, plotting each
+/// bucket's `mean` -- v1 draws the mean as the line rather than a min/max
+/// band or richer per-point tooltip; both would need `ChartSeries.points`
+/// to carry more than `(i64, f64)`, which ripples through
+/// `telemetry_chart.rs`'s geometry/table/tooltip code for every chart kind,
+/// not just this one. Left for a future pass (see #43) rather than done
+/// here. `buckets` already carries `pigeon_id` (capsules'
+/// `TelemetryHistoryBucket` is shared with the flock-scoped route, see
+/// api/telemetry.rs), but every row here is the same pigeon so it's
+/// ignored — filtering by key alone is enough. A bucket with no numeric
+/// samples (`mean: None`) contributes no point, same as a non-numeric
+/// `TelemetryHistoryPoint` used to under the old shape.
+fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> Vec<ChartSeries> {
   keys
     .iter()
     .map(|k| {
-      let mut pts: Vec<(i64, f64)> = points
+      let mut pts: Vec<(i64, f64)> = buckets
         .iter()
-        .filter(|p| &p.key == k)
-        .filter_map(|p| p.value_num.map(|v| (p.reported_at.unix_timestamp(), v)))
+        .filter(|b| &b.key == k)
+        .filter_map(|b| b.mean.map(|v| (b.bucket_start.unix_timestamp(), v)))
         .collect();
       pts.sort_by_key(|p| p.0);
       ChartSeries {
@@ -304,18 +309,18 @@ fn series_from_history(keys: &[String], points: &[TelemetryHistoryPoint]) -> Vec
 
 fn series_from_flock_history(
   keys: &[String],
-  points: &[TelemetryHistoryPoint],
+  buckets: &[TelemetryHistoryBucket],
 ) -> Vec<ChartSeries> {
   let Some(key) = keys.first() else {
     return Vec::new();
   };
   let mut by_pigeon: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
-  for p in points.iter().filter(|p| &p.key == key) {
-    if let Some(v) = p.value_num {
+  for b in buckets.iter().filter(|b| &b.key == key) {
+    if let Some(v) = b.mean {
       by_pigeon
-        .entry(p.pigeon_id.clone())
+        .entry(b.pigeon_id.clone())
         .or_default()
-        .push((p.reported_at.unix_timestamp(), v));
+        .push((b.bucket_start.unix_timestamp(), v));
     }
   }
   by_pigeon
@@ -363,12 +368,12 @@ fn numeric_keys_from_latest(latest: &[TelemetryLatest]) -> Vec<String> {
     .collect()
 }
 
-fn numeric_keys_from_history(points: &[TelemetryHistoryPoint]) -> Vec<String> {
-  let mut keys: Vec<String> = points
+fn numeric_keys_from_history(buckets: &[TelemetryHistoryBucket]) -> Vec<String> {
+  let mut keys: Vec<String> = buckets
     .iter()
-    .filter(|p| p.value_num.is_some())
-    .filter(|p| !gps_track::is_line_graph_excluded(&p.key))
-    .map(|p| p.key.clone())
+    .filter(|b| b.mean.is_some())
+    .filter(|b| !gps_track::is_line_graph_excluded(&b.key))
+    .map(|b| b.key.clone())
     .collect();
   keys.sort();
   keys.dedup();
@@ -554,9 +559,9 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
   use_resource(move || async move {
     let until = now();
     let since = until - time::Duration::seconds(TimeRange::Last24h.seconds());
-    match telemetry::get_flock_history(&flock_id, since, until).await {
-      Some(history) if !history.points.is_empty() => {
-        let keys = numeric_keys_from_history(&history.points);
+    match telemetry::get_flock_history_buckets(&flock_id, since, until).await {
+      Some(buckets) if !buckets.is_empty() => {
+        let keys = numeric_keys_from_history(&buckets);
         if keys.is_empty() {
           available_keys.set(fallback_keys());
           is_mock_keys.set(true);
@@ -832,12 +837,7 @@ fn GraphCard(
             }
             TelemetryChart { series: series.clone(), kind: def.kind }
           },
-          Some(SeriesOutcome::Live { series, truncated }) => rsx! {
-            if *truncated {
-              p { class: "text-[11px] text-warning/80",
-                "Newest {capsules::TELEMETRY_HISTORY_MAX_POINTS} points only — this range holds more than one response can carry, so its earliest part isn't drawn. Pick a shorter range to see a complete window."
-              }
-            }
+          Some(SeriesOutcome::Live { series }) => rsx! {
             TelemetryChart {
               series: series.clone(),
               kind: def.kind,
@@ -1027,7 +1027,7 @@ mod tests {
   };
   use capsules::{
     AlertChannel, AlertCondition, AlertDefinition, AlertScope, AlertSeverity, AlertState,
-    AlertStatus, Comparator, TelemetryHistoryPoint, TelemetryLatest,
+    AlertStatus, Comparator, TelemetryHistoryBucket, TelemetryLatest,
   };
   use time::OffsetDateTime;
   use uuid::Uuid;
@@ -1134,13 +1134,16 @@ mod tests {
     }
   }
 
-  fn history_point(key: &str, value: &str, value_num: Option<f64>) -> TelemetryHistoryPoint {
-    TelemetryHistoryPoint {
+  fn history_bucket(key: &str, last: &str, mean: Option<f64>) -> TelemetryHistoryBucket {
+    TelemetryHistoryBucket {
       pigeon_id: "p1".to_string(),
       key: key.to_string(),
-      value: value.to_string(),
-      value_num,
-      reported_at: OffsetDateTime::UNIX_EPOCH,
+      bucket_start: OffsetDateTime::UNIX_EPOCH,
+      min: mean,
+      max: mean,
+      mean,
+      last: last.to_string(),
+      count: 1,
     }
   }
 
@@ -1183,37 +1186,37 @@ mod tests {
 
   #[test]
   fn numeric_keys_from_history_excludes_key_with_no_numeric_samples() {
-    let points = vec![
-      history_point("battery_mv", "3300", Some(3300.0)),
-      history_point("fw_version", "1.2.0", None),
-      history_point("fw_version", "1.2.1", None),
+    let buckets = vec![
+      history_bucket("battery_mv", "3300", Some(3300.0)),
+      history_bucket("fw_version", "1.2.0", None),
+      history_bucket("fw_version", "1.2.1", None),
     ];
-    assert_eq!(numeric_keys_from_history(&points), vec!["battery_mv"]);
+    assert_eq!(numeric_keys_from_history(&buckets), vec!["battery_mv"]);
   }
 
   #[test]
   fn numeric_keys_from_history_dedups_and_sorts() {
-    let points = vec![
-      history_point("uptime_s", "10", Some(10.0)),
-      history_point("battery_mv", "3300", Some(3300.0)),
-      history_point("uptime_s", "20", Some(20.0)),
+    let buckets = vec![
+      history_bucket("uptime_s", "10", Some(10.0)),
+      history_bucket("battery_mv", "3300", Some(3300.0)),
+      history_bucket("uptime_s", "20", Some(20.0)),
     ];
     assert_eq!(
-      numeric_keys_from_history(&points),
+      numeric_keys_from_history(&buckets),
       vec!["battery_mv", "uptime_s"]
     );
   }
 
   #[test]
   fn numeric_keys_from_history_excludes_gps_lat_lon_but_keeps_other_gps_keys() {
-    let points = vec![
-      history_point("gps_lat", "40.7128", Some(40.7128)),
-      history_point("gps_lon", "-74.0060", Some(-74.0060)),
-      history_point("gps_heading_deg", "180", Some(180.0)),
-      history_point("battery_mv", "3300", Some(3300.0)),
+    let buckets = vec![
+      history_bucket("gps_lat", "40.7128", Some(40.7128)),
+      history_bucket("gps_lon", "-74.0060", Some(-74.0060)),
+      history_bucket("gps_heading_deg", "180", Some(180.0)),
+      history_bucket("battery_mv", "3300", Some(3300.0)),
     ];
     assert_eq!(
-      numeric_keys_from_history(&points),
+      numeric_keys_from_history(&buckets),
       vec!["battery_mv", "gps_heading_deg"]
     );
   }

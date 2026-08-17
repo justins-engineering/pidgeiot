@@ -15,7 +15,7 @@ use crate::components::{
 };
 use crate::config::DEMO_PIGEON_ID;
 use crate::helpers::sleep_ms;
-use capsules::{AlertStatus, Comparator, DemoAlert, TelemetryHistoryPoint, TelemetryLatest};
+use capsules::{AlertStatus, Comparator, DemoAlert, TelemetryHistoryBucket, TelemetryLatest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdPlay, LdRadio};
@@ -25,10 +25,13 @@ use dioxus_free_icons::icons::ld_icons::{LdPlay, LdRadio};
 /// could possibly arrive.
 const REFRESH_MS: i32 = 30_000;
 
-/// How far back the graphs look. The demo pigeon reports every 30s, so 6
-/// hours is a few hundred points per key -- plenty to show a real,
-/// visibly-moving line without ever hitting the history route's own 5000-row
-/// cap (helpers/telemetry.rs, dovecote).
+/// How far back the graphs look. Just a sensible demo window, not a limit
+/// dodge -- the history route buckets its response rather than capping it
+/// at a row count (helpers/telemetry.rs, dovecote), so this could be
+/// widened freely. It used to matter more: at 5 keys/30s, this pigeon's own
+/// history was the case that most directly exposed the old flat/truncating
+/// shape only drawing ~3.5h of a 6h request (see capsules'
+/// `TELEMETRY_HISTORY_BUCKET_TARGET` doc comment).
 const HISTORY_HOURS: i64 = 6;
 
 /// (key, label, unit, chart kind, why that kind suits this reading).
@@ -143,11 +146,13 @@ fn now() -> time::OffsetDateTime {
   time::OffsetDateTime::now_utc()
 }
 
-fn series_for_key(key: &str, points: &[TelemetryHistoryPoint]) -> ChartSeries {
-  let mut pts: Vec<(i64, f64)> = points
+/// Plots each bucket's `mean` -- same v1 choice `graph_widget::series_from_history`
+/// makes, for the same reason (see that function's doc comment).
+fn series_for_key(key: &str, buckets: &[TelemetryHistoryBucket]) -> ChartSeries {
+  let mut pts: Vec<(i64, f64)> = buckets
     .iter()
-    .filter(|p| p.key == key)
-    .filter_map(|p| p.value_num.map(|v| (p.reported_at.unix_timestamp(), v)))
+    .filter(|b| b.key == key)
+    .filter_map(|b| b.mean.map(|v| (b.bucket_start.unix_timestamp(), v)))
     .collect();
   pts.sort_by_key(|p| p.0);
   ChartSeries {
@@ -248,7 +253,7 @@ pub fn DemoPage() -> Element {
 #[component]
 fn DemoContent() -> Element {
   let mut latest: Signal<Vec<TelemetryLatest>> = use_signal(Vec::new);
-  let mut history: Signal<Vec<TelemetryHistoryPoint>> = use_signal(Vec::new);
+  let mut history: Signal<Vec<TelemetryHistoryBucket>> = use_signal(Vec::new);
   let mut alerts: Signal<Vec<DemoAlert>> = use_signal(Vec::new);
   let mut loaded_once = use_signal(|| false);
 
