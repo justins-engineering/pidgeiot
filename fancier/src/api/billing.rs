@@ -12,7 +12,8 @@
 use crate::api::orgs::{error_text, parse, to_body};
 use crate::api::{fetch_json, fetch_json_any_status};
 use capsules::{
-  BillingCheckoutRequest, BillingPlan, BillingSessionUrl, OrganizationBillingOverview,
+  BillingCheckoutRequest, BillingPlan, BillingPlanChangeRequest, BillingSessionUrl,
+  OrganizationBilling, OrganizationBillingOverview,
 };
 use uuid::Uuid;
 
@@ -40,6 +41,28 @@ pub async fn checkout(org_id: Uuid, plan: BillingPlan) -> Result<String, String>
     parse::<BillingSessionUrl>(response)
       .await
       .map(|s| s.url)
+      .ok_or_else(|| "Failed to parse response".to_string())
+  } else {
+    Err(error_text(&response).await)
+  }
+}
+
+/// Moves the org's live subscription to a different paid tier in place --
+/// no Stripe-hosted page involved (the portal can't switch a multi-product
+/// subscription). `Ok` is Stripe's post-change state; the org row itself is
+/// written by the webhook moments later, so callers refetch the overview.
+pub async fn change_plan(org_id: Uuid, plan: BillingPlan) -> Result<OrganizationBilling, String> {
+  let Some(body) = to_body(&BillingPlanChangeRequest { plan }) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) =
+    fetch_json_any_status("PUT", &format!("/orgs/{org_id}/billing/plan"), Some(&body)).await
+  else {
+    return Err("Network error".to_string());
+  };
+  if response.ok() {
+    parse::<OrganizationBilling>(response)
+      .await
       .ok_or_else(|| "Failed to parse response".to_string())
   } else {
     Err(error_text(&response).await)

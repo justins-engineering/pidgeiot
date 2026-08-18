@@ -411,17 +411,23 @@ pub(crate) fn redirect_to(url: &str) {
 }
 
 /// Plan, entitlement and usage-vs-allowance for this org, plus the
-/// manager-only session mints. Checkout buttons only render while the org
-/// has no live subscription: an entitled org changes plan through the
-/// Billing Portal instead, because a second Checkout would create a second
-/// subscription alongside the first, not replace it.
+/// manager-only billing actions. Checkout buttons only render while the
+/// org has no live subscription (a second Checkout would create a second
+/// subscription alongside the first, not replace it); an entitled org
+/// changes tier in place through `PUT /orgs/:id/billing/plan` -- the
+/// Stripe portal can't switch a multi-product subscription, so the portal
+/// button covers cards, invoices and cancellation only.
 #[component]
 fn BillingSection(
   org_id: Uuid,
   caller_role: OrgRole,
   action_error: Signal<Option<String>>,
 ) -> Element {
-  let overview_resource = use_resource(move || async move { api::billing::overview(org_id).await });
+  let billing_refresh = use_signal(|| 0u32);
+  let overview_resource = use_resource(move || async move {
+    let _ = billing_refresh();
+    api::billing::overview(org_id).await
+  });
   let overview = overview_resource.read().clone();
 
   rsx! {
@@ -439,10 +445,31 @@ fn BillingSection(
           }
         },
         Some(Some(o)) => rsx! {
-          BillingPanel { org_id, caller_role, action_error, overview: o }
+          BillingPanel {
+            org_id,
+            caller_role,
+            action_error,
+            billing_refresh,
+            overview: o,
+          }
         },
       }
     }
+  }
+}
+
+/// The plain-words confirmation for an in-place tier change, naming the
+/// proration direction: an upgrade charges the difference into the next
+/// invoice, a downgrade credits it.
+fn plan_change_confirm_text(current: BillingPlan, target: BillingPlan) -> String {
+  if target > current {
+    format!(
+      "Switch from {current} to {target} now? The price difference for the rest of this period is charged on your next invoice."
+    )
+  } else {
+    format!(
+      "Switch from {current} to {target} now? The unused portion of {current} for the rest of this period is credited on your next invoice."
+    )
   }
 }
 
@@ -451,10 +478,16 @@ fn BillingPanel(
   org_id: Uuid,
   caller_role: OrgRole,
   action_error: Signal<Option<String>>,
+  mut billing_refresh: Signal<u32>,
   overview: OrganizationBillingOverview,
 ) -> Element {
   let mut busy = use_signal(|| false);
+  // The refetched overview can lag a plan change by up to a minute
+  // (Hyperdrive's read cache), so success gets its own notice instead of
+  // relying on the badge flipping immediately.
+  let mut change_notice = use_signal(|| Option::<String>::None);
   let o = overview;
+  let current_plan = o.plan;
   let usage_pct = if o.included_messages > 0 {
     (o.billable_messages as f64 / o.included_messages as f64 * 100.0).min(100.0)
   } else {
@@ -500,9 +533,52 @@ fn BillingPanel(
         " included"
       }
 
+      if let Some(notice) = change_notice.read().as_ref() {
+        div { class: "alert alert-success text-sm", "{notice}" }
+      }
+
       if caller_role.is_manager() {
         div { class: "flex flex-wrap gap-2 items-center",
           if o.entitled {
+            for plan in [BillingPlan::Builder, BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
+              if plan == current_plan {
+                span { class: "badge badge-primary font-mono self-center", "{plan} — current" }
+              } else {
+                button {
+                  class: "btn btn-sm btn-outline",
+                  disabled: busy(),
+                  onclick: move |_| async move {
+                      let confirmed = web_sys::window()
+                          .and_then(|w| {
+                              w.confirm_with_message(&plan_change_confirm_text(current_plan, plan)).ok()
+                          })
+                          .unwrap_or(false);
+                      if !confirmed {
+                          return;
+                      }
+                      busy.set(true);
+                      action_error.set(None);
+                      change_notice.set(None);
+                      match api::billing::change_plan(org_id, plan).await {
+                          Ok(_) => {
+                              change_notice
+                                  .set(
+                                      Some(
+                                          format!(
+                                              "Plan changed to {plan}. Prorations land on the next invoice; this page can take a minute to catch up.",
+                                          ),
+                                      ),
+                                  );
+                              billing_refresh += 1;
+                          }
+                          Err(msg) => action_error.set(Some(msg)),
+                      }
+                      busy.set(false);
+                  },
+                  "Change to {plan}"
+                }
+              }
+            }
             if o.has_billing_account {
               button {
                 class: "btn btn-sm btn-primary",
@@ -519,7 +595,7 @@ fn BillingPanel(
                 "Manage billing"
               }
               span { class: "text-xs text-base-content/50",
-                "Plan changes, card updates and cancellation happen in the Stripe portal."
+                "Card updates, invoices and cancellation happen in the Stripe portal."
               }
             }
           } else {
