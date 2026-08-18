@@ -1479,8 +1479,11 @@ pub struct OrgRoleEntry {
 
 /// The five subscription tiers. Stored lowercase in `organizations.plan`,
 /// serialized lowercase on the wire. `Perch` is the free tier and the
-/// resting state of an org that has never subscribed.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// resting state of an org that has never subscribed. Variants are declared
+/// in ascending price order, which is what the derived `Ord` means -- it
+/// lets the dashboard phrase a plan change as an upgrade or a downgrade
+/// without carrying a separate rank table.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BillingPlan {
   #[default]
@@ -1648,6 +1651,10 @@ pub struct StripePriceRow {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct StripeSubscriptionItemRow {
+  /// The subscription item's own id (`si_…`) -- what the Subscriptions
+  /// Update API addresses when swapping an item's price in place.
+  #[serde(default)]
+  pub id: String,
   #[serde(default)]
   pub price: StripePriceRow,
   /// Stripe API version 2026-07-29.dahlia moved the billing period bounds
@@ -1759,6 +1766,34 @@ impl StripeSubscriptionRow {
       })
       .or(self.current_period_end)
   }
+
+  /// The `si_…` id of the licensed tier item -- the item a plan change
+  /// re-prices. Selection is by lookup_key, never by position, for the
+  /// reason on `licensed_item`.
+  pub fn licensed_item_id(&self) -> Option<&str> {
+    self.licensed_item().map(|item| item.id.as_str())
+  }
+
+  /// The `si_…` id of the per-device overage item, whose rate is
+  /// tier-specific (`device-overage-<tier>`) and so must be re-priced
+  /// alongside the licensed item on a plan change. The pooled
+  /// message-overage item shares one rate across tiers and is never
+  /// touched. `None` on a subscription that predates the metered
+  /// composition.
+  pub fn device_overage_item_id(&self) -> Option<&str> {
+    self
+      .items
+      .data
+      .iter()
+      .find(|item| {
+        item
+          .price
+          .lookup_key
+          .as_deref()
+          .is_some_and(|key| key.starts_with("device-overage-"))
+      })
+      .map(|item| item.id.as_str())
+  }
 }
 
 /// An organization's billing state: everything Stripe owns about the
@@ -1820,6 +1855,16 @@ impl From<StripeSubscriptionRow> for OrganizationBilling {
 /// purchasable, so `plan: perch` is a 400 at the route.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BillingCheckoutRequest {
+  pub plan: BillingPlan,
+}
+
+/// Body of `PUT /orgs/:org_id/billing/plan` -- which paid tier an already
+/// subscribed org should move to. Separate from `BillingCheckoutRequest`
+/// because the two requests' refusals differ: here `perch` means
+/// cancellation (the portal's job, `400`) and the org's current tier is a
+/// no-op (`409`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BillingPlanChangeRequest {
   pub plan: BillingPlan,
 }
 
@@ -2051,5 +2096,47 @@ mod billing_tests {
   fn free_tier_pauses_rather_than_billing_overage() {
     assert!(!BillingPlan::Perch.bills_overage());
     assert!(BillingPlan::Builder.bills_overage());
+  }
+
+  #[test]
+  fn plan_ordering_follows_the_tier_ladder() {
+    // The derived Ord rides on variant declaration order; this pins that
+    // order so a reordering refactor can't silently flip every
+    // upgrade/downgrade phrasing in the dashboard.
+    assert!(BillingPlan::Perch < BillingPlan::Builder);
+    assert!(BillingPlan::Builder < BillingPlan::Growth);
+    assert!(BillingPlan::Growth < BillingPlan::Scale);
+    assert!(BillingPlan::Scale < BillingPlan::Fleet);
+  }
+
+  #[test]
+  fn plan_change_item_ids_select_by_lookup_key_not_position() {
+    // Meter in slot 0, tier in slot 1: the same ordering trap the plan
+    // resolution guards against, now for the item ids a plan change
+    // re-prices.
+    let row = subscription_json(
+      r#","items":{"data":[
+        {"id":"si_msg","price":{"id":"price_m","lookup_key":"message-overage"}},
+        {"id":"si_tier","price":{"id":"price_g","lookup_key":"growth"}},
+        {"id":"si_dev","price":{"id":"price_d","lookup_key":"device-overage-growth"}}]}"#,
+    );
+    assert_eq!(row.licensed_item_id(), Some("si_tier"));
+    assert_eq!(row.device_overage_item_id(), Some("si_dev"));
+  }
+
+  #[test]
+  fn missing_items_yield_none_rather_than_grabbing_the_wrong_item() {
+    // A licensed-only subscription (predates the metered composition) has
+    // no device-overage item to re-price; the message-overage item must
+    // never be mistaken for one.
+    let row = subscription_json(
+      r#","items":{"data":[
+        {"id":"si_tier","price":{"id":"price_g","lookup_key":"growth"}},
+        {"id":"si_msg","price":{"id":"price_m","lookup_key":"message-overage"}}]}"#,
+    );
+    assert_eq!(row.licensed_item_id(), Some("si_tier"));
+    assert_eq!(row.device_overage_item_id(), None);
+    assert_eq!(subscription_json("").licensed_item_id(), None);
+    assert_eq!(subscription_json("").device_overage_item_id(), None);
   }
 }
