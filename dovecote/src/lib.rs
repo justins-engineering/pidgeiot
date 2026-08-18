@@ -12,23 +12,24 @@ use crate::helpers::{
   is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
   list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
   list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
-  load_org_roles, mark_webhook_event_processed, mint_invite_token, org_role_of,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon, remove_member,
+  load_org_roles, load_org_subscription_state, mark_webhook_event_processed, mint_invite_token,
+  org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
+  psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, raise_message_allowance_floor, remove_member,
   rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
   send_invite_email, sha256_hex, stripe_configured, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
-  BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest, OrgRole,
-  OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
-  OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
-  OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
+  FlockCreateRequest, OrgRole, OrganizationCreateRequest, OrganizationDetail,
+  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
+  OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
   TelemetryHistoryQuery,
 };
 use futures::future::join_all;
@@ -3649,6 +3650,184 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         };
 
         Response::from_json(&BillingSessionUrl { url })?.with_cors(&cors)
+      },
+    )
+    // Moves a subscribed org between paid tiers in place. This exists
+    // because Stripe's Billing Portal cannot switch a multi-product
+    // subscription, and every checkout-minted subscription here is
+    // multi-product (licensed tier + two metered overage prices) -- so
+    // self-service tier changes have to be ours. One Subscriptions Update
+    // call re-prices the licensed item and the tier-specific device-overage
+    // item together, prorated immediately in both directions.
+    .put_async(
+      "/orgs/:org_id/billing/plan",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(payload) = req.json::<BillingPlanChangeRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if payload.plan == BillingPlan::Perch {
+          return Response::error(
+            "Bad Request: moving to the free tier is a cancellation -- use the Stripe billing portal (Manage billing) to cancel",
+            400,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if !caller_role.is_some_and(|r| r.is_manager()) {
+          return Response::error("Forbidden: only owners/admins can manage billing", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        // Both bootstraps: the state read wants the billing columns and
+        // the allowance-floor write wants the usage table.
+        if ensure_billing_tables(&client).await.is_err()
+          || ensure_billing_usage_tables(&client).await.is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let state = match load_org_subscription_state(&client, &org_id).await {
+          Ok(Some(state)) => state,
+          Ok(None) => {
+            return Response::error("Not Found: no such organization", 404)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          Err(_) => {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let subscription_id = match state.stripe_subscription_id {
+          Some(ref id) if state.status.is_entitled() => id.clone(),
+          _ => {
+            return Response::error(
+              "Conflict: this organization has no live subscription to change -- checkout is the flow that starts one",
+              409,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+        };
+        if state.plan == payload.plan {
+          return Response::error(
+            "Conflict: this organization is already on that plan",
+            409,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+
+        let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {
+          Ok(prices) => prices,
+          Err(e) => {
+            console_error!("Plan change price resolution failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let subscription = match fetch_subscription(&ctx.env, &subscription_id).await {
+          Ok(subscription) => subscription,
+          Err(e) => {
+            console_error!("Plan change subscription fetch failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        // No licensed item means our own provisioning invariant is broken,
+        // not that Stripe is misbehaving -- a 500, and loudly.
+        let Some(licensed_item_id) = subscription.licensed_item_id().map(str::to_string) else {
+          console_error!(
+            "Plan change refused for org {org_id}: subscription {subscription_id} carries no licensed tier item"
+          );
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        // A missing device-overage item (a subscription predating the
+        // metered composition) is added by the same update rather than
+        // refused -- the change is exactly the moment to converge on the
+        // designed composition.
+        let device_overage_item_id = subscription.device_overage_item_id().map(str::to_string);
+
+        // Floor before Stripe: a failure here refuses the change, so a
+        // downgrade can never bill the in-flight period at the new, lower
+        // message allowance.
+        if raise_message_allowance_floor(
+          &client,
+          &org_id,
+          state.usage_period_start,
+          state.usage_period_end,
+          state.plan.included_messages(),
+        )
+        .await
+        .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let updated = match update_subscription_tier(
+          &ctx.env,
+          &subscription_id,
+          &licensed_item_id,
+          device_overage_item_id.as_deref(),
+          &prices,
+          payload.plan,
+        )
+        .await
+        {
+          Ok(updated) => updated,
+          Err(e) => {
+            console_error!("Plan change update failed for org {org_id}: {e}");
+            return Response::error("Bad Gateway: billing provider unavailable", 502)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        // The org row itself is written by the webhook's
+        // customer.subscription.updated (idempotent, out-of-order-safe);
+        // the response reflects Stripe's own post-update state so the
+        // dashboard doesn't have to wait for that delivery.
+        let billing: capsules::OrganizationBilling = updated.into();
+        Response::from_json(&billing)?.with_cors(&cors)
       },
     )
     .post_async("/billing/webhook", |mut req, ctx: RouteContext<()>| async move {

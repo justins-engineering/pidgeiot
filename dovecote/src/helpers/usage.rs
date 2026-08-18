@@ -28,6 +28,8 @@ pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (owner_kind, owner_id, period_start)
       );
+      ALTER TABLE billing_usage_periods
+        ADD COLUMN IF NOT EXISTS allowance_floor_messages BIGINT;
       CREATE TABLE IF NOT EXISTS billing_meter_reports (
         org_id UUID NOT NULL,
         period_start TIMESTAMPTZ NOT NULL,
@@ -68,6 +70,55 @@ pub fn effective_plan(org_plan: Option<&str>, org_status: Option<&str>) -> Billi
   org_plan
     .and_then(|raw| raw.parse().ok())
     .unwrap_or(BillingPlan::Perch)
+}
+
+/// The message allowance a period is charged against: the tier's own
+/// allowance, or the period's recorded floor if that is higher. The floor
+/// is the customer-favorable half of a mid-period plan change -- it holds
+/// the highest allowance of any tier the org was entitled to during the
+/// period, so a downgrade never converts already-included usage into
+/// overage retroactively (an upgrade's higher allowance is simply the
+/// tier's own).
+pub fn period_message_allowance(plan: BillingPlan, floor_messages: Option<i64>) -> i64 {
+  plan.included_messages().max(floor_messages.unwrap_or(0))
+}
+
+/// Records the outgoing tier's allowance as the period's floor, before a
+/// plan change is sent to Stripe -- write-first so a failure here refuses
+/// the change instead of letting a downgrade bill the in-flight period at
+/// the new, lower allowance. GREATEST keeps the highest floor across
+/// repeated changes within one period; the insert arm covers a period that
+/// has tallied no messages yet.
+pub async fn raise_message_allowance_floor(
+  client: &Client,
+  org_id: &Uuid,
+  period_start: OffsetDateTime,
+  period_end: OffsetDateTime,
+  floor_messages: i64,
+) -> Result<()> {
+  client
+    .execute_typed(
+      "INSERT INTO billing_usage_periods
+         (owner_kind, owner_id, period_start, period_end, billable_messages,
+          allowance_floor_messages)
+       VALUES ('org', $1, $2, $3, 0, $4)
+       ON CONFLICT (owner_kind, owner_id, period_start) DO UPDATE
+         SET allowance_floor_messages =
+               GREATEST(COALESCE(billing_usage_periods.allowance_floor_messages, 0), $4),
+             updated_at = now();",
+      &[
+        (org_id, Type::UUID),
+        (&period_start, Type::TIMESTAMPTZ),
+        (&period_end, Type::TIMESTAMPTZ),
+        (&floor_messages, Type::INT8),
+      ],
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+      console_error!("Message allowance floor write failed for org {org_id}: {e}");
+      Error::RustError("Internal Server Error".into())
+    })
 }
 
 /// One counted report: which account it landed on, where the count now
@@ -488,6 +539,7 @@ struct BillableOrg {
   period_start: OffsetDateTime,
   period_end: OffsetDateTime,
   billable_messages: i64,
+  allowance_floor_messages: Option<i64>,
 }
 
 /// Reports usage to Stripe's billing meters: daily message-overage deltas
@@ -568,7 +620,8 @@ async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
     .query_typed(
       "SELECT o.id, o.stripe_customer_id, o.plan, o.subscription_status,
               o.current_period_start, o.current_period_end,
-              COALESCE(u.billable_messages, 0) AS billable_messages
+              COALESCE(u.billable_messages, 0) AS billable_messages,
+              u.allowance_floor_messages
        FROM organizations o
        LEFT JOIN billing_usage_periods u
          ON u.owner_kind = 'org' AND u.owner_id = o.id
@@ -598,6 +651,7 @@ async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
         period_start: row.get("current_period_start"),
         period_end: row.get("current_period_end"),
         billable_messages: row.get("billable_messages"),
+        allowance_floor_messages: row.get("allowance_floor_messages"),
       })
       .collect(),
   )
@@ -636,7 +690,8 @@ async fn report_message_overage(
   plan: BillingPlan,
   event_names: &mut std::collections::HashMap<String, String>,
 ) {
-  let overage = (org.billable_messages - plan.included_messages()).max(0);
+  let allowance = period_message_allowance(plan, org.allowance_floor_messages);
+  let overage = (org.billable_messages - allowance).max(0);
 
   let already: i64 = match client
     .query_typed(
@@ -827,8 +882,30 @@ async fn post_unposted_reports(
 
 #[cfg(test)]
 mod tests {
-  use super::effective_plan;
+  use super::{effective_plan, period_message_allowance};
   use capsules::BillingPlan;
+
+  #[test]
+  fn period_allowance_is_the_higher_of_tier_and_floor() {
+    // Mid-period downgrade scale -> growth: the floor recorded at change
+    // time (scale's allowance) keeps governing the in-flight period, so
+    // usage that was included when it happened can't become overage.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Growth, Some(45_000_000)),
+      45_000_000
+    );
+    // Mid-period upgrade growth -> scale: the floor holds the old, lower
+    // allowance and must not cap the new tier's own.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Scale, Some(7_500_000)),
+      45_000_000
+    );
+    // No change this period: the tier's own allowance, floor or not.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Growth, None),
+      7_500_000
+    );
+  }
 
   #[test]
   fn status_gates_before_plan_is_read() {

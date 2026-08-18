@@ -403,6 +403,51 @@ pub async fn create_checkout_session(
     .ok_or_else(|| StripeError::transport("checkout session created but carried no redirect URL"))
 }
 
+/// Moves a live subscription to a different paid tier in one Subscriptions
+/// Update call: the licensed item is re-priced to the new tier's flat
+/// price, and the per-device overage item to that tier's own rate (added
+/// outright on a subscription that predates the metered composition). The
+/// pooled message-overage item shares one rate across tiers, so it is left
+/// alone. `metadata[plan]` is rewritten in the same call because the
+/// webhook resolves the tier from metadata before the licensed item --
+/// leaving the old name there would apply the old tier right back.
+///
+/// `create_prorations` in both directions: an upgrade charges the price
+/// difference for the rest of the period onto the next invoice, a
+/// downgrade credits it. No idempotency key on purpose -- a retry that
+/// sets the same prices again is a semantic no-op, while a deterministic
+/// key would make a later legitimate switch back to this tier replay the
+/// stale cached response instead of applying.
+pub async fn update_subscription_tier(
+  env: &Env,
+  subscription_id: &str,
+  licensed_item_id: &str,
+  device_overage_item_id: Option<&str>,
+  prices: &CheckoutPrices,
+  tier: capsules::BillingPlan,
+) -> Result<capsules::StripeSubscriptionRow, StripeError> {
+  let mut params = vec![
+    ("items[0][id]", licensed_item_id),
+    ("items[0][price]", prices.tier_price_id.as_str()),
+    ("items[1][price]", prices.device_overage_price_id.as_str()),
+    ("proration_behavior", "create_prorations"),
+    ("metadata[plan]", tier.as_str()),
+  ];
+  if let Some(device_item_id) = device_overage_item_id {
+    params.push(("items[1][id]", device_item_id));
+  }
+  stripe_post(
+    env,
+    &format!(
+      "/v1/subscriptions/{}",
+      url_encode_component(subscription_id)
+    ),
+    &params,
+    None,
+  )
+  .await
+}
+
 #[derive(Deserialize)]
 struct StripePortalSession {
   url: String,

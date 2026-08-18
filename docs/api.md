@@ -278,7 +278,7 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Org-shared pigeons: member-level routes (read, shadow get/put, telemetry, logs) | yes | yes | yes |
 | Org-shared pigeons: owner-level routes (delete, token refresh, ACL changes, shell) | yes | yes | no |
 | View billing overview (`GET /orgs/:id/billing`) | yes | yes | yes |
-| Manage billing (`POST /orgs/:id/billing/checkout`, `POST /orgs/:id/billing/portal`) | yes | yes | no |
+| Manage billing (`POST /orgs/:id/billing/checkout`, `POST /orgs/:id/billing/portal`, `PUT /orgs/:id/billing/plan`) | yes | yes | no |
 
 Last-owner protection: an org must always retain at least one `owner` — demoting or removing
 the only owner is refused with `409`, regardless of who asks.
@@ -402,9 +402,42 @@ unreachable or the catalog is missing a price.
 #### `POST /orgs/:org_id/billing/portal` — org: manage
 
 Mints a Stripe Billing Portal session for the org's existing customer and returns
-`capsules::BillingSessionUrl` (`{ url }`) — plan changes, card updates, invoice history and
-cancellation all happen on Stripe's hosted page. `409` if the org has no billing account yet
-(checkout is the flow that creates one); `502` when Stripe is unreachable.
+`capsules::BillingSessionUrl` (`{ url }`) — card updates, invoice history and cancellation
+happen on Stripe's hosted page. Plan changes do **not**: Stripe's portal cannot switch a
+multi-product subscription (and every checkout-minted subscription here is one), so tier
+changes go through `PUT /orgs/:org_id/billing/plan` below. `409` if the org has no billing
+account yet (checkout is the flow that creates one); `502` when Stripe is unreachable.
+
+#### `PUT /orgs/:org_id/billing/plan` — org: manage
+
+Moves an org with a live subscription to a different paid tier, in place. Body:
+`capsules::BillingPlanChangeRequest` (`{ plan: builder|growth|scale|fleet }`). Returns the
+post-change `capsules::OrganizationBilling` (Stripe's own updated subscription state); the org
+row itself is written moments later by the `customer.subscription.updated` webhook, same as
+every other subscription change.
+
+One Stripe Subscriptions Update call re-prices two items together, resolved by `lookup_key` at
+request time: the licensed tier item to the new tier's flat price, and the per-device overage
+item to `device-overage-<newtier>` (per-tier rates differ). The pooled `message-overage` item
+shares one rate across tiers and is untouched. A subscription that predates the metered
+composition gets the device-overage item added by the same call.
+
+**Proration** is immediate in both directions (`proration_behavior=create_prorations`): an
+upgrade charges the price difference for the rest of the period onto the next invoice; a
+downgrade credits it. Scheduling a downgrade for period end instead is future polish — today a
+downgrade applies (and credits) immediately.
+
+**Metered usage across a mid-period change**: device overage is reported near period *end*, so
+the whole period's extra devices bill at the tier held then — after a mid-period change, the
+new tier's per-device rate and included-device count. The message allowance is
+customer-favorable the other way: the in-flight period is charged against the **higher** of the
+old and new tiers' allowances, so a downgrade never converts already-included messages into
+overage retroactively.
+
+Errors: `400` for `perch` (that's a cancellation — use the billing portal) or a bad body;
+`403` for non-managers; `404` for an unknown org; `409` when the org is already on the
+requested tier, or has no live (`trialing`/`active`/`past_due`) subscription to change;
+`502` when Stripe is unreachable or the catalog is missing a price.
 
 #### `POST /billing/webhook` — Stripe signature required
 

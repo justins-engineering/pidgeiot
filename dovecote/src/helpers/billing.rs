@@ -162,6 +162,65 @@ pub async fn attach_stripe_customer(
   Ok(rows.first().and_then(|row| row.get("stripe_customer_id")))
 }
 
+/// What the plan-change route needs before touching Stripe: the stored
+/// tier and status (the same-tier and no-live-subscription refusals), the
+/// subscription id the change addresses, and the usage-period bounds the
+/// message-allowance floor is keyed on -- anchored exactly the way the
+/// usage tally anchors, so the floor lands on the row the meter reporter
+/// actually reads.
+pub struct OrgSubscriptionState {
+  pub plan: BillingPlan,
+  pub status: SubscriptionStatus,
+  pub stripe_subscription_id: Option<String>,
+  pub usage_period_start: OffsetDateTime,
+  pub usage_period_end: OffsetDateTime,
+}
+
+/// `None` if the org doesn't exist.
+pub async fn load_org_subscription_state(
+  client: &Client,
+  org_id: &Uuid,
+) -> Result<Option<OrgSubscriptionState>> {
+  let rows = client
+    .query_typed(
+      "SELECT o.plan, o.subscription_status, o.stripe_subscription_id,
+         CASE WHEN use_org_period THEN o.current_period_start
+              ELSE date_trunc('month', now()) END AS usage_period_start,
+         CASE WHEN use_org_period THEN o.current_period_end
+              ELSE date_trunc('month', now()) + interval '1 month' END AS usage_period_end
+       FROM organizations o,
+         LATERAL (SELECT (o.subscription_status IN ('trialing', 'active', 'past_due')
+             AND o.current_period_start IS NOT NULL
+             AND o.current_period_end IS NOT NULL
+             AND now() >= o.current_period_start
+             AND now() < o.current_period_end) AS use_org_period) anchor
+       WHERE o.id = $1;",
+      &[(org_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Org subscription state lookup error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let Some(row) = rows.first() else {
+    return Ok(None);
+  };
+
+  let plan_raw: String = row.get("plan");
+  let status_raw: String = row.get("subscription_status");
+
+  Ok(Some(OrgSubscriptionState {
+    plan: plan_raw.parse().unwrap_or_default(),
+    // Same conservative fallback as the overview: unknown status reads as
+    // unentitled-but-subscribed, never as "never subscribed".
+    status: status_raw.parse().unwrap_or(SubscriptionStatus::Incomplete),
+    stripe_subscription_id: row.get("stripe_subscription_id"),
+    usage_period_start: row.get("usage_period_start"),
+    usage_period_end: row.get("usage_period_end"),
+  }))
+}
+
 /// One read of everything the dashboard's billing panel shows: the org's
 /// billing columns, the tallied usage for the period those columns anchor
 /// (Stripe period while a live subscription covers now, calendar month
