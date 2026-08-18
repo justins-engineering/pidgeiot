@@ -17,6 +17,8 @@
 -- without a post-hoc ownership transfer (the ALTER ... OWNER TO lines below
 -- stay as idempotent self-healing for any run that skipped this). For a
 -- staging apply, use SET ROLE dovecote_staging instead.
+-- One-time prerequisite per cluster, or SET ROLE fails with "permission
+-- denied":  GRANT dovecote TO application;
 SET ROLE dovecote;
 
 -- OWNERSHIP, and this is not optional: the owner applies migrations as the
