@@ -427,9 +427,12 @@ upgrade charges the price difference for the rest of the period onto the next in
 downgrade credits it. Scheduling a downgrade for period end instead is future polish — today a
 downgrade applies (and credits) immediately.
 
-**Metered usage across a mid-period change**: device overage is reported near period *end*, so
-the whole period's extra devices bill at the tier held then — after a mid-period change, the
-new tier's per-device rate and included-device count. The message allowance is
+**Metered usage across a mid-period change**: at the moment of the swap Stripe closes off any
+meter usage already reported and bills it at the *old* item's rate; usage reported after the
+swap bills at the new rate. Since our reporter posts the extra-devices figure near period
+*end*, in practice the whole period's devices bill at the tier held then — the new tier's
+per-device rate and included-device count — unless the change lands after the final-day report,
+in which case that period's figure keeps the pre-change rate. The message allowance is
 customer-favorable the other way: the in-flight period is charged against the **higher** of the
 old and new tiers' allowances, so a downgrade never converts already-included messages into
 overage retroactively.
