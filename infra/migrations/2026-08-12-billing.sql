@@ -12,6 +12,13 @@
 -- Schema body only -- no CREATE ROLE/DATABASE/\c bootstrap (that lives in
 -- init-db.sql's first lines and must never be re-run against prod).
 --
+-- Run as the cluster's "application" superuser. SET ROLE makes every object
+-- dovecote-owned from creation, so the app role can use what this creates
+-- without a post-hoc ownership transfer (the ALTER ... OWNER TO lines below
+-- stay as idempotent self-healing for any run that skipped this). For a
+-- staging apply, use SET ROLE dovecote_staging instead.
+SET ROLE dovecote;
+
 -- OWNERSHIP, and this is not optional: the owner applies migrations as the
 -- Crunchy Bridge cluster owner, so anything CREATEd here comes out owned by
 -- that role and is unusable by the app role Hyperdrive connects as. The
@@ -51,3 +58,5 @@ CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_unprocessed
 ALTER TABLE stripe_webhook_events OWNER TO dovecote;
 -- Staging (run this line instead, against the staging database):
 -- ALTER TABLE stripe_webhook_events OWNER TO dovecote_staging;
+
+RESET ROLE;

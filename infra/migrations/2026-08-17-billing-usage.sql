@@ -12,6 +12,13 @@
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-17-billing-usage.sql
 --
+-- Run as the cluster's "application" superuser. SET ROLE makes every object
+-- dovecote-owned from creation, so the app role can use what this creates
+-- without a post-hoc ownership transfer (the ALTER ... OWNER TO lines below
+-- stay as idempotent self-healing for any run that skipped this). For a
+-- staging apply, use SET ROLE dovecote_staging instead.
+SET ROLE dovecote;
+
 -- Schema body only -- no CREATE ROLE/DATABASE/\c bootstrap (that lives in
 -- init-db.sql's first lines and must never be re-run against prod).
 --
@@ -77,3 +84,5 @@ ALTER TABLE billing_reporter_state OWNER TO dovecote;
 -- ALTER TABLE billing_usage_periods OWNER TO dovecote_staging;
 -- ALTER TABLE billing_meter_reports OWNER TO dovecote_staging;
 -- ALTER TABLE billing_reporter_state OWNER TO dovecote_staging;
+
+RESET ROLE;
