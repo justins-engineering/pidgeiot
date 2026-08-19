@@ -5,6 +5,8 @@ the same VPS as Kratos itself, reachable only through the existing Cloudflare
 Tunnel with Cloudflare Access in front of it. It replaces the "SSH in and
 `curl` the admin API" loop that identity work has needed until now (the
 identity import in `.migration/vps-bringup.sh` is the canonical example).
+Scope: a break-glass tool for one administrator, not a support-staff surface —
+see "Future: support staff" at the end for why that distinction is load-bearing.
 
 The software is [`dhia-gharsallaoui/kratos-admin-ui`](https://github.com/dhia-gharsallaoui/kratos-admin-ui),
 a Next.js app, pinned by digest:
@@ -99,37 +101,54 @@ Cloudflare Tunnel. No such token exists on the workstation — no
 `CF_*` entry in `secrets.env`, and no wrangler OAuth config. (`~/.cloudflared`
 holds a 2025-vintage origin certificate and credentials for tunnel
 `223d5b67-…`, a *different* tunnel from the one running here, so it is not a
-route in either.) Both remaining steps are therefore dashboard work.
+route in either.) The remaining steps are therefore dashboard work.
 
 **Do them in this order.** The Access application must exist before the
-hostname resolves, because adding a public hostname to a tunnel creates its DNS
-record immediately — reversing these two steps publishes an unauthenticated
-console over every identity in production, for however long the gap lasts.
+hostname resolves, because publishing a route on a tunnel creates its DNS
+record immediately — reversing the order publishes an unauthenticated console
+over every identity in production, for however long the gap lasts.
 
-### Step 1 — create the Access application (do this first)
+Cloudflare has been renaming these dashboard sections (Access moved under
+"Access controls", tunnel "public hostnames" are now "published application
+routes"). Breadcrumbs below match the docs as of this writing; if the wording
+has drifted again, the landmarks are the Applications list, the Policies page's
+rule-group tab, and the tunnel's own routes tab.
 
-Zero Trust dashboard → **Access → Applications → Add an application →
-Self-hosted**.
+### Step 1 — create a reusable rule group (do this first)
+
+Zero Trust → **Access controls → Policies**, **Rule groups** tab → create:
+
+- Name: `PidgeIoT Admins`
+- Include → **Emails** → `code@jes.contact` (verified identical to the address
+  `KRATOS_EMAIL` uses; add `justin@jes.contact` if that second identity should
+  reach it too)
+
+A group rather than an email typed straight into the policy. Same result today
+with one person in it, but membership then lives in one named object that other
+applications can reference, so the next internal tool is a one-line reuse
+instead of another copy of an email list to keep in sync. See "Future: support
+staff" below for the constraint that makes this worth doing now.
+
+### Step 2 — create the Access application
+
+Zero Trust → **Access controls → Applications** → add a **Self-hosted and
+private** application:
 
 - Application name: `Kratos Admin UI`
-- Session duration: **24 hours**
 - Public hostname: subdomain `kratos-admin`, domain `pidgeiot.com`
-- Then **Add policy**:
-  - Policy name: `Owner only`
-  - Action: **Allow**
-  - Include → **Emails** → `code@jes.contact` (the address `KRATOS_EMAIL`
-    already uses; add `justin@jes.contact` too if the second identity should
-    reach it)
+- Policy: **Allow**, named `PidgeIoT admins only`, Include → **Rule groups** →
+  `PidgeIoT Admins`
+- Session duration: **24 hours**
 - Leave the default identity provider (one-time PIN) unless an IdP is
   configured; save.
 
-### Step 2 — publish the hostname (only after step 1 is saved)
+### Step 3 — publish the route (only after step 2 is saved)
 
-Zero Trust dashboard → **Networks → Tunnels** → the tunnel above → **Public
-Hostname → Add a public hostname**.
+**Networking → Tunnels** → the tunnel above → **Routes** tab → **Add route** →
+**Published application**:
 
-- Subdomain `kratos-admin`, domain `pidgeiot.com`
-- Type **HTTP**, URL `localhost:3000`
+- Subdomain `kratos-admin`, domain `pidgeiot.com`, no path
+- Service **HTTP**, URL `localhost:3000`
 
 That writes the proxied DNS `CNAME` automatically. The resulting ingress should
 read as below — `auth.pidgeiot.com` first, the new rule second, catch-all last:
@@ -146,12 +165,13 @@ No `originServerName` on the new rule: that override exists on the Kratos rule
 because its origin serves TLS for that name. This origin is plain HTTP on
 loopback.
 
-Should a scoped API token ever exist, the same two steps are
+Should a scoped API token ever exist, the same steps are
+`POST /accounts/{account_id}/access/groups`,
 `POST /accounts/{account_id}/access/apps` (plus its `/policies`) and
 `PUT /accounts/{account_id}/cfd_tunnel/0c9ebcda-4eec-46de-b2df-3143e57ee8df/configurations`
 with the JSON above.
 
-### Step 3 — verify from outside
+### Step 4 — verify from outside
 
 Once the hostname is live, from any machine:
 
@@ -192,3 +212,40 @@ replace the digest in the unit's `ExecStart` via
 
 Note that the UI renders a Hydra section (`hydraEnabled` defaults true) that
 will fail against this host — no Hydra runs here. Harmless; ignore it.
+
+## Future: support staff
+
+This is a **break-glass tool for a single administrator**. It is worth being
+explicit about why, because the obvious next request — "give support a way to
+look up a customer" — must not be answered by widening the allow-list.
+
+**The capability model is all-or-nothing.** There are no roles, scopes, or
+read-only modes inside this UI. Anyone Access admits gets the full Kratos admin
+API: read every identity's traits, change credentials, and permanently delete
+identities. Deletion is the sharp edge — `flocks.user_id` and every DO-resident
+`pigeon_acl` key are keyed on Kratos identity IDs (see the identity-remap
+warning in `CLAUDE.md`), so removing an identity here strands that user's
+flocks and pigeons in a way no undo in this console can repair. A support hire
+who only ever needed to read an email address would be one misclick from that.
+So: **adding a support person to `PidgeIoT Admins` is not the way to give them
+customer visibility, now or later.** That group means "full production identity
+administration", and should keep meaning exactly that.
+
+The group indirection from step 1 is what keeps the door open cheaply. A future
+support surface gets its *own* rule group and its *own* Access application; this
+one stays a one-person group and never widens.
+
+Two paths are on record for that surface, neither started here:
+
+- **A role-aware support panel in `fancier`**, built on the RBAC dovecote
+  already enforces. It is first-party, so the visible fields and the allowed
+  mutations are chosen deliberately rather than inherited from whatever the
+  admin API happens to expose, and it reuses the session model the dashboard
+  already has. This is the direction currently queued.
+- **Ory Keto (+ Hydra) for internal authorization**, which buys a real
+  permission model off the shelf at the cost of another self-hosted service on
+  the identity path.
+
+Either way the design constraint is the same one this section exists to record:
+support tooling needs a deliberately narrowed capability set, and this console
+has none.
