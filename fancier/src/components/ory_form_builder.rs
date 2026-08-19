@@ -1,6 +1,6 @@
 use crate::{
   components::Alert,
-  helpers::{parse_json_bool, parse_json_string},
+  helpers::{autocomplete_token, input_type_token, parse_json_bool, parse_json_string},
   models::AlertVariant,
 };
 use dioxus::logger::tracing::error;
@@ -38,9 +38,9 @@ fn InputFieldNode(
         class: if validate { "validator" },
         required: attrs.required.unwrap_or_default(),
         disabled: attrs.disabled,
-        autocomplete: attrs.autocomplete.map(|a| format!("{a:?}").to_lowercase()),
+        autocomplete: attrs.autocomplete.map(autocomplete_token),
         placeholder: label_text,
-        r#type: format!("{:?}", attrs.r#type).to_lowercase(),
+        r#type: input_type_token(attrs.r#type),
         pattern,
         value: parse_json_string(&attrs.value),
       }
@@ -83,7 +83,7 @@ fn InputButtonNode(
       disabled: attrs.disabled,
       class: "btn btn-primary w-full my-4",
       name: attrs.name,
-      r#type: format!("{:?}", attrs.r#type).to_lowercase(),
+      r#type: input_type_token(attrs.r#type),
       value: parse_json_string(&attrs.value),
       if let Some(ref label) = meta {
         {label.text.to_string()}
@@ -109,7 +109,8 @@ fn InputOtherNode(
           disabled: attrs.disabled,
           class: "input w-full",
           name: attrs.name,
-          r#type: format!("{:?}", attrs.r#type).to_lowercase(),
+          required: attrs.required.unwrap_or_default(),
+          r#type: input_type_token(attrs.r#type),
           value: parse_json_string(&attrs.value),
         }
       }
@@ -119,7 +120,8 @@ fn InputOtherNode(
         disabled: attrs.disabled,
         class: "input w-full",
         name: attrs.name,
-        r#type: format!("{:?}", attrs.r#type).to_lowercase(),
+        required: attrs.required.unwrap_or_default(),
+        r#type: input_type_token(attrs.r#type),
         value: parse_json_string(&attrs.value),
       }
     }
@@ -149,7 +151,8 @@ fn InputCheckBoxNode(
         disabled: attrs.disabled,
         class: "checkbox",
         name: attrs.name,
-        r#type: format!("{:?}", attrs.r#type).to_lowercase(),
+        required: attrs.required.unwrap_or_default(),
+        r#type: input_type_token(attrs.r#type),
         checked: parse_json_bool(&attrs.value),
         value: node_value,
       }
@@ -365,10 +368,10 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
                       rsx! {
                         input {
                           id: format!("{}_{}", i.name, id_suffix),
-                          autocomplete: i.autocomplete.map(|a| format!("{a:?}").to_lowercase()),
+                          autocomplete: i.autocomplete.map(autocomplete_token),
                           disabled: i.disabled,
                           name: i.name,
-                          r#type: format!("{:?}", i.r#type).to_lowercase(),
+                          r#type: input_type_token(i.r#type),
                           value: parse_json_string(&i.value),
                         }
                       }

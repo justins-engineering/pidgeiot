@@ -1,6 +1,8 @@
 mod ory_ui;
+pub use ory_ui::autocomplete_token;
 pub use ory_ui::continue_anchor_href;
 pub use ory_ui::extract_ui_messages;
+pub use ory_ui::input_type_token;
 
 mod ory_error;
 pub use ory_error::DisplayError;
