@@ -6,7 +6,7 @@ pub fn PrivacyPage() -> Element {
     section { id: "privacy-policy", class: "py-16 md:py-24",
       div { class: "max-w-3xl mx-auto px-4 md:px-8",
         h1 { class: "text-4xl md:text-5xl font-extrabold tracking-tighter mb-3", "Privacy Policy" }
-        p { class: "text-sm text-base-content/50 mb-10", "Last updated: July 26, 2026" }
+        p { class: "text-sm text-base-content/50 mb-10", "Last updated: August 19, 2026" }
 
         p { class: "text-lg text-base-content/70 leading-relaxed mb-4",
           "PidgeIoT is operated by Justin's Engineering Services LLC, a Massachusetts limited liability company. This policy describes what data the platform collects, where it lives, and what we do — and deliberately don't do — with it."
@@ -24,8 +24,11 @@ pub fn PrivacyPage() -> Element {
           p { class: "mb-4",
             "Device data. The platform exists to hold the data your devices send it: telemetry values, device configuration (shadow state), and device log uploads, along with the metadata you enter when creating flocks and pigeons (names, descriptions, connector settings). You control what your devices report."
           }
-          p {
+          p { class: "mb-4",
             "Web logs. Like nearly every web service, our infrastructure records standard request logs — IP address, user agent, timestamps, and the routes requested — used for debugging and abuse prevention."
+          }
+          p {
+            "Error diagnostics. If the dashboard hits a bug, your browser sends us a technical report: the error message, the place in our code where it happened, the app build, the page's route template, your browser's user agent string, and a short trail of recent in-app actions recorded as request method, route template, and status code. These reports are anonymous by design. They carry no account identity, no full URLs, no query strings, no form contents, and no request or response bodies, and we do not link them to your session. If you choose to send us a problem report yourself, we attach your account identity to that report so we can follow up with you, and identified reports are deleted with your account. Error reports are kept for 90 days; the long-lived statistics we keep about error patterns contain no personal data."
           }
         }
 
