@@ -20,6 +20,13 @@
 
   var state = { panicked: false, sent: 0, boot: false, last_report: null };
   window.__pidgeiot_err = state;
+  // Exposed so the Rust panic hook can reveal the panel itself, pre-abort:
+  // the thrown RuntimeError the abort produces is typically swallowed by
+  // the wasm-bindgen/Dioxus invocation glue and never reaches
+  // window.onerror, so waiting for it here would show nothing.
+  state.reveal = function () {
+    revealCrash();
+  };
 
   var seen = {};
   var revealed = false;

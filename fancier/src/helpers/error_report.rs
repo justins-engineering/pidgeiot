@@ -14,10 +14,12 @@
 //! Classes this file cannot see -- a wasm that never boots, JS exceptions
 //! -- belong to `assets/error-shim.js`, installed pre-boot. The two
 //! coordinate through `window.__pidgeiot_err`: the hook flips `panicked`
-//! (so the shim suppresses the duplicate `RuntimeError: unreachable` the
-//! abort throws, and reveals the static crash panel exactly once) and
-//! stashes the serialized report (so the panel's "tell us what happened"
-//! note can resend it with the user's words attached).
+//! (so the shim treats anything JS throws after the abort as downstream
+//! noise), reveals the shim's crash panel itself (the abort's own
+//! `RuntimeError: unreachable` is swallowed by the invocation glue and
+//! never reaches window.onerror), and stashes the serialized report so
+//! the panel's "tell us what happened" note can resend it with the
+//! user's words attached.
 //!
 //! Everything is compiled out on non-wasm targets: the SSG prerender runs
 //! this crate as a native binary, where no `window` exists and a panic
@@ -212,12 +214,10 @@ mod imp {
       return;
     };
 
-    // The marker is flipped BEFORE the beacon: the abort's thrown
-    // `RuntimeError: unreachable` reaches window.onerror after this hook
-    // returns, and the shim needs the flag already set to suppress the
-    // duplicate and reveal the crash panel instead. The serialized report
-    // is stashed so the panel's note flow can attach the user's words to
-    // this exact report (joined by client_event_id).
+    // The marker is flipped BEFORE the beacon: any JS error thrown after
+    // the abort must be suppressed as downstream noise, and the serialized
+    // report is stashed so the panel's note flow can attach the user's
+    // words to this exact report (joined by client_event_id).
     let marker = err_marker();
     if let Some(marker) = &marker {
       set_marker(marker, "panicked", &JsValue::TRUE);
@@ -226,22 +226,33 @@ mod imp {
 
     // Shared page-load budget with the JS shim. A panic can't loop (the
     // module is dead), but a page cycling through JS errors and a late
-    // panic still stays bounded.
+    // panic still stays bounded. Budget exhaustion skips only the beacon,
+    // never the panel below -- the user still needs a true screen.
     let sent = marker
       .as_ref()
       .map(|m| marker_number(m, "sent"))
       .unwrap_or(0.0);
-    if sent >= MAX_ERROR_REPORTS_PER_PAGE as f64 {
-      return;
-    }
-    if let Some(marker) = &marker {
-      set_marker(marker, "sent", &JsValue::from_f64(sent + 1.0));
+    if sent < MAX_ERROR_REPORTS_PER_PAGE as f64 {
+      if let Some(marker) = &marker {
+        set_marker(marker, "sent", &JsValue::from_f64(sent + 1.0));
+      }
+      let url = format!("{}/errors", crate::config::API_HOST);
+      let _ = window
+        .navigator()
+        .send_beacon_with_opt_str(&url, Some(&body));
     }
 
-    let url = format!("{}/errors", crate::config::API_HOST);
-    let _ = window
-      .navigator()
-      .send_beacon_with_opt_str(&url, Some(&body));
+    // Reveal the crash panel from here, synchronously, while the hook can
+    // still run: the abort's thrown `RuntimeError: unreachable` gets
+    // swallowed by the wasm-bindgen/Dioxus invocation glue and never
+    // reaches window.onerror, so the shim can't notice the death on its
+    // own.
+    if let Some(marker) = &marker
+      && let Ok(reveal) = js_sys::Reflect::get(marker, &JsValue::from_str("reveal"))
+      && let Some(reveal) = reveal.dyn_ref::<js_sys::Function>()
+    {
+      let _ = reveal.call0(marker);
+    }
   }
 
   /// Disarms the shim's boot watchdog -- proof Rust ran at all is exactly
