@@ -3225,7 +3225,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // dev (no RESEND_API_KEY) this logs the link instead. Either way
         // the response below carries the token/URL once -- write-once,
         // same convention as device connector tokens.
-        send_invite_email(&ctx.env, &email, &organization.name, &invite_url).await;
+        send_invite_email(&ctx.env, &email, &org_id, &organization.name, &invite_url).await;
 
         Response::from_json(&OrganizationInviteCreated {
           invite,

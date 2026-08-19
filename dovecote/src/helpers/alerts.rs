@@ -1111,6 +1111,22 @@ struct UsesendEmailRequest<'a> {
   text: &'a str,
 }
 
+/// Domain-only form of an email address, for log lines that need to stay
+/// diagnostic (spotting a bad domain or a bounce pattern) without retaining
+/// a full recipient address now that `head_sampling_rate = 1`
+/// (`wrangler.toml`) keeps every `console_error!`/`console_log!` line
+/// instead of sampling almost all of them away. `send_via_usesend` is
+/// shared by alert, invite, and feedback sends, so it has no per-call
+/// context (alert definition id, org id, ...) to log instead of the
+/// address -- redacting the address itself is the only option available at
+/// this layer.
+fn redact_email(email: &str) -> String {
+  match email.rsplit_once('@') {
+    Some((_, domain)) if !domain.is_empty() => format!("***@{domain}"),
+    _ => "***@(unparseable)".to_string(),
+  }
+}
+
 /// POSTs one transactional email via useSend's Resend-compatible HTTP API
 /// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
@@ -1121,7 +1137,8 @@ struct UsesendEmailRequest<'a> {
 pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
   let Some(api_key) = usesend_api_key(env) else {
     console_error!(
-      "RESEND_API_KEY not configured -- cannot send alert email to {to} (subject: {subject})"
+      "RESEND_API_KEY not configured -- cannot send alert email to {} (subject: {subject})",
+      redact_email(to)
     );
     return Ok(());
   };
@@ -1150,7 +1167,10 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
   let status = resp.status_code();
 
   if status >= 400 {
-    console_error!("useSend send to {to} returned HTTP {status} (subject: {subject})");
+    console_error!(
+      "useSend send to {} returned HTTP {status} (subject: {subject})",
+      redact_email(to)
+    );
   } else {
     // The only positive signal on this path, and the reason it exists: every
     // other branch here logs exclusively on failure, so mail that went out
@@ -1158,8 +1178,27 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
     // Confirming that alert delivery worked at all took a mailbox rather
     // than a log line. "Accepted" rather than "sent" on purpose -- a 2xx is
     // useSend taking custody, not the message reaching an inbox.
-    console_log!("useSend accepted mail to {to} (subject: {subject})");
+    console_log!(
+      "useSend accepted mail to {} (subject: {subject})",
+      redact_email(to)
+    );
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::redact_email;
+
+  #[test]
+  fn redact_email_keeps_domain_drops_local_part() {
+    assert_eq!(redact_email("owner@example.com"), "***@example.com");
+  }
+
+  #[test]
+  fn redact_email_handles_malformed_input_without_echoing_it() {
+    assert_eq!(redact_email("not-an-email"), "***@(unparseable)");
+    assert_eq!(redact_email("trailing@"), "***@(unparseable)");
+  }
 }

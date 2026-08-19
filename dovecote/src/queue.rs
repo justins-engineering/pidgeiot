@@ -1,6 +1,6 @@
 use capsules::TelemetryEndpoint;
 use worker::{
-  Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result,
+  Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result, Url,
   console_error, console_log, event,
 };
 
@@ -357,7 +357,7 @@ async fn store_and_alert(
       if let Err(e) = forward_line_protocol(endpoint, pigeon_id, metrics, reported_at_ms).await {
         console_error!(
           "Telemetry consumer: line-protocol forward to '{}' failed for '{}': {e}",
-          endpoint.url,
+          redact_endpoint_host(&endpoint.url),
           pigeon_id
         );
       }
@@ -418,4 +418,38 @@ async fn forward_line_protocol(
   }
 
   post_line_protocol(&url, &line, endpoint.auth_token.as_deref(), &[]).await
+}
+
+/// scheme+host of a user-configured telemetry forwarding endpoint, for log
+/// lines. `endpoint.url` is user-supplied and can embed credentials as
+/// userinfo (`https://user:pass@host/...`) or a query param (InfluxDB-style
+/// `?token=...` endpoints especially) -- neither may reach a log line now
+/// that `head_sampling_rate = 1` (`wrangler.toml`) retains every one
+/// instead of sampling almost all of them away.
+fn redact_endpoint_host(url: &str) -> String {
+  match Url::parse(url) {
+    Ok(parsed) => match parsed.host_str() {
+      Some(host) => format!("{}://{host}", parsed.scheme()),
+      None => "(no-host)".to_string(),
+    },
+    Err(_) => "(unparseable)".to_string(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::redact_endpoint_host;
+
+  #[test]
+  fn redact_endpoint_host_drops_userinfo_path_and_query() {
+    assert_eq!(
+      redact_endpoint_host("https://user:s3cr3t@influx.example.com:8086/write?token=abc123"),
+      "https://influx.example.com"
+    );
+  }
+
+  #[test]
+  fn redact_endpoint_host_falls_back_on_garbage_input() {
+    assert_eq!(redact_endpoint_host("not a url"), "(unparseable)");
+  }
 }

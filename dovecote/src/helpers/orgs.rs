@@ -754,15 +754,39 @@ pub fn build_invite_url(env: &Env, token: &str) -> String {
   format!("{root}/invite?token={token}")
 }
 
+/// Last `n` characters of `s` (or the whole string if it's shorter),
+/// prefixed with an ellipsis -- enough to correlate a log line against a
+/// support report or a copy of the real value without retaining the value
+/// itself now that `head_sampling_rate = 1` (`wrangler.toml`) keeps every
+/// log line instead of sampling almost all of them away.
+fn suffix_hint(s: &str, n: usize) -> String {
+  let start = s.len().saturating_sub(n);
+  // `s` is ASCII (tokens/URLs), so byte and char boundaries coincide --
+  // no `floor_char_boundary` needed.
+  format!("...{}", &s[start..])
+}
+
 /// Sends the invite email through the EXISTING Resend transport
 /// (`helpers/alerts.rs::send_via_usesend` -- no new provider/secret). In an
-/// environment with no `RESEND_API_KEY` configured (dev), this logs the
-/// invite link instead, keeping the flow locally testable end-to-end: grab
-/// the link from `wrangler dev`'s console output.
-pub async fn send_invite_email(env: &Env, to: &str, org_name: &str, invite_url: &str) {
+/// environment with no `RESEND_API_KEY` configured (dev), this logs a
+/// (redacted) stand-in for the invite link instead, keeping the flow
+/// locally testable end-to-end: `wrangler dev`'s own admin/DB access can
+/// recover the real token, so nothing testable is lost. `org_id` is for
+/// logging only -- the email body still addresses the org by name.
+pub async fn send_invite_email(
+  env: &Env,
+  to: &str,
+  org_id: &Uuid,
+  org_name: &str,
+  invite_url: &str,
+) {
   if !crate::helpers::alerts::usesend_configured(env) {
+    // Never log `to` or the full `invite_url` -- the URL's query string IS
+    // the live, single-use invite token (see `build_invite_url`), a
+    // credential. Only its last 4 characters are shown.
     console_log!(
-      "Org invite (email transport not configured -- dev no-op): to={to} org={org_name:?} link={invite_url}"
+      "Org invite (email transport not configured -- dev no-op): org={org_id} org_name={org_name:?} link_token={}",
+      suffix_hint(invite_url, 4)
     );
     return;
   }
@@ -776,7 +800,7 @@ pub async fn send_invite_email(env: &Env, to: &str, org_name: &str, invite_url: 
   );
 
   if let Err(e) = crate::helpers::alerts::send_via_usesend(env, to, &subject, &text).await {
-    console_error!("Org invite email send failed for {to}: {e}");
+    console_error!("Org invite email send failed for org {org_id}: {e}");
   }
 }
 
@@ -914,4 +938,22 @@ pub async fn set_flock_org(client: &Client, flock_id: &Uuid, org_id: &Uuid) -> R
       Error::RustError("Internal Server Error".into())
     })?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::suffix_hint;
+
+  #[test]
+  fn suffix_hint_keeps_only_the_tail() {
+    assert_eq!(
+      suffix_hint("https://pidgeiot.com/invite?token=abcdef1234567890", 4),
+      "...7890"
+    );
+  }
+
+  #[test]
+  fn suffix_hint_returns_whole_string_when_shorter_than_n() {
+    assert_eq!(suffix_hint("ab", 4), "...ab");
+  }
 }
