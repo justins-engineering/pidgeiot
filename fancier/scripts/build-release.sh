@@ -41,6 +41,12 @@ bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 # which copies fancier/public/* verbatim into the output root.
 mkdir -p ./public/assets/styling
 cp ./assets/styling/main.css ./public/assets/styling/main.css
+# Same literal-path bug bites [web.resource] scripts: the <script> tag dx
+# writes says "assets/error-shim.js", which only exists in the output via
+# this passthrough. The public/ copy is committed (dx serve needs it too,
+# same as theme-init.js); refreshing it here makes drift from the source
+# impossible in a release build.
+cp ./assets/error-shim.js ./public/assets/error-shim.js
 # /favicon.ico at the conventional root path: browsers and link-preview
 # tools request it unconditionally, and without a real file wrangler's
 # SPA fallback answers 200 with text/html — which OpaqueResponseBlocking
