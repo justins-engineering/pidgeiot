@@ -114,6 +114,16 @@ COAP_SERVICE_ALLOWED_IPS = "15.204.254.3"
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
 
+# Per-IP throttle on the unauthenticated POST /errors ingest. Counters are
+# roughly per-colo, so this bounds request volume, not the ops inbox --
+# the new-signature email has its own global budget (helpers/errors.rs).
+# Each environment gets its own namespace_id: bindings sharing a namespace
+# share counters across Workers.
+[[ratelimits]]
+name = "ERROR_INGEST_LIMITER"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
@@ -212,6 +222,12 @@ bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 binding = "FIRMWARE_BUCKET"
 bucket_name = "pidgeiot-firmware-staging"
 
+# Own namespace_id -- see the production ratelimits block above.
+[[env.staging.ratelimits]]
+name = "ERROR_INGEST_LIMITER"
+namespace_id = "1002"
+simple = { limit = 20, period = 60 }
+
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
 # dovecote-db-staging: staging's OWN database (dovecote_staging on the
@@ -277,6 +293,12 @@ bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 [[env.dev.r2_buckets]]
 binding = "FIRMWARE_BUCKET"
 bucket_name = "pidgeiot-firmware-dev"
+
+# Own namespace_id -- see the production ratelimits block above.
+[[env.dev.ratelimits]]
+name = "ERROR_INGEST_LIMITER"
+namespace_id = "1003"
+simple = { limit = 20, period = 60 }
 
 [[env.dev.hyperdrive]]
 binding = "YugabyteDB"

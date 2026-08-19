@@ -159,7 +159,8 @@ models above; dev and production don't set these vars, so it's a no-op there.
 ## Rate & size limits
 
 There is no general-purpose rate limiting in `dovecote` today (beyond whatever Cloudflare
-applies at the platform level). The limits that do exist are:
+applies at the platform level); the one route with a real per-IP limiter is `POST /errors`,
+via Cloudflare's rate-limiter binding. The limits that do exist are:
 
 | Limit | Value | Where |
 |---|---|---|
@@ -174,6 +175,12 @@ applies at the platform level). The limits that do exist are:
 | `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — `contact_email` / `page_context` length | 254 / 512 bytes (`capsules::MAX_FEEDBACK_CONTACT_EMAIL_BYTES`/`MAX_FEEDBACK_PAGE_CONTEXT_BYTES`) | `lib.rs`, `400` over the cap |
+| `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
+| `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
+| `POST /errors` — bytes in `note` (manual JSON body) | 4 KiB (reuses `capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
+| New-signature ops emails | 5 / hour, global; overflow folded into the next allowed email as a suppressed count | `helpers/errors.rs` |
+| Stored error events per signature | newest 200 kept (each group's oldest 5 and all manual reports exempt) | `helpers/errors.rs` retention sweep on the 5-minute cron |
+| Stored error events age | 90 days, keyed on server-side `received_at` | `helpers/errors.rs` retention sweep |
 
 ---
 
@@ -1249,9 +1256,66 @@ Rejections:
 - `413` if the raw body exceeds `capsules::MAX_FEEDBACK_BODY_BYTES` or `message` exceeds
   `capsules::MAX_FEEDBACK_MESSAGE_BYTES` (see the size-limits table above).
 
-There is no per-IP rate limiting in-route (none exists anywhere in dovecote — see
-"Rate & size limits" above); platform-level protection (a Cloudflare WAF rate rule on
+There is no per-IP rate limiting in-route (see "Rate & size limits" above — `POST /errors`
+is the one route that carries one); platform-level protection (a Cloudflare WAF rate rule on
 `POST /feedback`, or Turnstile) is the intended follow-up if abuse appears.
+
+### Error reporting
+
+#### `POST /errors` — **no auth required** (identity only on the manual JSON path)
+
+Ingest for the dashboard's automatic crash reports (Rust panic hook, pre-boot JS shim) and
+for the crash screen's manual "tell us what happened" note. Rate-limited per IP (20/60s,
+answering `429` — deliberately never `401`, which the dashboard treats as a sign-out signal).
+Returns `202` with an empty JSON object; nothing about the response is actionable to the
+sender (`sendBeacon` cannot read it).
+
+The `Content-Type` carries the identity policy, not just the parse mode:
+
+- **`text/plain`** (the automatic path — what `navigator.sendBeacon` sends, since it cannot
+  negotiate a CORS preflight): body is a JSON-encoded `capsules::ErrorReport`. **Always
+  anonymous**: this branch never resolves a session, and the envelope rejects unknown fields,
+  so a body claiming an identity (a note, a user id, contact details) fails with `400` rather
+  than being partially honored. `text/plain` is CORS-safelisted — any origin can POST it
+  credentialed without a preflight — which is exactly why this branch is structurally
+  cookie-blind.
+- **`application/json`** (the manual path — the crash screen's note): body is
+  `capsules::ErrorNoteRequest` (`{"note": "...", "report": {...ErrorReport...}}`). Not
+  CORS-safelisted, so the preflight gates it to `ROOT_URL`, which is what makes an identified
+  report unforgeable cross-origin. A present Kratos session is resolved server-side and stored
+  as `user_id` on the event row (never trusted from the body); no session just stores the note
+  anonymously.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/errors \
+  -H 'Content-Type: text/plain;charset=UTF-8' \
+  --data '{"kind":"rust_panic","message":"called Option::unwrap() on a None value","location":"src/views/pigeon.rs:412:18","route":"/flocks/…/pigeons/…","build":"dxh7a1e5a63c0523eb1","user_agent":"…","breadcrumbs":[{"age_ms":1200,"kind":"api","detail":"GET /flocks -> 500"}],"session_kind":"anonymous","occurred_at_ms":1755600000000,"client_event_id":"018f3b9e-…"}'
+```
+
+Server-side handling (all client fields are treated as hostile):
+
+- The message and route are **re-normalized server-side** — UUIDs, long hex/base64 runs,
+  emails, and bare integers replaced with placeholders; query strings dropped — and the
+  normalized message is what the indefinitely-retained `error_groups` exemplar stores. The
+  raw (byte-capped) message lives only on the 90-day `error_events` row.
+- The grouping signature is computed server-side only (truncated SHA-256 over
+  kind + normalized message + location); there is no client signature field.
+- `build` must match the release artifact's `dxh` + 16-hex shape or it is blanked.
+- `occurred_at` is clamped to ±24h of server time; retention keys on `received_at`.
+- `client_event_id` is a client-minted correlation id (shown on the crash screen) that joins
+  a manual note to the automatic crash it describes — a hint, not a key.
+- A **new** signature sends one ops email (`[ERROR] New: …`) to `OPS_ALERT_EMAIL`, under a
+  global budget of 5/hour with the overflow folded into the next allowed email.
+
+Rejections: `400` (unsupported `Content-Type`, invalid JSON, unknown fields on the text/plain
+envelope, empty `note`), `413` (body or `note` over cap), `429` (rate limit).
+
+#### `DELETE /errors` — session required
+
+Erases every identified error-report row (`user_id` + `report_note`) belonging to the caller;
+automatic reports never stored an identity, so there is nothing of theirs to erase there.
+Returns `{"deleted": <count>}`. The manual account-deletion runbook runs the same statement
+directly (documented in `infra/migrations/2026-08-19-error-reporting.sql`).
 
 ---
 

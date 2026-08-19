@@ -110,6 +110,11 @@ pub use ops_probe::probe_kratos_health;
 mod feedback;
 pub use feedback::send_feedback_email;
 
+mod errors;
+pub use errors::erase_user_error_reports;
+pub use errors::ingest_error_report;
+pub use errors::sweep_error_retention;
+
 mod orgs;
 pub use orgs::FlockAction;
 pub use orgs::Principal;

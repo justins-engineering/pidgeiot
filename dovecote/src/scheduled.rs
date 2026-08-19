@@ -1,7 +1,7 @@
 use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, event};
 
 use crate::helpers::{
-  evaluate_scheduled_alerts, probe_kratos_health, report_billing_meters,
+  evaluate_scheduled_alerts, probe_kratos_health, report_billing_meters, sweep_error_retention,
   sweep_telemetry_history_retention,
 };
 
@@ -39,6 +39,12 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // so a DB hiccup here doesn't take out the two invocations above it.
   if let Err(e) = sweep_telemetry_history_retention(&env).await {
     console_error!("Telemetry history retention sweep failed: {e}");
+  }
+
+  // Error-report retention (helpers/errors.rs) -- same ride-the-cron
+  // reasoning and the same crash-proofing as the sweeps above.
+  if let Err(e) = sweep_error_retention(&env).await {
+    console_error!("Error-report retention sweep failed: {e}");
   }
 
   // Stripe meter reporter (helpers/usage.rs) -- rides the same cron behind

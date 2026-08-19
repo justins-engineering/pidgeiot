@@ -6,9 +6,10 @@ use crate::helpers::{
   claim_webhook_event, constant_time_eq, count_billable_message, create_checkout_session,
   create_customer, create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
-  delete_pigeon_pg_db, ensure_billing_tables, ensure_billing_usage_tables, fetch_subscription,
-  get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
-  get_organization, get_user_flocks, grant_org_acl_via_do, insert_pigeon_pg_db, is_alert_owner,
+  delete_pigeon_pg_db, ensure_billing_tables, ensure_billing_usage_tables,
+  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
+  get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
+  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
   list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
   list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
@@ -2768,6 +2769,153 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       send_feedback_email(&ctx.env, &subject, &text).await;
 
       Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
+    })
+    // --- Error Reporting Routes ---
+    // Ingest for the dashboard's crash/error reports (docs/api.md "Error
+    // reporting"). Two content types, and the split carries the identity
+    // policy: `text/plain` is what `sendBeacon` can send from a dying wasm
+    // module without a CORS preflight -- but text/plain is CORS-safelisted,
+    // so ANY page on the internet can POST it here cross-origin with
+    // cookies attached; that branch therefore never resolves a session and
+    // its envelope rejects unknown fields, making automatic reports
+    // anonymous by construction. `application/json` is not safelisted --
+    // the preflight gates it to ROOT_URL -- so it alone may carry the
+    // identified manual note, with identity resolved from the session and
+    // never from the body.
+    .post_async("/errors", |mut req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      // Cloudflare's rate-limiter binding, keyed on the connecting
+      // address; the key is checked and discarded, never stored. Over the
+      // limit answers 429 -- and never 401, because the dashboard treats
+      // 401 as "session gone" and signs the tab out, which must not happen
+      // to someone mid-bug-report. A limiter fault fails open: dropping
+      // real crash reports costs more than a window of unthrottled junk.
+      match ctx.env.rate_limiter("ERROR_INGEST_LIMITER") {
+        Ok(limiter) => {
+          let key = req
+            .headers()
+            .get("CF-Connecting-IP")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+          match limiter.limit(key).await {
+            Ok(outcome) if !outcome.success => {
+              return Response::error("Too Many Requests", 429)
+                .unwrap()
+                .with_cors(&cors);
+            }
+            Ok(_) => {}
+            Err(e) => console_error!("error ingest: rate limiter check failed (failing open): {e}"),
+          }
+        }
+        Err(e) => {
+          console_error!("error ingest: rate limiter binding unavailable (failing open): {e}")
+        }
+      }
+
+      let content_type = req
+        .headers()
+        .get("Content-Type")
+        .ok()
+        .flatten()
+        .map(|v| v.to_ascii_lowercase())
+        .unwrap_or_default();
+      let is_json = content_type.starts_with("application/json");
+      let is_text = content_type.starts_with("text/plain");
+      if !is_json && !is_text {
+        return Response::error(
+          "Bad Request: Content-Type must be text/plain or application/json",
+          400,
+        )
+        .unwrap()
+        .with_cors(&cors);
+      }
+
+      let Ok(body_text) = req.text().await else {
+        return Response::error("Bad Request: Failed to read body", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if body_text.len() > capsules::MAX_ERROR_REPORT_BYTES {
+        return Response::error("Payload Too Large: report exceeds size cap", 413)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let (report, user_id, note) = if is_json {
+        let Ok(payload) = serde_json::from_str::<capsules::ErrorNoteRequest>(&body_text) else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let note = payload.note.trim().to_string();
+        if note.is_empty() {
+          return Response::error("Bad Request: 'note' cannot be empty", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        if note.len() > capsules::MAX_FEEDBACK_MESSAGE_BYTES {
+          return Response::error("Payload Too Large: 'note' exceeds size cap", 413)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        // Optional session, same as /feedback: a signed-out visitor's note
+        // is stored anonymously; a failed session check is never a 401.
+        let user_id = require_auth_session(&req, &ctx.env)
+          .await
+          .ok()
+          .and_then(|auth| uuid::Uuid::parse_str(&auth.user_id).ok());
+        (payload.report, user_id, Some(note))
+      } else {
+        // Anonymous automatic branch: structurally cookie-blind -- no code
+        // path here reads the session, and `ErrorReport`'s
+        // deny_unknown_fields makes a body claiming an identity fail to
+        // parse rather than be partially honored.
+        let Ok(report) = serde_json::from_str::<capsules::ErrorReport>(&body_text) else {
+          return Response::error("Bad Request: Invalid report payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        (report, None, None)
+      };
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(()) = ingest_error_report(&ctx.env, &client, &report, user_id, note.as_deref()).await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
+    })
+    // Erasure of the caller's identified report rows -- the automatic rows
+    // never carried an identity to erase. The manual account-deletion
+    // runbook runs the same statement directly (see the migration file).
+    .delete_async("/errors", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(deleted) = erase_user_error_reports(&client, &user_uuid).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      Response::from_json(&serde_json::json!({ "deleted": deleted }))
+        .unwrap()
+        .with_cors(&cors)
     })
     // --- Organization Routes ---
     // Shared-org access for teams: individual Kratos accounts, org-level
