@@ -5,8 +5,12 @@ use crate::{
 };
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
+use dioxus_free_icons::Icon;
+use dioxus_free_icons::icons::ld_icons::LdCopy;
 use ory_kratos_client_wasm::models::UiNodeAttributes::{A, Div, Img, Input, Script, Text};
 use std::collections::BTreeMap;
+#[cfg(feature = "web")]
+use wasm_bindgen_futures::JsFuture;
 
 const TEL_REGEX: &str = "\\+?(9[976]\\d|8[987530]\\d|6[987]\\d|5[90]\\d|42\\d|3[875]\\d|2[98654321]\\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\\d{1,14}";
 
@@ -168,24 +172,29 @@ fn ImageNode(
   meta: Option<Box<ory_kratos_client_wasm::models::UiText>>,
   attrs: ory_kratos_client_wasm::models::UiNodeImageAttributes,
 ) -> Element {
+  // The only image Kratos sends is the TOTP enrolment QR code, which is
+  // something the user points a phone at: centred, and never wider than the
+  // form it sits in.
   rsx! {
-    if let Some(ref label) = meta {
-      label { id: label.id, class: "text-lg mb-4",
-        {label.text.clone()}
+    div { class: "flex flex-col items-center gap-2 my-4",
+      if let Some(ref label) = meta {
+        span { id: label.id, class: "text-sm text-base-content/80", {label.text.clone()} }
         img {
+          class: "max-w-full h-auto rounded-box border border-base-content/10 bg-base-100 p-2",
           height: attrs.height,
           id: attrs.id,
           src: attrs.src,
           width: attrs.width,
           alt: label.text.to_owned(),
         }
-      }
-    } else {
-      img {
-        height: attrs.height,
-        id: attrs.id,
-        src: attrs.src,
-        width: attrs.width,
+      } else {
+        img {
+          class: "max-w-full h-auto rounded-box border border-base-content/10 bg-base-100 p-2",
+          height: attrs.height,
+          id: attrs.id,
+          src: attrs.src,
+          width: attrs.width,
+        }
       }
     }
   }
@@ -196,6 +205,16 @@ fn TextNode(
   meta: Option<Box<ory_kratos_client_wasm::models::UiText>>,
   attrs: ory_kratos_client_wasm::models::UiNodeTextAttributes,
 ) -> Element {
+  // Kratos sends the TOTP secret as an ordinary text node, so by default it
+  // renders as a run of prose the user is expected to transcribe by eye.
+  // Give that one node the treatment every other credential in the app gets:
+  // monospace, selectable, and copyable.
+  if attrs.id == TOTP_SECRET_NODE_ID {
+    return rsx! {
+      SecretTextNode { meta, attrs }
+    };
+  }
+
   rsx! {
     if let Some(ref label) = meta {
       label { r#for: attrs.id.clone(), id: label.id, class: "text-lg",
@@ -203,6 +222,65 @@ fn TextNode(
       }
     }
     p { id: attrs.id, class: "", {attrs.text.text} }
+  }
+}
+
+/// Kratos's id for the text node carrying the TOTP secret in plain text.
+const TOTP_SECRET_NODE_ID: &str = "totp_secret_key";
+
+#[component]
+fn SecretTextNode(
+  meta: Option<Box<ory_kratos_client_wasm::models::UiText>>,
+  attrs: ory_kratos_client_wasm::models::UiNodeTextAttributes,
+) -> Element {
+  let mut copied = use_signal(|| false);
+  let mut copy_failed = use_signal(|| false);
+  let secret = attrs.text.text.clone();
+
+  rsx! {
+    div { class: "flex flex-col gap-2 my-4",
+      if let Some(ref label) = meta {
+        span { id: label.id, class: "text-sm text-base-content/80", {label.text.to_owned()} }
+      }
+      div { class: "flex items-center gap-3 rounded-box border border-base-content/10 bg-base-200 p-3",
+        code {
+          id: attrs.id,
+          class: "font-mono text-sm break-all grow select-all tracking-wider",
+          {attrs.text.text}
+        }
+        button {
+          // The enclosing element is a Kratos <form>: without this a click
+          // would submit it instead of copying.
+          r#type: "button",
+          class: "btn btn-square btn-ghost btn-sm shrink-0",
+          "aria-label": "Copy secret",
+          onclick: move |_| {
+              #[cfg(feature = "web")]
+              let secret = secret.clone();
+              async move {
+                  #[cfg(feature = "web")]
+                  if let Some(window) = web_sys::window() {
+                      let result = JsFuture::from(window.navigator().clipboard().write_text(&secret))
+                          .await;
+                      copied.set(result.is_ok());
+                      copy_failed.set(result.is_err());
+                      if result.is_ok() {
+                          crate::helpers::sleep_ms(2000).await;
+                          copied.set(false);
+                      }
+                  }
+              }
+          },
+          if copied() {
+            span { class: "text-success text-xs", "Copied!" }
+          } else if copy_failed() {
+            span { class: "text-error text-xs", "Copy failed" }
+          } else {
+            Icon { icon: LdCopy }
+          }
+        }
+      }
+    }
   }
 }
 
