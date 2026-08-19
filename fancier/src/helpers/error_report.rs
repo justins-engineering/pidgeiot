@@ -14,12 +14,12 @@
 //! Classes this file cannot see -- a wasm that never boots, JS exceptions
 //! -- belong to `assets/error-shim.js`, installed pre-boot. The two
 //! coordinate through `window.__pidgeiot_err`: the hook flips `panicked`
-//! (so the shim treats anything JS throws after the abort as downstream
-//! noise), reveals the shim's crash panel itself (the abort's own
-//! `RuntimeError: unreachable` is swallowed by the invocation glue and
-//! never reaches window.onerror), and stashes the serialized report so
-//! the panel's "tell us what happened" note can resend it with the
-//! user's words attached.
+//! (so the shim treats anything JS throws after the abort -- including
+//! the abort's own `RuntimeError: unreachable` -- as already-reported
+//! noise), reveals the shim's crash panel itself rather than waiting for
+//! that error to maybe surface, and stashes the serialized report so the
+//! panel's "tell us what happened" note can resend it with the user's
+//! words attached.
 //!
 //! Everything is compiled out on non-wasm targets: the SSG prerender runs
 //! this crate as a native binary, where no `window` exists and a panic
@@ -242,11 +242,11 @@ mod imp {
         .send_beacon_with_opt_str(&url, Some(&body));
     }
 
-    // Reveal the crash panel from here, synchronously, while the hook can
-    // still run: the abort's thrown `RuntimeError: unreachable` gets
-    // swallowed by the wasm-bindgen/Dioxus invocation glue and never
-    // reaches window.onerror, so the shim can't notice the death on its
-    // own.
+    // Reveal the crash panel from here, synchronously, while the hook is
+    // guaranteed a chance to run -- whether and when the abort's thrown
+    // `RuntimeError: unreachable` surfaces to window.onerror depends on
+    // which glue path invoked the wasm, so the shim's handlers are only a
+    // backstop for the reveal, never the primary path.
     if let Some(marker) = &marker
       && let Ok(reveal) = js_sys::Reflect::get(marker, &JsValue::from_str("reveal"))
       && let Some(reveal) = reveal.dyn_ref::<js_sys::Function>()
