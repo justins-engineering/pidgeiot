@@ -1,12 +1,9 @@
 use crate::helpers::{
-  clear_return_to, remove_session_cookie, take_return_to, url_query_param,
-  write_session_hint_cookie,
+  adopt_kratos_session, clear_return_to, remove_session_cookie, take_return_to, url_query_param,
 };
 use crate::models::AuthState;
-use crate::{Configuration, Create, Route, Session};
-use dioxus::logger::tracing::error;
+use crate::{Route, Session};
 use dioxus::prelude::*;
-use ory_kratos_client_wasm::apis::frontend_api::to_session;
 use std::str::FromStr;
 
 #[component]
@@ -27,39 +24,21 @@ pub fn SetSessionCookie(state: bool) -> Element {
       // state = true: Kratos redirect after successful login or verification.
       // We must now ask the Kratos backend to validate the secure HttpOnly cookie
       // and give us the session metadata (like expiry).
-      let config = Configuration::create();
-
-      match to_session(&config, None, None, None).await {
-        Ok(kratos_session) => {
-          if let Some(expires_at) = kratos_session.expires_at {
-            write_session_hint_cookie(&expires_at);
-            // A fresh session is no longer a lapsed one, so the login
-            // view stops explaining a sign-out that has been undone.
-            session.signed_out.set(false);
-            session.state.set(AuthState::Authenticated);
-            // Signing back in after a session ended mid-visit resumes on
-            // the interrupted page. A stale or hand-edited entry can only
-            // ever name an in-app route, and one that no longer resolves
-            // would land on the 404 view -- worse than the dashboard, so
-            // it falls back instead.
-            let destination = take_return_to()
-              .and_then(|path| Route::from_str(&path).ok())
-              .filter(|route| !matches!(route, Route::PageNotFound { .. }))
-              .unwrap_or(Route::Dashboard {});
-            nav.replace(destination);
-          } else {
-            error!("Kratos returned a valid session, but missing expiry.");
-            session.state.set(AuthState::Unauthenticated);
-            nav.replace(Route::Index {});
-          }
-        }
-        Err(err) => {
-          // This handles edge cases where the redirect happened, but the
-          // HttpOnly cookie was dropped or invalid.
-          error!("Kratos session validation failed post-redirect: {err:?}");
-          session.state.set(AuthState::Unauthenticated);
-          nav.replace(Route::Index {});
-        }
+      if adopt_kratos_session(session).await {
+        // Signing back in after a session ended mid-visit resumes on
+        // the interrupted page. A stale or hand-edited entry can only
+        // ever name an in-app route, and one that no longer resolves
+        // would land on the 404 view -- worse than the dashboard, so
+        // it falls back instead.
+        let destination = take_return_to()
+          .and_then(|path| Route::from_str(&path).ok())
+          .filter(|route| !matches!(route, Route::PageNotFound { .. }))
+          .unwrap_or(Route::Dashboard {});
+        nav.replace(destination);
+      } else {
+        // The redirect landed but no session came back with it.
+        session.state.set(AuthState::Unauthenticated);
+        nav.replace(Route::Index {});
       }
     } else {
       // state = false: Kratos redirect after logout.

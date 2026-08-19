@@ -223,13 +223,24 @@ pub fn App() -> Element {
 
   // 2. Fire the async check. This future runs automatically on mount.
   use_future(move || async move {
-    let is_valid = session_cookie_valid().await;
+    if session_cookie_valid().await {
+      session.state.set(AuthState::Authenticated);
+      return;
+    }
 
-    session.state.set(if is_valid {
-      AuthState::Authenticated
-    } else {
-      AuthState::Unauthenticated
-    });
+    // A completed account recovery arrives here: Kratos issues the session
+    // itself and 303s straight to the settings UI, so there is a real
+    // session in the browser and no hint cookie to find it by. Asking
+    // Kratos directly is what stops the guard bouncing a just-recovered
+    // user back to the login page. Only that one hand-off asks -- see
+    // helpers::kratos_settings_handoff.
+    if crate::helpers::kratos_settings_handoff()
+      && crate::helpers::adopt_kratos_session(session).await
+    {
+      return;
+    }
+
+    session.state.set(AuthState::Unauthenticated);
   });
 
   let mut local_session = use_context_provider(|| LocalSession {

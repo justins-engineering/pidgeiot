@@ -97,6 +97,16 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
                   "Register →"
                 }
               }
+              // The recovery flow is reachable only from here; someone who
+              // cannot sign in has no other way to find it.
+              p { class: "text-sm leading-6",
+                "Forgot your password? "
+                Link {
+                  to: Route::RecoveryFlow { flow: None },
+                  class: "link-primary link-hover",
+                  "Recover your account →"
+                }
+              }
             }
           }
         }
