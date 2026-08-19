@@ -484,8 +484,61 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
 
 // --- Main Builder Component ---
 
+/// Human title for a node group, used as the heading of the form built from
+/// it. `LookupSecret` is Kratos's name for backup codes, not for the account
+/// recovery flow -- calling it "Recovery" on the settings page put two
+/// unrelated things under one word.
+fn group_title(group: ory_kratos_client_wasm::models::ui_node::GroupEnum) -> &'static str {
+  use ory_kratos_client_wasm::models::ui_node::GroupEnum;
+
+  match group {
+    GroupEnum::Password => "Password",
+    GroupEnum::Oidc => "OIDC",
+    GroupEnum::Profile => "Profile",
+    GroupEnum::Code => "Code",
+    GroupEnum::Totp => "Authenticator app",
+    GroupEnum::LookupSecret => "Backup recovery codes",
+    GroupEnum::Webauthn => "Web Authentication",
+    GroupEnum::Passkey => "Passkey",
+    GroupEnum::Captcha => "Captcha",
+    GroupEnum::Saml => "SAML",
+    _ => "",
+  }
+}
+
+/// Slug for the section id a group's form is wrapped in. Kebab-case, and
+/// stable per group rather than derived from the title, so rewording a
+/// heading cannot silently break a link into the page.
+fn group_slug(group: ory_kratos_client_wasm::models::ui_node::GroupEnum) -> &'static str {
+  use ory_kratos_client_wasm::models::ui_node::GroupEnum;
+
+  match group {
+    GroupEnum::Password => "password",
+    GroupEnum::Oidc => "oidc",
+    GroupEnum::Profile => "profile",
+    GroupEnum::Code => "code",
+    GroupEnum::Totp => "totp",
+    GroupEnum::LookupSecret => "backup-codes",
+    GroupEnum::Webauthn => "webauthn",
+    GroupEnum::Passkey => "passkey",
+    GroupEnum::Captcha => "captcha",
+    GroupEnum::Saml => "saml",
+    _ => "other",
+  }
+}
+
 #[component]
-pub fn FormBuilder(ui: ory_kratos_client_wasm::models::UiContainer) -> Element {
+pub fn FormBuilder(
+  ui: ory_kratos_client_wasm::models::UiContainer,
+  // When set, each method gets its own titled `section` (id
+  // `<prefix>-<group>`) instead of one anonymous stack of fieldsets. Only
+  // the settings flow passes it: it is the one flow where several unrelated
+  // methods -- profile, password, authenticator app, backup codes -- are on
+  // screen at once and need telling apart. The single-purpose flows
+  // (login, registration, recovery, verification) already have the page's
+  // own heading for that.
+  #[props(default)] section_prefix: Option<String>,
+) -> Element {
   // 1. O(N) Stable Partition: Separate CSRF/Default nodes from Flow nodes
   let (default_nodes, flow_nodes): (Vec<_>, Vec<_>) = ui
     .nodes
@@ -515,32 +568,33 @@ pub fn FormBuilder(ui: ory_kratos_client_wasm::models::UiContainer) -> Element {
           }
         }
       }
+    } else if let Some(prefix) = section_prefix {
+      for (group_enum , group_nodes) in groups {
+        section { id: "{prefix}-{group_slug(group_enum)}", class: "mb-10",
+          h2 { class: "text-lg font-semibold mb-3", {group_title(group_enum)} }
+          form {
+            class: "bg-base-100 border border-base-content/10 rounded-box shadow-sm p-4",
+            action: ui.action.clone(),
+            method: ui.method.clone(),
+            // Namespace the IDs with the specific flow name to prevent collisions
+            // if Kratos demands multiple forms (e.g., Password and Webauthn)
+            NodeBuilder {
+              nodes: default_nodes.clone(),
+              id_suffix: format!("{group_enum:?}").to_lowercase(),
+            }
+            NodeBuilder {
+              nodes: group_nodes,
+              id_suffix: format!("{group_enum:?}").to_lowercase(),
+            }
+          }
+        }
+      }
     } else {
       for (group_enum , group_nodes) in groups {
         form { action: ui.action.clone(), method: ui.method.clone(),
           div { class: "my-2",
             fieldset { class: "fieldset bg-base-100 border border-base-300 rounded-box p-4",
-              legend { class: "fieldset-legend text-xl",
-                {
-                    match group_enum {
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Password => "Password",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Oidc => "OIDC",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Profile => "Profile",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Code => "Code",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Totp => "TOTP",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::LookupSecret => {
-                            "Recovery"
-                        }
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Webauthn => {
-                            "Web Authentication"
-                        }
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Passkey => "Passkey",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Captcha => "Captcha",
-                        ory_kratos_client_wasm::models::ui_node::GroupEnum::Saml => "SAML",
-                        _ => "",
-                    }
-                }
-              }
+              legend { class: "fieldset-legend text-xl", {group_title(group_enum)} }
               // Namespace the IDs with the specific flow name to prevent collisions
               // if Kratos demands multiple forms (e.g., Password and Webauthn)
               NodeBuilder {

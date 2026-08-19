@@ -70,8 +70,11 @@ pub fn SettingsFlow(flow: Option<String>) -> Element {
               }
             }
 
-            // Pure HTML submission.
-            FormBuilder { ui: *res.ui.to_owned() }
+            // Pure HTML submission. Unlike the single-purpose flows, this
+            // page shows several unrelated methods at once, so each gets its
+            // own titled section (`settings-password`, `settings-totp`, ...)
+            // rather than arriving as one undifferentiated stack of forms.
+            FormBuilder { ui: *res.ui.to_owned(), section_prefix: "settings" }
           }
         }
       }
