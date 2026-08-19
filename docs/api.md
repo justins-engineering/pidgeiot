@@ -175,6 +175,7 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — `contact_email` / `page_context` length | 254 / 512 bytes (`capsules::MAX_FEEDBACK_CONTACT_EMAIL_BYTES`/`MAX_FEEDBACK_PAGE_CONTEXT_BYTES`) | `lib.rs`, `400` over the cap |
+| `POST /feedback` — `diagnostics` length | 2 KiB (`capsules::MAX_FEEDBACK_DIAGNOSTICS_BYTES`) | `lib.rs`, `400` over the cap |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /errors` — bytes in `note` (manual JSON body) | 4 KiB (reuses `capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -1234,7 +1235,10 @@ require a Kratos session — public marketing pages link the same form. If a val
 the notification email; the submitter is never trusted from the request body.
 
 Body: `capsules::FeedbackRequest`. Only `message` is required; `category` is one of `"bug"`,
-`"feature_request"`, `"general"` (treated as general when omitted).
+`"feature_request"`, `"general"`, `"problem"` (treated as general when omitted). `"problem"`
+is the dashboard's persistent "Report a problem" flow, which also auto-attaches a
+`diagnostics` string (the recent-request breadcrumb trail — method + route template + status,
+never bodies — plus the app build hash) so the report is debuggable without a reproduction.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/feedback \

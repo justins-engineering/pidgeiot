@@ -13,8 +13,8 @@ pub mod connection_state;
 pub mod feedback;
 pub use feedback::{
   FeedbackCategory, FeedbackRequest, FeedbackSubmitter, MAX_FEEDBACK_BODY_BYTES,
-  MAX_FEEDBACK_CONTACT_EMAIL_BYTES, MAX_FEEDBACK_MESSAGE_BYTES, MAX_FEEDBACK_PAGE_CONTEXT_BYTES,
-  format_feedback_email,
+  MAX_FEEDBACK_CONTACT_EMAIL_BYTES, MAX_FEEDBACK_DIAGNOSTICS_BYTES, MAX_FEEDBACK_MESSAGE_BYTES,
+  MAX_FEEDBACK_PAGE_CONTEXT_BYTES, format_feedback_email,
 };
 
 // Client error-report envelope plus the normalizer/signature functions

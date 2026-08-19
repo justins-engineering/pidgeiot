@@ -2756,6 +2756,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       }
 
+      if payload
+        .diagnostics
+        .as_ref()
+        .is_some_and(|d| d.len() > capsules::MAX_FEEDBACK_DIAGNOSTICS_BYTES)
+      {
+        return Response::error("Bad Request: 'diagnostics' is too long", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
       let (subject, text) = capsules::format_feedback_email(
         &payload,
         submitter.as_ref(),

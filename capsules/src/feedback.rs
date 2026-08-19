@@ -33,16 +33,27 @@ pub const MAX_FEEDBACK_CONTACT_EMAIL_BYTES: usize = 254;
 /// `/flocks/<uuid>/pigeons/<id>`), not free text.
 pub const MAX_FEEDBACK_PAGE_CONTEXT_BYTES: usize = 512;
 
+/// Length cap on `diagnostics` -- machine-generated (the breadcrumb trail
+/// plus the build hash, shape-only lines), so anything near this size is
+/// being smuggled, not attached. Small enough that a maximal message plus
+/// maximal diagnostics still fits the raw-body cap.
+pub const MAX_FEEDBACK_DIAGNOSTICS_BYTES: usize = 2 * 1024;
+
 /// The feedback form's category select. Wire values are snake_case
-/// (`"bug"`, `"feature_request"`, `"general"`); an unknown value fails
-/// deserialization, which dovecote's route surfaces as a 400 rather than
-/// silently coercing.
+/// (`"bug"`, `"feature_request"`, `"general"`, `"problem"`); an unknown
+/// value fails deserialization, which dovecote's route surfaces as a 400
+/// rather than silently coercing.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedbackCategory {
   Bug,
   FeatureRequest,
   General,
+  /// The persistent "Report a problem" affordance -- distinguished from
+  /// `Bug` so the ops inbox can tell "something is broken for me right
+  /// now" (arrives with diagnostics attached) from a considered bug
+  /// write-up.
+  Problem,
 }
 
 impl FeedbackCategory {
@@ -53,6 +64,7 @@ impl FeedbackCategory {
       FeedbackCategory::Bug => "Bug report",
       FeedbackCategory::FeatureRequest => "Feature request",
       FeedbackCategory::General => "General feedback",
+      FeedbackCategory::Problem => "Problem report",
     }
   }
 }
@@ -69,6 +81,12 @@ pub struct FeedbackRequest {
   pub contact_email: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub page_context: Option<String>,
+  /// Auto-attached context from the problem-report flow: the breadcrumb
+  /// trail (method + route template + status, never bodies) and the build
+  /// hash -- what makes "it broke when I clicked save" debuggable without
+  /// asking the user to reproduce.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub diagnostics: Option<String>,
 }
 
 /// Who submitted the feedback, when a Kratos session was present on the
@@ -126,6 +144,21 @@ pub fn format_feedback_email(
     .filter(|s| !s.trim().is_empty())
     .unwrap_or("not provided");
 
+  let diagnostics_block = req
+    .diagnostics
+    .as_deref()
+    .filter(|s| !s.trim().is_empty())
+    .map(|d| {
+      format!(
+        "\nDiagnostics (attached automatically):\n\
+         ----------------------------------------\n\
+         {}\n\
+         ----------------------------------------\n",
+        d.trim()
+      )
+    })
+    .unwrap_or_default();
+
   let text = format!(
     "New feedback submitted via the PidgeIoT dashboard feedback form.\n\
      \n\
@@ -138,7 +171,8 @@ pub fn format_feedback_email(
      Message:\n\
      ----------------------------------------\n\
      {}\n\
-     ----------------------------------------\n",
+     ----------------------------------------\n\
+     {diagnostics_block}",
     req.message.trim()
   );
 
@@ -156,6 +190,7 @@ mod tests {
       category: Some(FeedbackCategory::Bug),
       contact_email: Some("reporter@example.com".to_string()),
       page_context: Some("/flocks/abc/pigeons/def".to_string()),
+      diagnostics: None,
     }
   }
 
@@ -219,6 +254,33 @@ mod tests {
     let (_, body) = format_feedback_email(&req, None, datetime!(2026-08-08 15:04:05 UTC));
     assert!(body.contains("Contact email: not provided"));
     assert!(body.contains("Page:          not provided"));
+  }
+
+  #[test]
+  fn diagnostics_block_renders_only_when_present() {
+    let (_, without) =
+      format_feedback_email(&base_request(), None, datetime!(2026-08-08 15:04:05 UTC));
+    assert!(!without.contains("Diagnostics"));
+
+    let mut req = base_request();
+    req.category = Some(FeedbackCategory::Problem);
+    req.diagnostics =
+      Some("build: dxh7a1e5a63c0523eb1\n-1200ms api GET /flocks -> 500".to_string());
+    let (subject, with) = format_feedback_email(&req, None, datetime!(2026-08-08 15:04:05 UTC));
+    assert_eq!(
+      subject,
+      "[FEEDBACK] Problem report via the PidgeIoT dashboard"
+    );
+    assert!(with.contains("Diagnostics (attached automatically):"));
+    assert!(with.contains("-1200ms api GET /flocks -> 500"));
+  }
+
+  #[test]
+  fn problem_category_wire_format() {
+    assert_eq!(
+      serde_json::to_string(&FeedbackCategory::Problem).unwrap(),
+      "\"problem\""
+    );
   }
 
   #[test]

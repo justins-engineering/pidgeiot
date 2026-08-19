@@ -83,6 +83,7 @@ pub fn FeedbackModal(on_close: EventHandler<()>) -> Element {
       category: Some(selected_category),
       contact_email: (!contact.is_empty()).then_some(contact),
       page_context,
+      diagnostics: None,
     };
 
     match api::feedback::send(&req).await {
