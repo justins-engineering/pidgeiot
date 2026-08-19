@@ -145,9 +145,23 @@ cp -r ./public/. "$PUBLIC_DIR/"
 cp ./public/llms.txt "$PUBLIC_DIR/index.md"
 mkdir -p "$PUBLIC_DIR/api-reference"
 cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
-python3 - "$PUBLIC_DIR" <<'PYEOF'
+
+# Build identity for error reports: dx already content-hashes the wasm
+# (fancier_bg-dxh<16 hex>.wasm), which is a perfect per-release id -- no
+# new constant, just read it off the artifact. The API host comes from the
+# same .env file build.rs baked into the wasm (FANCIER_ENV-aware), so the
+# pre-boot JS shim -- which can't see Rust's compile-time config -- reports
+# to the same place the app does. Both are injected as window globals in
+# the python head pass below.
+BUILD_HASH="$(find "$PUBLIC_DIR" -name 'fancier_bg-dxh*.wasm' -exec basename {} \; \
+  | sed -E 's/^fancier_bg-(dxh[0-9a-f]{16})\.wasm$/\1/' | head -n1)"
+API_HOST_VALUE="$(grep -E '^API_HOST' ".env.${FANCIER_ENV:-release}" \
+  | sed -E 's/^API_HOST *= *"?([^"]*)"?/\1/' | head -n1)"
+
+python3 - "$PUBLIC_DIR" "$BUILD_HASH" "$API_HOST_VALUE" <<'PYEOF'
 import json, re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
+build_hash, api_host = sys.argv[2], sys.argv[3]
 
 # Indexable marketing/docs pages: per-page title + description so search
 # results don't collapse into one duplicate title. The map lives in
@@ -209,6 +223,47 @@ if violations:
 # stay OFF in the Cloudflare dashboard or pages get a second beacon.
 RUM = """<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "16f747723d074609936627f7f7daf1cf"}'></script><!-- End Cloudflare Web Analytics -->"""
 
+# The crash panel: static HTML already in every page, hidden, revealed by
+# error-shim.js. It cannot be a Dioxus component -- after a Rust panic the
+# wasm module is dead and nothing will ever render -- and it styles itself
+# inline because the boot-failure case it exists for may be a failure to
+# load any CSS at all. Colors are fixed (one deliberate dark card over a
+# scrim) rather than theme tokens for the same reason.
+BTN = ("font:inherit;padding:8px 14px;border-radius:8px;border:1px solid #4a5670;"
+       "background:#2a3247;color:#e8eaf0;cursor:pointer;")
+PANEL = (
+    '<div id="app-crash" hidden style="position:fixed;inset:0;z-index:2147483647;'
+    'background:rgba(15,18,25,.92);color:#e8eaf0;font:15px/1.5 system-ui,sans-serif;'
+    'display:flex;align-items:center;justify-content:center;padding:24px;">'
+    '<div style="max-width:26rem;width:100%;background:#1b2130;border:1px solid #333c52;'
+    'border-radius:12px;padding:24px;">'
+    '<h2 style="margin:0 0 8px;font-size:18px;">Something broke</h2>'
+    '<p style="margin:0 0 8px;opacity:.85;">The dashboard hit an internal error and stopped. '
+    'A technical report was sent automatically; it contains no personal data.</p>'
+    '<p id="app-crash-id" style="margin:0 0 16px;font-family:monospace;font-size:12px;opacity:.6;"></p>'
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+    f'<button id="app-crash-reload" style="{BTN}">Reload</button>'
+    f'<button id="app-crash-report" style="{BTN}">Report this</button>'
+    '</div>'
+    '<div id="app-crash-form" hidden style="margin-top:12px;">'
+    '<textarea id="app-crash-note" rows="4" placeholder="What were you doing when it broke?" '
+    'style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border-radius:8px;'
+    'border:1px solid #4a5670;background:#12161f;color:#e8eaf0;"></textarea>'
+    f'<button id="app-crash-send" style="{BTN}margin-top:8px;">Send</button>'
+    '<p style="font-size:12px;opacity:.6;margin:8px 0 0;">If you are signed in, your account '
+    'is attached so we can follow up.</p>'
+    '</div>'
+    '<p id="app-crash-thanks" hidden style="margin-top:12px;">Thanks. Your note is attached '
+    'to the report.</p>'
+    '</div></div>'
+)
+GLOBALS = ""
+if build_hash:
+    GLOBALS += f'window.__pidgeiot_build="{build_hash}";'
+if api_host:
+    GLOBALS += f'window.__pidgeiot_api="{api_host}";'
+GLOBALS = f"<script>{GLOBALS}</script>" if GLOBALS else ""
+
 # Do NOT add a <link rel="preload"> for the wasm bundle here. It craters
 # the Lighthouse mobile score on every page (landing 1.00 -> 0.74, LCP
 # 1.5s -> 8.7s locally): preloading makes the wasm arrive early enough
@@ -254,8 +309,11 @@ for f in root.rglob("index.html"):
         f'<meta name="twitter:description" content="{desc}">'
         f'<meta name="twitter:image" content="{BASE}/og.png">'
         + (f'<script type="application/ld+json">{JSONLD}</script>' if route == "/" else '')
+        + GLOBALS
         + RUM
     )
+    if "</body>" in html:
+        html = html.replace("</body>", PANEL + "</body>", 1)
     if "<head>" in html:
         f.write_text(html.replace("<head>", "<head>" + tags, 1))
 
