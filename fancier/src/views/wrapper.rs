@@ -15,6 +15,11 @@ fn PageTitle() -> Element {
   let route = use_route::<Route>();
   let title = page_title(&route);
 
+  // This component already reruns on every navigation, which makes it the
+  // free place to feed the error reporter's trail (a no-op during the SSG
+  // prerender, and deduped against rerenders without a route change).
+  crate::helpers::error_report::breadcrumb_nav(&route.to_string());
+
   rsx! {
     document::Title { "{title}" }
   }

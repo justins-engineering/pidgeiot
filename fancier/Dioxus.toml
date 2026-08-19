@@ -18,7 +18,9 @@ pre_compress = false
 
 [web.resource]
 style = ["assets/styling/main.css"]
-script = ["assets/theme-init.js"]
+# error-shim.js must load before the wasm loader tag: it catches the boot
+# failures where no Rust ever runs, so it can't be delivered by the app.
+script = ["assets/theme-init.js", "assets/error-shim.js"]
 
 # style is left empty deliberately: dev keeps the old runtime
 # document::Link (App(), src/lib.rs) instead of this static-link
@@ -31,7 +33,7 @@ script = ["assets/theme-init.js"]
 # gets it too.
 [web.resource.dev]
 style = []
-script = ["assets/theme-init.js"]
+script = ["assets/theme-init.js", "assets/error-shim.js"]
 
 [web.app]
 title = "PidgeIoT"

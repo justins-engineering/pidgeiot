@@ -54,6 +54,8 @@ pub mod graph_store;
 mod page_meta;
 pub use page_meta::page_title;
 
+pub mod error_report;
+
 mod timer;
 pub use timer::sleep_ms;
 

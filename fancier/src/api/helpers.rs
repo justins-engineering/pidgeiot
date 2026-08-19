@@ -41,10 +41,17 @@ async fn dispatch(
   // status check below -- which is the whole reason that check can treat a
   // 401 as authoritative. Only a real HTTP response the browser accepted
   // gets a say in whether the session is still alive.
-  let resp_value = JsFuture::from(window.fetch_with_request(&request))
-    .await
-    .ok()?;
+  let Ok(resp_value) = JsFuture::from(window.fetch_with_request(&request)).await else {
+    crate::helpers::error_report::breadcrumb_api(method, path, None);
+    return None;
+  };
   let response = resp_value.dyn_into::<Response>().ok()?;
+
+  // Second cross-cutting concern grafted onto the one funnel every API
+  // call passes through (the 401 check below being the first): a
+  // shape-only breadcrumb -- method, route template, status -- for the
+  // error reporter's trail. Never bodies, never query params.
+  crate::helpers::error_report::breadcrumb_api(method, path, Some(response.status()));
 
   // Every caller below eventually collapses a failed request to `None`,
   // which the views render as "nothing here" -- so without this an expired

@@ -206,6 +206,15 @@ struct LocalSession {
 
 #[component]
 pub fn App() -> Element {
+  // First, before any other hook can panic: on this target the default
+  // hook writes to a stderr that goes nowhere, so without this a
+  // production panic is perfectly silent. Compiled out on the native SSG
+  // prerender target. The paired `mark_booted` below disarms the pre-boot
+  // shim's watchdog -- an effect, so it only ever runs in a real browser
+  // after the app actually mounted.
+  use_hook(crate::helpers::error_report::install_panic_hook);
+  use_effect(crate::helpers::error_report::mark_booted);
+
   use_init_i18n(|| {
     I18nConfig::new(langid!("en-US")).with_locale(Locale::new_static(
       langid!("en-US"),
