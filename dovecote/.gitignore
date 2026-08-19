@@ -11,3 +11,4 @@
 .wrangler
 build/
 .env*
+dist/
