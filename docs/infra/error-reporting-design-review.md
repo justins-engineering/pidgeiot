@@ -340,3 +340,89 @@ requires M3's server-side re-normalization; "deleted with your account"
 requires the erasure hook; "contain no personal data" requires M4's
 normalized-and-redacted group exemplar. If any of those is cut, the paragraph
 must change with it.
+
+---
+
+## Addendum (owner input, same day): Traces, Logpush, Exports, Tail Workers
+
+The Workers Observability plan can enable all four. Evaluated as available
+options against the design, the 20M-events-included cost basis, and the same
+PII lens. One cross-cutting rule before the per-option verdicts: **every one
+of these widens where and how long log/trace content lives, so the four
+production PII log sites in the audit above gate all of them, not just the
+sampling deploy.** Fix the interpolations before widening any pipe.
+
+| Option | Verdict | Trigger / phase |
+|---|---|---|
+| Tail Worker | Skip, named escalation trigger | uncaught-exception recurrence in Phase 1 data |
+| Logpush → R2 | Enable later, two preconditions | first investigation that hits the 7-day wall |
+| Traces | Enable in Phase 3 | with the backend-capture work |
+| Exports (OTLP/external) | Skip | a real external consumer existing |
+
+**Tail Worker — skip now; the Phase 3 stance survives, but its justification
+should be sharpened.** The design rejected it on complexity grounds (a second
+Worker script to deploy and version), and that reasoning holds with
+availability confirmed — availability was never the constraint. What
+confirmation changes is the honesty of the comparison, and §4.2 should say
+this: a tail worker is the only mechanism here that automatically sees
+*uncaught* failures — a top-level exception, a cron or queue handler that
+died — which in-band `report_server_error` can never report, because the code
+that would call it is the code that crashed. Workers Logs at sampling 1
+already records those invocations with outcome and error message, 7-day
+queryable, so the true gap is automation (PG rows + alert email), not
+visibility. Escalate to a tail worker if Phase 1's real data shows uncaught
+exceptions or cron/queue deaths recurring often enough that reading them out
+of Workers Logs by hand is a real cost. Cost note: a tail worker bills as
+ordinary invocations (one per traced invocation, plus its CPU) — trivial in
+dollars at current volume, but it roughly doubles invocation count.
+
+**Logpush → R2 — enable later, not now, with two preconditions.** It answers
+a different question than the Postgres store and complements rather than
+replaces it: PG holds grouped, user-facing error *signal* indefinitely;
+Logpush holds raw backend *logs* past the 7-day horizon. The design's "less
+queryable, not more" point stands — R2 logs are forensics, not a review loop.
+The honest argument for it is perishable-evidence insurance: an incident
+noticed on day 8 currently has no logs at all. Recommendation: run a month on
+sampling-1 first; if any real investigation hits the 7-day wall, enable with
+(a) the four PII log-site fixes already deployed, and (b) an R2 object
+lifecycle rule capped at 90 days, so pushed logs match the privacy story
+instead of becoming an indefinite retention surface nobody decided on. Cost:
+$0.05/GB pushed plus ~$0.015/GB-month R2 storage — cents at this volume.
+
+**Traces — enable in Phase 3, not with Phase 1, and verify the payload once
+before trusting it.** This is the option with real value for this specific
+architecture: the worker→DO→PG dual-persistence hop and Hyperdrive latency
+are exactly where request-level spans answer questions logs cannot. Privacy
+under the same lens: span attributes are runtime-generated metadata (method,
+URL, status, binding operations), not developer-interpolated strings, so the
+newly-load-bearing audit does not widen to new interpolation sites. The URL
+surface is the same "routes requested" the privacy page already discloses,
+and no dovecote route carries a secret in a URL — verified: no query-param
+credential reads anywhere in `lib.rs`/helpers; the invite token arrives in a
+POST body (`/invites/accept`, `lib.rs:3332`); device credentials ride
+`Authorization` headers. Two honest caveats: (a) at enable time, inspect one
+real trace and confirm neither headers nor query strings appear in span
+payloads — five minutes that converts this paragraph from belief to fact;
+(b) cost — each span is an event against the 20M included, and a request that
+proxies to a DO and syncs to PG plausibly emits 5-15 spans, so traces are the
+one option that meaningfully multiplies event consumption. Still far under
+the cap at current volume; and if that ever changes, traces — unlike error
+reports — are precisely the telemetry where sampling is appropriate, because
+trace value is statistical while error-report value is individual (§2.5's
+own distinction, applied in reverse).
+
+**Exports — skip, by the design's own reasoning.** Exporting observability
+into an external stack solves problems this platform does not have: no
+Grafana/Honeycomb/Datadog consumer exists, and standing one up contradicts
+the first-party position §3.1 already invokes against Sentry. Redundant with
+Logpush for the retention question. Revisit only if a real external consumer
+materializes.
+
+**Does any of this change Phase 3's backend-capture recommendation? No.**
+In-band `report_server_error` remains right for the "a user's request
+actually broke" class: it carries application-level context into the same
+signature store the review loop reads, at zero added deploy surface. Two doc
+updates follow from the confirmation: §4.2 should state the tail-worker
+escalation trigger explicitly (uncaught-exception/cron-death recurrence
+observed in Phase 1 data), and Phase 3's menu should include enabling traces,
+since the DO/PG hop is where they pay for themselves.
