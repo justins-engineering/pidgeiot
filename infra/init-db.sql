@@ -301,6 +301,45 @@ CREATE TABLE IF NOT EXISTS billing_reporter_state (
   last_run_at TIMESTAMPTZ NOT NULL
 );
 
+-- Client error reports, signature-grouped (dovecote's POST /errors,
+-- helpers/errors.rs). Groups are the normalized, redacted aggregate and
+-- are kept indefinitely; events hold the raw capped detail and age out on
+-- a 90-day received_at sweep. `user_id` is populated only for identified
+-- manual reports (application/json with a note) -- automatic reports are
+-- anonymous by construction, and the CHECK makes that structural. The
+-- account-deletion runbook must DELETE FROM error_events WHERE user_id
+-- matches the departing identity (same statement as DELETE /errors).
+CREATE TABLE IF NOT EXISTS error_groups (
+  signature TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  location TEXT,
+  first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+  first_build TEXT,
+  last_build TEXT,
+  occurrences BIGINT NOT NULL DEFAULT 0,
+  notified_at TIMESTAMPTZ,
+  resolved_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS error_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  signature TEXT NOT NULL REFERENCES error_groups(signature) ON DELETE CASCADE,
+  client_event_id UUID,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id UUID,
+  message TEXT,
+  route TEXT,
+  build TEXT,
+  user_agent TEXT,
+  stack TEXT,
+  breadcrumbs JSONB,
+  report_note TEXT,
+  CONSTRAINT error_events_identity_requires_note CHECK (user_id IS NULL OR report_note IS NOT NULL)
+);
+
 CREATE TABLE IF NOT EXISTS organization_members (
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
@@ -361,6 +400,14 @@ CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_id ON pigeon_acl(id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported ON pigeon_telemetry_history(pigeon_id, reported_at);
 CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_key ON pigeon_telemetry_history(key);
+CREATE INDEX IF NOT EXISTS idx_error_events_signature ON error_events(signature);
+-- Received (server clock), not occurred (client-claimed): the retention
+-- sweep must never trust a client-stamped timestamp.
+CREATE INDEX IF NOT EXISTS idx_error_events_received ON error_events(received_at);
+-- Partial: the erasure path looks up identified rows only, and almost
+-- every row is anonymous.
+CREATE INDEX IF NOT EXISTS idx_error_events_user ON error_events(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_error_groups_last_seen ON error_groups(last_seen DESC);
 -- Unique so a Stripe customer/subscription can never map to two orgs --
 -- the webhook applies state by matching on these, and an ambiguous match
 -- would bill the wrong tenant.
