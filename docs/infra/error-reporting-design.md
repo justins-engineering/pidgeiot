@@ -203,7 +203,7 @@ to Workers Logs. Its range is 0–1 and its default is 1. **Set to 0, no invocat
 is sampled, so nothing is written to Workers Logs at all.** Retention would be 7
 days on a paid plan if anything were being kept.
 
-This makes all **367** `console_error!` sites in `dovecote/src/` effectively
+This makes the hundreds of `console_error!` sites in `dovecote/src/` effectively
 write-only: they are visible in a live `wrangler tail` and nowhere else. Every one of this codebase's best-effort/fire-and-log paths — the Postgres
 mirror sync, alert email delivery, the retention sweep — reports its failures into
 that void.
@@ -651,7 +651,7 @@ Two changes, in increasing order of ambition. Only the first is urgent.
 **4.1 — Turn logging back on. One line, do it in Phase 1.**
 `head_sampling_rate = 0` → `1` in `dovecote/wrangler.toml` (all three env blocks).
 Cost is a fraction of a cent per million requests at current volume; benefit is
-that the ~100 existing `console_error!` sites start producing 7 days of queryable
+that the hundreds of existing `console_error!` sites start producing 7 days of queryable
 history instead of nothing. This is the single highest value-per-effort item in
 this document, and it should not wait for any of the rest of it. It needs a
 production deploy, so it is owner-gated (§8).
@@ -869,6 +869,13 @@ close gaps we have not yet observed.
 
 Nothing else in this document needs a decision to proceed.
 
+**Decisions recorded (owner, 2026-08-19):** 1 and 2 are done — the sampling flip
+is committed and deploying, with no cost objection. 3: authenticated routes only.
+4: the paragraph drafted in the review file was approved verbatim and now lives on
+`/privacy/`. 5: 90 days / 200 per signature / groups kept indefinitely, adopted
+with the review's conditions (received_at-keyed sweep, normalized redacted group
+exemplar, manual-report eviction exemption, junk-group aging, erasure hook).
+
 ---
 
 ## 9. Summary of recommendations
@@ -884,7 +891,7 @@ Nothing else in this document needs a decision to proceed.
 - **Store in Postgres**, two tables, signature-grouped. Not Sentry (it symbolicates
   stack traces we do not have, costs bundle size and money, and contradicts the
   no-lock-in position); not Workers Logs alone (no grouping, 7-day retention).
-- **Turn `head_sampling_rate` back to 1 now** — all 367 `console_error!` sites in
+- **Turn `head_sampling_rate` back to 1 now** — the hundreds of `console_error!` sites in
   dovecote currently report into nothing at all. Highest value per unit of effort
   in this document, and independent of everything else.
 - **Reuse what exists**: `POST /feedback`'s optionally-authenticated capped-body
