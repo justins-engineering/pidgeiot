@@ -1304,7 +1304,7 @@ Server-side handling (all client fields are treated as hostile):
   raw (byte-capped) message lives only on the 90-day `error_events` row.
 - The grouping signature is computed server-side only (truncated SHA-256 over
   kind + normalized message + location); there is no client signature field.
-- `build` must match the release artifact's `dxh` + 16-hex shape or it is blanked.
+- `build` must match the release artifact's `dxh` + unpadded-u64-hex shape or it is blanked.
 - `occurred_at` is clamped to ±24h of server time; retention keys on `received_at`.
 - `client_event_id` is a client-minted correlation id (shown on the crash screen) that joins
   a manual note to the automatic crash it describes — a hint, not a key.

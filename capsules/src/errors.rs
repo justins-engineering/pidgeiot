@@ -116,8 +116,8 @@ pub struct ErrorReport {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub stack: Option<String>,
   pub route: String,
-  /// The release artifact's content hash (`dxh` + 16 hex). The server
-  /// blanks anything not matching that shape.
+  /// The release artifact's content hash (`dxh` + unpadded u64 hex). The
+  /// server blanks anything not matching that shape.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub build: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -341,14 +341,17 @@ pub fn error_signature(
   digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `dx` names the release wasm `fancier_bg-dxh<16 hex>.wasm`; that hash is
-/// the build identity. Anything else is client-claimed noise and gets
-/// blanked rather than stored, so "which builds still throw this" stays
-/// meaningful.
+/// `dx` names the release wasm `fancier_bg-dxh<hex>.wasm`; that hash is
+/// the build identity. The hex run is a u64 formatted WITHOUT zero
+/// padding, so its length varies up to 16 -- an exact-16 check rejects
+/// real builds. Anything not matching gets blanked rather than stored, so
+/// "which builds still throw this" stays meaningful.
 pub fn is_valid_build(build: &str) -> bool {
-  build.len() == 19
-    && build.starts_with("dxh")
-    && build[3..]
+  let Some(hex) = build.strip_prefix("dxh") else {
+    return false;
+  };
+  (1..=16).contains(&hex.len())
+    && hex
       .chars()
       .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
@@ -468,8 +471,12 @@ mod tests {
   #[test]
   fn build_shape_validation() {
     assert!(is_valid_build("dxh7a1e5a63c0523eb1"));
+    // Unpadded u64 hex: shorter runs are real builds, not noise.
+    assert!(is_valid_build("dxha5135ae36ce712"));
+    assert!(is_valid_build("dxh1"));
     assert!(!is_valid_build("dxh7A1E5A63C0523EB1"));
-    assert!(!is_valid_build("dxh7a1e5a63c0523eb"));
+    assert!(!is_valid_build("dxh7a1e5a63c0523eb11"));
+    assert!(!is_valid_build("dxh"));
     assert!(!is_valid_build("release-2026-08-19"));
     assert!(!is_valid_build(""));
   }

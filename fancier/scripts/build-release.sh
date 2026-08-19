@@ -159,8 +159,9 @@ cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
 # pre-boot JS shim -- which can't see Rust's compile-time config -- reports
 # to the same place the app does. Both are injected as window globals in
 # the python head pass below.
+# The hex run is an unpadded u64, so its length varies -- never assume 16.
 BUILD_HASH="$(find "$PUBLIC_DIR" -name 'fancier_bg-dxh*.wasm' -exec basename {} \; \
-  | sed -E 's/^fancier_bg-(dxh[0-9a-f]{16})\.wasm$/\1/' | head -n1)"
+  | sed -nE 's/^fancier_bg-(dxh[0-9a-f]+)\.wasm$/\1/p' | head -n1)"
 API_HOST_VALUE="$(grep -E '^API_HOST' ".env.${FANCIER_ENV:-release}" \
   | sed -E 's/^API_HOST *= *"?([^"]*)"?/\1/' | head -n1)"
 
