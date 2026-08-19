@@ -9,6 +9,9 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 time.workspace = true
+# Error-report signature grouping (errors.rs) -- same version dovecote
+# already pins, pure Rust, wasm-safe.
+sha2 = "0.10"
 
 # `macros` (time::macros::datetime!) is test-only -- needed by
 # connection_state's unit tests. Same per-crate feature-add pattern

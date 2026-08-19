@@ -17,6 +17,18 @@ pub use feedback::{
   format_feedback_email,
 };
 
+// Client error-report envelope plus the normalizer/signature functions
+// dovecote's `POST /errors` route and fancier's capture hooks share --
+// see that module's own header for why the pure logic lives here.
+pub mod errors;
+pub use errors::{
+  Breadcrumb, BreadcrumbKind, ErrorKind, ErrorNoteRequest, ErrorReport,
+  MAX_ERROR_BREADCRUMB_DETAIL_BYTES, MAX_ERROR_BREADCRUMBS, MAX_ERROR_FIELD_BYTES,
+  MAX_ERROR_MESSAGE_BYTES, MAX_ERROR_REPORT_BYTES, MAX_ERROR_REPORTS_PER_PAGE,
+  MAX_ERROR_STACK_BYTES, SessionKind, error_signature, is_valid_build, normalize_message,
+  normalize_route, truncate_bytes,
+};
+
 #[macro_export]
 macro_rules! unwrap_or_return_response {
   ($expr:expr) => {
