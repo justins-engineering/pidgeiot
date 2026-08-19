@@ -11,7 +11,10 @@ zone_name = "pidgeiot.com"
 [observability.logs]
 enabled = true
 invocation_logs = true
-head_sampling_rate = 0
+# 1.0: every invocation's logs are kept. At 0 every console_error! in the
+# worker reported into nothing; Workers Observability includes 20M
+# events/month, far above our volume, so full sampling is effectively free.
+head_sampling_rate = 1
 
 # GREPTIMEDB_ENDPOINT (all three [vars]/[env.*.vars] blocks below) -- the
 # platform's optional GreptimeDB telemetry store, read via
