@@ -1,6 +1,6 @@
 use crate::models::AlertVariant;
 use ory_kratos_client_wasm::models::ui_node_input_attributes::{
-  AutocompleteEnum, TypeEnum as InputTypeEnum,
+  AutocompleteEnum, OnclickTriggerEnum, OnloadTriggerEnum, TypeEnum as InputTypeEnum,
 };
 use ory_kratos_client_wasm::models::{UiContainer, UiNodeAttributes, ui_text::TypeEnum};
 
@@ -93,9 +93,43 @@ pub fn autocomplete_token(a: AutocompleteEnum) -> &'static str {
   }
 }
 
+/// The name of the Ory-provided WebAuthn global a trigger button invokes.
+///
+/// Kratos's webauthn.js -- delivered to the page as a script UI node --
+/// defines these functions on `window`; a node's trigger attribute names
+/// which one to call. The serde rename is exactly the JavaScript function
+/// name, so the tests below pin each arm to it the same way the attribute
+/// tokens above are pinned.
+pub fn onclick_trigger_fn(t: OnclickTriggerEnum) -> &'static str {
+  match t {
+    OnclickTriggerEnum::OryWebAuthnRegistration => "oryWebAuthnRegistration",
+    OnclickTriggerEnum::OryWebAuthnLogin => "oryWebAuthnLogin",
+    OnclickTriggerEnum::OryPasskeyLogin => "oryPasskeyLogin",
+    OnclickTriggerEnum::OryPasskeyLoginAutocompleteInit => "oryPasskeyLoginAutocompleteInit",
+    OnclickTriggerEnum::OryPasskeyRegistration => "oryPasskeyRegistration",
+    OnclickTriggerEnum::OryPasskeySettingsRegistration => "oryPasskeySettingsRegistration",
+  }
+}
+
+/// `onclick_trigger_fn`'s counterpart for onload triggers -- the same six
+/// Ory globals, arriving as a distinct generated enum type.
+pub fn onload_trigger_fn(t: OnloadTriggerEnum) -> &'static str {
+  match t {
+    OnloadTriggerEnum::OryWebAuthnRegistration => "oryWebAuthnRegistration",
+    OnloadTriggerEnum::OryWebAuthnLogin => "oryWebAuthnLogin",
+    OnloadTriggerEnum::OryPasskeyLogin => "oryPasskeyLogin",
+    OnloadTriggerEnum::OryPasskeyLoginAutocompleteInit => "oryPasskeyLoginAutocompleteInit",
+    OnloadTriggerEnum::OryPasskeyRegistration => "oryPasskeyRegistration",
+    OnloadTriggerEnum::OryPasskeySettingsRegistration => "oryPasskeySettingsRegistration",
+  }
+}
+
 #[cfg(test)]
 mod attribute_tokens {
-  use super::{AutocompleteEnum, InputTypeEnum, autocomplete_token, input_type_token};
+  use super::{
+    AutocompleteEnum, InputTypeEnum, OnclickTriggerEnum, OnloadTriggerEnum, autocomplete_token,
+    input_type_token, onclick_trigger_fn, onload_trigger_fn,
+  };
 
   // The model carries the HTML token as its serde rename, so serializing a
   // variant is the authoritative answer for what the attribute must say.
@@ -135,6 +169,36 @@ mod attribute_tokens {
     ] {
       let wire = serde_json::to_value(a).unwrap();
       assert_eq!(autocomplete_token(a), wire.as_str().unwrap(), "{a:?}");
+    }
+  }
+
+  #[test]
+  fn onclick_triggers_match_the_models_serde_names() {
+    for t in [
+      OnclickTriggerEnum::OryWebAuthnRegistration,
+      OnclickTriggerEnum::OryWebAuthnLogin,
+      OnclickTriggerEnum::OryPasskeyLogin,
+      OnclickTriggerEnum::OryPasskeyLoginAutocompleteInit,
+      OnclickTriggerEnum::OryPasskeyRegistration,
+      OnclickTriggerEnum::OryPasskeySettingsRegistration,
+    ] {
+      let wire = serde_json::to_value(t).unwrap();
+      assert_eq!(onclick_trigger_fn(t), wire.as_str().unwrap(), "{t:?}");
+    }
+  }
+
+  #[test]
+  fn onload_triggers_match_the_models_serde_names() {
+    for t in [
+      OnloadTriggerEnum::OryWebAuthnRegistration,
+      OnloadTriggerEnum::OryWebAuthnLogin,
+      OnloadTriggerEnum::OryPasskeyLogin,
+      OnloadTriggerEnum::OryPasskeyLoginAutocompleteInit,
+      OnloadTriggerEnum::OryPasskeyRegistration,
+      OnloadTriggerEnum::OryPasskeySettingsRegistration,
+    ] {
+      let wire = serde_json::to_value(t).unwrap();
+      assert_eq!(onload_trigger_fn(t), wire.as_str().unwrap(), "{t:?}");
     }
   }
 

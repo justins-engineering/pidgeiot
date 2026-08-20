@@ -1,6 +1,9 @@
 use crate::{
   components::Alert,
-  helpers::{autocomplete_token, input_type_token, parse_json_bool, parse_json_string},
+  helpers::{
+    autocomplete_token, input_type_token, invoke_webauthn_trigger, onclick_trigger_fn,
+    onload_trigger_fn, parse_json_bool, parse_json_string,
+  },
   models::AlertVariant,
 };
 use dioxus::logger::tracing::error;
@@ -80,6 +83,14 @@ fn InputButtonNode(
   id_suffix: String,
 ) -> Element {
   let input_id = format!("{}_{}", attrs.name, id_suffix);
+  // Kratos ships its WebAuthn/passkey trigger buttons as type="button" and
+  // expects the page to invoke the named Ory global on click: that function
+  // runs the browser ceremony, writes the credential into the form's hidden
+  // input, and submits the form itself. Without the call such a button does
+  // nothing at all. Plain submit buttons carry no trigger and keep native
+  // submission; the deprecated stringly `onclick` field is ignored because
+  // honoring it would mean eval().
+  let trigger = attrs.onclick_trigger;
 
   rsx! {
     button {
@@ -89,11 +100,31 @@ fn InputButtonNode(
       name: attrs.name,
       r#type: input_type_token(attrs.r#type),
       value: parse_json_string(&attrs.value),
+      onclick: move |_| async move {
+        if let Some(trigger) = trigger {
+          invoke_webauthn_trigger(onclick_trigger_fn(trigger)).await;
+        }
+      },
       if let Some(ref label) = meta {
         {label.text.to_string()}
       }
     }
   }
+}
+
+#[component]
+fn OnloadTriggerNode(
+  trigger: ory_kratos_client_wasm::models::ui_node_input_attributes::OnloadTriggerEnum,
+) -> Element {
+  // Kratos marks a node with an onload trigger when the page should start a
+  // WebAuthn action on arrival -- the passkey-autofill (conditional UI)
+  // initializer on the login flow. There is no DOM to render; mounting is
+  // the load event.
+  use_future(move || async move {
+    invoke_webauthn_trigger(onload_trigger_fn(trigger)).await;
+  });
+
+  rsx! {}
 }
 
 #[component]
@@ -322,18 +353,49 @@ fn DivNode(attrs: ory_kratos_client_wasm::models::UiNodeDivisionAttributes) -> E
 
 #[component]
 fn ScriptNode(attrs: ory_kratos_client_wasm::models::UiNodeScriptAttributes) -> Element {
-  rsx! {
-    script {
-      r#async: attrs.r#async,
-      crossorigin: attrs.crossorigin,
-      id: attrs.id,
-      integrity: attrs.integrity,
-      nonce: attrs.nonce,
-      referrerpolicy: attrs.referrerpolicy,
-      src: attrs.src,
-      r#type: attrs.r#type,
+  // Dioxus mounts rsx by cloning <template> contents, and a script element
+  // parsed into a template carries the parser's "already started" flag, so
+  // a declaratively rendered script tag lands in the DOM but never executes.
+  // Kratos's webauthn.js has to actually run for the passkey/WebAuthn
+  // trigger buttons to have anything to call, so the element is created and
+  // inserted imperatively instead.
+  use_effect(move || {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+      return;
+    };
+    // Flow refetches remount this component, but the script element itself
+    // outlives it in <head>; inserting again would double-execute it.
+    if document.get_element_by_id(&attrs.id).is_some() {
+      return;
     }
-  }
+    let Ok(element) = document.create_element("script") else {
+      return;
+    };
+    let _ = element.set_attribute("id", &attrs.id);
+    let _ = element.set_attribute("src", &attrs.src);
+    let _ = element.set_attribute("type", &attrs.r#type);
+    if attrs.r#async {
+      let _ = element.set_attribute("async", "");
+    }
+    // The model types these as bare strings where empty means unset, and an
+    // empty-string crossorigin attribute would mean anonymous CORS mode
+    // rather than "no attribute" -- map empty to absent.
+    for (name, value) in [
+      ("crossorigin", &attrs.crossorigin),
+      ("integrity", &attrs.integrity),
+      ("nonce", &attrs.nonce),
+      ("referrerpolicy", &attrs.referrerpolicy),
+    ] {
+      if !value.is_empty() {
+        let _ = element.set_attribute(name, value);
+      }
+    }
+    if let Some(head) = document.head() {
+      let _ = head.append_child(&element);
+    }
+  });
+
+  rsx! {}
 }
 
 #[component]
@@ -362,7 +424,10 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
     for node in nodes {
       match *node.attributes {
           Input(i) => {
-              match i.r#type {
+              // A node of any input type can carry an onload trigger; run it
+              // alongside whatever element the node renders as.
+              let onload_trigger = i.onload_trigger;
+              let body = match i.r#type {
                   ory_kratos_client_wasm::models::ui_node_input_attributes::TypeEnum::Text => {
                       rsx! {
                         InputFieldNode {
@@ -460,6 +525,12 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
                         InputButtonNode { meta: node.meta.label, attrs: *i, id_suffix: id_suffix.clone() }
                       }
                   }
+              };
+              rsx! {
+                if let Some(trigger) = onload_trigger {
+                  OnloadTriggerNode { trigger }
+                }
+                {body}
               }
           }
           Text(text) => rsx! {

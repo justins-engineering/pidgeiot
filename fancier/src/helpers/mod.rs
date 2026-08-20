@@ -3,6 +3,11 @@ pub use ory_ui::autocomplete_token;
 pub use ory_ui::continue_anchor_href;
 pub use ory_ui::extract_ui_messages;
 pub use ory_ui::input_type_token;
+pub use ory_ui::onclick_trigger_fn;
+pub use ory_ui::onload_trigger_fn;
+
+mod ory_webauthn;
+pub use ory_webauthn::invoke_webauthn_trigger;
 
 mod ory_error;
 pub use ory_error::DisplayError;
