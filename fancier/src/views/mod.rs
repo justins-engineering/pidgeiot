@@ -78,6 +78,9 @@ pub use demo::DemoPage;
 mod api_reference;
 pub use api_reference::ApiReferencePage;
 
+mod story_departure_board;
+pub use story_departure_board::DepartureBoardStory;
+
 mod privacy;
 pub use privacy::PrivacyPage;
 

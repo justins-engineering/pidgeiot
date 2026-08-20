@@ -198,6 +198,18 @@ pub fn Footer() -> Element {
                     }
                   }
                   li {
+                    Link {
+                      class: "hover:text-secondary transition-colors duration-300 group",
+                      to: Route::DepartureBoardStory {},
+                      Icon {
+                        icon: LdChevronRight,
+                        class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
+                        title: "Chevron right",
+                      }
+                      "Field Story"
+                    }
+                  }
+                  li {
                     a {
                       class: "hover:text-secondary transition-colors duration-300 group",
                       href: "mailto:code@jes.contact",

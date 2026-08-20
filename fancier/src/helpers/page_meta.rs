@@ -98,7 +98,7 @@ mod page_meta_matches_the_router {
 
   /// Every public page, listed so that adding one to the router without a
   /// title is a test failure rather than a silent fallback to the brand name.
-  const PUBLIC_ROUTES: [Route; 14] = [
+  const PUBLIC_ROUTES: [Route; 15] = [
     Route::Index {},
     Route::FeaturesPage {},
     Route::HowItWorksPage {},
@@ -113,6 +113,7 @@ mod page_meta_matches_the_router {
     Route::AboutUs {},
     Route::PrivacyPage {},
     Route::TermsPage {},
+    Route::DepartureBoardStory {},
   ];
 
   #[test]

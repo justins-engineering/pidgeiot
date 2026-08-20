@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DocumentationPage, FeaturesPage,
-  Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow, OpenSourcePage,
-  OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow,
-  RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, UseCasesPage,
-  VerificationFlow, Wrapper,
+  AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DepartureBoardStory,
+  DocumentationPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept,
+  LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage,
+  PrivacyPage, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage,
+  Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -103,6 +103,8 @@ enum Route {
   DemoPage {},
   #[route("/api-reference/")]
   ApiReferencePage {},
+  #[route("/stories/departure-board/")]
+  DepartureBoardStory {},
   #[route("/privacy/")]
   PrivacyPage {},
   #[route("/open-source/")]
@@ -419,6 +421,11 @@ mod public_route_trailing_slash {
   both_forms!(pricing, "/pricing", PricingPage);
   both_forms!(demo, "/demo", DemoPage);
   both_forms!(api_reference, "/api-reference", ApiReferencePage);
+  both_forms!(
+    departure_board_story,
+    "/stories/departure-board",
+    DepartureBoardStory
+  );
   both_forms!(privacy, "/privacy", PrivacyPage);
   both_forms!(open_source, "/open-source", OpenSourcePage);
   both_forms!(terms, "/terms", TermsPage);

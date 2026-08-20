@@ -57,6 +57,8 @@ run_worker_first = [
   "/getting-started/",
   "/demo",
   "/demo/",
+  "/stories/departure-board",
+  "/stories/departure-board/",
   "/open-source",
   "/open-source/",
   "/about",

@@ -54,6 +54,10 @@
       "title": "Live Demo — Real Device Data, No Signup | PidgeIoT",
       "description": "Watch live telemetry from a real PidgeIoT device account right now: no signup, no mock data. Charts and latest values straight from the platform API."
     },
+    "/stories/departure-board/": {
+      "title": "Stop 73: Rebuilding a Solar Bus Departure Sign | PidgeIoT",
+      "description": "Rebuilding three solar bus departure signs for a Massachusetts transit agency: custom LED panels, LTE modems, dead batteries, and no way to check one remotely."
+    },
     "/open-source/": {
       "title": "Open Source — Licenses & Attribution | PidgeIoT",
       "description": "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license texts for every open-source component the platform ships, auto-generated."

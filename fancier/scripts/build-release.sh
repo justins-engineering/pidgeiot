@@ -143,14 +143,19 @@ cp -r ./public/. "$PUBLIC_DIR/"
 # also advertised via `Link: rel="alternate"; type="text/markdown"`
 # response headers (public/_headers) and llms.txt. Reuses existing prose
 # rather than authoring parallel copies that could drift: llms.txt IS the
-# site overview (-> /index.md), and docs/api.md IS the API reference --
-# the exact file /api-reference/ renders via pulldown-cmark (->
-# /api-reference/index.md). Every other PAGES route gets a minimal
-# generated variant (title/description/links, python block below) from
-# the same map that drives titles and the sitemap, so it can't drift.
+# site overview (-> /index.md), docs/api.md IS the API reference -- the
+# exact file /api-reference/ renders via pulldown-cmark (->
+# /api-reference/index.md) -- and assets/stories/departure-board.md IS the
+# story, the same file views/story_departure_board.rs renders, so an agent
+# negotiating markdown gets the prose rather than a stub. Every other PAGES
+# route gets a minimal generated variant (title/description/links, python
+# block below) from the same map that drives titles and the sitemap, so it
+# can't drift.
 cp ./public/llms.txt "$PUBLIC_DIR/index.md"
 mkdir -p "$PUBLIC_DIR/api-reference"
 cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
+mkdir -p "$PUBLIC_DIR/stories/departure-board"
+cp ./assets/stories/departure-board.md "$PUBLIC_DIR/stories/departure-board/index.md"
 
 # Build identity for error reports: dx already content-hashes the wasm
 # (fancier_bg-dxh<16 hex>.wasm), which is a perfect per-release id -- no
