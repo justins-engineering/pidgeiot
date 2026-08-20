@@ -4,13 +4,13 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "daisyui": "^5.7.17",
+        "daisyui": "^5.7.19",
         "tailwindcss": "^4.3.3",
       },
       "devDependencies": {
         "@mermaid-js/mermaid-cli": "^11.16.0",
         "@tailwindcss/cli": "^4.3.3",
-        "wrangler": "^4.123.0",
+        "wrangler": "^4.124.0",
       },
     },
   },
@@ -533,7 +533,7 @@
 
     "dagre-d3-es": ["dagre-d3-es@7.0.14", "", { "dependencies": { "d3": "^7.9.0", "lodash-es": "^4.17.21" } }, "sha512-P4rFMVq9ESWqmOgK+dlXvOtLwYg0i7u0HBGJER0LZDJT2VHIPAMZ/riPxqJceWMStH5+E61QxFra9kIS3AqdMg=="],
 
-    "daisyui": ["daisyui@5.7.18", "", {}, "sha512-ucODxcoGsL5oqMMiO5SzX++cAuNiko4S3XipKtEtq4c1t8tpeetcCBJSVe1t+C/q2oXgRv/wYz5yu1rXE5Cl1A=="],
+    "daisyui": ["daisyui@5.7.19", "", {}, "sha512-0ylsSwFdzecFBh1XKPw/FB74bYX1kiufv7/dFvj3FxrUMWGkACfwqIzIMrsxIMzUlKF6ZHwH6YaOwPNvQGGmsg=="],
 
     "data-uri-to-buffer": ["data-uri-to-buffer@6.0.2", "", {}, "sha512-7hvf7/GW8e86rW0ptuwS3OcBGDjIi6SZva7hCyWC0yYry2cOPmLIjXAUHI6DK2HsnwJd9ifmt57i8eV2n4YNpw=="],
 

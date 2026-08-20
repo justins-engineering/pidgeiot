@@ -2,7 +2,7 @@
   "name": "fancier",
   "private": true,
   "dependencies": {
-    "daisyui": "^5.7.18",
+    "daisyui": "^5.7.19",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
