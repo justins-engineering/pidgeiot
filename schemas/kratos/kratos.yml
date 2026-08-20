@@ -5,12 +5,20 @@ dsn: postgres://kratos:secret@127.0.0.1:5432/kratos?sslmode=disable&max_conns=20
 session:
   lifespan: 4h
 
+# Browser-facing dev URLs say localhost, not 127.0.0.1: WebAuthn refuses an
+# IP literal as an RP id, so passkeys only work when the page's effective
+# domain is a real (if special-cased) domain -- and the page, Kratos, and
+# the API must then share that one host, because the session/CSRF cookies
+# are host-only and localhost/127.0.0.1 count as different sites. Bind
+# addresses are unchanged; localhost resolves to the same loopback.
 serve:
   public:
-    base_url: http://127.0.0.1:4433/
+    base_url: http://localhost:4433/
     cors:
       enabled: true
       allowed_origins:
+        - http://localhost:4433
+        - http://localhost:4455
         - http://127.0.0.1:4433
         - http://127.0.0.1:4455
         - http://127.0.0.1
@@ -33,8 +41,9 @@ serve:
     base_url: http://127.0.0.1:4434/
 
 selfservice:
-  default_browser_return_url: http://127.0.0.1:4455/
+  default_browser_return_url: http://localhost:4455/
   allowed_return_urls:
+    - http://localhost
     - http://127.0.0.1
     - http://localhost:19006/Callback
     - exp://localhost:8081/--/Callback
@@ -42,6 +51,16 @@ selfservice:
   methods:
     password:
       enabled: true
+    passkey:
+      enabled: true
+      config:
+        rp:
+          display_name: PidgeIoT
+          # The RP id must be a registrable suffix of the page's host and a
+          # valid domain -- see the localhost note on `serve` above.
+          id: localhost
+          origins:
+            - http://localhost:4455
     totp:
       config:
         issuer: Kratos
@@ -55,38 +74,38 @@ selfservice:
 
   flows:
     error:
-      ui_url: http://127.0.0.1:4455/error
+      ui_url: http://localhost:4455/error
 
     settings:
-      ui_url: http://127.0.0.1:4455/settings
+      ui_url: http://localhost:4455/settings
       privileged_session_max_age: 15m
       required_aal: highest_available
 
     recovery:
       enabled: true
-      ui_url: http://127.0.0.1:4455/recovery
+      ui_url: http://localhost:4455/recovery
       use: code
 
     verification:
       enabled: true
-      ui_url: http://127.0.0.1:4455/verification
+      ui_url: http://localhost:4455/verification
       use: code
       after:
-        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+        default_browser_return_url: http://localhost:4455/session/local?state=true
 
     logout:
       after:
-        default_browser_return_url: http://127.0.0.1:4455/session/local?state=false
+        default_browser_return_url: http://localhost:4455/session/local?state=false
 
     login:
-      ui_url: http://127.0.0.1:4455/login
+      ui_url: http://localhost:4455/login
       lifespan: 10m
       after:
-        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+        default_browser_return_url: http://localhost:4455/session/local?state=true
 
     registration:
       lifespan: 10m
-      ui_url: http://127.0.0.1:4455/registration
+      ui_url: http://localhost:4455/registration
       # Kratos's default TWO-STEP registration (profile traits first,
       # password on a second step). Works end-to-end in a real browser:
       # fancier's FormBuilder posts a native <form>, Kratos 303s back to
@@ -97,7 +116,7 @@ selfservice:
       # the native browser form path (Accept: text/html) works. Do not
       # re-add enable_legacy_one_step on that false alarm.
       after:
-        default_browser_return_url: http://127.0.0.1:4455/session/local?state=true
+        default_browser_return_url: http://localhost:4455/session/local?state=true
         password:
           hooks:
             - hook: session

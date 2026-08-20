@@ -260,7 +260,10 @@ crons = ["*/5 * * * *"]
 
 [env.dev.vars]
 KRATOS_BROWSER_URL = "http://127.0.0.1:4433"
-ROOT_URL = "http://127.0.0.1:4455"
+# The dev dashboard is browsed as localhost (WebAuthn refuses an IP literal
+# as an RP id -- see schemas/kratos/kratos.yml), and CORS matches the Origin
+# header against this value verbatim.
+ROOT_URL = "http://localhost:4455"
 DEVICE_API_HOST = "127.0.0.1:8787"
 # Local terminator from the loft repo (`cargo run -p loft` there; defaults
 # to 0.0.0.0:5684, and the coaps

@@ -37,7 +37,7 @@ services:
     image: oryd/kratos:v26.2
     ports:
       # Loopback only -- both are dashboard-user auth endpoints (fancier's
-      # KRATOS_BROWSER_URL points at 127.0.0.1:4433), never device-facing;
+      # KRATOS_BROWSER_URL points at localhost:4433), never device-facing;
       # devices auth via dovecote's own Ed25519 token scheme, not Kratos.
       # The admin API is unauthenticated by design, so a wide bind here
       # would hand full identity control to anything else on the network.

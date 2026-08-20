@@ -1,7 +1,7 @@
 // Ory Kratos public endpoint for browser flows
 pub const KRATOS_BROWSER_URL: &str = match option_env!("KRATOS_BROWSER_URL") {
   Some(url) => url,
-  None => "http://127.0.0.1:4433", // A safe local fallback
+  None => "http://localhost:4433", // A safe local fallback
 };
 
 // Cookie name for cookie defining session state
@@ -12,7 +12,7 @@ pub const SESSION_COOKIE_NAME: &str = match option_env!("SESSION_COOKIE_NAME") {
 
 pub const API_HOST: &str = match option_env!("API_HOST") {
   Some(name) => name,
-  None => "http://127.0.0.1:8787",
+  None => "http://localhost:8787",
 };
 
 // Pigeon id backing the public /demo page (views/demo.rs, api/demo.rs) --

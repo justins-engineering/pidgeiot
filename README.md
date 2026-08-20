@@ -50,7 +50,7 @@ Open a third terminal window and start the Dioxus development server:
 cd fancier
 dx serve --addr 127.0.0.1 --port 4455
 ```
-*The Dashboard will be available at [http://127.0.0.1:4455](http://127.0.0.1:4455)*
+*The Dashboard will be available at [http://localhost:4455](http://localhost:4455) — browse it as `localhost`, not `127.0.0.1`: WebAuthn/passkeys refuse an IP-literal RP id, and the auth cookies are scoped to the host the pages share.*
 
 ### 4. Frontend development
 For live CSS changes run tailwindCSS in watch mode
