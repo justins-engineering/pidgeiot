@@ -621,6 +621,22 @@ pub fn FormBuilder(
     return rsx! {};
   }
 
+  // Scripts are page side-effects, not form fields: hoist them out of the
+  // group bucketing so they mount once rather than per method form, and so
+  // a method whose only node is its script (Kratos puts webauthn.js in the
+  // webauthn group even when only passkeys are enabled) does not render as
+  // a titled form with nothing in it.
+  let (script_nodes, flow_nodes): (Vec<_>, Vec<_>) = flow_nodes
+    .into_iter()
+    .partition(|n| matches!(n.attributes.as_ref(), Script(_)));
+  let script_attrs: Vec<_> = script_nodes
+    .into_iter()
+    .filter_map(|n| match *n.attributes {
+      Script(script) => Some(*script),
+      _ => None,
+    })
+    .collect();
+
   // 2. Safely bucket remaining nodes by group to prevent interleaving crashes
   let mut groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
   for node in flow_nodes {
@@ -628,6 +644,9 @@ pub fn FormBuilder(
   }
 
   rsx! {
+    for attrs in script_attrs {
+      ScriptNode { attrs }
+    }
     if groups.is_empty() {
       form { action: ui.action.clone(), method: ui.method.clone(),
         div { class: "my-2",
