@@ -1,4 +1,4 @@
-# Production Kratos: enable passkeys (owner-applied)
+# Production Kratos: enable passkeys, fix the TOTP issuer (owner-applied)
 
 Production Kratos config changes are applied by the repo owner, never by
 tooling. This document is the exact diff for the production config
@@ -50,6 +50,21 @@ Against `.migration/kratos.prod.yml` (`selfservice.methods`):
      totp:
 ```
 
+In the same edit, fix the TOTP issuer (it is what authenticator apps
+display as the provider; today every entry is branded "Kratos"):
+
+```diff
+     totp:
+       config:
+-        issuer: Kratos
++        issuer: PidgeIoT
+       enabled: true
+```
+
+Existing TOTP enrollments keep the label they were created with; only new
+enrollments pick up the issuer. Nothing else about existing codes changes,
+so no user action is needed.
+
 ## Considered and deferred: the separate `webauthn` method
 
 Kratos's `webauthn` method (security keys as a *second* factor) is a
@@ -82,6 +97,8 @@ asks for hardware-key 2FA specifically.
      authenticator (platform or key).
    - Sign out, then sign in with that passkey end to end.
    - Password sign-in still works.
+   - A fresh TOTP enrollment QR decodes to an `otpauth://` URI with
+     `issuer=PidgeIoT`.
 
 5. Rollback: revert the config edit and `sudo docker restart kratos`.
    Passkeys enrolled while enabled simply stop being offered; password

@@ -63,7 +63,9 @@ selfservice:
             - http://localhost:4455
     totp:
       config:
-        issuer: Kratos
+        # What the authenticator app displays as the account's provider;
+        # the software default would brand every entry "Kratos".
+        issuer: PidgeIoT
       enabled: true
     lookup_secret:
       enabled: true
