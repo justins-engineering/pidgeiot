@@ -1,0 +1,122 @@
+# Ory Kratos -- production systemd unit. Install to
+# /etc/systemd/system/kratos.service. Full migration procedure (binary
+# install + checksum verification, env-file shape, cutover, verification,
+# rollback, upgrades): docs/infra/kratos-systemd-migration.md.
+#
+# This replaces the oryd/kratos docker container as the thing that binds
+# 127.0.0.1:4433 (public) and 127.0.0.1:4434 (admin); the stopped container
+# stays on disk as the instant rollback path. Bind addresses and ports live
+# in /opt/kratos/kratos.yml (serve.public.host / serve.admin.host), not
+# here -- the unit adds no network flags, so the config alone decides what
+# is exposed, exactly as it did under docker's --network host. Loopback-only
+# is load-bearing: the only public route in is the Cloudflare Tunnel
+# (auth.pidgeiot.com), which targets these loopback ports and needs no
+# change for this migration.
+
+[Unit]
+Description=Ory Kratos identity server (loopback-only; published via Cloudflare Tunnel as auth.pidgeiot.com)
+Documentation=https://www.ory.sh/docs/kratos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Kratos has no sd_notify integration, so Type=notify would time out
+# waiting for a readiness message that never comes; Type=exec considers the
+# unit started once the execve() succeeds -- the same honest-match
+# reasoning loft.service documents. Actual readiness is observable at
+# http://127.0.0.1:4433/health/ready, not from systemd state.
+Type=exec
+
+# --watch-courier is load-bearing; never remove it. On a single-instance
+# deployment it is what makes Kratos actually DELIVER outbound mail: without
+# it, mail is silently queued forever -- courier_messages rows sit at
+# status "queued" with send_count 0, no error is logged anywhere, and
+# signup verification / recovery emails simply never arrive. This exact
+# failure broke production signup once already. It also means exactly one
+# Kratos may run at a time (two couriers would double-send); the port binds
+# make a double-run loud, but treat any edit to this line as a reason to
+# re-run the courier check in the migration runbook.
+ExecStart=/usr/local/bin/kratos serve -c /opt/kratos/kratos.yml --watch-courier
+
+# DSN and COURIER_SMTP_CONNECTION_URI -- secret URIs, so their values live
+# only in this 0600 file, never in the unit (unit files under
+# /etc/systemd/system are world-readable). systemd's manager reads
+# EnvironmentFile= as root before dropping to the dynamic user below, so
+# the tight mode is compatible with DynamicUser=. This is an env file
+# rather than loft.service's LoadCredential= pattern because Kratos
+# consumes both settings from the process environment by design (the
+# container received them the same way) and has no file-based input for
+# them.
+EnvironmentFile=/opt/kratos/.env
+
+Restart=on-failure
+RestartSec=5s
+
+SyslogIdentifier=kratos
+
+# --- Hardening -----------------------------------------------------------
+# Mirrors loft.service on the same host, which documents the shared
+# rationale for these directives in depth; comments here cover only what is
+# Kratos-specific. Kratos's shape: bind two loopback TCP listeners, make
+# outbound TCP to Postgres and SMTP, read config/schemas/mail templates
+# from /opt/kratos, keep every piece of mutable state in Postgres, write
+# nothing locally.
+
+# No local state means no need for a real uid that owns files. The
+# ephemeral uid can read everything the service itself opens under
+# /opt/kratos (config, identity schema, courier templates -- all
+# world-readable); the one 0600 file there (.env) is read by systemd as
+# root, per above.
+DynamicUser=yes
+
+# Read-only everything: Kratos's local footprint is pure config. All
+# mutable state (identities, sessions, the courier queue) lives in
+# Postgres, so no ReadWritePaths= exceptions are needed.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+
+# 4433/4434 are unprivileged ports, and nothing else Kratos does needs a
+# capability either.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Loopback listeners plus outbound TCP (Postgres over TLS, SMTP). Unlike
+# loft, this is a statically linked pure-Go binary: it cannot load NSS
+# modules, so name resolution is Go's own resolver querying the
+# systemd-resolved stub over UDP, which AF_INET already covers. AF_UNIX is
+# kept anyway -- it is local-only, costs nothing, and keeps this unit
+# aligned with the house pattern instead of diverging on a directive whose
+# absence would only ever fail subtly.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+
+# Statically linked pure-Go binary: no JIT, no cgo, no dlopen, nothing
+# that maps memory writable+executable. As in loft.service: if the service
+# dies instantly with SIGSYS or a mapping error, suspect this directive
+# first.
+MemoryDenyWriteExecute=yes
+
+# Backstop, not a capacity plan (loft.service's framing). kratos.yml's
+# argon2 hasher declares dedicated_memory: 1GB -- password hashing is
+# deliberately memory-hungry, so the cap must sit comfortably above that
+# budget, and 2G doubles it. Together with loft's own 1536M cap this still
+# fits this host's ~3.8G total: a runaway Kratos gets OOM-killed and
+# restarted inside its own cgroup instead of the box-wide OOM killer
+# choosing among sshd / loft / cloudflared.
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
