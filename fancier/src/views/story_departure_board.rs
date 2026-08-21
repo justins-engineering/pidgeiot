@@ -16,7 +16,7 @@ const STORY_MD: &str = include_str!("../../assets/stories/departure-board.md");
 // it illustrates, and a phrase that stops matching sends its figure to the
 // end of the story instead of dropping it. The unit tests below fail on a
 // re-sync that leaves an anchor behind.
-const PLACARD_ANCHOR: &str = "I raised the cap to 8.";
+const PLACARD_ANCHOR: &str = "I raised the cap to 8";
 const MILL_LOCUST_ANCHOR: &str = "By August 2025 the fleet was complete";
 
 // Served verbatim out of fancier/public/ rather than through asset!(): dx's
