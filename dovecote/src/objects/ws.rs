@@ -69,6 +69,21 @@ pub enum WsInboundFrame {
   },
 }
 
+impl WsInboundFrame {
+  /// Whether this frame tallies a billable message, and so has to answer
+  /// to the free-tier fuse. It must name exactly the frames whose handlers
+  /// reach `count_billable_message` -- a frame counted here but not fused
+  /// is the gap this function exists to close, and one fused but not
+  /// counted would cut off a device over an allowance it never spent.
+  ///
+  /// `Ping`/`Pong` are keepalive and `ShellOutput` answers an operator's
+  /// own diagnostic request; none of the three is stored or billed, so a
+  /// paused socket keeps serving them.
+  pub fn is_billable(&self) -> bool {
+    matches!(self, Self::Telemetry { .. } | Self::ShadowReport { .. })
+  }
+}
+
 /// Frames the server may push to a connected device. `ShadowUpdate` is the
 /// headline win this endpoint exists for -- pushed immediately from
 /// `update_shadow` whenever a dashboard `PUT` lands, instead of the device
@@ -138,4 +153,33 @@ pub fn check_rate_limit(ws: &worker::WebSocket) -> bool {
   let _ = ws.serialize_attachment(&state);
 
   within_limit
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn parse(json: &str) -> WsInboundFrame {
+    serde_json::from_str(json).expect("frame should parse")
+  }
+
+  #[test]
+  fn telemetry_and_shadow_report_are_billable() {
+    assert!(parse(r#"{"type":"telemetry","metrics":{"uptime_s":"12"}}"#).is_billable());
+    assert!(
+      parse(r#"{"type":"shadow_report","current_version":3,"current_config":{}}"#).is_billable()
+    );
+  }
+
+  #[test]
+  fn keepalive_and_shell_replies_are_not_billable() {
+    assert!(!parse(r#"{"type":"ping"}"#).is_billable());
+    assert!(!parse(r#"{"type":"pong"}"#).is_billable());
+    assert!(
+      !parse(
+        r#"{"type":"shell_output","request_id":"r1","output":"ok","exit_code":0,"truncated":false}"#
+      )
+      .is_billable()
+    );
+  }
 }

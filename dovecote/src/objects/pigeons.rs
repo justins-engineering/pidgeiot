@@ -374,11 +374,7 @@ impl DurableObject for Pigeons {
     // Only the two frames that tally a billable message are fused; a
     // paused account can still ping and still answer a shell command,
     // neither of which is billed or stored.
-    let billable = matches!(
-      frame,
-      WsInboundFrame::Telemetry { .. } | WsInboundFrame::ShadowReport { .. }
-    );
-    if billable && device_ingest_paused(self).await {
+    if frame.is_billable() && device_ingest_paused(self).await {
       console_error!("WS: ingest paused for pigeon {}, closing", self.state.id());
       let _ = ws.close(
         Some(WS_CLOSE_INGEST_PAUSED),
