@@ -505,6 +505,13 @@ pub enum DeviceCap {
 /// Fail-open on lookup errors (logged): an infrastructure blip must not
 /// block provisioning, and the count is re-derived on the next attempt
 /// anyway.
+///
+/// Counts provisioned rows, deliberately unlike `report_device_overage`,
+/// which counts only devices that reported in the period. The two answer
+/// different questions and the difference is not drift: the free tier's
+/// cap is on how many pigeons may exist (each one occupies a Durable
+/// Object whether or not it ever powers on), while the meter charges only
+/// for devices in use.
 pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> DeviceCap {
   let rows = match client
     .query_typed(
@@ -785,6 +792,19 @@ async fn report_message_overage(
 /// per period, identifier keyed on org + period. A device removed or added
 /// after this snapshot isn't re-reported; a missed final-day run
 /// undercounts and logs, never bills late into the next period.
+///
+/// Counts connected devices, not provisioned ones: a pigeon is billable
+/// for a period when it sent at least one billable message during it,
+/// which is the promise the pricing page makes and the definition it
+/// publishes. `last_billable_activity` is NULL for a device that has never
+/// reported, and a NULL fails both comparisons, so provisioned-and-idle
+/// stock costs nothing. The period anchor matches the one the stamp writer
+/// uses -- `load_billable_orgs` selects on the same live-subscription
+/// condition as that statement's `use_org_period` -- so a device active
+/// anywhere in the period is stamped inside it, not merely within six
+/// hours of it. What the once-per-period snapshot does miss is a device
+/// whose only activity lands in the period's final hours, after this run;
+/// that undercounts, in the customer's favour.
 async fn report_device_overage(
   env: &Env,
   client: &Client,
@@ -800,15 +820,21 @@ async fn report_device_overage(
     .query_typed(
       "SELECT COUNT(*)::bigint AS device_count
        FROM pigeons p JOIN flocks f ON f.id = p.flock_id
-       WHERE f.org_id = $1;",
-      &[(&org.id, Type::UUID)],
+       WHERE f.org_id = $1
+         AND p.last_billable_activity >= $2
+         AND p.last_billable_activity < $3;",
+      &[
+        (&org.id, Type::UUID),
+        (&org.period_start, Type::TIMESTAMPTZ),
+        (&org.period_end, Type::TIMESTAMPTZ),
+      ],
     )
     .await
   {
     Ok(rows) => rows.first().map(|r| r.get("device_count")).unwrap_or(0),
     Err(e) => {
       console_error!(
-        "Billing meter reporter: device count failed for org {}: {e}",
+        "Billing meter reporter: connected device count failed for org {}: {e}",
         org.id
       );
       return;
