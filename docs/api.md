@@ -154,8 +154,8 @@ models above; dev and production don't set these vars, so it's a no-op there.
 - `GET /device/pigeons/:pigeon_id/ws` is the one exception to "error responses are plain text
   HTTP status codes": a rejected upgrade (bad `Upgrade` header, bad token) is still a normal HTTP
   error response (`400`/`401`/`429`), but a problem discovered *after* the socket is open (oversize
-  frame, malformed frame, frame flood, spent message allowance) has no HTTP status to report —
-  it's a WebSocket close code instead (`4001`-`4009` and `4029`; see that route's own section for
+  frame, malformed frame, frame flood, spent message allowance) has no HTTP status to report,
+  so it's a WebSocket close code instead (`4001`-`4009` and `4029`; see that route's own section for
   the full list).
 
 ## Rate & size limits
@@ -1583,7 +1583,7 @@ decoded host-side against the firmware's own dictionary/ELF.
 
 An accepted chunk counts as one billable device message against the owning account's message
 allowance, the same as a telemetry report, and is refused with the same `429` by the free-tier
-allowance fuse once that allowance is spent — checked after the bearer token is verified and
+allowance fuse once that allowance is spent, checked after the bearer token is verified and
 before the chunk is stored.
 
 ```sh
@@ -1716,15 +1716,15 @@ Note `shadow.target_config`/`current_config` in a `shadow_update` push are `caps
 | Malformed frame (not valid JSON, or missing/unknown `type`) | — | Connection closed, code `4003`, reason "malformed frame"; logged server-side |
 | Free-tier message allowance spent, on a `telemetry` or `shadow_report` frame | Monthly pooled allowance | Connection closed, code `4029`, reason "free tier message allowance exhausted" |
 
-None of the first three are "recoverable" mid-connection — reconnect (a fresh `GET .../ws`) to
+None of the first three are "recoverable" mid-connection: reconnect (a fresh `GET .../ws`) to
 resume after any of them.
 
 `4029` is the WebSocket spelling of the `429` the HTTP ingest routes answer with, and it is the
 one close in this table that reconnecting does **not** clear: the upgrade itself is refused with
 `429` until the allowance resets or the account moves to a paid tier. A device should back off
 as it does on an HTTP `429` rather than reconnect immediately. `ping`/`pong` and `shell_output`
-frames are not billable and are still served on a paused account — it is only the billable
-frames that close the socket.
+frames are not billable and are still served on a paused account; only the billable frames
+close the socket.
 
 **`shell_cmd`/`shell_output` count toward the same 50-frame/10s budget above — no carve-out in
 v1.** One command invocation is one frame each way, negligible against that budget; see the

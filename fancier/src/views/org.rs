@@ -535,7 +535,7 @@ fn BillingPanel(
         // number that gets billed. Showing only the first would leave a
         // customer unable to tell what their invoice will say.
         span { class: "block text-xs text-base-content/50",
-          "{o.connected_device_count} connected this period — only these count toward billing"
+          "{o.connected_device_count} connected this period, and only these count toward billing"
         }
       }
 
