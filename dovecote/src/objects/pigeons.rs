@@ -1,3 +1,4 @@
+use crate::helpers::{LegacyTelemetryRow, TelemetryBlob};
 use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
 };
@@ -8,8 +9,7 @@ use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
   PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonLogChunkRow,
   PigeonRow, PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
-  PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest, TelemetryLatestRow,
-  unwrap_or_return_response,
+  PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -225,16 +225,27 @@ impl DurableObject for Pigeons {
     // Latest-value-per-key store, not a time-series log -- a telemetry
     // report overwrites, it doesn't append. History/range queries are
     // served from Postgres `pigeon_telemetry_history` instead.
+    //
+    // Every key lives in one JSON object in one row rather than a row per
+    // key, because DO SQLite bills per row read and written and this is the
+    // hottest write path on the platform: a ten-key report costs one row
+    // read plus one row write instead of a table scan plus ten upserts. The
+    // shape and the per-key eviction that bounds it live in
+    // `helpers::telemetry_latest`. No `updated_at` trigger like the tables
+    // above -- the single writer stamps it in the same statement, and every
+    // key carries its own `reported_at` inside the blob anyway.
     sql
       .exec(
-        "CREATE TABLE IF NOT EXISTS pigeon_telemetry (
-          key TEXT PRIMARY KEY NOT NULL,
-          value TEXT NOT NULL,
-          reported_at INTEGER DEFAULT (unixepoch())
+        "CREATE TABLE IF NOT EXISTS pigeon_telemetry_latest (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          metrics TEXT NOT NULL DEFAULT '{}',
+          updated_at INTEGER DEFAULT (unixepoch())
         );",
         None,
       )
-      .expect("created pigeon_telemetry table");
+      .expect("created pigeon_telemetry_latest table");
+
+    migrate_legacy_telemetry(&sql);
 
     // Bounded ring buffer of opaque device log chunks, stored as base64
     // text (see `report_logs_device`). `id` is a plain autoincrement so
@@ -932,6 +943,17 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
     return Response::error("Internal Server Error", 500);
   }
 
+  // No FK to `pigeons`, so unlike `pigeon_shadow` this doesn't cascade off
+  // the delete below -- a wiped pigeon would otherwise keep serving its old
+  // readings to whoever the ACL let back in.
+  if let Err(e) = pigeons
+    .sql
+    .exec("DELETE FROM pigeon_telemetry_latest;", None)
+  {
+    console_error!("Pigeon telemetry delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
   match pigeons.sql.exec(
     "DELETE FROM pigeons WHERE id = ?;",
     vec![pigeons.state.id().to_string().into()],
@@ -1534,16 +1556,26 @@ async fn handle_ws_telemetry(
     return;
   }
 
-  // Must run before upsert_telemetry (see read_previous_telemetry). In
-  // the queue-bound branch below this capture rides the outgoing
-  // `TelemetryMessage` -- recomputing it in `queue.rs`, after the upsert
-  // just below, would see the *new* value where the previous one is
-  // needed, silently defeating RateOfChange for every WS-sourced report.
-  let previous_values = read_previous_telemetry(pigeons, &metrics);
-
-  if upsert_telemetry(pigeons, &metrics).is_err() {
+  // A telemetry frame has no reply of its own (see `docs/api.md`), so an
+  // over-cap frame is logged and dropped where the HTTP route would answer
+  // 400. Dropping one frame beats closing a working socket over a report
+  // the device can simply send fewer keys in.
+  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
+    console_error!(
+      "WS telemetry: rejected report from pigeon {}: {message}",
+      pigeons.state.id()
+    );
     return;
   }
+
+  // `write_telemetry` captures the previous values before merging this
+  // report in. In the queue-bound branch below that capture rides the
+  // outgoing `TelemetryMessage` -- recomputing it in `queue.rs`, after the
+  // write just below, would see the *new* value where the previous one is
+  // needed, silently defeating RateOfChange for every WS-sourced report.
+  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
+    return;
+  };
 
   let pigeon_id = pigeons.state.id().to_string();
 
@@ -1659,30 +1691,13 @@ async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<R
   }
 }
 
-/// Each key overwrites its own row in `pigeon_telemetry` -- a
-/// latest-value-per-key store, not a time-series log.
-fn upsert_telemetry(
-  pigeons: &Pigeons,
-  metrics: &std::collections::HashMap<String, String>,
-) -> Result<()> {
-  for (key, value) in metrics {
-    if let Err(e) = pigeons.sql.exec(
-      "INSERT INTO pigeon_telemetry (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, reported_at = unixepoch();",
-      vec![key.clone().into(), value.clone().into()],
-    ) {
-      console_error!("Telemetry UPSERT error for key '{key}': {e}");
-      return Err(e);
-    }
-  }
-  Ok(())
-}
-
 /// One telemetry key's stored value + timestamp from immediately before
-/// this report's upsert overwrote it -- feeds the `RateOfChange` alert
-/// condition, which needs the prior row the UPSERT destroys.
+/// this report's merge overwrote it -- feeds the `RateOfChange` alert
+/// condition, which needs the prior value the merge replaces.
 /// `reported_at` is the *previous* report's own unix-seconds timestamp,
-/// used to enforce `RateOfChange::window_secs`.
+/// used to enforce `RateOfChange::window_secs`. Doubles as the per-key
+/// entry of the stored blob itself (`helpers::TelemetryBlob`), since a
+/// key's stored entry is exactly what the next report hands the evaluator.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct PreviousTelemetryValue {
   pub value: String,
@@ -1690,45 +1705,148 @@ pub struct PreviousTelemetryValue {
 }
 
 #[derive(serde::Deserialize)]
-struct TelemetryKeyRow {
-  key: String,
-  value: String,
-  reported_at: i64,
+struct TelemetryBlobRow {
+  metrics: String,
 }
 
-/// Reads what's currently stored for exactly the keys `metrics` is about
-/// to overwrite -- MUST run before `upsert_telemetry`, the only chance to
-/// see the prior values. A key with no existing row is simply absent from
-/// the result, so `RateOfChange` never fires on a first-ever reading
-/// (absent, not a synthetic zero). Reads the whole table rather than a
-/// dynamic `IN (?, ...)` -- one row per distinct key ever reported, the
-/// same bounded size `get_telemetry_latest` already reads.
-fn read_previous_telemetry(
+#[derive(serde::Deserialize)]
+struct SqliteTableName {
+  #[allow(dead_code)]
+  name: String,
+}
+
+/// The whole latest-value store in one row read. A blob that fails to parse
+/// is logged and treated as empty rather than failing the request: the
+/// stored text is already unreadable, and refusing every later report would
+/// not bring it back -- this way the next report rebuilds the store.
+fn read_telemetry_blob(sql: &SqlStorage) -> Result<TelemetryBlob> {
+  let cursor = sql.exec(
+    "SELECT metrics FROM pigeon_telemetry_latest WHERE id = 1;",
+    None,
+  )?;
+  // `to_array`, not `one()` (see `one_row`): a pigeon that has never
+  // reported telemetry has no row here at all.
+  let Some(row) = cursor.to_array::<TelemetryBlobRow>()?.into_iter().next() else {
+    return Ok(TelemetryBlob::new());
+  };
+
+  match crate::helpers::parse_blob(&row.metrics) {
+    Ok(blob) => Ok(blob),
+    Err(e) => {
+      console_error!("Telemetry blob parse error: {e}");
+      Ok(TelemetryBlob::new())
+    }
+  }
+}
+
+fn write_telemetry_blob(sql: &SqlStorage, blob: &TelemetryBlob) -> Result<()> {
+  let metrics = serde_json::to_string(blob)
+    .map_err(|e| worker::Error::RustError(format!("telemetry blob serialize failed: {e}")))?;
+
+  // Bound as a parameter rather than formatted into the statement text:
+  // DO SQLite caps a statement at 100 KB, but a bound value only has to
+  // stay under the 2 MB row limit, which `MAX_TELEMETRY_KEYS` and the
+  // per-value cap already keep it far below.
+  sql.exec(
+    "INSERT INTO pigeon_telemetry_latest (id, metrics, updated_at)
+     VALUES (1, ?, unixepoch())
+     ON CONFLICT(id) DO UPDATE SET metrics = excluded.metrics, updated_at = unixepoch();",
+    vec![metrics.into()],
+  )?;
+  Ok(())
+}
+
+/// One report's entire write: read the store, capture the previous values
+/// for exactly the keys about to be overwritten, merge this report in, write
+/// it back. Reading once and using that same read for both jobs is the point
+/// of the single-row shape -- the previous values `RateOfChange` needs are
+/// already in hand, so they cost no extra read. Keys the report doesn't
+/// carry keep their own value and timestamp (see `helpers::merge_report`).
+fn write_telemetry(
   pigeons: &Pigeons,
-  metrics: &std::collections::HashMap<String, String>,
-) -> std::collections::HashMap<String, PreviousTelemetryValue> {
-  let Ok(cursor) = pigeons.sql.exec(
+  metrics: &HashMap<String, String>,
+) -> Result<HashMap<String, PreviousTelemetryValue>> {
+  let mut blob = read_telemetry_blob(&pigeons.sql)?;
+  let previous = crate::helpers::previous_values(&blob, metrics);
+
+  // Unix seconds, matching what `unixepoch()` wrote when this was a table
+  // of rows, so nothing downstream had to change how it reads a timestamp.
+  let now_secs = (Date::now().as_millis() / 1000) as i64;
+  crate::helpers::merge_report(&mut blob, metrics, now_secs);
+
+  write_telemetry_blob(&pigeons.sql, &blob)?;
+  Ok(previous)
+}
+
+/// Folds a DO provisioned before the single-row store into it and drops the
+/// per-key table. There is no fleet-wide migration step and no maintenance
+/// window: every pigeon's DO does this on its next wake, production pigeons
+/// included, so it runs against live data and has to survive being
+/// interrupted. Order is fold-then-drop, and `fold_legacy_rows` lets the
+/// blob win per key, so a rerun that finds both tables resumes instead of
+/// overwriting newer values with the legacy copies. Every failure path
+/// leaves the legacy table alone for the next wake to retry rather than
+/// dropping data it could not carry over.
+fn migrate_legacy_telemetry(sql: &SqlStorage) {
+  let legacy_present = match sql.exec(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pigeon_telemetry';",
+    None,
+  ) {
+    Ok(cursor) => match cursor.to_array::<SqliteTableName>() {
+      Ok(rows) => !rows.is_empty(),
+      Err(e) => {
+        console_error!("Telemetry migration: legacy table probe failed: {e}");
+        return;
+      }
+    },
+    Err(e) => {
+      console_error!("Telemetry migration: legacy table probe failed: {e}");
+      return;
+    }
+  };
+
+  if !legacy_present {
+    return;
+  }
+
+  let rows = match sql.exec(
     "SELECT key, value, reported_at FROM pigeon_telemetry;",
     None,
-  ) else {
-    return std::collections::HashMap::new();
+  ) {
+    Ok(cursor) => match cursor.to_array::<LegacyTelemetryRow>() {
+      Ok(rows) => rows,
+      Err(e) => {
+        console_error!("Telemetry migration: legacy READ error: {e}");
+        return;
+      }
+    },
+    Err(e) => {
+      console_error!("Telemetry migration: legacy READ error: {e}");
+      return;
+    }
   };
-  let Ok(rows) = cursor.to_array::<TelemetryKeyRow>() else {
-    return std::collections::HashMap::new();
-  };
-  rows
-    .into_iter()
-    .filter(|row| metrics.contains_key(&row.key))
-    .map(|row| {
-      (
-        row.key,
-        PreviousTelemetryValue {
-          value: row.value,
-          reported_at: row.reported_at,
-        },
-      )
-    })
-    .collect()
+
+  if !rows.is_empty() {
+    let mut blob = match read_telemetry_blob(sql) {
+      Ok(blob) => blob,
+      Err(e) => {
+        console_error!("Telemetry migration: blob READ error: {e}");
+        return;
+      }
+    };
+    let folded = rows.len();
+    crate::helpers::fold_legacy_rows(&mut blob, rows);
+
+    if let Err(e) = write_telemetry_blob(sql, &blob) {
+      console_error!("Telemetry migration: blob WRITE error: {e}");
+      return;
+    }
+    console_log!("Telemetry migration: folded {folded} legacy rows into the latest-value blob");
+  }
+
+  if let Err(e) = sql.exec("DROP TABLE IF EXISTS pigeon_telemetry;", None) {
+    console_error!("Telemetry migration: legacy DROP error: {e}");
+  }
 }
 
 /// Device-facing telemetry ingestion: auth + write in one call, used where
@@ -1757,12 +1875,13 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
-  // Must run before upsert_telemetry (see read_previous_telemetry).
-  let previous_values = read_previous_telemetry(pigeons, &metrics);
-
-  if upsert_telemetry(pigeons, &metrics).is_err() {
-    return Response::error("Internal Server Error", 500);
+  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
+    return Response::error(message, 400);
   }
+
+  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
+    return Response::error("Internal Server Error", 500);
+  };
 
   let pigeon_id = pigeons.state.id().to_string();
   let reported_at_ms = Date::now().as_millis();
@@ -1850,12 +1969,17 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
-  // Must run before upsert_telemetry (see read_previous_telemetry).
-  let previous_values = read_previous_telemetry(pigeons, &metrics);
-
-  if upsert_telemetry(pigeons, &metrics).is_err() {
-    return Response::error("Internal Server Error", 500);
+  // The gateway already refused an over-cap report before enqueueing it;
+  // this is the same check on the trusted-internal path, so a message that
+  // somehow reaches the consumer without it can't grow the stored blob past
+  // what eviction expects.
+  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
+    return Response::error(message, 400);
   }
+
+  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
+    return Response::error("Internal Server Error", 500);
+  };
 
   Response::from_json(&TelemetryWriteResult {
     metrics,
@@ -1895,26 +2019,14 @@ async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
 }
 
 /// ACL-gated latest-value read for the dashboard (`GET
-/// /pigeons/:id/telemetry` in `lib.rs`) -- every key currently in the DO's
-/// `pigeon_telemetry` table, unlike the history routes which read
+/// /pigeons/:id/telemetry` in `lib.rs`) -- every key currently in this DO's
+/// own latest-value store, unlike the history routes which read
 /// `pigeon_telemetry_history` from Postgres.
 async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
-  match pigeons.sql.exec(
-    "SELECT key, value, reported_at FROM pigeon_telemetry;",
-    None,
-  ) {
-    Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
-      Ok(rows) => {
-        let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
-        Response::from_json(&latest)
-      }
-      Err(e) => {
-        console_error!("Telemetry latest LIST error: {e}");
-        Response::error("Internal Server Error", 500)
-      }
-    },
+  match read_telemetry_blob(&pigeons.sql) {
+    Ok(blob) => Response::from_json(&crate::helpers::to_latest(&blob)),
     Err(e) => {
       console_error!("Telemetry latest READ error: {e}");
       Response::error("Internal Server Error", 500)
@@ -1927,20 +2039,8 @@ async fn get_telemetry_latest(pigeons: &Pigeons, req: Request) -> Result<Respons
 /// gateway only proxies here after confirming the pigeon is in
 /// `DEMO_PIGEON_IDS`.
 async fn get_telemetry_latest_demo(pigeons: &Pigeons, _req: Request) -> Result<Response> {
-  match pigeons.sql.exec(
-    "SELECT key, value, reported_at FROM pigeon_telemetry;",
-    None,
-  ) {
-    Ok(cursor) => match cursor.to_array::<TelemetryLatestRow>() {
-      Ok(rows) => {
-        let latest: Vec<TelemetryLatest> = rows.into_iter().map(TelemetryLatest::from).collect();
-        Response::from_json(&latest)
-      }
-      Err(e) => {
-        console_error!("Telemetry latest LIST error (demo): {e}");
-        Response::error("Internal Server Error", 500)
-      }
-    },
+  match read_telemetry_blob(&pigeons.sql) {
+    Ok(blob) => Response::from_json(&crate::helpers::to_latest(&blob)),
     Err(e) => {
       console_error!("Telemetry latest READ error (demo): {e}");
       Response::error("Internal Server Error", 500)

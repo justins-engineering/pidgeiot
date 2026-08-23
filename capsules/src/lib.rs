@@ -436,27 +436,6 @@ pub const MAX_TELEMETRY_KEY_BYTES: usize = 128;
 /// dovecote, so this is the only thing bounding one.
 pub const MAX_TELEMETRY_VALUE_BYTES: usize = 1024;
 
-// DB model for the DO's `pigeon_telemetry` latest-value-per-key table
-// (SQLite integer timestamp, like PigeonRow/PigeonShadowRow above).
-#[derive(Deserialize, Debug)]
-pub struct TelemetryLatestRow {
-  pub key: String,
-  pub value: String,
-  #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
-  pub reported_at: i64,
-}
-
-impl From<TelemetryLatestRow> for TelemetryLatest {
-  fn from(row: TelemetryLatestRow) -> Self {
-    Self {
-      key: row.key,
-      value: row.value,
-      reported_at: OffsetDateTime::from_unix_timestamp(row.reported_at)
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
-    }
-  }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TelemetryLatest {
   pub key: String,

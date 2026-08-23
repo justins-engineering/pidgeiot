@@ -21,7 +21,8 @@ use crate::helpers::{
   rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
   send_invite_email, sha256_hex, stripe_configured, update_alert_definition, update_pigeon_pg_db,
   update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
+  verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -571,6 +572,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return Response::error("Bad Request: Empty telemetry report", 400)
             .unwrap()
             .with_cors(&cors);
+        }
+
+        // Refused here rather than at the consumer so the device learns its
+        // report was rejected: past this point the route answers 202 and the
+        // write happens off the queue, where nothing can reach the device.
+        // A report is applied whole or not at all.
+        if let Err(message) = validate_telemetry_report(&metrics) {
+          return Response::error(message, 400).unwrap().with_cors(&cors);
         }
 
         let verify_resp =

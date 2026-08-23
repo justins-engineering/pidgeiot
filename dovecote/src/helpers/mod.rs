@@ -88,6 +88,16 @@ pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
 
+mod telemetry_latest;
+pub use telemetry_latest::LegacyTelemetryRow;
+pub use telemetry_latest::TelemetryBlob;
+pub use telemetry_latest::fold_legacy_rows;
+pub use telemetry_latest::merge_report;
+pub use telemetry_latest::parse_blob;
+pub use telemetry_latest::previous_values;
+pub use telemetry_latest::to_latest;
+pub use telemetry_latest::validate_telemetry_report;
+
 mod greptime;
 pub use greptime::build_line_protocol;
 pub use greptime::greptime_origin;
