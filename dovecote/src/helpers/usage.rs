@@ -14,6 +14,10 @@ use crate::helpers::get_db_client;
 /// would be pure overhead. Until the migration (or the first cron
 /// invocation) has created the tables, the hot paths fail open / undercount
 /// and log, which is the customer-favorable direction.
+///
+/// `pigeons.last_billable_activity` is bootstrapped here despite living on
+/// a non-billing table: it exists only to feed the extra-devices meter, and
+/// this is the DDL path the meter itself runs behind.
 pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
   client
     .batch_execute(
@@ -30,6 +34,8 @@ pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
       );
       ALTER TABLE billing_usage_periods
         ADD COLUMN IF NOT EXISTS allowance_floor_messages BIGINT;
+      ALTER TABLE pigeons
+        ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
       CREATE TABLE IF NOT EXISTS billing_meter_reports (
         org_id UUID NOT NULL,
         period_start TIMESTAMPTZ NOT NULL,
@@ -141,6 +147,16 @@ struct BillableMessageTally {
 /// `None` means the pigeon has no Postgres mirror row (the mirror is
 /// best-effort by design), so there is no account to bill -- an undercount
 /// in the customer's favour, not an error.
+///
+/// The same statement stamps `pigeons.last_billable_activity`, which is
+/// what makes device-overage billing connected-only (see
+/// `report_device_overage`). It rides here rather than in its own query
+/// because this is the one place every billable surface already converges
+/// on, and folding it into the existing CTE costs no extra round trip on a
+/// path that runs per device report. Against a database that predates the
+/// column the whole statement errors, so the tally undercounts and logs
+/// until the cron's `ensure_billing_usage_tables` adds it -- the same
+/// fail-open-and-undercount direction that bootstrap already documents.
 async fn record_billable_message(
   client: &Client,
   pigeon_id: &str,
@@ -165,6 +181,17 @@ async fn record_billable_message(
          JOIN flocks f ON f.id = p.flock_id
          LEFT JOIN organizations o ON o.id = f.org_id
          WHERE p.id = $1
+       ),
+       stamped AS (
+         UPDATE pigeons p
+         SET last_billable_activity = now()
+         FROM target t
+         WHERE p.id = $1
+           AND (p.last_billable_activity IS NULL
+             OR p.last_billable_activity < now() - interval '6 hours'
+             OR p.last_billable_activity < CASE WHEN t.use_org_period
+                                                THEN t.org_period_start
+                                                ELSE date_trunc('month', now()) END)
        ),
        upserted AS (
          INSERT INTO billing_usage_periods

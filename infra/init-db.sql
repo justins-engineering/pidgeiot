@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- check_firmware_board_compat before a firmware shadow assignment is
   -- accepted.
   board TEXT,
+  -- Last time this pigeon sent a billable message (telemetry, shadow
+  -- report-back or log upload, on any transport). NULL until it first
+  -- reports, which is exactly what makes a provisioned-but-idle device
+  -- free: the extra-devices meter counts only pigeons whose stamp falls
+  -- inside the billing period. Written by record_billable_message
+  -- (dovecote's helpers/usage.rs), which refreshes it at most every six
+  -- hours rather than once per message. Deliberately NOT the DO-owned
+  -- updated_at, which also bumps on dashboard writes.
+  last_billable_activity TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -75,6 +84,7 @@ CREATE TABLE IF NOT EXISTS pigeons (
 -- fallback for the DO's SQLite schema (see objects/pigeons.rs).
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons
