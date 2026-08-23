@@ -11,6 +11,46 @@ not a data migration.
 Everything here is applied on the VPS (`debian@15.204.254.3`) by the owner.
 The unit file ships in this repo at [`infra/systemd/kratos.service`](../../infra/systemd/kratos.service).
 
+## Status: cut over 2026-08-23
+
+`auth.pidgeiot.com` now serves from the native binary under systemd. The
+container is stopped with `--restart=no` and its image is untouched on disk,
+so the Rollback section below is still a live path — leave both in place.
+
+- **Auth downtime: 1.08 s.** `docker stop` was issued at 15:50:21.957Z and the
+  first `{"status":"ok"}` from `http://127.0.0.1:4433/health/ready` came back
+  at 15:50:23.034Z. No `migrate sql` ran: same version, same database.
+- The installed binary is v26.2.0, build commit
+  `9d7085948039ffb8960160d4979f71527b5cf4d5` — `sha256sum -c` OK against the
+  release `checksums.txt`, and the same source revision the image carried.
+- `/opt/kratos/.env` is now root:root 0600 holding exactly `DSN` and
+  `COURIER_SMTP_CONNECTION_URI`; `TUNNEL_TOKEN` is gone. The pre-edit file is
+  kept alongside it as `.env.pre-systemd` (root:root 0600). This is the point
+  at which a rerun of `.migration/vps-bringup.sh` breaks, as step 2 warns.
+- Verification 1–6 all passed. Step 5 was run as a **recovery**-code flow for
+  the existing test identity rather than a fresh registration — it exercises
+  the same courier path without minting an identity, which matters because
+  identity IDs are load-bearing here (gotcha 2 in `CLAUDE.md`). The
+  `recovery_code_valid` row was already `"status":"sent"` with `send_count` 1
+  at the first poll sixteen seconds later, and the journal opens with
+  `Courier worker started.`
+- Dashboard sanity was checked through the API rather than a browser: an
+  authenticated `GET /flocks` and `GET /pigeons/:id/telemetry` both returned
+  200 with non-empty bodies. That is the check that catches the
+  `cookies.domain` regression, whose signature is a 200 with an empty list.
+- Tidied afterwards, so `/opt/kratos` now holds config and nothing else:
+  `kratos.yml`, the identity schema, `courier-templates/`, `.env` and
+  `.env.pre-systemd`. The one-time identity import payload was removed, being
+  byte-identical to the copy in `.migration/`. The docker-era `vps-bringup.sh`
+  was archived to `.migration/vps-bringup.host-2026-07-26.sh` before removal
+  rather than just deleted, because it did **not** match the `.migration/`
+  copy: the host copy is the one that actually ran at bring-up, and it carries
+  no `--watch-courier` anywhere, while the repo copy carries it twice. That
+  makes the archived file the surviving artifact of gotcha 0 in `CLAUDE.md` —
+  the queued-mail outage in its original form — which is reason enough to keep
+  it off the serving host but not to lose it. Everything readable by the unit's
+  dynamic user under `/opt/kratos` is now config, schema and mail templates.
+
 ## What runs today (verified against the live VPS)
 
 The container was created by `.migration/vps-bringup.sh` and `docker inspect`
