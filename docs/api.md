@@ -141,8 +141,9 @@ models above; dev and production don't set these vars, so it's a no-op there.
   and the device log-chunk POST, which returns an empty body).
 - Error responses are **plain text**, not JSON — read `response.text()`, not
   `response.json()`, when handling a non-2xx status.
-- Status codes used throughout: `400` (malformed JSON, missing/invalid path param, empty
-  telemetry report, empty log chunk), `401` (missing/invalid session cookie or device token),
+- Status codes used throughout: `400` (malformed JSON, missing/invalid path param, empty or
+  over-cap telemetry report, empty log chunk), `401` (missing/invalid session cookie or device
+  token),
   `403` (authenticated but not authorized — wrong ACL role, or CF Access rejection on staging),
   `404` (no matching route), `413` (log chunk over the size cap), `500` (internal error — DB
   connection failure, Durable Object dispatch failure, etc).
@@ -167,6 +168,9 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `POST /pigeons/batch` — pigeon IDs per request | 48 | `lib.rs` (Workers subrequest budget) |
 | `POST /device/pigeons/:id/logs` — bytes per chunk | 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`) | `objects/pigeons.rs::report_logs_device`, `413` over the cap |
 | Stored log chunks per pigeon | 200 (oldest silently pruned, not an error) | `objects/pigeons.rs::MAX_STORED_LOG_CHUNKS` |
+| Stored latest-value telemetry keys per pigeon | 128 (`capsules::MAX_TELEMETRY_KEYS`) — least-recently-reported keys silently evicted, not an error | `helpers/telemetry_latest.rs`, see [Telemetry](#telemetry) |
+| Telemetry keys per report | 128 (`capsules::MAX_TELEMETRY_KEYS`) | `helpers/telemetry_latest.rs`, `400` over the cap (nothing applied) |
+| Telemetry key / value length | 128 / 1024 bytes (`capsules::MAX_TELEMETRY_KEY_BYTES`/`MAX_TELEMETRY_VALUE_BYTES`) | `helpers/telemetry_latest.rs`, `400` over the cap (nothing applied) |
 | `GET .../telemetry/history` points per query | bucketed by default (`capsules::TELEMETRY_HISTORY_BUCKET_TARGET` = 360 buckets, unlimited range, no cap); `raw=true` caps at 5000 (`capsules::TELEMETRY_HISTORY_MAX_POINTS`) — the range's **newest** 5000, flagged by `X-Telemetry-Truncated`, not an error | `helpers/telemetry.rs` |
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
@@ -807,11 +811,29 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/firmware \
 
 ### Telemetry
 
-Every telemetry value, on both the DO's latest-value table and the Postgres history table, is
+Every telemetry value, on both the DO's latest-value store and the Postgres history table, is
 stored and returned as a **string** — dovecote doesn't know or enforce a schema for what a
 device reports. Where a value happens to parse as a number, the history endpoints also populate
 a `value_num` float alongside the raw string, so numeric series can be queried/plotted without a
 client-side cast.
+
+**A report merges, it doesn't replace.** The pigeon's latest-value store keeps a per-key value
+*and* a per-key `reported_at`; a report stamps only the keys it carries, and every other key
+keeps the value and timestamp it already had. So a key a device reports once at boot
+(`reset_cause`) keeps its boot timestamp while `uptime_s` moves with every report, and the
+dashboard's connection-state badge and the `RateOfChange` alert condition both read the per-key
+timestamp rather than a single store-wide one. The whole store lives in one JSON object in one
+Durable Object SQLite row (DO SQLite bills per row read and written, and this is the platform's
+hottest write path), which is what the key cap below bounds.
+
+**Key cap and eviction.** A pigeon's store holds at most `capsules::MAX_TELEMETRY_KEYS` = 128
+distinct keys. Past that, the least-recently-reported keys are evicted to make room — silently,
+not an error — so a device that renames its keys across firmware versions sheds the abandoned
+ones instead of accumulating them forever. A report's own keys are never the ones evicted. A
+single report carrying more than 128 keys is refused whole with `400` (nothing partially
+applied), as is one carrying a key over 128 bytes or a value over 1024 bytes. For reference,
+the `pigeon` device library's own per-report ceiling (`CONFIG_PIGEON_TELEMETRY_MAX_KEYS`)
+defaults to 8 and maxes out at 64, and it truncates keys at 31 bytes and values at 127.
 
 #### `GET /pigeons/:pigeon_id/telemetry` — member
 
@@ -1497,7 +1519,10 @@ config it applied.
 Reports telemetry. Body: a **flat JSON object of string key/value pairs** — no nesting, no
 typed values; this matches the wire shape the `pigeon` Zephyr device library's
 `pigeon_set_shadow_param()`/`pigeon_shadow_flush()` calls produce. `400` if the body is empty
-or not a flat string map.
+or not a flat string map, or if it breaks one of the [telemetry caps](#telemetry) (more than 128
+keys, a key over 128 bytes, a value over 1024 bytes) — an over-cap report is refused whole, with
+none of its keys applied. The report merges into the pigeon's stored keys rather than replacing
+them; see [Telemetry](#telemetry) above for what that means for per-key timestamps.
 
 **Free-tier allowance fuse.** On a free-tier account that has exhausted its monthly pooled
 message allowance, this route answers `429 Too Many Requests` (after the bearer token has been
@@ -1644,7 +1669,7 @@ was sent for a while.
 
 | Direction | `type` | Fields | Effect |
 |---|---|---|---|
-| device → server | `telemetry` | `metrics: {string: string}` | Same handling as `POST /device/pigeons/:id/telemetry`: an immediate latest-value upsert in the pigeon's own Durable Object, plus (environment-dependent — see below) a queued write for history/forwarding. |
+| device → server | `telemetry` | `metrics: {string: string}` | Same handling as `POST /device/pigeons/:id/telemetry`: an immediate merge into the pigeon's own Durable Object latest-value store, plus (environment-dependent — see below) a queued write for history/forwarding. The same [telemetry caps](#telemetry) apply, but a frame has no reply of its own to carry a `400`: an over-cap frame is logged server-side and dropped whole, and the socket stays open. |
 | device → server | `shadow_report` | `current_version: int`, `current_config: <JSON object>` | Same handling as `POST /device/pigeons/:id/shadow`: updates `pigeon_shadow.current_config`/`current_version` and best-effort syncs the result to Postgres. |
 | device → server | `ping` | — | Server replies with `{"type":"pong"}`. |
 | device → server | `pong` | — | Liveness acknowledgement only; no reply, no other effect. |
