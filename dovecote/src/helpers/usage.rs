@@ -423,6 +423,13 @@ pub enum IngestFuse {
   Pause,
 }
 
+/// The body every HTTP ingest surface answers a paused account with. One
+/// constant rather than a literal per route so a device sees the same
+/// refusal whether it was reporting telemetry, confirming a shadow or
+/// uploading logs -- the account state being described is the same one.
+pub const INGEST_PAUSED_MESSAGE: &str =
+  "Too Many Requests: free tier message allowance exhausted for this billing period";
+
 /// Whether a device report should be refused because its account is a
 /// free-tier one that has exhausted this month's message allowance. Paid,
 /// entitled tiers always pass -- their over-allowance usage bills as

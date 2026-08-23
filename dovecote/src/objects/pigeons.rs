@@ -1,6 +1,7 @@
 use crate::helpers::{LegacyTelemetryRow, TelemetryBlob};
 use crate::objects::ws::{
-  MAX_WS_FRAME_BYTES, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
+  MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame,
+  check_rate_limit,
 };
 use crate::objects::{mint_coap_psk, mint_device_credential, verify_device_token};
 use crate::queue::TelemetryMessage;
@@ -369,6 +370,22 @@ impl DurableObject for Pigeons {
         return Ok(());
       }
     };
+
+    // Only the two frames that tally a billable message are fused; a
+    // paused account can still ping and still answer a shell command,
+    // neither of which is billed or stored.
+    let billable = matches!(
+      frame,
+      WsInboundFrame::Telemetry { .. } | WsInboundFrame::ShadowReport { .. }
+    );
+    if billable && device_ingest_paused(self).await {
+      console_error!("WS: ingest paused for pigeon {}, closing", self.state.id());
+      let _ = ws.close(
+        Some(WS_CLOSE_INGEST_PAUSED),
+        Some("free tier message allowance exhausted"),
+      );
+      return Ok(());
+    }
 
     match frame {
       WsInboundFrame::Telemetry { metrics } => handle_ws_telemetry(self, metrics).await,
@@ -1248,12 +1265,38 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
   }
 }
 
+/// Whether this pigeon's account is a free-tier one that has spent its
+/// monthly message allowance, in which case the caller must refuse the
+/// report rather than store it.
+///
+/// Checked in here, not at the gateway, for the surfaces that reach the DO
+/// with auth and write in one hop: this is the only point that is both
+/// after `is_authorized_device` -- so a caller without a device token
+/// never learns anything about the account's billing state -- and before
+/// the write. The WS surfaces have no gateway to check at all. The
+/// HTTP/CoAP telemetry route is the exception and keeps its own gateway
+/// check, since it verifies auth in a separate hop and never reaches these
+/// handlers.
+///
+/// Fail-open lives inside `check_perch_ingest_fuse`, along with the note
+/// on why Hyperdrive's result cache makes a per-report check affordable.
+async fn device_ingest_paused(pigeons: &Pigeons) -> bool {
+  matches!(
+    crate::helpers::check_perch_ingest_fuse(&pigeons.env, &pigeons.state.id().to_string()).await,
+    crate::helpers::IngestFuse::Pause
+  )
+}
+
 /// Device confirms it applied `target_config` by writing its own
 /// `current_config` plus the `target_version` it applied (echoed into
 /// `current_version`) — never re-derived from `target_version` here, since
 /// the device may still be catching up to a newer target.
 async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  if device_ingest_paused(pigeons).await {
+    return Response::error(crate::helpers::INGEST_PAUSED_MESSAGE, 429);
+  }
 
   let report = match req.json::<PigeonShadowReportRequest>().await {
     Ok(data) => data,
@@ -1328,6 +1371,16 @@ fn read_shadow(pigeons: &Pigeons) -> Result<PigeonShadow> {
 /// the upgrade.
 async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  // Refusing the upgrade is what actually makes the fuse hold on this
+  // transport. The per-frame check in `websocket_message` only closes a
+  // socket that was already open when the allowance ran out; without this,
+  // the device would reconnect immediately and be closed again on its next
+  // frame, forever. A 429 at the upgrade instead hands it the same signal
+  // the HTTP ingest routes do, which its own back-off already understands.
+  if device_ingest_paused(pigeons).await {
+    return Response::error(crate::helpers::INGEST_PAUSED_MESSAGE, 429);
+  }
 
   // One active device socket per pigeon: a new connection (e.g. a device
   // reconnecting after a network blip, before its old socket has timed out)
@@ -2125,6 +2178,10 @@ const MAX_STORED_LOG_CHUNKS: i64 = 200;
 /// as base64 anyway.
 async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  if device_ingest_paused(pigeons).await {
+    return Response::error(crate::helpers::INGEST_PAUSED_MESSAGE, 429);
+  }
 
   let bytes = match req.bytes().await {
     Ok(b) => b,

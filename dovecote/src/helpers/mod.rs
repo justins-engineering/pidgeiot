@@ -39,6 +39,7 @@ pub use billing::mark_webhook_event_processed;
 
 mod usage;
 pub use usage::DeviceCap;
+pub use usage::INGEST_PAUSED_MESSAGE;
 pub use usage::IngestFuse;
 pub use usage::check_device_cap;
 pub use usage::check_perch_ingest_fuse;

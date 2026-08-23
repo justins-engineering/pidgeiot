@@ -18,6 +18,18 @@ pub const MAX_WS_FRAME_BYTES: usize = 16 * 1024;
 pub const WS_RATE_LIMIT_WINDOW_MS: i64 = 10_000;
 pub const WS_RATE_LIMIT_MAX_FRAMES: u32 = 50;
 
+/// Close code for a socket carrying billable frames on a free-tier account
+/// that has spent its monthly message allowance. 4029 rather than the next
+/// number in this file's 4001-4009 run so it reads as the WebSocket
+/// spelling of the 429 the HTTP ingest routes answer with -- it is the same
+/// refusal, and a device that reconnects meets that 429 at the upgrade.
+/// Closing rather than replying with an error frame is deliberate: shipped
+/// `pigeon` firmware silently ignores frame types it doesn't know (see
+/// `ShellCmd` below), so a new frame would change nothing in the field,
+/// while a close already routes into the device's own reconnect-and-back-off
+/// path.
+pub const WS_CLOSE_INGEST_PAUSED: u16 = 4029;
+
 /// Tag applied to every device-class socket accepted by
 /// `accept_websocket_device` (`objects/pigeons.rs`). Scoping "close the old
 /// socket"/"broadcast a shadow push" to this tag (via
