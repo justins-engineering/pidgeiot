@@ -228,12 +228,35 @@ impl DurableObject for Pigeons {
     //
     // Every key lives in one JSON object in one row rather than a row per
     // key, because DO SQLite bills per row read and written and this is the
-    // hottest write path on the platform: a ten-key report costs one row
-    // read plus one row write instead of a table scan plus ten upserts. The
-    // shape and the per-key eviction that bounds it live in
-    // `helpers::telemetry_latest`. No `updated_at` trigger like the tables
-    // above -- the single writer stamps it in the same statement, and every
-    // key carries its own `reported_at` inside the blob anyway.
+    // hottest write path on the platform. The shape and the per-key eviction
+    // that bounds it live in `helpers::telemetry_latest`.
+    //
+    // The billing model is what dictates this table's shape, so three things
+    // here are load-bearing rather than stylistic:
+    //
+    // 1. `id INTEGER PRIMARY KEY` is the rowid, which SQLite does NOT give a
+    //    backing index. The retired per-key table's `key TEXT PRIMARY KEY`
+    //    did get one (`sqlite_autoindex_...`, confirmed by querying
+    //    `sqlite_master` for both shapes under workerd), and an index costs
+    //    an extra written row whenever a write touches the indexed column,
+    //    so every first report of a key used to pay two writes rather than
+    //    one.
+    // 2. Never add an index to this table. Rows read are rows scanned, and
+    //    the one read is already a direct rowid seek: `EXPLAIN QUERY PLAN`
+    //    reports `SEARCH pigeon_telemetry_latest USING INTEGER PRIMARY KEY
+    //    (rowid=?)`, where the old shape's previous-value lookup reported a
+    //    bare `SCAN`. An index could only add written rows, never save a
+    //    read.
+    // 3. The per-report write is an upsert that only ever changes `metrics`
+    //    and `updated_at`, neither of them indexed, and an upsert bills as
+    //    the one row it actually writes rather than as an insert plus an
+    //    update. So a report costs one row read and one row written whatever
+    //    its key count, where the old shape cost roughly two reads and one
+    //    write per key.
+    //
+    // No `updated_at` trigger like the tables above -- the single writer
+    // stamps it in the same statement, and every key carries its own
+    // `reported_at` inside the blob anyway.
     sql
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_telemetry_latest (
