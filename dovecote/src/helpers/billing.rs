@@ -249,7 +249,17 @@ pub async fn load_org_billing_overview(
          COALESCE(u.billable_messages, 0) AS billable_messages,
          (SELECT COUNT(*)::bigint FROM pigeons p
             JOIN flocks f ON f.id = p.flock_id
-            WHERE f.org_id = a.id) AS device_count
+            WHERE f.org_id = a.id) AS device_count,
+         (SELECT COUNT(*)::bigint FROM pigeons p
+            JOIN flocks f ON f.id = p.flock_id
+            WHERE f.org_id = a.id
+              AND p.last_billable_activity >=
+                CASE WHEN a.use_org_period THEN a.current_period_start
+                     ELSE date_trunc('month', now()) END
+              AND p.last_billable_activity <
+                CASE WHEN a.use_org_period THEN a.current_period_end
+                     ELSE date_trunc('month', now()) + interval '1 month' END
+           ) AS connected_device_count
        FROM anchored a
        LEFT JOIN billing_usage_periods u
          ON u.owner_kind = 'org' AND u.owner_id = a.id
@@ -290,6 +300,7 @@ pub async fn load_org_billing_overview(
     billable_messages: row.get("billable_messages"),
     included_messages: effective_plan.included_messages(),
     device_count: row.get("device_count"),
+    connected_device_count: row.get("connected_device_count"),
     included_devices: effective_plan.included_devices(),
   }))
 }

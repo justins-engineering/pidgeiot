@@ -153,9 +153,10 @@ models above; dev and production don't set these vars, so it's a no-op there.
   to authorize against), not `404`.
 - `GET /device/pigeons/:pigeon_id/ws` is the one exception to "error responses are plain text
   HTTP status codes": a rejected upgrade (bad `Upgrade` header, bad token) is still a normal HTTP
-  error response (`400`/`401`), but a problem discovered *after* the socket is open (oversize
-  frame, malformed frame, frame flood) has no HTTP status to report — it's a WebSocket close
-  code instead (`4001`-`4009`; see that route's own section for the full list).
+  error response (`400`/`401`/`429`), but a problem discovered *after* the socket is open (oversize
+  frame, malformed frame, frame flood, spent message allowance) has no HTTP status to report —
+  it's a WebSocket close code instead (`4001`-`4009` and `4029`; see that route's own section for
+  the full list).
 
 ## Rate & size limits
 
@@ -175,6 +176,7 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
+| Free-tier pooled messages per billing period | Tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_perch_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
 | `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -1510,9 +1512,10 @@ side, so `fancier` doesn't need to poll the Durable Object directly to see a dev
 reported state.
 
 An accepted report-back counts as one billable device message against the owning account's
-message allowance, the same as a telemetry report. The free-tier allowance fuse (see the
-telemetry route below) never `429`s this route, though — a device can always confirm the
-config it applied.
+message allowance, the same as a telemetry report, and is refused with the same `429` by the
+free-tier allowance fuse (see the telemetry route below) once that allowance is spent. The
+check runs inside the Durable Object, after the bearer token is verified and before the report
+is stored, so a refused report is neither stored nor counted.
 
 ### `POST /device/pigeons/:pigeon_id/telemetry`
 
@@ -1529,8 +1532,10 @@ message allowance, this route answers `429 Too Many Requests` (after the bearer 
 verified) for the rest of the billing period — the `pigeon` device library backs off and keeps
 unsent readings queued, so data is delayed rather than lost. Paid, entitled tiers are never
 paused; their over-allowance usage bills as metered overage instead. The check fails open: a
-usage-lookup failure never blocks ingestion. Only this route pauses: shadow report-backs and
-log uploads keep counting toward the same allowance but are never refused by the fuse.
+usage-lookup failure never blocks ingestion. Every ingest surface answers to the same fuse:
+shadow report-backs and log uploads `429` alongside this route, and the WebSocket endpoint
+refuses the upgrade with the same `429` and closes an already-open socket on its next billable
+frame (code `4029`).
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
@@ -1577,7 +1582,9 @@ decoded host-side against the firmware's own dictionary/ELF.
 - `200` with an empty body on success.
 
 An accepted chunk counts as one billable device message against the owning account's message
-allowance, the same as a telemetry report; the free-tier allowance fuse never `429`s this route.
+allowance, the same as a telemetry report, and is refused with the same `429` by the free-tier
+allowance fuse once that allowance is spent — checked after the bearer token is verified and
+before the chunk is stored.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/logs \
@@ -1707,9 +1714,17 @@ Note `shadow.target_config`/`current_config` in a `shadow_update` push are `caps
 | Max frame size | 16 KiB | Connection closed, code `4002`, reason "frame too large" |
 | Frame rate | 50 frames / rolling 10s window, per socket | Connection closed, code `4008`, reason "rate limit exceeded" |
 | Malformed frame (not valid JSON, or missing/unknown `type`) | — | Connection closed, code `4003`, reason "malformed frame"; logged server-side |
+| Free-tier message allowance spent, on a `telemetry` or `shadow_report` frame | Monthly pooled allowance | Connection closed, code `4029`, reason "free tier message allowance exhausted" |
 
-None of these three are "recoverable" mid-connection — reconnect (a fresh `GET .../ws`) to
+None of the first three are "recoverable" mid-connection — reconnect (a fresh `GET .../ws`) to
 resume after any of them.
+
+`4029` is the WebSocket spelling of the `429` the HTTP ingest routes answer with, and it is the
+one close in this table that reconnecting does **not** clear: the upgrade itself is refused with
+`429` until the allowance resets or the account moves to a paid tier. A device should back off
+as it does on an HTTP `429` rather than reconnect immediately. `ping`/`pong` and `shell_output`
+frames are not billable and are still served on a paused account — it is only the billable
+frames that close the socket.
 
 **`shell_cmd`/`shell_output` count toward the same 50-frame/10s budget above — no carve-out in
 v1.** One command invocation is one frame each way, negligible against that budget; see the

@@ -1929,6 +1929,11 @@ pub struct OrganizationBillingOverview {
   pub billable_messages: i64,
   pub included_messages: i64,
   pub device_count: i64,
+  /// How many of those devices sent a billable message during this period,
+  /// which is the number the per-device overage is charged on -- provisioned
+  /// stock that never reported is free. `device_count` still drives the
+  /// free tier's hard cap, so the two legitimately differ.
+  pub connected_device_count: i64,
   pub included_devices: i64,
 }
 

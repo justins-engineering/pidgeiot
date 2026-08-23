@@ -531,6 +531,12 @@ fn BillingPanel(
         " of "
         span { class: "font-mono", "{o.included_devices}" }
         " included"
+        // Provisioned is the number that hits the cap, connected is the
+        // number that gets billed. Showing only the first would leave a
+        // customer unable to tell what their invoice will say.
+        span { class: "block text-xs text-base-content/50",
+          "{o.connected_device_count} connected this period — only these count toward billing"
+        }
       }
 
       if let Some(notice) = change_notice.read().as_ref() {
