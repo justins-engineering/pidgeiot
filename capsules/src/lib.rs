@@ -413,6 +413,29 @@ impl Default for Connector {
 
 // --- Telemetry ---
 
+/// Most distinct keys one pigeon's latest-value store will hold. The store
+/// is a single JSON object in a single Durable Object SQLite row, so this
+/// is what bounds that row against a device that renames its keys across
+/// firmware versions: past the cap the least-recently-reported keys are
+/// evicted, and a report carrying more than this many keys is refused
+/// whole (`400`) rather than partly applied. Sized well above the device
+/// library's own per-report ceiling (`~/pigeon`'s
+/// `CONFIG_PIGEON_TELEMETRY_MAX_KEYS`, default 8, range max 64) so a
+/// fleet's accumulated key set has room, while the worst-case row stays a
+/// small fraction of the platform's 2 MB row limit.
+pub const MAX_TELEMETRY_KEYS: usize = 128;
+
+/// Longest single telemetry key accepted, in bytes. `~/pigeon` truncates
+/// keys at 31 bytes (`PIGEON_TELEMETRY_KEY_MAX`); this leaves headroom for
+/// other clients while keeping the worst-case stored row bounded.
+pub const MAX_TELEMETRY_KEY_BYTES: usize = 128;
+
+/// Longest single telemetry value accepted, in bytes. `~/pigeon` truncates
+/// values at 127 bytes (`PIGEON_TELEMETRY_VAL_MAX`); the same headroom
+/// rationale as `MAX_TELEMETRY_KEY_BYTES`. Values are opaque strings to
+/// dovecote, so this is the only thing bounding one.
+pub const MAX_TELEMETRY_VALUE_BYTES: usize = 1024;
+
 // DB model for the DO's `pigeon_telemetry` latest-value-per-key table
 // (SQLite integer timestamp, like PigeonRow/PigeonShadowRow above).
 #[derive(Deserialize, Debug)]
@@ -440,6 +463,21 @@ pub struct TelemetryLatest {
   pub value: String,
   #[serde(with = "time::serde::rfc3339")]
   pub reported_at: OffsetDateTime,
+}
+
+impl TelemetryLatest {
+  /// The DO stores each key's timestamp as unix seconds (what `unixepoch()`
+  /// wrote when the per-key table still existed, kept identical so the
+  /// dashboard's deserialization never had to change), while the public
+  /// shape is RFC 3339. This is the only conversion between the two.
+  pub fn from_unix_seconds(key: String, value: String, reported_at: i64) -> Self {
+    Self {
+      key,
+      value,
+      reported_at: OffsetDateTime::from_unix_timestamp(reported_at)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+    }
+  }
 }
 
 // Postgres already hands back a native `OffsetDateTime` (unlike the DO's
