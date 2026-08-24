@@ -21,7 +21,7 @@ use crate::helpers::telemetry_latest::{TelemetryBlob, evict_to_cap, validate_tel
 use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::{
   MAX_TELEMETRY_BACKDATE_SECS, MAX_TELEMETRY_BATCH_READINGS, MAX_TELEMETRY_KEYS, TelemetryBatch,
-  TelemetryReading,
+  TelemetryReading, TelemetryReportBody,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -51,14 +51,6 @@ impl ResolvedReading {
       metrics,
       previous: None,
     }
-  }
-
-  /// The previous values this reading carries, or an empty map. A reading
-  /// with no capture behaves as a pigeon's first-ever sighting of every
-  /// key, which makes `RateOfChange` skip rather than fire -- the safe
-  /// direction for a degraded path.
-  pub fn previous_or_empty(&self) -> HashMap<String, PreviousTelemetryValue> {
-    self.previous.clone().unwrap_or_default()
   }
 }
 
@@ -195,6 +187,31 @@ pub fn merge_batch(blob: &mut TelemetryBlob, readings: &mut [ResolvedReading]) {
     .flat_map(|reading| reading.metrics.keys().map(String::as_str))
     .collect();
   evict_to_cap(blob, &protected);
+}
+
+/// A device-supplied telemetry body, already parsed, turned into the
+/// chronological readings every write path takes. The flat form is one
+/// reading stamped now; the batch form resolves each reading's own
+/// device-supplied timestamp against this server's clock (see
+/// `helpers::resolve_batch` for the clamping rules).
+///
+/// Every entry point resolves through here -- the gateway route before it
+/// enqueues, the no-queue direct write, and the WebSocket frame -- so a
+/// device timestamp can never reach the store without passing the clamp.
+pub fn readings_from_body(
+  body: TelemetryReportBody,
+  now_secs: i64,
+) -> Result<Vec<ResolvedReading>, String> {
+  match body {
+    TelemetryReportBody::Batch(batch) => resolve_batch(&batch, now_secs),
+    TelemetryReportBody::Flat(metrics) => {
+      if metrics.is_empty() {
+        return Err("Bad Request: Empty telemetry report".into());
+      }
+      validate_telemetry_report(&metrics)?;
+      Ok(vec![ResolvedReading::new(now_secs, metrics)])
+    }
+  }
 }
 
 #[cfg(test)]
@@ -441,19 +458,28 @@ mod tests {
 
     merge_batch(&mut blob, &mut readings);
 
-    assert_eq!(readings[0].previous_or_empty()["temp"].value, "20");
     assert_eq!(
-      readings[0].previous_or_empty()["temp"].reported_at,
+      readings[0].previous.clone().unwrap_or_default()["temp"].value,
+      "20"
+    );
+    assert_eq!(
+      readings[0].previous.clone().unwrap_or_default()["temp"].reported_at,
       NOW - 100
     );
-    assert_eq!(readings[1].previous_or_empty()["temp"].value, "25");
     assert_eq!(
-      readings[1].previous_or_empty()["temp"].reported_at,
+      readings[1].previous.clone().unwrap_or_default()["temp"].value,
+      "25"
+    );
+    assert_eq!(
+      readings[1].previous.clone().unwrap_or_default()["temp"].reported_at,
       NOW - 30
     );
-    assert_eq!(readings[2].previous_or_empty()["temp"].value, "30");
     assert_eq!(
-      readings[2].previous_or_empty()["temp"].reported_at,
+      readings[2].previous.clone().unwrap_or_default()["temp"].value,
+      "30"
+    );
+    assert_eq!(
+      readings[2].previous.clone().unwrap_or_default()["temp"].reported_at,
       NOW - 20
     );
   }
@@ -471,8 +497,17 @@ mod tests {
 
     merge_batch(&mut blob, &mut readings);
 
-    assert!(!readings[0].previous_or_empty().contains_key("temp"));
-    assert_eq!(readings[1].previous_or_empty()["temp"].value, "25");
+    assert!(
+      !readings[0]
+        .previous
+        .clone()
+        .unwrap_or_default()
+        .contains_key("temp")
+    );
+    assert_eq!(
+      readings[1].previous.clone().unwrap_or_default()["temp"].value,
+      "25"
+    );
   }
 
   #[test]
@@ -513,7 +548,10 @@ mod tests {
     assert_eq!(blob["temp"].reported_at, NOW);
     // The stale readings still report their true previous values, so
     // history and alerts see the progression the device actually sampled.
-    assert_eq!(readings[0].previous_or_empty()["temp"].value, "30");
+    assert_eq!(
+      readings[0].previous.clone().unwrap_or_default()["temp"].value,
+      "30"
+    );
   }
 
   #[test]

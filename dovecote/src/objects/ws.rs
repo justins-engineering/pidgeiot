@@ -67,8 +67,19 @@ pub const WS_DEVICE_TAG: &str = "device";
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsInboundFrame {
+  // The two spellings of one frame. `metrics` is the original flat form,
+  // one reading taken now; `reports` is the batched form, the same shape
+  // the HTTP telemetry route's body takes, letting a device that
+  // accumulates locally deliver a window of readings in a single frame.
+  // Both default to empty rather than being an untagged enum, so shipped
+  // firmware sending only `metrics` keeps parsing unchanged and a device
+  // gains the batch form by adding a field, not by switching shapes. A
+  // frame carrying neither is dropped like any empty report.
   Telemetry {
+    #[serde(default)]
     metrics: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    reports: Vec<capsules::TelemetryReading>,
   },
   ShadowReport {
     current_version: i32,
@@ -188,8 +199,37 @@ mod tests {
   fn telemetry_and_shadow_report_are_billable() {
     assert!(parse(r#"{"type":"telemetry","metrics":{"uptime_s":"12"}}"#).is_billable());
     assert!(
+      parse(r#"{"type":"telemetry","reports":[{"age_secs":10,"metrics":{"uptime_s":"12"}}]}"#)
+        .is_billable()
+    );
+    assert!(
       parse(r#"{"type":"shadow_report","current_version":3,"current_config":{}}"#).is_billable()
     );
+  }
+
+  #[test]
+  fn a_flat_telemetry_frame_still_parses_without_the_batch_field() {
+    // Shipped firmware sends only `metrics`; adding `reports` must not
+    // make its frames stop decoding.
+    let WsInboundFrame::Telemetry { metrics, reports } =
+      parse(r#"{"type":"telemetry","metrics":{"uptime_s":"12"}}"#)
+    else {
+      panic!("a telemetry frame should decode as one");
+    };
+    assert_eq!(metrics["uptime_s"], "12");
+    assert!(reports.is_empty());
+  }
+
+  #[test]
+  fn a_batched_telemetry_frame_carries_its_readings() {
+    let WsInboundFrame::Telemetry { metrics, reports } = parse(
+      r#"{"type":"telemetry","reports":[{"age_secs":20,"metrics":{"temp":"21.5"}},{"age_secs":10,"metrics":{"temp":"21.6"}}]}"#,
+    ) else {
+      panic!("a telemetry frame should decode as one");
+    };
+    assert!(metrics.is_empty());
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1].age_secs, Some(10));
   }
 
   #[test]

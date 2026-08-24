@@ -20,22 +20,21 @@ use crate::helpers::{
   proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, remove_member, rename_organization, resolve_checkout_prices,
-  revoke_invite, send_feedback_email, send_invite_email, sha256_hex, store_contact_submission,
-  stripe_configured, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
-  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
-  verify_webhook_signature,
+  raise_message_allowance_floor, readings_from_body, remove_member, rename_organization,
+  resolve_checkout_prices, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
+  store_contact_submission, stripe_configured, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, OrgRole, OrganizationCreateRequest, OrganizationDetail,
-  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
-  OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery,
+  FlockCreateRequest, MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationCreateRequest,
+  OrganizationDetail, OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest,
+  OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest,
+  Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER,
+  TelemetryEndpoint, TelemetryHistoryBucket, TelemetryHistoryQuery, TelemetryReportBody,
 };
 use futures::future::join_all;
 use worker::{
@@ -699,28 +698,50 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // the non-queue path above.
         let auth_header = req.headers().get("Authorization").ok().flatten();
 
-        let Ok(metrics) = req
-          .json::<std::collections::HashMap<String, String>>()
-          .await
-        else {
+        // Read as text first: the batch form has a raw-body cap, and the
+        // only way to enforce a byte cap is to measure the bytes before
+        // deciding what they are.
+        let Ok(raw) = req.text().await else {
           return Response::error("Bad Request: Invalid JSON", 400)
             .unwrap()
             .with_cors(&cors);
         };
 
-        if metrics.is_empty() {
-          return Response::error("Bad Request: Empty telemetry report", 400)
+        let Ok(body) = serde_json::from_str::<TelemetryReportBody>(&raw) else {
+          return Response::error("Bad Request: Invalid JSON", 400)
             .unwrap()
             .with_cors(&cors);
+        };
+
+        // The cap applies to the batch form only. A flat report has always
+        // been bounded by the key and value caps alone, and narrowing that
+        // retroactively would refuse bodies devices in the field already
+        // send.
+        if matches!(body, TelemetryReportBody::Batch(_)) && raw.len() > MAX_TELEMETRY_BATCH_BYTES {
+          return Response::error(
+            format!(
+              "Payload Too Large: telemetry batch over {MAX_TELEMETRY_BATCH_BYTES} bytes"
+            ),
+            413,
+          )
+          .unwrap()
+          .with_cors(&cors);
         }
 
-        // Refused here rather than at the consumer so the device learns its
-        // report was rejected: past this point the route answers 202 and the
-        // write happens off the queue, where nothing can reach the device.
-        // A report is applied whole or not at all.
-        if let Err(message) = validate_telemetry_report(&metrics) {
-          return Response::error(message, 400).unwrap().with_cors(&cors);
-        }
+        // Resolved here, at the edge, because this is where the receive
+        // time is known -- a device's own timestamps are clamped against
+        // it (see helpers::resolve_batch) and nothing downstream re-derives
+        // one. Refused here rather than at the consumer so the device
+        // learns its report was rejected: past this point the route answers
+        // 202 and the write happens off the queue, where nothing can reach
+        // the device. A report is applied whole or not at all.
+        let now_secs = (Date::now().as_millis() / 1000) as i64;
+        let readings = match readings_from_body(body, now_secs) {
+          Ok(readings) => readings,
+          Err(message) => {
+            return Response::error(message, 400).unwrap().with_cors(&cors);
+          }
+        };
 
         let verify_resp =
           verify_device_via_do(auth_header, &obj_id, "/device/telemetry/verify").await?;
@@ -746,12 +767,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        // Pre-serialize the metrics map here: a HashMap round-tripped
-        // through Queue::send arrives at the consumer as an empty object
+        // Pre-serialize the readings here: a Vec round-tripped through
+        // Queue::send arrives at the consumer as an empty object
         // (serde-wasm-bindgen map -> JS Map -> JSON.stringify == "{}"),
         // so the queue message carries a JSON string instead -- see
         // TelemetryMessage in queue.rs.
-        let Ok(metrics_json) = serde_json::to_string(&metrics) else {
+        let Ok(readings_json) = serde_json::to_string(&readings) else {
           console_error!("Failed to serialize telemetry for pigeon {pigeon_id}");
           return Response::error("Internal Server Error", 500)
             .unwrap()
@@ -760,12 +781,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let message = TelemetryMessage {
           pigeon_id: pigeon_id.clone(),
-          metrics_json,
           reported_at_ms: Date::now().as_millis(),
+          readings_json: Some(readings_json),
           // This route enqueues right after a bare auth check -- no DO
-          // round trip has happened yet that could capture a previous
-          // value, so there's nothing to carry here. write_telemetry_device
-          // (queue.rs::dispatch_http_sourced) does that capture itself.
+          // round trip has happened yet that could merge the readings or
+          // capture a previous value, so the consumer's own write hop
+          // (write_telemetry_device, via queue.rs::dispatch_write) does
+          // both.
+          pre_merged: false,
+          metrics_json: String::new(),
           previous_values_json: None,
         };
 

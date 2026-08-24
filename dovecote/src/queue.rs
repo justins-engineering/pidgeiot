@@ -4,10 +4,11 @@ use worker::{
   console_error, console_log, event,
 };
 
-use crate::helpers::write_telemetry_default;
+use crate::helpers::ResolvedReading;
+use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
-  build_line_protocol, check_telemetry_alerts, count_billable_messages, post_line_protocol,
-  url_encode_component,
+  build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
+  post_line_protocol, url_encode_component,
 };
 use crate::objects::pigeons::{
   PreviousTelemetryValue, TelemetryEndpointLookup, TelemetryWriteResult,
@@ -17,39 +18,93 @@ use crate::objects::pigeons::{
 /// gateway route once it verifies the device's bearer token against the
 /// owning DO, and the WebSocket `telemetry` frame handler
 /// (`handle_ws_telemetry`, `objects/pigeons.rs`). `reported_at_ms` is when
-/// the report was accepted -- informational only, the DO's own
-/// `pigeon_telemetry` rows still stamp `reported_at` at write time via
-/// SQLite's `unixepoch()` default.
+/// the report was accepted -- informational only for a batch, whose
+/// readings each carry their own already-clamped timestamp.
 ///
-/// `metrics_json` carries the device's flat `{"key":"val"}` report as a
-/// pre-serialized JSON string, NOT a `HashMap`: `Queue::send` serializes
-/// through serde-wasm-bindgen, which turns a Rust map into a JS `Map`, and
-/// the queue's JSON content type then `JSON.stringify`s that `Map` into
-/// `{}` -- silently emptying every report. Strings survive every
-/// serializer identically. `#[serde(default)]` lets messages from before
-/// this fix decode as empty and get ack-dropped instead of wedging the
-/// batch.
+/// Every payload field is a pre-serialized JSON **string**, never a
+/// `HashMap` or `Vec`: `Queue::send` serializes through
+/// serde-wasm-bindgen, which turns a Rust map into a JS `Map`, and the
+/// queue's JSON content type then `JSON.stringify`s that `Map` into `{}`
+/// -- silently emptying every report. Strings survive every serializer
+/// identically.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct TelemetryMessage {
   pub pigeon_id: String,
+  pub reported_at_ms: u64,
+  /// This report's readings, chronological, each with its timestamp
+  /// already resolved and clamped by the producer -- one entry for a flat
+  /// report, up to `capsules::MAX_TELEMETRY_BATCH_READINGS` for a batch.
+  /// The clamp happens at the producer because that is where the receive
+  /// time is known; nothing downstream re-derives a timestamp.
+  ///
+  /// `#[serde(default)]` because a message enqueued by a previous deploy
+  /// carries `metrics_json` instead -- see `readings_of` below, which
+  /// reads either.
+  #[serde(default)]
+  pub readings_json: Option<String>,
+  /// Set when the Durable Object already merged these readings into its
+  /// store and captured each one's previous values at that moment: the
+  /// WebSocket path, which writes synchronously at ingest and enqueues
+  /// only the history/forwarding tail. Re-running the write here would
+  /// upsert a second time and re-read "previous" values that are no
+  /// longer previous.
+  #[serde(default)]
+  pub pre_merged: bool,
+  /// A flat report's metrics, as enqueued by a previous deploy. Kept only
+  /// so messages already on the queue when this one deploys still land
+  /// rather than being ack-dropped; nothing writes it any more.
   #[serde(default)]
   pub metrics_json: String,
-  pub reported_at_ms: u64,
-  /// Pre-serialized JSON of this report's `PreviousTelemetryValue` map (same
-  /// "must be a string, not a raw `HashMap`" reasoning as `metrics_json`
-  /// above), captured by `handle_ws_telemetry` (`objects/pigeons.rs`) at
-  /// WS-ingest time, before its own upsert overwrote `pigeon_telemetry`.
-  ///
-  /// `None` for HTTP-sourced messages: that route enqueues right after a
-  /// bare auth check, with no DO round trip that could capture a previous
-  /// value, so there is nothing to carry -- `write_telemetry_device`
-  /// (dispatched below) does that capture itself. `dispatch_to_do` uses
-  /// this field's presence, not the environment, to decide which DO route
-  /// a message goes to. `#[serde(default)]` so messages enqueued before
-  /// this field existed decode as `None` rather than failing to
-  /// deserialize.
+  /// The `previous_values` a previous deploy's WebSocket path captured
+  /// alongside `metrics_json`. Its presence is also what marks such a
+  /// message as already merged, the role `pre_merged` now fills.
   #[serde(default)]
   pub previous_values_json: Option<String>,
+}
+
+impl TelemetryMessage {
+  /// The readings this message carries, whichever deploy enqueued it.
+  /// `None` for a message with no payload at all, which can never become
+  /// valid on a retry.
+  fn readings_of(&self) -> Option<Vec<ResolvedReading>> {
+    if let Some(readings_json) = &self.readings_json {
+      return match serde_json::from_str::<Vec<ResolvedReading>>(readings_json) {
+        Ok(readings) if !readings.is_empty() => Some(readings),
+        Ok(_) => None,
+        Err(e) => {
+          console_error!(
+            "Telemetry consumer: failed to parse readings for '{}': {e}",
+            self.pigeon_id
+          );
+          None
+        }
+      };
+    }
+
+    if self.metrics_json.is_empty() {
+      return None;
+    }
+
+    let metrics =
+      serde_json::from_str::<std::collections::HashMap<String, String>>(&self.metrics_json).ok()?;
+    if metrics.is_empty() {
+      return None;
+    }
+
+    let mut reading = ResolvedReading::new((self.reported_at_ms / 1000) as i64, metrics);
+    if let Some(previous_values_json) = &self.previous_values_json {
+      reading.previous = serde_json::from_str::<
+        std::collections::HashMap<String, PreviousTelemetryValue>,
+      >(previous_values_json)
+      .ok();
+    }
+    Some(vec![reading])
+  }
+
+  /// Whether the owning Durable Object has already applied these readings.
+  fn already_merged(&self) -> bool {
+    self.pre_merged || self.previous_values_json.is_some()
+  }
 }
 
 /// Queue consumer for `pidgeiot-telemetry` (bound as `TELEMETRY_QUEUE` in
@@ -104,40 +159,48 @@ async fn dispatch_to_do(
     return;
   };
 
-  if body.metrics_json.is_empty() {
+  let Some(readings) = body.readings_of() else {
     console_error!(
-      "Telemetry consumer: empty/legacy message for '{}', dropping",
+      "Telemetry consumer: empty/undecodable message for '{}', dropping",
       body.pigeon_id
     );
-    // Pre-metrics_json messages (or an empty report that slipped through)
-    // will never become valid on retry -- ack to drop.
+    // Will never decode on retry either -- ack to drop.
     message.ack();
     return;
-  }
+  };
 
-  match &body.previous_values_json {
-    Some(previous_values_json) => {
-      dispatch_ws_sourced(&stub, env, message, previous_values_json).await
-    }
-    None => dispatch_http_sourced(&stub, env, message).await,
+  if body.already_merged() {
+    dispatch_pre_merged(&stub, env, message, readings).await
+  } else {
+    dispatch_write(&stub, env, message, readings).await
   }
 }
 
-/// HTTP-sourced queue message path (`report_telemetry_device`'s
-/// queue-producer route in `lib.rs`): no pre-upsert has happened yet, so
-/// the trusted-internal `/pigeon/device/telemetry/write` route
-/// (`write_telemetry_device`, `objects/pigeons.rs`) does the
-/// read-before-upsert capture AND the upsert itself, in one DO round trip.
-async fn dispatch_http_sourced(
+/// Not-yet-written path (the gateway's queue producer in `lib.rs`): the
+/// device's token was verified at enqueue time but nothing has been
+/// merged, so the trusted-internal `/pigeon/device/telemetry/write` route
+/// (`write_telemetry_device`, `objects/pigeons.rs`) does the merge AND the
+/// previous-value capture, for the whole batch, in one DO round trip.
+async fn dispatch_write(
   stub: &worker::Stub,
   env: &Env,
   message: &Message<TelemetryMessage>,
+  readings: Vec<ResolvedReading>,
 ) {
   let body = message.body();
 
+  let Ok(payload) = serde_json::to_string(&readings) else {
+    console_error!(
+      "Telemetry consumer: failed to serialize readings for '{}'",
+      body.pigeon_id
+    );
+    message.retry();
+    return;
+  };
+
   let mut init = RequestInit::default();
   init.with_method(Method::Post);
-  init.body = Some(body.metrics_json.clone().into());
+  init.body = Some(payload.into());
 
   let Ok(do_req) = Request::new_with_init("https://internal/pigeon/device/telemetry/write", &init)
   else {
@@ -151,59 +214,37 @@ async fn dispatch_http_sourced(
 
   match stub.fetch_with_request(do_req).await {
     Ok(mut resp) if resp.status_code() < 400 => {
-      console_log!("Telemetry consumer: wrote metrics for '{}'", body.pigeon_id);
+      console_log!(
+        "Telemetry consumer: wrote {} reading(s) for '{}'",
+        readings.len(),
+        body.pigeon_id
+      );
       message.ack();
 
       match resp.json::<TelemetryWriteResult>().await {
-        Ok(TelemetryWriteResult {
-          metrics,
-          telemetry_endpoint,
-          previous_values,
-        }) => {
+        Ok(result) => {
           store_and_alert(
             env,
             &body.pigeon_id,
-            &metrics,
-            telemetry_endpoint.as_ref(),
-            &previous_values,
-            body.reported_at_ms,
+            &result.readings,
+            result.telemetry_endpoint.as_ref(),
           )
           .await;
         }
         Err(e) => {
-          // Fall back: re-parse the queue message's own metrics_json
-          // (independent of the DO response shape) and write our own
-          // default, so a response-parsing mismatch doesn't silently drop
-          // telemetry that already landed in the DO.
+          // Fall back to the readings the message itself carried, which
+          // are independent of the DO response shape, so a parsing
+          // mismatch doesn't silently drop telemetry that already landed
+          // in the DO. Their `previous` chains are the one thing only the
+          // DO could fill in, so `RateOfChange` can't be evaluated on this
+          // degraded path; `Threshold` still can. No `telemetry_endpoint`
+          // either, for the same reason -- always falls to the platform
+          // default here.
           console_error!(
-            "Telemetry consumer: failed to parse DO write result for '{}', falling back to default write: {e}",
+            "Telemetry consumer: failed to parse DO write result for '{}', falling back to the enqueued readings: {e}",
             body.pigeon_id
           );
-          match serde_json::from_str::<std::collections::HashMap<String, String>>(
-            &body.metrics_json,
-          ) {
-            Ok(metrics) => {
-              // `previous_values` isn't available here -- the DO's own
-              // response (the only place an HTTP-sourced message carries
-              // it) is exactly what failed to parse, so RateOfChange can't
-              // be evaluated on this degraded path; Threshold still can.
-              // No `telemetry_endpoint` either, for the same reason --
-              // always falls to the platform default here.
-              store_and_alert(
-                env,
-                &body.pigeon_id,
-                &metrics,
-                None,
-                &std::collections::HashMap::new(),
-                body.reported_at_ms,
-              )
-              .await;
-            }
-            Err(e) => console_error!(
-              "Telemetry consumer: failed to re-parse metrics_json for default write ('{}'): {e}",
-              body.pigeon_id
-            ),
-          }
+          store_and_alert(env, &body.pigeon_id, &readings, None).await;
         }
       }
     }
@@ -225,49 +266,24 @@ async fn dispatch_http_sourced(
   }
 }
 
-/// WS-sourced queue message path (`handle_ws_telemetry`,
-/// `objects/pigeons.rs`). Unlike the HTTP-sourced path above,
-/// `pigeon_telemetry` was already upserted synchronously, before this
-/// message was even enqueued, and this report's true previous values were
-/// already captured at that same moment -- see
-/// `TelemetryMessage::previous_values_json`'s doc comment. Re-running
-/// `write_telemetry_device` here would both upsert a second time for no
-/// reason and re-read "previous" values that are no longer previous (that
-/// second read would see the value `handle_ws_telemetry` already wrote).
-/// So this path skips `write_telemetry_device` entirely and only asks the
-/// DO for the one piece of state it doesn't already have -- this pigeon's
+/// Already-written path (`handle_ws_telemetry`, `objects/pigeons.rs`).
+/// Unlike the path above, the store was already merged synchronously
+/// before this message was enqueued, and each reading's true previous
+/// values were captured at that same moment. Re-running the write here
+/// would both merge a second time for no reason and re-read "previous"
+/// values that are no longer previous (that second read would see what
+/// the ingest write already stored). So this asks the DO only for the one
+/// piece of state the message doesn't already carry -- this pigeon's
 /// `telemetry_endpoint` -- via the read-only
 /// `/pigeon/device/telemetry/endpoint` route
-/// (`read_telemetry_endpoint_device`), using the metrics and
-/// previous-values already carried on the message itself.
-async fn dispatch_ws_sourced(
+/// (`read_telemetry_endpoint_device`).
+async fn dispatch_pre_merged(
   stub: &worker::Stub,
   env: &Env,
   message: &Message<TelemetryMessage>,
-  previous_values_json: &str,
+  readings: Vec<ResolvedReading>,
 ) {
   let body = message.body();
-
-  let Ok(metrics) =
-    serde_json::from_str::<std::collections::HashMap<String, String>>(&body.metrics_json)
-  else {
-    console_error!(
-      "Telemetry consumer: failed to parse metrics_json for WS-sourced message '{}', dropping",
-      body.pigeon_id
-    );
-    // Will never parse on retry either.
-    message.ack();
-    return;
-  };
-
-  let previous_values: std::collections::HashMap<String, PreviousTelemetryValue> =
-    serde_json::from_str(previous_values_json).unwrap_or_else(|e| {
-      console_error!(
-        "Telemetry consumer: failed to parse previous_values_json for '{}': {e}",
-        body.pigeon_id
-      );
-      std::collections::HashMap::new()
-    });
 
   let Ok(do_req) = Request::new(
     "https://internal/pigeon/device/telemetry/endpoint",
@@ -284,7 +300,8 @@ async fn dispatch_ws_sourced(
   match stub.fetch_with_request(do_req).await {
     Ok(mut resp) if resp.status_code() < 400 => {
       console_log!(
-        "Telemetry consumer: WS-sourced metrics for '{}' already upserted at ingest time",
+        "Telemetry consumer: {} reading(s) for '{}' already merged at ingest time",
+        readings.len(),
         body.pigeon_id
       );
       message.ack();
@@ -300,15 +317,7 @@ async fn dispatch_ws_sourced(
         }
       };
 
-      store_and_alert(
-        env,
-        &body.pigeon_id,
-        &metrics,
-        telemetry_endpoint.as_ref(),
-        &previous_values,
-        body.reported_at_ms,
-      )
-      .await;
+      store_and_alert(env, &body.pigeon_id, &readings, telemetry_endpoint.as_ref()).await;
     }
     Ok(resp) => {
       console_error!(
@@ -330,31 +339,35 @@ async fn dispatch_ws_sourced(
 
 /// Shared "where does this report's history go, and should it trip an
 /// alert" tail for both dispatch paths above. Forwards as line protocol to
-/// a configured per-pigeon `telemetry_endpoint` if one exists
-/// (`previous_values` unused in that branch -- RateOfChange isn't
-/// evaluated when a report is forwarded externally rather than stored in
-/// our own history); otherwise writes the platform default (Greptime or PG
-/// history, `write_telemetry_default`) and evaluates alerts against
-/// `previous_values`.
+/// a configured per-pigeon `telemetry_endpoint` if one exists (alerts
+/// aren't evaluated in that branch -- a report forwarded externally isn't
+/// stored in our own history); otherwise writes the platform default
+/// (Greptime or PG history) and evaluates alerts across the batch.
+///
+/// Whichever branch it takes, a batch costs the same one round trip a
+/// single report does. That is the whole arithmetic of this feature: a
+/// device reporting every 10s books 259,200 reports a month, and folding
+/// M of them into one delivery divides the worker request, the two DO
+/// round trips and the three queue operations by M. What does NOT divide
+/// is what follows -- the history rows, the line-protocol lines, and the
+/// billable count -- because those measure readings, not envelopes.
 async fn store_and_alert(
   env: &Env,
   pigeon_id: &str,
-  metrics: &std::collections::HashMap<String, String>,
+  readings: &[ResolvedReading],
   telemetry_endpoint: Option<&TelemetryEndpoint>,
-  previous_values: &std::collections::HashMap<String, PreviousTelemetryValue>,
-  reported_at_ms: u64,
 ) {
-  // Billable-message tally -- one device report is one message, regardless
-  // of which store the report lands in below (our history OR a forwarding
-  // endpoint both cost the customer the same report). Counted here in the
-  // consumer, off the device path; internally best-effort, so a failed
-  // increment undercounts in the customer's favour rather than failing or
-  // delaying ingestion.
-  count_billable_messages(env, pigeon_id, 1).await;
+  // Billable-message tally -- one per READING, not one per delivery, and
+  // the same count regardless of which store the readings land in below
+  // (our history OR a forwarding endpoint both cost the customer the same
+  // reports). Counted here in the consumer, off the device path;
+  // internally best-effort, so a failed increment undercounts in the
+  // customer's favour rather than failing or delaying ingestion.
+  count_billable_messages(env, pigeon_id, readings.len() as i64).await;
 
   match telemetry_endpoint {
     Some(endpoint) => {
-      if let Err(e) = forward_line_protocol(endpoint, pigeon_id, metrics, reported_at_ms).await {
+      if let Err(e) = forward_line_protocol(endpoint, pigeon_id, readings).await {
         console_error!(
           "Telemetry consumer: line-protocol forward to '{}' failed for '{}': {e}",
           redact_endpoint_host(&endpoint.url),
@@ -363,7 +376,7 @@ async fn store_and_alert(
       }
     }
     None => {
-      if let Err(e) = write_telemetry_default(env, pigeon_id, metrics, reported_at_ms).await {
+      if let Err(e) = write_telemetry_default_batch(env, pigeon_id, readings).await {
         console_error!(
           "Telemetry consumer: default write failed for '{}': {e}",
           pigeon_id
@@ -373,9 +386,7 @@ async fn store_and_alert(
       // Alert evaluation -- best-effort, alongside the default write
       // above, same "log and move on, never fail/retry the queue message"
       // convention.
-      if let Err(e) =
-        check_telemetry_alerts(env, pigeon_id, metrics, previous_values, reported_at_ms).await
-      {
+      if let Err(e) = check_telemetry_alerts_batch(env, pigeon_id, readings).await {
         console_error!(
           "Telemetry consumer: alert evaluation failed for '{}': {e}",
           pigeon_id
@@ -385,29 +396,33 @@ async fn store_and_alert(
   }
 }
 
-/// Forwards one device telemetry report as an InfluxDB line protocol v2
+/// Forwards a device telemetry report as an InfluxDB line protocol v2
 /// HTTP write (GreptimeDB-compatible) to a pigeon's user-configured
 /// `telemetry_endpoint` -- taken INSTEAD of the platform default (our own
 /// GreptimeDB, or PG history) once a per-pigeon endpoint is set; the DO's
-/// own latest-value upsert always happens regardless. `endpoint.url` is
-/// the user's full write URL -- we only ever append `precision`/`db` query
+/// own latest-value merge always happens regardless. A batch goes as one
+/// request carrying one line per reading, which is the protocol's own
+/// multi-line form, not a concession we invented. `endpoint.url` is the
+/// user's full write URL -- we only ever append `precision`/`db` query
 /// params, never assume a particular path, since GreptimeDB/InfluxDB
 /// deployments vary.
 ///
 /// Line-building and the HTTP POST are shared with
-/// `helpers::write_telemetry_default`'s own Greptime write via
-/// `build_line_protocol`/`post_line_protocol` -- deliberately passes `&[]`
-/// for `extra_headers`: this is a per-pigeon, user-configured URL, so it
-/// must never carry this Worker's own Cloudflare Access service-token
+/// `helpers::write_telemetry_default_batch`'s own Greptime write via
+/// `build_line_protocol_batch`/`post_line_protocol` -- deliberately passes
+/// `&[]` for `extra_headers`: this is a per-pigeon, user-configured URL,
+/// so it must never carry this Worker's own Cloudflare Access service-token
 /// headers (those are only for our own `GREPTIMEDB_ENDPOINT` origin;
 /// leaking them here would be a real credential leak).
 async fn forward_line_protocol(
   endpoint: &TelemetryEndpoint,
   pigeon_id: &str,
-  metrics: &std::collections::HashMap<String, String>,
-  reported_at_ms: u64,
+  readings: &[ResolvedReading],
 ) -> Result<()> {
-  let line = build_line_protocol(pigeon_id, metrics, reported_at_ms);
+  let line = build_line_protocol_batch(pigeon_id, readings);
+  if line.is_empty() {
+    return Ok(());
+  }
 
   let mut url = endpoint.url.clone();
   url.push(if url.contains('?') { '&' } else { '?' });

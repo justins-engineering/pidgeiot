@@ -100,31 +100,28 @@ pub use telemetry::query_telemetry_history_buckets_for_flock;
 pub use telemetry::query_telemetry_history_buckets_for_pigeon;
 pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
-pub use telemetry::write_telemetry_history;
 pub use telemetry::write_telemetry_history_batch;
 
 mod telemetry_batch;
 pub use telemetry_batch::ResolvedReading;
+pub use telemetry_batch::merge_batch;
+pub use telemetry_batch::readings_from_body;
 
 mod telemetry_latest;
 pub use telemetry_latest::LegacyTelemetryRow;
 pub use telemetry_latest::TelemetryBlob;
 pub use telemetry_latest::fold_legacy_rows;
-pub use telemetry_latest::merge_report;
 pub use telemetry_latest::parse_blob;
-pub use telemetry_latest::previous_values;
 pub use telemetry_latest::to_latest;
 pub use telemetry_latest::validate_telemetry_report;
 
 mod greptime;
-pub use greptime::build_line_protocol;
 pub use greptime::build_line_protocol_batch;
 pub use greptime::greptime_origin;
 pub use greptime::post_line_protocol;
 pub use greptime::query_greptime_history_for_pigeon;
 pub use greptime::query_greptime_history_for_pigeons;
 pub use greptime::url_encode_component;
-pub use greptime::write_telemetry_default;
 pub use greptime::write_telemetry_default_batch;
 
 mod firmware;
@@ -175,7 +172,6 @@ pub use orgs::send_invite_email;
 pub use orgs::set_flock_org;
 
 mod alerts;
-pub use alerts::check_telemetry_alerts;
 pub use alerts::check_telemetry_alerts_batch;
 pub use alerts::create_flock_alert;
 pub use alerts::create_pigeon_alert;

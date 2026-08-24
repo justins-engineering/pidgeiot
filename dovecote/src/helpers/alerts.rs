@@ -1,11 +1,9 @@
 use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client};
-use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
   AlertScope, AlertState, AlertStatus, ConnectionStateKind, DemoAlert, JsonString,
 };
-use std::collections::HashMap;
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
@@ -514,8 +512,8 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
   Ok(())
 }
 
-/// Evaluation hook -- called alongside `write_telemetry_default` at each
-/// of its three call sites (`queue.rs::dispatch_to_do`,
+/// Evaluation hook -- called alongside `write_telemetry_default_batch` at
+/// each of its three call sites (`queue.rs::store_and_alert`,
 /// `objects/pigeons.rs::handle_ws_telemetry`/`report_telemetry_device`),
 /// NOT only from `queue.rs`: `queue.rs` alone misses dev entirely (no
 /// queue bound) and always misses WS-telemetry. Best-effort: every
@@ -534,22 +532,6 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// before its own UPSERT overwrote it -- the only input `RateOfChange`
 /// needs that `Threshold` doesn't; see `PreviousTelemetryValue`'s doc
 /// comment for why that capture has to happen at the call site, not here.
-pub async fn check_telemetry_alerts(
-  env: &Env,
-  pigeon_id: &str,
-  metrics: &HashMap<String, String>,
-  previous: &HashMap<String, PreviousTelemetryValue>,
-  reported_at_ms: u64,
-) -> Result<()> {
-  if metrics.is_empty() {
-    return Ok(());
-  }
-
-  let mut reading = ResolvedReading::new((reported_at_ms / 1000) as i64, metrics.clone());
-  reading.previous = Some(previous.clone());
-  check_telemetry_alerts_batch(env, pigeon_id, &[reading]).await
-}
-
 /// The batched form, and the one that holds the evaluation loop -- a
 /// single report is a batch of one.
 ///

@@ -66,41 +66,6 @@ pub fn parse_blob(text: &str) -> Result<TelemetryBlob, serde_json::Error> {
   serde_json::from_str(text)
 }
 
-/// The stored entries for exactly the keys `metrics` is about to overwrite,
-/// read from the blob *before* it is merged. A key with no entry is simply
-/// absent from the result rather than a synthetic zero, so `RateOfChange`
-/// can never fire on a pigeon's first-ever reading of a key. Each entry
-/// carries its own `reported_at`, which is what `RateOfChange::window_secs`
-/// measures the gap against.
-pub fn previous_values(
-  blob: &TelemetryBlob,
-  metrics: &HashMap<String, String>,
-) -> HashMap<String, PreviousTelemetryValue> {
-  metrics
-    .keys()
-    .filter_map(|key| blob.get(key).map(|entry| (key.clone(), entry.clone())))
-    .collect()
-}
-
-/// Merges one report into the blob, stamping `now_secs` on only the keys the
-/// report carries. Every other key keeps the value and timestamp it already
-/// had, which is what lets a boot-time key like `reset_cause` hold its boot
-/// timestamp while `uptime_s` moves with every report -- the connection-state
-/// badge and `RateOfChange` both read those per-key timestamps.
-pub fn merge_report(blob: &mut TelemetryBlob, metrics: &HashMap<String, String>, now_secs: i64) {
-  for (key, value) in metrics {
-    blob.insert(
-      key.clone(),
-      PreviousTelemetryValue {
-        value: value.clone(),
-        reported_at: now_secs,
-      },
-    );
-  }
-
-  evict_to_cap(blob, &metrics.keys().map(String::as_str).collect());
-}
-
 /// Folds the retired per-key table's rows into the blob during a DO's lazy
 /// migration. Blob entries win over legacy rows: the migration writes the
 /// blob before dropping the legacy table, so a rerun that finds both is
@@ -181,118 +146,6 @@ mod tests {
         )
       })
       .collect()
-  }
-
-  #[test]
-  fn merge_stamps_only_the_keys_the_report_carries() {
-    let mut blob = blob_of(&[("reset_cause", "power_on", 1000), ("uptime_s", "10", 1000)]);
-    merge_report(&mut blob, &metrics(&[("uptime_s", "70")]), 1060);
-
-    assert_eq!(blob["reset_cause"].value, "power_on");
-    assert_eq!(blob["reset_cause"].reported_at, 1000);
-    assert_eq!(blob["uptime_s"].value, "70");
-    assert_eq!(blob["uptime_s"].reported_at, 1060);
-  }
-
-  #[test]
-  fn merge_adds_new_keys_without_disturbing_old_ones() {
-    let mut blob = blob_of(&[("temp", "21.5", 500)]);
-    merge_report(&mut blob, &metrics(&[("humidity", "40")]), 900);
-
-    assert_eq!(blob.len(), 2);
-    assert_eq!(blob["temp"].reported_at, 500);
-    assert_eq!(blob["humidity"].reported_at, 900);
-  }
-
-  #[test]
-  fn previous_values_covers_only_reported_keys_and_omits_first_sightings() {
-    let blob = blob_of(&[("temp", "21.5", 500), ("humidity", "40", 500)]);
-    let previous = previous_values(&blob, &metrics(&[("temp", "30"), ("pressure", "1013")]));
-
-    assert_eq!(previous.len(), 1);
-    assert_eq!(previous["temp"].value, "21.5");
-    assert_eq!(previous["temp"].reported_at, 500);
-    assert!(!previous.contains_key("pressure"));
-    assert!(!previous.contains_key("humidity"));
-  }
-
-  #[test]
-  fn eviction_drops_the_least_recently_reported_keys_first() {
-    let mut blob: TelemetryBlob = (0..MAX_TELEMETRY_KEYS)
-      .map(|i| {
-        (
-          format!("old_{i:03}"),
-          PreviousTelemetryValue {
-            value: "x".into(),
-            reported_at: i as i64,
-          },
-        )
-      })
-      .collect();
-
-    merge_report(
-      &mut blob,
-      &metrics(&[("fresh", "1"), ("fresher", "2")]),
-      9999,
-    );
-
-    assert_eq!(blob.len(), MAX_TELEMETRY_KEYS);
-    assert!(blob.contains_key("fresh"));
-    assert!(blob.contains_key("fresher"));
-    // The two oldest went, the rest stayed.
-    assert!(!blob.contains_key("old_000"));
-    assert!(!blob.contains_key("old_001"));
-    assert!(blob.contains_key("old_002"));
-  }
-
-  #[test]
-  fn eviction_never_drops_a_key_the_report_just_carried() {
-    // Every stored key shares the incoming report's timestamp, so only the
-    // protected-key rule can keep the report's own keys alive here.
-    let mut blob: TelemetryBlob = (0..MAX_TELEMETRY_KEYS)
-      .map(|i| {
-        (
-          format!("key_{i:03}"),
-          PreviousTelemetryValue {
-            value: "x".into(),
-            reported_at: 400,
-          },
-        )
-      })
-      .collect();
-
-    merge_report(
-      &mut blob,
-      &metrics(&[("key_127", "new"), ("zzz", "1")]),
-      400,
-    );
-
-    assert_eq!(blob.len(), MAX_TELEMETRY_KEYS);
-    assert_eq!(blob["key_127"].value, "new");
-    assert!(blob.contains_key("zzz"));
-  }
-
-  #[test]
-  fn a_report_at_exactly_the_cap_replaces_the_whole_store() {
-    let mut blob: TelemetryBlob = (0..MAX_TELEMETRY_KEYS)
-      .map(|i| {
-        (
-          format!("old_{i:03}"),
-          PreviousTelemetryValue {
-            value: "x".into(),
-            reported_at: 1,
-          },
-        )
-      })
-      .collect();
-    let report: HashMap<String, String> = (0..MAX_TELEMETRY_KEYS)
-      .map(|i| (format!("new_{i:03}"), "y".to_string()))
-      .collect();
-
-    merge_report(&mut blob, &report, 2);
-
-    assert_eq!(blob.len(), MAX_TELEMETRY_KEYS);
-    assert!(blob.keys().all(|k| k.starts_with("new_")));
   }
 
   #[test]
@@ -390,7 +243,13 @@ mod tests {
   #[test]
   fn a_round_trip_through_storage_keeps_values_and_timestamps() {
     let mut blob = blob_of(&[("temp", "21.5", 500)]);
-    merge_report(&mut blob, &metrics(&[("status", "ok")]), 900);
+    blob.insert(
+      "status".to_string(),
+      PreviousTelemetryValue {
+        value: "ok".to_string(),
+        reported_at: 900,
+      },
+    );
 
     let stored = serde_json::to_string(&blob).unwrap();
     let restored = parse_blob(&stored).unwrap();

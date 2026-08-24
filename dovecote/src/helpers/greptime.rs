@@ -219,17 +219,16 @@ pub async fn post_line_protocol(
   Ok(())
 }
 
-/// Forwards one device telemetry report to the platform's own default
-/// GreptimeDB instance, the default write path used whenever
+/// Forwards a batch of device telemetry readings to the platform's own
+/// default GreptimeDB instance, the default write path used whenever
 /// `GREPTIMEDB_ENDPOINT` is configured for this environment. Errors
 /// (including "not configured") are returned to the caller rather than
-/// swallowed here, since `write_telemetry_default` below is what decides
-/// whether to fall back to Postgres.
-async fn write_greptime_default(
+/// swallowed here, since `write_telemetry_default_batch` below is what
+/// decides whether to fall back to Postgres.
+async fn write_greptime_default_batch(
   env: &Env,
   pigeon_id: &str,
-  metrics: &HashMap<String, String>,
-  reported_at_ms: u64,
+  readings: &[ResolvedReading],
 ) -> Result<()> {
   let Some(origin) = greptime_origin(env) else {
     return Err(worker::Error::RustError(
@@ -237,7 +236,7 @@ async fn write_greptime_default(
     ));
   };
 
-  let line = build_line_protocol(pigeon_id, metrics, reported_at_ms);
+  let line = build_line_protocol_batch(pigeon_id, readings);
   let url = match greptime_db(env) {
     Some(db) => format!(
       "{origin}/v1/influxdb/write?db={}&precision=ms",
@@ -260,35 +259,15 @@ async fn write_greptime_default(
 /// permanent dual-write architecture: once Greptime forwarding succeeds,
 /// this returns without touching Postgres at all.
 ///
+/// One forward or one insert for the whole batch either way -- that
+/// collapse is the point of batching, and falling back per reading would
+/// spend it.
+///
 /// Shared by all three "no per-pigeon `telemetry_endpoint` override" write
 /// sites -- the queue consumer (`queue.rs`) and the two no-queue-bound
 /// fallbacks in `objects/pigeons.rs`
 /// (`handle_ws_telemetry`/`report_telemetry_device`) -- so all three keep
 /// behaving identically.
-pub async fn write_telemetry_default(
-  env: &Env,
-  pigeon_id: &str,
-  metrics: &HashMap<String, String>,
-  reported_at_ms: u64,
-) -> Result<()> {
-  if greptime_origin(env).is_some() {
-    match write_greptime_default(env, pigeon_id, metrics, reported_at_ms).await {
-      Ok(()) => return Ok(()),
-      Err(e) => {
-        console_error!(
-          "Greptime forward failed for pigeon {pigeon_id}, falling back to PG history: {e}"
-        );
-      }
-    }
-  }
-
-  crate::helpers::write_telemetry_history(env, pigeon_id, metrics, reported_at_ms).await
-}
-
-/// The batched counterpart to `write_telemetry_default`, with the same
-/// Greptime-then-Postgres fallback. One forward or one insert for the
-/// whole batch either way -- that collapse is the point of batching, and
-/// falling back per reading would spend it.
 pub async fn write_telemetry_default_batch(
   env: &Env,
   pigeon_id: &str,
@@ -298,28 +277,12 @@ pub async fn write_telemetry_default_batch(
     return Ok(());
   }
 
-  if let Some(origin) = greptime_origin(env) {
-    let line = build_line_protocol_batch(pigeon_id, readings);
-    let url = match greptime_db(env) {
-      Some(db) => format!(
-        "{origin}/v1/influxdb/write?db={}&precision=ms",
-        url_encode_component(&db)
-      ),
-      None => format!("{origin}/v1/influxdb/write?precision=ms"),
-    };
-
-    match post_line_protocol(
-      &url,
-      &line,
-      greptime_auth_token(env).as_deref(),
-      &greptime_access_headers(env),
-    )
-    .await
-    {
+  if greptime_origin(env).is_some() {
+    match write_greptime_default_batch(env, pigeon_id, readings).await {
       Ok(()) => return Ok(()),
       Err(e) => {
         console_error!(
-          "Greptime batch forward failed for pigeon {pigeon_id}, falling back to PG history: {e}"
+          "Greptime forward failed for pigeon {pigeon_id}, falling back to PG history: {e}"
         );
       }
     }

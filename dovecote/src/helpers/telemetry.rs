@@ -38,100 +38,48 @@ pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
     })
 }
 
-/// Best-effort PG history write for one device telemetry report, called by
-/// the queue consumer (`queue.rs`) right after the DO's own latest-value
-/// upsert succeeds -- matches this codebase's established best-effort PG
-/// sync convention (log, never fail the primary operation). One row per
-/// reported key; `value_num` is populated only when the raw string parses
-/// as an `f64`, so range queries can filter numeric series without a cast
-/// at query time.
+/// Best-effort PG history write for one batch of device telemetry
+/// readings, called by the queue consumer (`queue.rs`) right after the
+/// DO's own latest-value merge succeeds -- matches this codebase's
+/// established best-effort PG sync convention (log, never fail the primary
+/// operation). One row per reported key per reading; `value_num` is
+/// populated only when the raw string parses as an `f64`, so range queries
+/// can filter numeric series without a cast at query time.
 ///
-/// Every row of one report carries the same `reported_at`, taken from the
-/// report itself rather than from each statement's own arrival time. A
-/// reader has no other way to tell which rows belong together: `fancier`'s
-/// GPS track reassembles a fix by grouping rows on `reported_at` and drops
-/// any group missing a coordinate, so letting the column default per row
-/// would split a fix in two whenever the writes straddled a boundary and
-/// lose it entirely. `metrics` iterates in `HashMap` order, so which keys
-/// land on which side of such a split is arbitrary.
+/// Every row of one reading carries that reading's `reported_at` exactly,
+/// bound per reading rather than defaulted per row. A reader has no other
+/// way to tell which rows belong together: `fancier`'s GPS track
+/// reassembles a fix by grouping rows on `reported_at` and drops any group
+/// missing a coordinate, so letting the column default per row would split
+/// a fix in two whenever the writes straddled a boundary and lose it
+/// entirely. `metrics` iterates in `HashMap` order, so which keys land on
+/// which side of such a split would be arbitrary.
 ///
-/// Writing all rows in a single statement is what makes one timestamp
-/// natural, and collapses a round trip per key into one for the report.
-pub async fn write_telemetry_history(
-  env: &Env,
-  pigeon_id: &str,
-  metrics: &std::collections::HashMap<String, String>,
-  reported_at_ms: u64,
-) -> Result<()> {
-  if metrics.is_empty() {
-    return Ok(());
-  }
-
-  let reported_at = OffsetDateTime::from_unix_timestamp_nanos(
-    i128::from(reported_at_ms) * 1_000_000,
-  )
-  .map_err(|e| {
-    console_error!("Telemetry history: unrepresentable reported_at {reported_at_ms}ms: {e}");
-    worker::Error::RustError("Internal Server Error".into())
-  })?;
-
-  insert_history_rows(env, pigeon_id, &[(reported_at, metrics)]).await
-}
-
-/// The batched counterpart: every reading of one batch written in a single
-/// statement, each row carrying its own reading's timestamp.
+/// Writing the whole batch in a single statement is where its cost saving
+/// lands on this path -- one round trip however many readings and keys it
+/// holds -- while the rows themselves stay one per key per reading. A
+/// chart drawn over a batching device has to agree with one drawn over a
+/// device sending the same readings as it takes them.
 ///
-/// This is where a batch's cost saving stops and its honesty begins. The
-/// per-envelope work collapses to one statement for the whole batch, while
-/// the rows themselves stay one per key per reading. History has to come
-/// out indistinguishable from what the same readings would have written
-/// arriving one at a time, or a chart drawn over a batching device would
-/// disagree with one drawn over a chatty device reporting the same values.
-///
-/// Second resolution rather than the millisecond resolution above, because
-/// that is the resolution a batched reading actually has: the device
-/// supplies whole seconds (an age or a unix timestamp) and the
-/// latest-value store has always stamped whole seconds too.
+/// The statement's parameter count is bounded by
+/// `capsules::MAX_TELEMETRY_BATCH_BYTES` rather than by the reading and key
+/// caps multiplied together: a 16 KiB body cannot express more than a
+/// couple of thousand key/value pairs however they are distributed across
+/// readings, which stays far under Postgres's 65535-parameter ceiling.
 pub async fn write_telemetry_history_batch(
   env: &Env,
   pigeon_id: &str,
   readings: &[ResolvedReading],
 ) -> Result<()> {
-  let rows: Vec<(OffsetDateTime, &std::collections::HashMap<String, String>)> = readings
-    .iter()
-    .map(|reading| {
-      (
-        OffsetDateTime::from_unix_timestamp(reading.at_secs).unwrap_or(OffsetDateTime::UNIX_EPOCH),
-        &reading.metrics,
-      )
-    })
-    .collect();
-
-  insert_history_rows(env, pigeon_id, &rows).await
-}
-
-/// The one statement builder behind both writes above. One round trip
-/// however many readings and keys it is handed, and a `reported_at` bound
-/// per reading rather than defaulted per row -- see
-/// `write_telemetry_history`'s note on why rows of one reading must share
-/// a timestamp exactly.
-///
-/// The parameter count is bounded by `capsules::MAX_TELEMETRY_BATCH_BYTES`
-/// rather than by the reading and key caps multiplied together: a 16 KiB
-/// body cannot express more than a couple of thousand key/value pairs
-/// however they are distributed across readings, which stays far under
-/// Postgres's 65535-parameter ceiling.
-async fn insert_history_rows(
-  env: &Env,
-  pigeon_id: &str,
-  readings: &[(OffsetDateTime, &std::collections::HashMap<String, String>)],
-) -> Result<()> {
   // Owned first so the borrows handed to `execute_typed` below outlive the
   // parameter list.
-  let rows: Vec<(&String, &String, Option<f64>, &OffsetDateTime)> = readings
+  let rows: Vec<(&String, &String, Option<f64>, OffsetDateTime)> = readings
     .iter()
-    .flat_map(|(reported_at, metrics)| {
-      metrics
+    .flat_map(|reading| {
+      let reported_at =
+        OffsetDateTime::from_unix_timestamp(reading.at_secs).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+      reading
+        .metrics
         .iter()
         .map(move |(key, value)| (key, value, value.parse::<f64>().ok(), reported_at))
     })
@@ -166,7 +114,7 @@ async fn insert_history_rows(
     params.push((*key, Type::TEXT));
     params.push((*value, Type::TEXT));
     params.push((value_num, Type::FLOAT8));
-    params.push((*reported_at, Type::TIMESTAMPTZ));
+    params.push((reported_at, Type::TIMESTAMPTZ));
   }
   sql.push(';');
 

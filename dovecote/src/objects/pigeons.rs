@@ -1,4 +1,4 @@
-use crate::helpers::{LegacyTelemetryRow, TelemetryBlob};
+use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob};
 use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_CLOSE_PIGEON_DELETED, WS_CLOSE_TOKEN_REVOKED,
   WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
@@ -432,7 +432,9 @@ impl DurableObject for Pigeons {
     }
 
     match frame {
-      WsInboundFrame::Telemetry { metrics } => handle_ws_telemetry(self, metrics).await,
+      WsInboundFrame::Telemetry { metrics, reports } => {
+        handle_ws_telemetry(self, metrics, reports).await
+      }
       WsInboundFrame::ShadowReport {
         current_version,
         current_config,
@@ -1739,72 +1741,76 @@ async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportR
   }
 }
 
-/// WS counterpart to the HTTP telemetry route. Upserts the DO's own
+/// WS counterpart to the HTTP telemetry route. Merges into the DO's own
 /// latest-value store synchronously first (like every telemetry entry
 /// point), then either enqueues onto `TELEMETRY_QUEUE` for the shared
 /// consumer path (see `queue.rs`), or -- with no queue bound (dev) --
 /// writes history directly so WS telemetry doesn't silently skip what the
 /// HTTP route would have recorded. No auth round trip: the bearer token
 /// was verified once, at socket accept.
+///
+/// Takes both spellings of the frame (see `WsInboundFrame::Telemetry`): a
+/// flat `metrics` map, or a `reports` batch. The batch form is what makes
+/// this endpoint the cheap path for a bridge relaying many devices'
+/// readings -- one frame, one merge, one queue message.
 async fn handle_ws_telemetry(
   pigeons: &Pigeons,
   metrics: std::collections::HashMap<String, String>,
+  reports: Vec<capsules::TelemetryReading>,
 ) {
-  if metrics.is_empty() {
-    return;
-  }
+  let body = if reports.is_empty() {
+    if metrics.is_empty() {
+      return;
+    }
+    capsules::TelemetryReportBody::Flat(metrics)
+  } else {
+    capsules::TelemetryReportBody::Batch(capsules::TelemetryBatch { reports })
+  };
 
   // A telemetry frame has no reply of its own (see `docs/api.md`), so an
   // over-cap frame is logged and dropped where the HTTP route would answer
   // 400. Dropping one frame beats closing a working socket over a report
-  // the device can simply send fewer keys in.
-  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
-    console_error!(
-      "WS telemetry: rejected report from pigeon {}: {message}",
-      pigeons.state.id()
-    );
+  // the device can simply send fewer keys or fewer readings in.
+  let now_secs = (Date::now().as_millis() / 1000) as i64;
+  let mut readings = match crate::helpers::readings_from_body(body, now_secs) {
+    Ok(readings) => readings,
+    Err(message) => {
+      console_error!(
+        "WS telemetry: rejected report from pigeon {}: {message}",
+        pigeons.state.id()
+      );
+      return;
+    }
+  };
+
+  // The merge captures each reading's previous values before overwriting
+  // them. In the queue-bound branch below that capture rides the outgoing
+  // `TelemetryMessage` -- recomputing it in `queue.rs`, after the write
+  // just below, would see the *new* value where the previous one is
+  // needed, silently defeating RateOfChange for every WS-sourced report.
+  if write_telemetry_batch(pigeons, &mut readings).is_err() {
     return;
   }
-
-  // `write_telemetry` captures the previous values before merging this
-  // report in. In the queue-bound branch below that capture rides the
-  // outgoing `TelemetryMessage` -- recomputing it in `queue.rs`, after the
-  // write just below, would see the *new* value where the previous one is
-  // needed, silently defeating RateOfChange for every WS-sourced report.
-  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
-    return;
-  };
 
   let pigeon_id = pigeons.state.id().to_string();
 
   match pigeons.env.queue("TELEMETRY_QUEUE") {
     Ok(queue) => {
-      let Ok(metrics_json) = serde_json::to_string(&metrics) else {
-        console_error!("WS telemetry: failed to serialize metrics for pigeon {pigeon_id}");
+      // Pre-serialized to a JSON string because a raw `Vec`/`HashMap`
+      // field hits the serde-wasm-bindgen -> JS `Map` -> `JSON.stringify`
+      // == `{}` bug (see `TelemetryMessage`).
+      let Ok(readings_json) = serde_json::to_string(&readings) else {
+        console_error!("WS telemetry: failed to serialize readings for pigeon {pigeon_id}");
         return;
-      };
-
-      // Pre-serialized to a JSON string for the same reason as
-      // `metrics_json` -- a raw `HashMap` field hits the
-      // serde-wasm-bindgen -> JS `Map` -> `JSON.stringify` == `{}` bug.
-      // On a (shouldn't-happen) serialization failure, `None` makes
-      // `queue.rs` fall back to the HTTP-sourced path for that one message
-      // rather than dropping a report that already landed in this DO.
-      let previous_values_json = match serde_json::to_string(&previous_values) {
-        Ok(json) => Some(json),
-        Err(e) => {
-          console_error!(
-            "WS telemetry: failed to serialize previous_values for pigeon {pigeon_id}: {e}"
-          );
-          None
-        }
       };
 
       let message = TelemetryMessage {
         pigeon_id: pigeon_id.clone(),
-        metrics_json,
         reported_at_ms: Date::now().as_millis(),
-        previous_values_json,
+        readings_json: Some(readings_json),
+        pre_merged: true,
+        metrics_json: String::new(),
+        previous_values_json: None,
       };
 
       if queue.send(message).await.is_err() {
@@ -1830,23 +1836,15 @@ async fn handle_ws_telemetry(
       // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
       // HTTP route's no-queue fallback by writing the default history
       // target directly instead of silently dropping it.
-      let reported_at_ms = Date::now().as_millis();
       if let Err(e) =
-        crate::helpers::write_telemetry_default(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
-          .await
+        crate::helpers::write_telemetry_default_batch(&pigeons.env, &pigeon_id, &readings).await
       {
         console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
 
       // Best-effort, same as the default write above.
-      if let Err(e) = crate::helpers::check_telemetry_alerts(
-        &pigeons.env,
-        &pigeon_id,
-        &metrics,
-        &previous_values,
-        reported_at_ms,
-      )
-      .await
+      if let Err(e) =
+        crate::helpers::check_telemetry_alerts_batch(&pigeons.env, &pigeon_id, &readings).await
       {
         console_error!("WS telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
       }
@@ -1969,26 +1967,20 @@ fn write_telemetry_blob(sql: &SqlStorage, blob: &TelemetryBlob) -> Result<()> {
   Ok(())
 }
 
-/// One report's entire write: read the store, capture the previous values
-/// for exactly the keys about to be overwritten, merge this report in, write
-/// it back. Reading once and using that same read for both jobs is the point
-/// of the single-row shape -- the previous values `RateOfChange` needs are
-/// already in hand, so they cost no extra read. Keys the report doesn't
-/// carry keep their own value and timestamp (see `helpers::merge_report`).
-fn write_telemetry(
-  pigeons: &Pigeons,
-  metrics: &HashMap<String, String>,
-) -> Result<HashMap<String, PreviousTelemetryValue>> {
+/// A whole batch of readings for the cost of one report's write: one row
+/// read, one merge pass, one row written, however many readings the batch
+/// holds. That collapse is the reason the batch form exists, and it works
+/// only because the store is a single blob row -- there is nothing here to
+/// do per reading that the merge cannot do in memory.
+///
+/// Fills in each reading's `previous` as it merges, so the caller gets
+/// back the chronological previous-value chain `RateOfChange` needs
+/// without a second read (see `helpers::merge_batch`).
+fn write_telemetry_batch(pigeons: &Pigeons, readings: &mut [ResolvedReading]) -> Result<()> {
   let mut blob = read_telemetry_blob(&pigeons.sql)?;
-  let previous = crate::helpers::previous_values(&blob, metrics);
-
-  // Unix seconds, matching what `unixepoch()` wrote when this was a table
-  // of rows, so nothing downstream had to change how it reads a timestamp.
-  let now_secs = (Date::now().as_millis() / 1000) as i64;
-  crate::helpers::merge_report(&mut blob, metrics, now_secs);
-
+  crate::helpers::merge_batch(&mut blob, readings);
   write_telemetry_blob(&pigeons.sql, &blob)?;
-  Ok(previous)
+  Ok(())
 }
 
 /// Folds a DO provisioned before the single-row store into it and drops the
@@ -2073,10 +2065,7 @@ fn migrate_legacy_telemetry(sql: &SqlStorage) {
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized_device(pigeons, &req));
 
-  let metrics = match req
-    .json::<std::collections::HashMap<String, String>>()
-    .await
-  {
+  let body = match req.json::<capsules::TelemetryReportBody>().await {
     Ok(data) => data,
     Err(e) => {
       console_error!("Telemetry json parse error: {e}");
@@ -2084,41 +2073,37 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
     }
   };
 
-  if metrics.is_empty() {
-    return Response::error("Bad Request: Empty telemetry report", 400);
-  }
-
-  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
-    return Response::error(message, 400);
-  }
-
-  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
-    return Response::error("Internal Server Error", 500);
+  let now_secs = (Date::now().as_millis() / 1000) as i64;
+  let mut readings = match crate::helpers::readings_from_body(body, now_secs) {
+    Ok(readings) => readings,
+    Err(message) => return Response::error(message, 400),
   };
 
+  if write_telemetry_batch(pigeons, &mut readings).is_err() {
+    return Response::error("Internal Server Error", 500);
+  }
+
   let pigeon_id = pigeons.state.id().to_string();
-  let reported_at_ms = Date::now().as_millis();
   if let Err(e) =
-    crate::helpers::write_telemetry_default(&pigeons.env, &pigeon_id, &metrics, reported_at_ms)
-      .await
+    crate::helpers::write_telemetry_default_batch(&pigeons.env, &pigeon_id, &readings).await
   {
     console_error!("HTTP telemetry: default write failed for pigeon {pigeon_id}: {e}");
   }
 
   // Best-effort, same as the default write above.
-  if let Err(e) = crate::helpers::check_telemetry_alerts(
-    &pigeons.env,
-    &pigeon_id,
-    &metrics,
-    &previous_values,
-    reported_at_ms,
-  )
-  .await
+  if let Err(e) =
+    crate::helpers::check_telemetry_alerts_batch(&pigeons.env, &pigeon_id, &readings).await
   {
     console_error!("HTTP telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
   }
 
-  Response::from_json(&metrics)
+  // Echoes the merged union of everything just applied, newest value per
+  // key -- for a flat report that is the report itself, unchanged.
+  let echoed: std::collections::HashMap<&String, &String> = readings
+    .iter()
+    .flat_map(|reading| reading.metrics.iter())
+    .collect();
+  Response::from_json(&echoed)
 }
 
 /// Verifies the device's bearer token WITHOUT writing anything, so the
@@ -2141,13 +2126,25 @@ async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Resp
 ///
 /// Besides confirming what got written, this hands the queue consumer the
 /// pigeon's `telemetry_endpoint` (forward externally vs. write our own PG
-/// history) and `previous_values` (for `RateOfChange`) without a second
-/// DO round trip.
+/// history) without a second DO round trip, and the readings with their
+/// `previous` chains filled in (for `RateOfChange`) -- which for a batch
+/// is the progression the alert evaluator walks.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TelemetryWriteResult {
-  pub metrics: std::collections::HashMap<String, String>,
+  pub readings: Vec<ResolvedReading>,
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
-  pub previous_values: std::collections::HashMap<String, PreviousTelemetryValue>,
+}
+
+/// What the trusted-internal write route accepts. The array form is the
+/// canonical one every current producer sends; the flat form is what a
+/// queue message enqueued by a previous deploy still carries, and decodes
+/// as one reading stamped on arrival. Array against object, so
+/// `#[serde(untagged)]` can never confuse the two.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum TelemetryWriteRequest {
+  Readings(Vec<ResolvedReading>),
+  Flat(std::collections::HashMap<String, String>),
 }
 
 #[derive(serde::Deserialize)]
@@ -2167,10 +2164,7 @@ fn read_telemetry_endpoint(pigeons: &Pigeons) -> Option<TelemetryEndpoint> {
 }
 
 async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
-  let metrics = match req
-    .json::<std::collections::HashMap<String, String>>()
-    .await
-  {
+  let request = match req.json::<TelemetryWriteRequest>().await {
     Ok(data) => data,
     Err(e) => {
       console_error!("Telemetry json parse error: {e}");
@@ -2178,7 +2172,16 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
     }
   };
 
-  if metrics.is_empty() {
+  let mut readings = match request {
+    TelemetryWriteRequest::Readings(readings) => readings,
+    TelemetryWriteRequest::Flat(metrics) => {
+      let now_secs = (Date::now().as_millis() / 1000) as i64;
+      vec![ResolvedReading::new(now_secs, metrics)]
+    }
+  };
+
+  readings.retain(|reading| !reading.metrics.is_empty());
+  if readings.is_empty() {
     return Response::error("Bad Request: Empty telemetry report", 400);
   }
 
@@ -2186,18 +2189,19 @@ async fn write_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<R
   // this is the same check on the trusted-internal path, so a message that
   // somehow reaches the consumer without it can't grow the stored blob past
   // what eviction expects.
-  if let Err(message) = crate::helpers::validate_telemetry_report(&metrics) {
-    return Response::error(message, 400);
+  for reading in &readings {
+    if let Err(message) = crate::helpers::validate_telemetry_report(&reading.metrics) {
+      return Response::error(message, 400);
+    }
   }
 
-  let Ok(previous_values) = write_telemetry(pigeons, &metrics) else {
+  if write_telemetry_batch(pigeons, &mut readings).is_err() {
     return Response::error("Internal Server Error", 500);
-  };
+  }
 
   Response::from_json(&TelemetryWriteResult {
-    metrics,
+    readings,
     telemetry_endpoint: read_telemetry_endpoint(pigeons),
-    previous_values,
   })
 }
 
