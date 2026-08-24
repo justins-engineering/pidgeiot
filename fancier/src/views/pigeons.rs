@@ -24,9 +24,11 @@ const LIST_LOOKBACK_HOURS: i64 = 6;
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   let binding = use_context::<crate::LocalSession>();
-  // (pigeon_id, token) — the id rides alongside the token so dismissing
-  // the reveal can navigate to the pigeon it belongs to.
-  let mut new_token = use_signal(|| None::<(String, String)>);
+  // (pigeon_id, connector as minted) — the id rides alongside so
+  // dismissing the reveal can navigate to the pigeon it belongs to, and
+  // the whole connector because a PSK-bearing one has a second write-once
+  // secret to show.
+  let mut new_credentials = use_signal(|| None::<(String, Connector)>);
   // Conditional-render gate for the flock->org transfer modal
   // -- remounts fresh each open, same reasoning as TokenReveal/
   // DeletePigeonModal (it loads the caller's org list on mount and holds
@@ -248,11 +250,12 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         // One-time token reveal modal. Dismissal — not creation success —
         // is the flow-complete moment: navigating away must never preempt
         // or unmount this modal while the token is still showing.
-        if let Some((pigeon_id, token)) = new_token() {
+        if let Some((pigeon_id, connector)) = new_credentials() {
           TokenReveal {
-            token,
+            token: connector.token().to_string(),
+            psk_secret: connector.psk().map(|(_, secret)| secret.to_string()),
             on_close: move |_| {
-              new_token.set(None);
+              new_credentials.set(None);
               nav.replace(Route::PigeonView {
                   flock_id,
                   pigeon_id: pigeon_id.clone(),
@@ -263,7 +266,9 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 
         CreatePigeonModal {
           flock_id,
-          on_created: move |(pigeon_id, token)| new_token.set(Some((pigeon_id, token))),
+          on_created: move |(pigeon_id, connector)| {
+              new_credentials.set(Some((pigeon_id, connector)))
+          },
         }
 
         if show_transfer() {
@@ -390,9 +395,11 @@ fn ErrorPigeonsState() -> Element {
 }
 
 #[component]
-fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
+fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler<()>) -> Element {
   let copied = use_signal(|| false);
   let copy_failed = use_signal(|| false);
+  let psk_copied = use_signal(|| false);
+  let psk_copy_failed = use_signal(|| false);
 
   rsx! {
     div {
@@ -413,12 +420,20 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
         h3 {
           class: "text-lg font-bold text-warning flex items-center gap-2",
           id: "token_reveal_title",
-          "🔑 Device Token"
+          if psk_secret.is_some() {
+            "🔑 Device Credentials"
+          } else {
+            "🔑 Device Token"
+          }
         }
         p { class: "py-4 text-sm text-base-content/80",
-          "This token is shown "
+          if psk_secret.is_some() {
+            "These credentials are shown "
+          } else {
+            "This token is shown "
+          }
           strong { "only once" }
-          ". Copy it now and store it securely on your device. It cannot be retrieved later."
+          ". Copy them now and store them securely on your device. They cannot be retrieved later."
         }
         div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
           code { class: "font-mono text-xs break-all grow select-all", "{token}" }
@@ -448,11 +463,51 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
             }
           }
         }
+        if let Some(secret) = psk_secret {
+          div { class: "mt-4",
+            div { class: "text-xs uppercase tracking-wide text-base-content/60 mb-1",
+              "TLS PSK secret"
+            }
+            div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
+              code { class: "font-mono text-xs break-all grow select-all", "{secret}" }
+              button {
+                class: "btn btn-square btn-ghost btn-sm shrink-0",
+                onclick: move |_| {
+                    #[cfg(feature = "web")]
+                    let secret = secret.clone();
+                    async move {
+                        #[cfg(feature = "web")]
+                        if let Some(window) = web_sys::window() {
+                            let mut psk_copied = psk_copied;
+                            let mut psk_copy_failed = psk_copy_failed;
+                            let result = JsFuture::from(
+                                    window.navigator().clipboard().write_text(&secret),
+                                )
+                                .await;
+                            psk_copied.set(result.is_ok());
+                            psk_copy_failed.set(result.is_err());
+                        }
+                    }
+                },
+                if psk_copied() {
+                  span { class: "text-success text-xs", "Copied!" }
+                } else if psk_copy_failed() {
+                  span { class: "text-error text-xs", "Copy failed — select and copy manually" }
+                } else {
+                  Icon { icon: LdCopy }
+                }
+              }
+            }
+            p { class: "text-xs text-base-content/60 mt-1",
+              "The PSK identity is the pigeon's own id."
+            }
+          }
+        }
         div { class: "modal-action",
           button {
             class: "btn btn-primary",
             onclick: move |_| on_close.call(()),
-            "I've Saved the Token"
+            "I've Saved These"
           }
         }
       }
@@ -460,7 +515,10 @@ fn TokenReveal(token: String, on_close: EventHandler<()>) -> Element {
   }
 }
 #[component]
-fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, String)>) -> Element {
+fn CreatePigeonModal(
+  flock_id: uuid::Uuid,
+  on_created: EventHandler<(String, Connector)>,
+) -> Element {
   let mut selected_connector = use_signal(|| "Https".to_string());
   let mut local_session = use_context::<crate::LocalSession>();
   let mut is_saving = use_signal(|| false);
@@ -509,12 +567,12 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
 
                   is_saving.set(true);
                   submit_error.set(None);
-                  if let Some((pigeon_id, token)) = api::pigeons::create(&pcr).await {
+                  if let Some((pigeon_id, connector)) = api::pigeons::create(&pcr).await {
                       is_saving.set(false);
                       if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
                           flock.pigeon_ids.push(pigeon_id.clone());
                       }
-                      on_created.call((pigeon_id, token));
+                      on_created.call((pigeon_id, connector));
                       document::eval(
                           r#"document.getElementById("create_pigeon_modal").close();"#,
                       );

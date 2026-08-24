@@ -1,8 +1,8 @@
 use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
-  LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
-  TelemetryEndpoint,
+  Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk,
+  PigeonShadow, PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest,
+  PigeonUpdateRequest, TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -91,7 +91,12 @@ pub async fn update(pigeon_id: &str, pur: &PigeonUpdateRequest) -> Option<String
   Some(id)
 }
 
-pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, String)> {
+/// Returns the new pigeon's id and the connector exactly as minted --
+/// with the credentials the create response carries once and no read
+/// route ever returns again, which is why the caller gets the whole
+/// connector rather than just its token: a PSK-bearing connector has a
+/// second secret in it, and both have to reach the reveal.
+pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, Connector)> {
   let body = serde_json::to_string(pigeon).ok()?;
   let body = serde_wasm_bindgen::to_value(&body).ok()?;
   let response = fetch_json("POST", "/flock/pigeons", Some(&body)).await?;
@@ -105,9 +110,7 @@ pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, String)> {
   pigeon_list.insert(id.clone(), detail.pigeon.clone());
   pigeon_list.write();
 
-  let token = detail.pigeon.connector.token().to_string();
-
-  Some((id, token))
+  Some((id, detail.pigeon.connector.clone()))
 }
 
 pub async fn delete(pigeon_id: &str) -> Option<String> {
@@ -124,7 +127,11 @@ pub async fn delete(pigeon_id: &str) -> Option<String> {
   Some(pigeon_id.to_string())
 }
 
-pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
+/// Rotates this pigeon's credentials, returning the connector as minted.
+/// Whole connector for the same reason `create` returns one: a refresh
+/// rotates the PSK alongside the token, and this response is the only
+/// place either is readable.
+pub async fn refresh_token(pigeon_id: &str) -> Option<Connector> {
   let mut path = String::with_capacity(87);
   path.push_str("/pigeons/");
   path.push_str(pigeon_id);
@@ -134,14 +141,14 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
 
   let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
-  let token = pigeon.connector.token().to_string();
+  let connector = pigeon.connector.clone();
 
   // Update cache with new connector data
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
   pigeon_list.insert(pigeon_id.to_string(), pigeon);
   pigeon_list.write();
 
-  Some(token)
+  Some(connector)
 }
 
 pub async fn update_shadow(

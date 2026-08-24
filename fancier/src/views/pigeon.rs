@@ -446,6 +446,9 @@ fn ConnectorInfo(
     .unwrap_or_else(|_| "Invalid Format".to_string());
 
   let mut refreshed_token = use_signal(|| None::<String>);
+  // A refresh rotates a PSK-bearing connector's secret alongside its
+  // token, and this is the only moment either is readable.
+  let mut refreshed_psk = use_signal(|| None::<String>);
   let mut is_refreshing = use_signal(|| false);
   let mut refresh_error = use_signal(|| Option::<String>::None);
 
@@ -684,9 +687,11 @@ fn ConnectorInfo(
                             is_refreshing.set(true);
                             refresh_error.set(None);
                             match api::pigeons::refresh_token(&id).await {
-                                Some(token) => {
+                                Some(connector) => {
                                     is_refreshing.set(false);
-                                    refreshed_token.set(Some(token));
+                                    refreshed_token.set(Some(connector.token().to_string()));
+                                    refreshed_psk
+                                        .set(connector.psk().map(|(_, secret)| secret.to_string()));
                                 }
                                 None => {
                                     is_refreshing.set(false);
@@ -706,6 +711,33 @@ fn ConnectorInfo(
                     } else {
                       "Refresh Token"
                     }
+                  }
+                }
+              }
+            }
+            if let Some(secret) = refreshed_psk() {
+              tr {
+                th { "TLS PSK" }
+                td {
+                  div { class: "flex flex-col gap-2",
+                    div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
+                      "Copy this secret now — it will not be shown again"
+                    }
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                      "{secret}"
+                    }
+                  }
+                }
+                td {
+                  button {
+                    class: "btn btn-success btn-sm",
+                    onclick: move |_| {
+                        #[cfg(feature = "web")]
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.navigator().clipboard().write_text(&secret);
+                        }
+                    },
+                    "Copy"
                   }
                 }
               }
@@ -733,7 +765,10 @@ fn ConnectorInfo(
         div { class: "flex justify-end",
           button {
             class: "btn btn-ghost btn-sm text-base-content/60",
-            onclick: move |_| refreshed_token.set(None),
+            onclick: move |_| {
+                refreshed_token.set(None);
+                refreshed_psk.set(None);
+            },
             "I've Saved the Token"
           }
         }
