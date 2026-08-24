@@ -393,6 +393,72 @@ fn resolve_serve_range(range: &Range, total: u64) -> (u64, u64) {
   }
 }
 
+/// Serves both names of the service-internal PSK route. NOT a device or
+/// dashboard route: the only legitimate callers are the protocol
+/// terminators themselves, gated by two independent layers -- a
+/// source-address allowlist (COAP_SERVICE_ALLOWED_IPS, their egress
+/// addresses) and the COAP_SERVICE_SECRET Worker secret (set via `wrangler
+/// secret put` per env, never [vars] -- same convention as RESEND_API_KEY;
+/// local dev reads it from dovecote/.dev.vars). The var and secret keep
+/// their CoAP-era names: one gate, one shared value, and renaming a
+/// deployed secret buys nothing. The `:pigeon_id` path param IS the PSK
+/// identity -- `create`/`refresh_token` mint `tls_psk_identity` as the
+/// pigeon's own DO id. An environment where either layer is unconfigured
+/// refuses every call (fail closed), so this route is inert until a
+/// terminator is actually provisioned.
+async fn internal_psk_lookup(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+  let cors = build_cors(&ctx.env, &req);
+
+  // Address gate first: the secret grants unscoped PSK resolution for
+  // every pigeon, so a leaked copy must not be usable from anywhere
+  // but the terminator host -- and a disallowed caller gets no timing
+  // signal from the secret comparison either.
+  if !is_allowed_coap_service_ip(&ctx.env, &req) {
+    console_error!(
+      "Internal PSK lookup from disallowed address {:?}",
+      req.headers().get("CF-Connecting-IP").ok().flatten()
+    );
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  let Ok(expected) = ctx.env.secret("COAP_SERVICE_SECRET") else {
+    console_error!("COAP_SERVICE_SECRET not configured; refusing internal PSK lookup");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  };
+  // An empty or whitespace-only secret counts as unconfigured -- the
+  // same definition loft's config guard applies on its side -- because
+  // a bare "Bearer " header would otherwise satisfy the constant-time
+  // compare below and open every pigeon's PSK to anyone.
+  let expected = expected.to_string();
+  if expected.trim().is_empty() {
+    console_error!("COAP_SERVICE_SECRET is empty; refusing internal PSK lookup");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  let presented = req
+    .headers()
+    .get("Authorization")
+    .ok()
+    .flatten()
+    .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string));
+  let Some(presented) = presented else {
+    return Response::error("Unauthorized", 401)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+    console_error!("Internal PSK lookup with wrong service secret");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+  // 200 with capsules::CoapPskLookup, or the DO's own 404 for an
+  // unknown identity or a connector that mints no PSK -- passed through
+  // unchanged so the terminator's negative cache keys off a real 404.
+  psk_lookup_via_do(&obj_id).await?.with_cors(&cors)
+}
+
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
   // Used only by the catch-all panic guard below, after `env` is moved
@@ -900,69 +966,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .await?
         .with_cors(&cors)
     })
-    // Service-internal PSK resolution for the CoAP terminator (`loft`, its
-    // own repo). NOT a device or dashboard route: the
-    // only legitimate caller is the terminator itself, gated by two
-    // independent layers -- a source-address allowlist
-    // (COAP_SERVICE_ALLOWED_IPS, the terminator's egress addresses) and
-    // the COAP_SERVICE_SECRET Worker secret (set via `wrangler secret put`
-    // per env, never [vars] -- same convention as RESEND_API_KEY; local
-    // dev reads it from dovecote/.dev.vars). The `:pigeon_id` path param
-    // IS the PSK identity -- `create`/`refresh_token` mint
-    // `tls_psk_identity` as the pigeon's own DO id. An environment where
-    // either layer is unconfigured refuses every call (fail closed), so
-    // this route is inert until the terminator is actually provisioned.
+    // Service-internal PSK resolution for the protocol terminators: the
+    // CoAP one (`loft`) and the MQTT broker (`pigeonhole`), each in its
+    // own repo. Two names, one handler -- `device-psk` is what a
+    // terminator that is not CoAP asks for, and the older `coap-psk` name
+    // stays because loft is deployed against it and moves over on its own
+    // schedule.
+    .get_async("/internal/device-psk/:pigeon_id", |req, ctx| async move {
+      internal_psk_lookup(req, ctx).await
+    })
     .get_async("/internal/coap-psk/:pigeon_id", |req, ctx| async move {
-      let cors = build_cors(&ctx.env, &req);
-
-      // Address gate first: the secret grants unscoped PSK resolution for
-      // every pigeon, so a leaked copy must not be usable from anywhere
-      // but the terminator host -- and a disallowed caller gets no timing
-      // signal from the secret comparison either.
-      if !is_allowed_coap_service_ip(&ctx.env, &req) {
-        console_error!(
-          "Internal PSK lookup from disallowed address {:?}",
-          req.headers().get("CF-Connecting-IP").ok().flatten()
-        );
-        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
-      }
-
-      let Ok(expected) = ctx.env.secret("COAP_SERVICE_SECRET") else {
-        console_error!("COAP_SERVICE_SECRET not configured; refusing internal PSK lookup");
-        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
-      };
-      // An empty or whitespace-only secret counts as unconfigured -- the
-      // same definition loft's config guard applies on its side -- because
-      // a bare "Bearer " header would otherwise satisfy the constant-time
-      // compare below and open every pigeon's PSK to anyone.
-      let expected = expected.to_string();
-      if expected.trim().is_empty() {
-        console_error!("COAP_SERVICE_SECRET is empty; refusing internal PSK lookup");
-        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
-      }
-
-      let presented = req
-        .headers()
-        .get("Authorization")
-        .ok()
-        .flatten()
-        .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string));
-      let Some(presented) = presented else {
-        return Response::error("Unauthorized", 401)
-          .unwrap()
-          .with_cors(&cors);
-      };
-      if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
-        console_error!("Internal PSK lookup with wrong service secret");
-        return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
-      }
-
-      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
-
-      // 200 with capsules::CoapPskLookup, or the DO's own 404 for an
-      // unknown identity / Https-connector pigeon -- passed through
-      // unchanged so the terminator's negative cache keys off a real 404.
-      psk_lookup_via_do(&obj_id).await?.with_cors(&cors)
+      internal_psk_lookup(req, ctx).await
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
