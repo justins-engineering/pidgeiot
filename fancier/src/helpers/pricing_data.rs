@@ -491,6 +491,41 @@ mod the_data_file_says_what_it_claims {
     assert_eq!(ours.source_host(), None);
   }
 
+  // The one competitor that genuinely beats us across our own self-serve
+  // band. Every other note on the page is held to a sentence, which makes
+  // this row the obvious thing to shorten next time someone trims for
+  // length -- and shortening it is precisely what would turn an honest
+  // comparison into a flattering one.
+  #[test]
+  fn the_competitor_who_beats_us_still_says_so_and_says_where() {
+    let golioth = BAKED_COMPARISON
+      .profiles
+      .iter()
+      .flat_map(|p| p.rows.iter())
+      .find(|r| r.id == "golioth-steady")
+      .expect("golioth is priced against the steady profile");
+    let note = golioth.note.as_deref().unwrap_or_default();
+
+    assert!(
+      note.contains("1,225"),
+      "the crossover where they stop being cheaper is gone from Golioth's row"
+    );
+    for evidence in ["$14.25", "$142.50", "$285"] {
+      assert!(
+        note.contains(evidence),
+        "Golioth's row no longer shows {evidence}, so the crossover is an assertion rather than \
+         arithmetic a reader can check"
+      );
+    }
+    for lacking in ["dashboard", "RBAC", "alerting"] {
+      assert!(
+        note.contains(lacking),
+        "Golioth's row stopped naming {lacking}, which is half of why we lose on price and still \
+         win the sale"
+      );
+    }
+  }
+
   #[test]
   fn a_threshold_that_would_flag_everything_or_nothing_is_not_a_threshold() {
     assert!((30..=365).contains(&BAKED_COMPARISON.stale_after_days));

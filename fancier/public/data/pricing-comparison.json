@@ -7,7 +7,12 @@
     "file on load, so an asset deploy is enough -- no Rust rebuild. A rebuild only refreshes",
     "the pre-JavaScript copy baked into the prerendered HTML.",
     "A figure older than stale_after_days renders with a visible 'recheck' cue.",
-    "Keep every note to ONE sentence. This is the page that has to explain why someone should",
+    "Keep notes to ONE sentence. This is the page that has to explain why someone should choose",
+    "us, and text nobody reads persuades nobody: a note's job is the single key difference, what a",
+    "vendor does not do or why they legitimately beat us.",
+    "ONE deliberate exception, do not trim it: Golioth is the only competitor that genuinely beats",
+    "us on price across our own self-serve band, so their row carries the crossover numbers and the",
+    "three things they lack. Losing that would make the page dishonest, not shorter.",
     "choose us, and text nobody reads persuades nobody. The note's job is the single key",
     "difference: what a vendor does not do, or why they legitimately beat us.",
     "A row with no entry under a column renders as 'not published'; a row with no figures at",
@@ -84,7 +89,7 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "Cheaper than us below about 1,225 devices. No dashboard, organizations or alerting."
+          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do."
         },
         {
           "id": "thingsboard-steady",
@@ -361,7 +366,7 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "Beats us outright at this cadence. Still no dashboard, organizations or alerting."
+          "note": "Beats us outright at this cadence too, and still ships no multi-tenant dashboard, no organizations or RBAC and no alerting."
         },
         {
           "id": "thingsboard-chatty",
