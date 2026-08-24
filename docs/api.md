@@ -101,14 +101,18 @@ keypair and overwrites `device_public_key`, so the old token's signature can nev
 the verification key *is* the revocation mechanism.
 
 The token is returned in a pigeon's `connector.Https.token` (or `connector.Coap.token` /
-`tls_psk_secret`) field, and **only** in the response to the route that just minted it — pigeon
+`connector.Mqtt.token`, each alongside its `tls_psk_secret`) field, and **only** in the response to the route that just minted it — pigeon
 create (`POST /flock/pigeons`) or token refresh (`POST /pigeons/:pigeon_id/token/refresh`).
 Every other route that returns a `Pigeon` (`GET /pigeons/:id`, `GET /pigeons/:id/detail`,
 `PUT /pigeons/:id`, `POST /pigeons/batch`) strips it to an empty string first
 (`strip_secrets`, `objects/pigeons.rs`) — treat that field as write-once, read-never after the
 initial mint.
 
-A missing/malformed/expired/wrong-pigeon token gets `401 Unauthorized`.
+A missing/malformed/expired/wrong-pigeon token gets `401 Unauthorized`, and so does a token for
+a pigeon that has since been **deleted** — the Durable Object stays addressable with its tables
+empty, and answers device routes as an unknown pigeon rather than as a fault, so a device (or a
+protocol terminator holding a session for one) reads deprovisioning as permanent instead of
+retrying through it.
 
 > **Troubleshooting: `403` with an HTML body.** If a device request gets `403` and the body is
 > HTML (e.g. "Just a moment...") instead of plain text, the request was stopped by edge
@@ -624,8 +628,9 @@ checked flock ownership at all — a latent gap this closed). A pigeon created i
 org-owned flock is seeded with **both** ACL rows: the creator's own `owner` row and the org's
 `owner` row (so every org member gets role-mapped access immediately, and the org's access
 survives the creator leaving). Body: `capsules::PigeonCreateRequest`
-(`{ flock_id, serial?, name?, tags?, connector, board? }`) — `connector` is either
-`{"Https": {"endpoint": "", "token": ""}}` or `{"Coap": {"endpoint": "", "token": ""}}`; the
+(`{ flock_id, serial?, name?, tags?, connector, board? }`) — `connector` is one of
+`{"Https": {"endpoint": "", "token": ""}}`, `{"Coap": {"endpoint": "", "token": ""}}` or
+`{"Mqtt": {"endpoint": "", "token": ""}}`; the
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
 device endpoint URL and credential).
 
@@ -649,7 +654,16 @@ refusal shape are in [Per-tier limits](#per-tier-limits).
 > compiled transport and fails loudly on a mismatch — a TLS/TCP device build uses the same
 > authority and substitutes the `coaps+tcp://` scheme. See
 > [CoAP device surface](#coap-device-surface-via-the-loft-terminator) below, and the `loft`
-> repo's `docs/infra/coap-terminator.md` for deployment. `board` (task #20, phase 1) is optional — the pigeon's own
+> repo's `docs/infra/coap-terminator.md` for deployment.
+
+> **MQTT is terminated by `pigeonhole`, also not by the edge Worker.** The `Mqtt` connector
+> variant mints the same two credentials the `Coap` one does — the bearer token, which
+> authorizes every request the broker makes upstream on the device's behalf, and a PSK pair
+> (`tls_psk_identity` = the pigeon's own id, `tls_psk_secret` = a 32-char hex PSK) — because the
+> broker accepts a certificate handshake and a PSK handshake on one listener and a device may
+> arrive by either. The minted endpoint is `mqtts://<MQTT_DEVICE_HOST>:8883` with no path: a
+> topic names the resource, and the CONNECT handshake binds the session to one pigeon. See
+> [MQTT device surface](#mqtt-device-surface-via-the-pigeonhole-broker) below. `board` is optional — the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
 never be assigned firmware over the shadow route (see [Shadow](#shadow) above's fail-closed
 board-compatibility check) until it's tagged, either here or via a later `PUT`.
@@ -690,6 +704,12 @@ Response is `capsules::PigeonDetail` (`{ pigeon, acl, shadow }`) with status `20
 
 Note the pigeon's `id` is not a UUID — it's the hex string form of its Durable Object ID, and
 doubles as the path segment for every other pigeon route.
+
+**The connector is a provisioning hint, not a transport boundary.** Nothing about the variant
+restricts what the device may do: a pigeon's bearer token authenticates it on the HTTPS device
+routes, through `loft`, and as an MQTT CONNECT password alike, and any pigeon that minted a PSK
+pair can complete a PSK handshake with either terminator. The variant records how the pigeon was
+provisioned, and decides which endpoint and credentials the dashboard shows.
 
 #### `GET /pigeons/:pigeon_id` — member
 
@@ -746,7 +766,10 @@ Returns `Vec<capsules::Pigeon>`.
 
 Mints a new Ed25519 keypair and device token for this pigeon, immediately revoking the old
 one (see [Device authentication](#device-authentication-bearer-token) above). Returns the
-updated `capsules::Pigeon` with the new token visible in `connector.Https.token`/`connector.Coap.token` — save it now, it won't be shown again.
+updated `capsules::Pigeon` with the new token visible in `connector.Https.token` /
+`connector.Coap.token` / `connector.Mqtt.token` — save it now, it won't be shown again. For the
+PSK-bearing variants the refresh rotates `tls_psk_secret` in the same response, and the old PSK
+stops resolving through the [service-internal route](#service-internal-api) at once.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/token/refresh \
@@ -2060,15 +2083,86 @@ The `loft` repo's `docs/infra/coap-terminator.md` documents the deployment postu
 
 ---
 
+## MQTT device surface (via the `pigeonhole` broker)
+
+The same device routes are reachable over MQTT, terminated by `pigeonhole` (a first-party Rust
+service in its own repo) at `mqtt.pidgeiot.com:8883` — **not** by the edge Worker, which cannot
+hold a TCP session. The broker is a thin bridge: it terminates TLS, framing, sessions and
+keepalive, and every publish becomes one of the HTTP device routes above, carrying the pigeon's
+own bearer token. It holds no per-pigeon state and stores nothing, so authorization is still the
+owning Durable Object's, exactly as for a direct HTTPS device.
+
+**One TLS listener, two handshakes, no cleartext.** There is no port 1883 and no unencrypted
+listener in any deployment shape: the CONNECT password is a device token, and that rule is what
+keeps it off the wire. The ClientHello decides which credential is used:
+
+| Mode | Handshake | CONNECT |
+|---|---|---|
+| Certificate | The broker's own Let's Encrypt chain for `mqtt.pidgeiot.com`; the device verifies it | `username` = pigeon id, `password` = the device bearer token, `client_id` = the pigeon id or empty |
+| PSK | `TLS_PSK_WITH_AES_128_CCM_8` / GCM / CBC-SHA256, the same suites `loft` offers | PSK identity = pigeon id, key = the raw UTF-8 bytes of `connector.Mqtt.tls_psk_secret`; `username`, if sent, must equal the identity and `password` is ignored |
+
+In certificate mode the broker cannot verify an Ed25519 token itself, so it does not try: it
+opens the pigeon's [device WebSocket](#get-devicepigeonspigeon_idws) with the presented token,
+and that upgrade **is** the authentication — 101 accepts the session, 401 refuses it. In PSK
+mode it resolves identity → (PSK, token) through
+[`GET /internal/device-psk/:pigeon_id`](#service-internal-api) at handshake time, then opens the
+same socket. Wherever an identity appears more than once (PSK identity, username, client id) all
+of them must agree.
+
+**Topics are session-scoped and carry no pigeon id** — the handshake already bound the
+connection to exactly one pigeon, so the id would be redundant weight on every publish. Payloads
+are byte-identical to the HTTP bodies:
+
+| Topic | Direction | Payload | Route behind it |
+|---|---|---|---|
+| `pigeon/telemetry` | device → | flat JSON object of string values | `POST /device/pigeons/:id/telemetry` (QoS 1), or a `telemetry` frame on the held device WebSocket (QoS 0) |
+| `pigeon/shadow/report` | device → | `{"current_config": {...}, "current_version": N}` | `POST /device/pigeons/:id/shadow` |
+| `pigeon/logs` | device → | one raw dictionary-log chunk, ≤ 16 KiB | `POST /device/pigeons/:id/logs` |
+| `pigeon/shadow/target` | → device, retained | `capsules::PigeonShadow` as the device shadow GET returns it | the device WebSocket's snapshot-on-accept and every `shadow_update` frame |
+
+The retained value on `pigeon/shadow/target` is the Durable Object's own live shadow, not a copy
+the broker keeps: a subscriber gets the current one on SUBACK and a fresh PUBLISH whenever
+`target_version` changes. Accepted filters are `pigeon/shadow/target`, `pigeon/shadow/#` and
+`pigeon/#`, all meaning the shadow target; any other filter gets a SUBACK failure for that entry,
+and publishing to an unknown topic closes the connection.
+
+**QoS 0 and 1 only.** A QoS 1 PUBACK is sent when the upstream route answers, so an ack means
+dovecote accepted the report and nothing is buffered on the broker; QoS 0 is fire-and-forget over
+the already-open WebSocket. QoS 2 is not offered rather than shimmed: true exactly-once needs a
+per-client dedup store that survives reconnects, which a stateless bridge deliberately has not
+got, and delivering it as at-least-once would silently break the contract the client asked for.
+Sessions are stateless (`session_present` is always 0) — the retained shadow gives a reconnecting
+device the catch-up a queued session would have. A Last Will is accepted when its topic is one
+this session may publish to, and delivered as an ordinary bridged publish.
+
+Rotation and deletion reach a live session, in both directions: a bridged publish that answers
+401 ends the session, and `token/refresh` and `delete` close the pigeon's device WebSocket with
+`4004` / `4005` themselves, which ends it even if the device never publishes again. Firmware has
+no MQTT surface — the `firmware` key arrives inside the retained shadow and the device downloads
+it over
+[`GET /device/pigeons/:id/firmware`](#get-devicepigeonspigeon_idfirmware), which already does
+ranged, resumable chunking.
+
+`MQTT_DEVICE_HOST` (`dovecote/wrangler.toml`) is what points minted endpoints at a broker;
+where an environment leaves it empty the endpoint falls back to that environment's own API host,
+so an `Mqtt` pigeon can be provisioned with real credentials before a broker exists to dial.
+
+---
+
 ## Service-internal API
 
-### `GET /internal/coap-psk/:pigeon_id` — **service secret required**
+### `GET /internal/device-psk/:pigeon_id` — **service secret required**
 
-PSK resolution for the CoAP terminator — the only route in this API authenticated by a shared
-service secret rather than a Kratos session or device token:
+Also served at its original name, `GET /internal/coap-psk/:pigeon_id`. One handler, two paths,
+identical in every respect: the neutral name is what a terminator that is not CoAP asks for, and
+the older one stays because `loft` is deployed against it.
+
+PSK resolution for the protocol terminators — the only route in this API authenticated by a
+shared service secret rather than a Kratos session or device token:
 `Authorization: Bearer <COAP_SERVICE_SECRET>` (a Worker secret, set per environment via
 `wrangler secret put COAP_SERVICE_SECRET`, never a `[vars]` entry; `loft` holds the same value
-in its own `COAP_SERVICE_SECRET` env var). The secret is compared in constant time, and is
+in its own `COAP_SERVICE_SECRET` env var, and `pigeonhole` in `PIGEONHOLE_SERVICE_SECRET`; one
+value, one gate, whatever each side calls it). The secret is compared in constant time, and is
 only half the gate: the request's source address (`CF-Connecting-IP`, edge-set and not
 client-forgeable) must also appear in the environment's `COAP_SERVICE_ALLOWED_IPS` allowlist
 (`dovecote/wrangler.toml`) — the terminator's own egress addresses, empty meaning deny-all.
@@ -2084,7 +2178,9 @@ CORS-usable from a browser in any meaningful way; never called by devices or the
 
 - `401` missing bearer, `403` source address outside the allowlist or wrong/unconfigured
   secret.
-- `404` for an unknown identity or an `Https`-connector pigeon (no PSK exists).
+- `404` for an unknown identity or a pigeon whose connector mints no PSK (`Https`). Both
+  PSK-bearing variants (`Coap`, `Mqtt`) resolve, under either route name: which transport minted
+  the pair says nothing about which terminator may resolve it, and both hold the same secret.
 - `400` for a string that cannot be a pigeon id at all (Durable Object ids embed a namespace
   check, so a malformed/foreign id fails before any lookup). `loft` treats `400` and `404`
   identically: authoritatively unknown, negative-cached.
@@ -2113,8 +2209,10 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
   `JsonString`
-- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)`), `CoapPskLookup` (service-internal,
-  the `/internal/coap-psk/:pigeon_id` response)
+- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)` | `Mqtt(MqttConfig)`), `CoapPskLookup`
+  (service-internal, the `/internal/device-psk/:pigeon_id` response)
+- `MQTT_TLS_PORT`, `MQTT_TOPIC_TELEMETRY`, `MQTT_TOPIC_SHADOW_REPORT`, `MQTT_TOPIC_LOGS`,
+  `MQTT_TOPIC_SHADOW_TARGET` — the wire constants the broker mirrors
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,
   `TelemetryHistoryQuery`, `TELEMETRY_HISTORY_BUCKET_TARGET`, `TelemetryEndpoint`,
   `PigeonTelemetryEndpointUpdateRequest`

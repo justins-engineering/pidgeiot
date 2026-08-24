@@ -459,6 +459,10 @@ fn ConnectorInfo(
         ConnectorBadge { connector: connector.clone() }
       }
 
+      p { class: "text-xs text-base-content/60 md:px-4",
+        "How this pigeon was provisioned, not a restriction on it: its token authenticates it on every device transport."
+      }
+
       div { class: "overflow-x-auto",
         table { class: "table",
           tbody {
