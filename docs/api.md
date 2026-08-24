@@ -527,9 +527,19 @@ routinely has one or two of its twenty-eight member states listed `Unavailable`
 
 **Why `invalid` is unreachable from a save.** At save time a definitive `invalid` refuses the
 write, so nothing lands in that state by being entered. It is reachable only through the sweep
-re-checking a row that already exists — a number that was `pending`, or one that was
-`validated` and has since been deregistered. That asymmetry is deliberate: a save can refuse
-because there is nothing to leave behind, and a re-check cannot because there already is.
+resolving a row that is already `pending`. That asymmetry is deliberate: a save can refuse
+because there is nothing to leave behind, and a re-check cannot, because there already is.
+
+**An inconclusive re-save never downgrades a confirmed registration.** Saving the form
+re-runs the lookup, so somebody editing only their business name during a VIES outage would
+otherwise be flipped from `validated` to `pending` for something they did not do. When the
+`tax_id` is unchanged and already `validated`, an inconclusive outcome leaves it `validated`.
+A *different* number carries none of the old one's history and starts clean.
+
+**There is no revalidation cadence.** A `validated` row is never re-checked by the sweep, so a
+registration deregistered after we confirmed it keeps reading as `validated` until its owner
+next saves the form. `tax_id_validated_at` is therefore the honest thing to read: it is when
+we last confirmed, not a claim about now.
 
 **Format checks run first, locally**, so a typo is refused without spending a VIES call and
 with a specific reason (`"that is not the shape of a DE VAT number"`). They are per-country

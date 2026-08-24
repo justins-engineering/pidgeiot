@@ -220,12 +220,19 @@ pub async fn write_business_details(
   let stored = &plan.stored;
   let attempted_lookup = plan.attempted_lookup;
 
-  // `tax_id_validated_at` is a confirmation date, not a save date, so it
-  // survives a re-save of the SAME number that failed to reach VIES --
-  // "confirmed on the 3rd, unreachable since" is the honest reading, and
-  // blanking it would silently downgrade a customer who only edited their
-  // business name. A DIFFERENT number carries none of the old number's
-  // history, so it starts clean.
+  // Both CASE expressions read the row's PRE-update `tax_id`/`tax_id_status`
+  // -- every SET expression in one UPDATE is evaluated against the old row --
+  // which is what lets them ask "is this the same number as before?".
+  //
+  // An inconclusive re-save must not downgrade a registration we already
+  // confirmed. Somebody editing their business name during a VIES outage
+  // did nothing to cast doubt on a number VIES already accepted, and
+  // flipping them to `pending` would read as a problem they caused. The
+  // number has to be unchanged for this to apply; a new number carries none
+  // of the old one's history.
+  //
+  // Same reasoning for `tax_id_validated_at`: it is a confirmation date,
+  // not a save date, so "confirmed on the 3rd, unreachable since" survives.
   let rows = client
     .query_typed(
       &format!(
@@ -233,7 +240,13 @@ pub async fn write_business_details(
            business_name = $2,
            tax_id = $3,
            tax_id_type = $4,
-           tax_id_status = $5,
+           tax_id_status = CASE
+             WHEN $5 = 'pending'
+               AND tax_id_status = 'validated'
+               AND tax_id IS NOT DISTINCT FROM $3
+               THEN 'validated'
+             ELSE $5
+           END,
            tax_id_validated_at = CASE
              WHEN $5 = 'validated' THEN now()
              WHEN tax_id IS NOT DISTINCT FROM $3 THEN tax_id_validated_at
@@ -273,6 +286,14 @@ pub async fn write_business_details(
 /// authority to ask, and a settled row has nothing left to learn. Rows are
 /// taken oldest-attempt-first so a backlog drains in order rather than
 /// starving whichever org sorts last.
+///
+/// Deliberately NOT a revalidation cadence: a `validated` row is never
+/// re-checked here, so a registration deregistered after we confirmed it
+/// keeps reading as validated until its owner next saves the form. Adding a
+/// periodic re-check of confirmed registrations is a reasonable future
+/// change; it is a different feature (it needs a cadence, and a decision
+/// about what a customer sees when their own registration lapses) and not
+/// something to do by widening this predicate.
 pub async fn sweep_pending_tax_ids(env: &Env) -> Result<()> {
   let client = get_db_client(env).await?;
   // The sweep's predicate reads columns a database behind the migration
