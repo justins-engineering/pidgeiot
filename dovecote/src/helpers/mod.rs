@@ -101,8 +101,10 @@ pub use telemetry::query_telemetry_history_buckets_for_pigeon;
 pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
+pub use telemetry::write_telemetry_history_batch;
 
 mod telemetry_batch;
+pub use telemetry_batch::ResolvedReading;
 
 mod telemetry_latest;
 pub use telemetry_latest::LegacyTelemetryRow;
@@ -116,12 +118,14 @@ pub use telemetry_latest::validate_telemetry_report;
 
 mod greptime;
 pub use greptime::build_line_protocol;
+pub use greptime::build_line_protocol_batch;
 pub use greptime::greptime_origin;
 pub use greptime::post_line_protocol;
 pub use greptime::query_greptime_history_for_pigeon;
 pub use greptime::query_greptime_history_for_pigeons;
 pub use greptime::url_encode_component;
 pub use greptime::write_telemetry_default;
+pub use greptime::write_telemetry_default_batch;
 
 mod firmware;
 pub use firmware::FlockAccess;

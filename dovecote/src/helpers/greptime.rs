@@ -1,6 +1,7 @@
 use capsules::TelemetryHistoryPoint;
 use std::collections::HashMap;
 
+use crate::helpers::ResolvedReading;
 use crate::helpers::telemetry::TelemetryHistoryPage;
 use time::OffsetDateTime;
 use worker::{Env, Fetch, Method, Request, RequestInit, Result, console_error};
@@ -156,6 +157,29 @@ pub fn build_line_protocol(
   line
 }
 
+/// Every reading of a batch as one line-protocol payload -- the newline-
+/// separated multi-line form the protocol has always had, which is why a
+/// batch costs one HTTP request to forward rather than M.
+///
+/// Timestamps are per line, taken from each reading rather than from the
+/// batch's arrival, so a series written through a forwarding endpoint has
+/// the same shape as one written through our own history: the points sit
+/// where the device sampled them.
+pub fn build_line_protocol_batch(pigeon_id: &str, readings: &[ResolvedReading]) -> String {
+  readings
+    .iter()
+    .filter(|reading| !reading.metrics.is_empty())
+    .map(|reading| {
+      build_line_protocol(
+        pigeon_id,
+        &reading.metrics,
+        (reading.at_secs as u64).saturating_mul(1000),
+      )
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
 /// POSTs a pre-built line-protocol line to `url`. `extra_headers` exists
 /// specifically for `write_greptime_default`'s CF-Access headers -- see
 /// that function's doc comment and `greptime_access_headers`'s above for
@@ -259,6 +283,49 @@ pub async fn write_telemetry_default(
   }
 
   crate::helpers::write_telemetry_history(env, pigeon_id, metrics, reported_at_ms).await
+}
+
+/// The batched counterpart to `write_telemetry_default`, with the same
+/// Greptime-then-Postgres fallback. One forward or one insert for the
+/// whole batch either way -- that collapse is the point of batching, and
+/// falling back per reading would spend it.
+pub async fn write_telemetry_default_batch(
+  env: &Env,
+  pigeon_id: &str,
+  readings: &[ResolvedReading],
+) -> Result<()> {
+  if readings.is_empty() {
+    return Ok(());
+  }
+
+  if let Some(origin) = greptime_origin(env) {
+    let line = build_line_protocol_batch(pigeon_id, readings);
+    let url = match greptime_db(env) {
+      Some(db) => format!(
+        "{origin}/v1/influxdb/write?db={}&precision=ms",
+        url_encode_component(&db)
+      ),
+      None => format!("{origin}/v1/influxdb/write?precision=ms"),
+    };
+
+    match post_line_protocol(
+      &url,
+      &line,
+      greptime_auth_token(env).as_deref(),
+      &greptime_access_headers(env),
+    )
+    .await
+    {
+      Ok(()) => return Ok(()),
+      Err(e) => {
+        console_error!(
+          "Greptime batch forward failed for pigeon {pigeon_id}, falling back to PG history: {e}"
+        );
+      }
+    }
+  }
+
+  crate::helpers::write_telemetry_history_batch(env, pigeon_id, readings).await
 }
 
 #[derive(serde::Deserialize)]
@@ -527,4 +594,63 @@ pub async fn query_greptime_history_for_pigeons(
   }
 
   Ok(TelemetryHistoryPage::from_ascending(points))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn reading(at_secs: i64, pairs: &[(&str, &str)]) -> ResolvedReading {
+    ResolvedReading::new(
+      at_secs,
+      pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect(),
+    )
+  }
+
+  #[test]
+  fn a_batch_becomes_one_line_per_reading_at_its_own_timestamp() {
+    let line = build_line_protocol_batch(
+      "abc123",
+      &[
+        reading(1_800_000_000, &[("temp", "21.5")]),
+        reading(1_800_000_010, &[("temp", "21.6")]),
+        reading(1_800_000_020, &[("temp", "21.7")]),
+      ],
+    );
+
+    let lines: Vec<&str> = line.split('\n').collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(
+      lines[0],
+      "pigeon_telemetry,pigeon_id=abc123 temp=21.5 1800000000000"
+    );
+    assert_eq!(
+      lines[1],
+      "pigeon_telemetry,pigeon_id=abc123 temp=21.6 1800000010000"
+    );
+    assert_eq!(
+      lines[2],
+      "pigeon_telemetry,pigeon_id=abc123 temp=21.7 1800000020000"
+    );
+  }
+
+  #[test]
+  fn a_single_reading_batch_matches_the_unbatched_line() {
+    let metrics: HashMap<String, String> = [("temp".to_string(), "21.5".to_string())]
+      .into_iter()
+      .collect();
+
+    assert_eq!(
+      build_line_protocol_batch("abc123", &[reading(1_800_000_000, &[("temp", "21.5")])]),
+      build_line_protocol("abc123", &metrics, 1_800_000_000_000)
+    );
+  }
+
+  #[test]
+  fn an_empty_batch_produces_no_payload() {
+    assert!(build_line_protocol_batch("abc123", &[]).is_empty());
+  }
 }

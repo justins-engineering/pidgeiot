@@ -5,6 +5,7 @@ use uuid::Uuid;
 use worker::{Env, Result, console_error};
 
 use crate::helpers::PigeonAccess;
+use crate::helpers::ResolvedReading;
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
 
@@ -66,9 +67,6 @@ pub async fn write_telemetry_history(
     return Ok(());
   }
 
-  let client = get_db_client(env).await?;
-  ensure_telemetry_history_table(&client).await?;
-
   let reported_at = OffsetDateTime::from_unix_timestamp_nanos(
     i128::from(reported_at_ms) * 1_000_000,
   )
@@ -77,35 +75,98 @@ pub async fn write_telemetry_history(
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
-  // Owned first so the borrows handed to `execute_typed` below outlive the
-  // parameter list.
-  let rows: Vec<(&String, &String, Option<f64>)> = metrics
+  insert_history_rows(env, pigeon_id, &[(reported_at, metrics)]).await
+}
+
+/// The batched counterpart: every reading of one batch written in a single
+/// statement, each row carrying its own reading's timestamp.
+///
+/// This is where a batch's cost saving stops and its honesty begins. The
+/// per-envelope work collapses to one statement for the whole batch, while
+/// the rows themselves stay one per key per reading. History has to come
+/// out indistinguishable from what the same readings would have written
+/// arriving one at a time, or a chart drawn over a batching device would
+/// disagree with one drawn over a chatty device reporting the same values.
+///
+/// Second resolution rather than the millisecond resolution above, because
+/// that is the resolution a batched reading actually has: the device
+/// supplies whole seconds (an age or a unix timestamp) and the
+/// latest-value store has always stamped whole seconds too.
+pub async fn write_telemetry_history_batch(
+  env: &Env,
+  pigeon_id: &str,
+  readings: &[ResolvedReading],
+) -> Result<()> {
+  let rows: Vec<(OffsetDateTime, &std::collections::HashMap<String, String>)> = readings
     .iter()
-    .map(|(key, value)| (key, value, value.parse::<f64>().ok()))
+    .map(|reading| {
+      (
+        OffsetDateTime::from_unix_timestamp(reading.at_secs).unwrap_or(OffsetDateTime::UNIX_EPOCH),
+        &reading.metrics,
+      )
+    })
     .collect();
 
+  insert_history_rows(env, pigeon_id, &rows).await
+}
+
+/// The one statement builder behind both writes above. One round trip
+/// however many readings and keys it is handed, and a `reported_at` bound
+/// per reading rather than defaulted per row -- see
+/// `write_telemetry_history`'s note on why rows of one reading must share
+/// a timestamp exactly.
+///
+/// The parameter count is bounded by `capsules::MAX_TELEMETRY_BATCH_BYTES`
+/// rather than by the reading and key caps multiplied together: a 16 KiB
+/// body cannot express more than a couple of thousand key/value pairs
+/// however they are distributed across readings, which stays far under
+/// Postgres's 65535-parameter ceiling.
+async fn insert_history_rows(
+  env: &Env,
+  pigeon_id: &str,
+  readings: &[(OffsetDateTime, &std::collections::HashMap<String, String>)],
+) -> Result<()> {
+  // Owned first so the borrows handed to `execute_typed` below outlive the
+  // parameter list.
+  let rows: Vec<(&String, &String, Option<f64>, &OffsetDateTime)> = readings
+    .iter()
+    .flat_map(|(reported_at, metrics)| {
+      metrics
+        .iter()
+        .map(move |(key, value)| (key, value, value.parse::<f64>().ok(), reported_at))
+    })
+    .collect();
+
+  if rows.is_empty() {
+    return Ok(());
+  }
+
+  let client = get_db_client(env).await?;
+  ensure_telemetry_history_table(&client).await?;
+
   let mut params: Vec<(&(dyn tokio_postgres::types::ToSql + Sync), Type)> =
-    Vec::with_capacity(rows.len() * 3 + 2);
+    Vec::with_capacity(rows.len() * 4 + 1);
   params.push((&pigeon_id, Type::TEXT));
-  params.push((&reported_at, Type::TIMESTAMPTZ));
 
   let mut sql = String::from(
     "INSERT INTO pigeon_telemetry_history (pigeon_id, key, value, value_num, reported_at) VALUES ",
   );
-  for (i, (key, value, value_num)) in rows.iter().enumerate() {
+  for (i, (key, value, value_num, reported_at)) in rows.iter().enumerate() {
     if i > 0 {
       sql.push(',');
     }
-    let base = i * 3 + 3;
+    let base = i * 4 + 2;
     sql.push_str(&format!(
-      "($1, ${}, ${}, ${}, $2)",
+      "($1, ${}, ${}, ${}, ${})",
       base,
       base + 1,
-      base + 2
+      base + 2,
+      base + 3
     ));
     params.push((*key, Type::TEXT));
     params.push((*value, Type::TEXT));
     params.push((value_num, Type::FLOAT8));
+    params.push((*reported_at, Type::TIMESTAMPTZ));
   }
   sql.push(';');
 
