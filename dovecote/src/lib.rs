@@ -3252,21 +3252,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       }
 
-      // Business details are optional here, and settled BEFORE the org is
-      // inserted: a VAT ID that VIES definitively rejects should refuse the
-      // whole creation rather than leave an org behind carrying a number we
-      // already know is wrong. A VIES outage is not a rejection -- the plan
-      // comes back `pending` and the sweep finishes the job.
-      let details_request = OrganizationBusinessDetailsRequest {
-        business_name: payload.business_name.clone(),
-        tax_id: payload.tax_id.clone(),
-        tax_id_type: payload.tax_id_type,
-      };
-      let plan = match plan_business_details(&details_request).await {
-        Ok(plan) => plan,
-        Err(message) => return Response::error(message, 400).unwrap().with_cors(&cors),
-      };
-
       get_db!(ctx.env, client, &cors);
       // The org insert runs in a transaction, which needs the client
       // mutably; the details write below then reuses the same connection.
@@ -3278,6 +3263,25 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       if let EntitlementCap::Refuse(message) = check_org_cap(&client, &auth.user_id).await {
         return Response::error(message, 403).unwrap().with_cors(&cors);
       }
+
+      // Business details are optional here, and settled BEFORE the org is
+      // inserted: a VAT ID that VIES definitively rejects should refuse the
+      // whole creation rather than leave an org behind carrying a number we
+      // already know is wrong. A VIES outage is not a rejection -- the plan
+      // comes back `pending` and the sweep finishes the job.
+      //
+      // After the entitlement gate, not before it: a request that is going
+      // to be refused anyway must not spend a VIES call, which would also
+      // make org creation a VAT-lookup oracle for anyone past their cap.
+      let details_request = OrganizationBusinessDetailsRequest {
+        business_name: payload.business_name.clone(),
+        tax_id: payload.tax_id.clone(),
+        tax_id_type: payload.tax_id_type,
+      };
+      let plan = match plan_business_details(&details_request).await {
+        Ok(plan) => plan,
+        Err(message) => return Response::error(message, 400).unwrap().with_cors(&cors),
+      };
 
       if !plan.is_empty() && ensure_business_details_columns(&client).await.is_err() {
         return Response::error("Internal Server Error", 500)
