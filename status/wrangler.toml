@@ -48,7 +48,7 @@ STATUS_ENV = "production"
 #   bunx wrangler kv namespace create STATUS_KV
 [[kv_namespaces]]
 binding = "STATUS_KV"
-id = "REPLACE_WITH_PRODUCTION_KV_NAMESPACE_ID"
+id = "21b30860201d4ebe8cbfb459e8013558"
 
 # Every five minutes. Modest by design: this is 288 cycles a day, which is
 # three cheap requests per cycle against the product and exactly one KV
