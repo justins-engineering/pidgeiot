@@ -11,7 +11,7 @@ use crate::helpers::{
   ensure_billing_tables, ensure_billing_usage_tables, erase_user_error_reports, fetch_subscription,
   get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
   get_organization, get_user_flocks, grant_org_acl_via_do, ingest_error_report,
-  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
+  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev,
   list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts, list_flock_firmware,
   list_org_invites, list_org_members, list_pigeon_alert_state, list_pigeon_alerts,
   list_user_organizations, load_org_billing_overview, load_org_roles, load_org_subscription_state,
@@ -546,11 +546,31 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // default/production [[queues.*]] blocks of wrangler.toml. Only
         // dev has no TELEMETRY_QUEUE binding and falls through to the
         // synchronous direct-DO-write path below.
-        let Ok(telemetry_queue) = ctx.env.queue("TELEMETRY_QUEUE") else {
-          // Same device-auth model as the shadow device routes above.
-          return proxy_to_pigeon_do(req, "", None, &obj_id, "/device/telemetry")
-            .await?
-            .with_cors(&cors);
+        //
+        // Anywhere else that fallback would be a silent regression rather
+        // than a local convenience: it moves every report's history write
+        // back onto the request's own critical path, so ingestion quietly
+        // becomes slower and more expensive per message while still
+        // answering 200. A deployed environment that has lost this
+        // binding is a deployment fault, and answering 500 is what makes
+        // it visible -- the device keeps its unsent readings queued and
+        // retries, so the reports are delayed rather than lost.
+        let telemetry_queue = match ctx.env.queue("TELEMETRY_QUEUE") {
+          Ok(queue) => queue,
+          Err(e) => {
+            if !is_local_dev(&ctx.env) {
+              console_error!(
+                "TELEMETRY_QUEUE binding unavailable in a deployed environment: {e}"
+              );
+              return Response::error("Internal Server Error", 500)
+                .unwrap()
+                .with_cors(&cors);
+            }
+            // Same device-auth model as the shadow device routes above.
+            return proxy_to_pigeon_do(req, "", None, &obj_id, "/device/telemetry")
+              .await?
+              .with_cors(&cors);
+          }
         };
 
         // The queue has no authentication of its own, so the device's

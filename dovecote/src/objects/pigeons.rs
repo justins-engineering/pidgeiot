@@ -1715,7 +1715,22 @@ async fn handle_ws_telemetry(
         console_error!("WS telemetry: enqueue failed for pigeon {pigeon_id}");
       }
     }
-    Err(_) => {
+    Err(e) => {
+      // A frame has no reply of its own, so the HTTP route's 500 has no
+      // spelling here -- but the fault it exists to surface is the same
+      // one, and taking the dev fallback silently in a deployed
+      // environment would move every WS report's history write back onto
+      // the socket's own critical path. Loud and dropped is what makes a
+      // lost binding visible; the DO's own latest-value store was already
+      // written above, so the dashboard still shows current values while
+      // only history is missing.
+      if !crate::helpers::is_local_dev(&pigeons.env) {
+        console_error!(
+          "WS telemetry: TELEMETRY_QUEUE binding unavailable in a deployed environment ({e}); dropping the history write for pigeon {pigeon_id}"
+        );
+        return;
+      }
+
       // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
       // HTTP route's no-queue fallback by writing the default history
       // target directly instead of silently dropping it.
