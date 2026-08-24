@@ -156,8 +156,8 @@ pub fn DocumentationPage() -> Element {
             },
             title: "Contact form",
             body: "Sales questions, feature requests, and anything with enough detail to be worth structuring. It reaches the same inbox.",
-            href: Some("/contact/"),
-            route: None,
+            href: None,
+            route: Some(Route::ContactPage {}),
           }
           DocLink {
             icon: rsx! {
