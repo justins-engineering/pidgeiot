@@ -247,6 +247,7 @@ pub async fn load_org_billing_overview(
          CASE WHEN a.use_org_period THEN a.current_period_end
               ELSE date_trunc('month', now()) + interval '1 month' END AS usage_period_end,
          COALESCE(u.billable_messages, 0) AS billable_messages,
+         u.allowance_floor_messages,
          (SELECT COUNT(*)::bigint FROM pigeons p
             JOIN flocks f ON f.id = p.flock_id
             WHERE f.org_id = a.id) AS device_count,
@@ -288,6 +289,20 @@ pub async fn load_org_billing_overview(
   let status: SubscriptionStatus = status_raw.parse().unwrap_or(SubscriptionStatus::Incomplete);
   let effective_plan = super::usage::effective_plan(Some(&plan_raw), Some(&status_raw));
 
+  // The same allowance the meter charges against, not the bare tier
+  // figure: the dashboard's usage bar is where a customer checks whether
+  // they are about to pay overage, so showing them a denominator the
+  // reporter doesn't use would be worse than showing nothing. Both halves
+  // matter -- a mid-period downgrade's floor, and the pool the account's
+  // billed extra devices carry.
+  let connected_device_count: i64 = row.get("connected_device_count");
+  let allowance_floor_messages: Option<i64> = row.get("allowance_floor_messages");
+  let included_messages = super::usage::period_message_allowance(
+    effective_plan,
+    allowance_floor_messages,
+    connected_device_count,
+  );
+
   Ok(Some(OrganizationBillingOverview {
     plan,
     status,
@@ -298,9 +313,9 @@ pub async fn load_org_billing_overview(
     usage_period_start: row.get("usage_period_start"),
     usage_period_end: row.get("usage_period_end"),
     billable_messages: row.get("billable_messages"),
-    included_messages: effective_plan.included_messages(),
+    included_messages,
     device_count: row.get("device_count"),
-    connected_device_count: row.get("connected_device_count"),
+    connected_device_count,
     included_devices: effective_plan.included_devices(),
   }))
 }

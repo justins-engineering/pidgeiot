@@ -79,14 +79,35 @@ pub fn effective_plan(org_plan: Option<&str>, org_status: Option<&str>) -> Billi
 }
 
 /// The message allowance a period is charged against: the tier's own
-/// allowance, or the period's recorded floor if that is higher. The floor
-/// is the customer-favorable half of a mid-period plan change -- it holds
-/// the highest allowance of any tier the org was entitled to during the
-/// period, so a downgrade never converts already-included usage into
-/// overage retroactively (an upgrade's higher allowance is simply the
+/// allowance (or the period's recorded floor if that is higher), plus the
+/// pool the account's billed extra devices carry with them.
+///
+/// The floor is the customer-favorable half of a mid-period plan change --
+/// it holds the highest allowance of any tier the org was entitled to
+/// during the period, so a downgrade never converts already-included usage
+/// into overage retroactively (an upgrade's higher allowance is simply the
 /// tier's own).
-pub fn period_message_allowance(plan: BillingPlan, floor_messages: Option<i64>) -> i64 {
-  plan.included_messages().max(floor_messages.unwrap_or(0))
+///
+/// The extra-device pool deliberately sits outside the floor rather than
+/// being recorded into it: it is recomputed from the live connected count
+/// on every reporter run, and a downgrade only ever grows it (the lower
+/// tier includes fewer devices, so more of the same fleet bills as extra).
+/// There is nothing for a floor to protect on that half.
+///
+/// `connected_devices` is the count the per-device meter charges on, not
+/// the provisioned count -- see `report_device_overage`. A free-tier
+/// account contributes no extras at any count
+/// (`BillingPlan::billed_extra_devices`), which is what keeps the ingest
+/// fuse's threshold exactly the free tier's own allowance.
+pub fn period_message_allowance(
+  plan: BillingPlan,
+  floor_messages: Option<i64>,
+  connected_devices: i64,
+) -> i64 {
+  plan
+    .included_messages()
+    .max(floor_messages.unwrap_or(0))
+    .saturating_add(plan.extra_device_messages(connected_devices))
 }
 
 /// Records the outgoing tier's allowance as the period's floor, before a
@@ -581,6 +602,11 @@ struct BillableOrg {
   period_end: OffsetDateTime,
   billable_messages: i64,
   allowance_floor_messages: Option<i64>,
+  /// Devices that sent at least one billable message during this period.
+  /// Both meters read this one figure: the per-device overage charges on
+  /// it, and the message allowance is widened by it, so the two can never
+  /// disagree about how many extra devices an account is being billed for.
+  connected_device_count: i64,
 }
 
 /// Reports usage to Stripe's billing meters: daily message-overage deltas
@@ -656,13 +682,31 @@ async fn claim_reporter_run(client: &Client) -> Result<bool> {
 
 /// Orgs with a live Stripe relationship whose current period covers now,
 /// joined to their tallied usage. Anything else has nothing meterable.
+///
+/// The connected-device count comes from here rather than from the meter
+/// that reports it, because both meters need it: a pigeon is connected for
+/// a period when it sent at least one billable message during it, which is
+/// the promise the pricing page makes and the definition it publishes.
+/// `last_billable_activity` is NULL for a device that has never reported,
+/// and NULL fails both comparisons, so provisioned-and-idle stock costs
+/// nothing and adds nothing. The period bounds are the same ones the stamp
+/// writer anchors on -- the WHERE clause below selects on the identical
+/// live-subscription condition as `record_billable_message`'s
+/// `use_org_period` -- so a device active anywhere in the period is
+/// stamped inside it, not merely within six hours of it.
 async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
   let rows = client
     .query_typed(
       "SELECT o.id, o.stripe_customer_id, o.plan, o.subscription_status,
               o.current_period_start, o.current_period_end,
               COALESCE(u.billable_messages, 0) AS billable_messages,
-              u.allowance_floor_messages
+              u.allowance_floor_messages,
+              (SELECT COUNT(*)::bigint
+                 FROM pigeons p JOIN flocks f ON f.id = p.flock_id
+                 WHERE f.org_id = o.id
+                   AND p.last_billable_activity >= o.current_period_start
+                   AND p.last_billable_activity < o.current_period_end
+              ) AS connected_device_count
        FROM organizations o
        LEFT JOIN billing_usage_periods u
          ON u.owner_kind = 'org' AND u.owner_id = o.id
@@ -693,6 +737,7 @@ async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
         period_end: row.get("current_period_end"),
         billable_messages: row.get("billable_messages"),
         allowance_floor_messages: row.get("allowance_floor_messages"),
+        connected_device_count: row.get("connected_device_count"),
       })
       .collect(),
   )
@@ -731,7 +776,11 @@ async fn report_message_overage(
   plan: BillingPlan,
   event_names: &mut std::collections::HashMap<String, String>,
 ) {
-  let allowance = period_message_allowance(plan, org.allowance_floor_messages);
+  let allowance = period_message_allowance(
+    plan,
+    org.allowance_floor_messages,
+    org.connected_device_count,
+  );
   let overage = (org.billable_messages - allowance).max(0);
 
   let already: i64 = match client
@@ -795,23 +844,19 @@ async fn report_message_overage(
 }
 
 /// Within the final day of the period, claims and posts the billable
-/// extra-devices count (devices above the tier's included count) -- once
-/// per period, identifier keyed on org + period. A device removed or added
-/// after this snapshot isn't re-reported; a missed final-day run
+/// extra-devices count (connected devices above the tier's included count)
+/// -- once per period, identifier keyed on org + period. A device removed
+/// or added after this snapshot isn't re-reported; a missed final-day run
 /// undercounts and logs, never bills late into the next period.
 ///
-/// Counts connected devices, not provisioned ones: a pigeon is billable
-/// for a period when it sent at least one billable message during it,
-/// which is the promise the pricing page makes and the definition it
-/// publishes. `last_billable_activity` is NULL for a device that has never
-/// reported, and a NULL fails both comparisons, so provisioned-and-idle
-/// stock costs nothing. The period anchor matches the one the stamp writer
-/// uses -- `load_billable_orgs` selects on the same live-subscription
-/// condition as that statement's `use_org_period` -- so a device active
-/// anywhere in the period is stamped inside it, not merely within six
-/// hours of it. What the once-per-period snapshot does miss is a device
-/// whose only activity lands in the period's final hours, after this run;
-/// that undercounts, in the customer's favour.
+/// The count itself is `load_billable_orgs`'s, read at the top of this
+/// same reporter pass -- see its doc comment for what "connected" means
+/// and why the period bounds are the ones they are. Sharing it is what
+/// makes this meter and the message allowance agree by construction: an
+/// account cannot be billed for an extra device whose 30 K of pool it was
+/// not also granted. What the once-per-period snapshot does miss is a
+/// device whose only activity lands in the period's final hours, after
+/// this run; that undercounts, in the customer's favour.
 async fn report_device_overage(
   env: &Env,
   client: &Client,
@@ -823,32 +868,7 @@ async fn report_device_overage(
     return;
   }
 
-  let device_count: i64 = match client
-    .query_typed(
-      "SELECT COUNT(*)::bigint AS device_count
-       FROM pigeons p JOIN flocks f ON f.id = p.flock_id
-       WHERE f.org_id = $1
-         AND p.last_billable_activity >= $2
-         AND p.last_billable_activity < $3;",
-      &[
-        (&org.id, Type::UUID),
-        (&org.period_start, Type::TIMESTAMPTZ),
-        (&org.period_end, Type::TIMESTAMPTZ),
-      ],
-    )
-    .await
-  {
-    Ok(rows) => rows.first().map(|r| r.get("device_count")).unwrap_or(0),
-    Err(e) => {
-      console_error!(
-        "Billing meter reporter: connected device count failed for org {}: {e}",
-        org.id
-      );
-      return;
-    }
-  };
-
-  let extra = (device_count - plan.included_devices()).max(0);
+  let extra = plan.billed_extra_devices(org.connected_device_count);
   if extra > 0 {
     let identifier = format!("devov-{}-{}", org.id, org.period_start.unix_timestamp());
     let report_day = org.period_end.date();
@@ -951,19 +971,77 @@ mod tests {
     // time (scale's allowance) keeps governing the in-flight period, so
     // usage that was included when it happened can't become overage.
     assert_eq!(
-      period_message_allowance(BillingPlan::Growth, Some(45_000_000)),
+      period_message_allowance(BillingPlan::Growth, Some(45_000_000), 0),
       45_000_000
     );
     // Mid-period upgrade growth -> scale: the floor holds the old, lower
     // allowance and must not cap the new tier's own.
     assert_eq!(
-      period_message_allowance(BillingPlan::Scale, Some(7_500_000)),
+      period_message_allowance(BillingPlan::Scale, Some(7_500_000), 0),
       45_000_000
     );
     // No change this period: the tier's own allowance, floor or not.
     assert_eq!(
-      period_message_allowance(BillingPlan::Growth, None),
+      period_message_allowance(BillingPlan::Growth, None, 0),
       7_500_000
+    );
+  }
+
+  #[test]
+  fn billed_extra_devices_extend_the_pool() {
+    // The case this exists for: a Builder account at 150 connected
+    // devices used to bill device overage and message overage at once for
+    // one act of growth. 100 extra devices now carry 3 M of pool with
+    // them, so the second meter stays quiet until the fleet genuinely
+    // talks more than the devices were sold to.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Builder, None, 150),
+      4_500_000
+    );
+    // Under and at the included count, nothing is billed and nothing is
+    // added.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Builder, None, 50),
+      1_500_000
+    );
+    assert_eq!(
+      period_message_allowance(BillingPlan::Builder, None, 7),
+      1_500_000
+    );
+  }
+
+  #[test]
+  fn the_extra_pool_stacks_on_the_floor_rather_than_competing_with_it() {
+    // A downgrade mid-period is exactly when both halves are live at once:
+    // scale -> growth leaves the floor at scale's 45 M, while the same
+    // 1,600-device fleet now bills 1,350 extras against growth's 250
+    // included. The extras add to the floor -- taking the larger of the
+    // two would silently drop whichever half moved second.
+    assert_eq!(
+      period_message_allowance(BillingPlan::Growth, Some(45_000_000), 1_600),
+      45_000_000 + 1_350 * 30_000
+    );
+  }
+
+  #[test]
+  fn the_free_tier_allowance_is_untouched_by_any_device_count() {
+    // The guard the ingest fuse depends on. The fuse trips at
+    // `BillingPlan::Perch.included_messages()`, so if a device count could
+    // ever widen the free tier's allowance the two would part company and
+    // the fuse would be enforcing a number nothing else believes.
+    for connected in [0, 10, 11, 10_000] {
+      assert_eq!(
+        period_message_allowance(BillingPlan::Perch, None, connected),
+        BillingPlan::Perch.included_messages()
+      );
+    }
+    // And an unentitled org resolves to Perch before it ever gets here, so
+    // a lapsed Fleet account with 10,000 devices connected is on the free
+    // tier's allowance too, not a 300 M one.
+    let plan = effective_plan(Some("fleet"), Some("canceled"));
+    assert_eq!(
+      period_message_allowance(plan, None, 10_000),
+      BillingPlan::Perch.included_messages()
     );
   }
 

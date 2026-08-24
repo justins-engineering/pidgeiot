@@ -1579,6 +1579,44 @@ impl BillingPlan {
   pub fn bills_overage(&self) -> bool {
     !matches!(self, BillingPlan::Perch)
   }
+
+  /// Pooled messages one billed extra device adds to the account's
+  /// allowance. It is not a separate figure to keep in step with the
+  /// ladder: every tier's own allowance divided by its own device count is
+  /// exactly this number, so a device bought as overage carries the same
+  /// message budget as one included in the tier
+  /// (`every_tier_budgets_the_same_messages_per_device` pins that).
+  ///
+  /// Without it an account a little past its device count bills device
+  /// overage and message overage for a single behavior -- two meters
+  /// ticking for one act of growth, which is the opacity we criticize
+  /// competitors for.
+  pub const MESSAGES_PER_BILLED_DEVICE: i64 = 30_000;
+
+  /// Devices billed as overage at this connected-device count: those
+  /// beyond what the tier includes. A tier that bills no overage has no
+  /// billed extras by definition, which is what keeps the free tier's
+  /// allowance -- and so its ingest fuse -- out of reach of this
+  /// arithmetic entirely. Perch's device count is a hard cap rather than
+  /// an overage floor, so there is nothing above it to bill for.
+  ///
+  /// Connected, not provisioned: the count belongs to the caller, and the
+  /// only counts passed in are the connected-device counts the per-device
+  /// meter itself charges on.
+  pub fn billed_extra_devices(&self, connected_devices: i64) -> i64 {
+    if !self.bills_overage() {
+      return 0;
+    }
+    (connected_devices - self.included_devices()).max(0)
+  }
+
+  /// Pooled messages the billed extra devices add on top of the tier's own
+  /// allowance.
+  pub fn extra_device_messages(&self, connected_devices: i64) -> i64 {
+    self
+      .billed_extra_devices(connected_devices)
+      .saturating_mul(Self::MESSAGES_PER_BILLED_DEVICE)
+  }
 }
 
 impl std::str::FromStr for BillingPlan {
@@ -1939,6 +1977,10 @@ pub struct OrganizationBillingOverview {
   #[serde(with = "time::serde::rfc3339")]
   pub usage_period_end: OffsetDateTime,
   pub billable_messages: i64,
+  /// The allowance this period is actually charged against, which is the
+  /// tier's pooled messages plus the 30 K each billed extra device carries
+  /// (and never below the floor a mid-period downgrade recorded) -- so it
+  /// can legitimately exceed `effective_plan.included_messages()`.
   pub included_messages: i64,
   pub device_count: i64,
   /// How many of those devices sent a billable message during this period,
@@ -2142,6 +2184,49 @@ mod billing_tests {
   fn free_tier_pauses_rather_than_billing_overage() {
     assert!(!BillingPlan::Perch.bills_overage());
     assert!(BillingPlan::Builder.bills_overage());
+  }
+
+  #[test]
+  fn every_tier_budgets_the_same_messages_per_device() {
+    // What makes MESSAGES_PER_BILLED_DEVICE the right figure rather than a
+    // chosen one: it is the ladder's own per-device budget, identical on
+    // every rung. A future tier that breaks the ratio has to decide here
+    // whether the constant or the tier is wrong, instead of quietly
+    // selling an extra device a budget the tier never promised.
+    for plan in [
+      BillingPlan::Perch,
+      BillingPlan::Builder,
+      BillingPlan::Growth,
+      BillingPlan::Scale,
+      BillingPlan::Fleet,
+    ] {
+      assert_eq!(
+        plan.included_messages() / plan.included_devices(),
+        BillingPlan::MESSAGES_PER_BILLED_DEVICE,
+        "{plan} budgets a different message count per included device"
+      );
+    }
+  }
+
+  #[test]
+  fn billed_extras_count_only_devices_past_the_included_count() {
+    assert_eq!(BillingPlan::Builder.billed_extra_devices(150), 100);
+    assert_eq!(BillingPlan::Builder.extra_device_messages(150), 3_000_000);
+    // At and below the included count there is nothing billed, so nothing
+    // added.
+    assert_eq!(BillingPlan::Builder.billed_extra_devices(50), 0);
+    assert_eq!(BillingPlan::Builder.extra_device_messages(50), 0);
+    assert_eq!(BillingPlan::Builder.extra_device_messages(3), 0);
+  }
+
+  #[test]
+  fn the_free_tier_has_no_billed_extras_at_any_device_count() {
+    // The guard that keeps the free-tier fuse out of reach of the extra
+    // pool. A Perch account cannot legitimately exceed 10 devices at all
+    // (check_device_cap refuses), and even if a count above the cap
+    // reached here it must not widen the allowance the fuse trips on.
+    assert_eq!(BillingPlan::Perch.billed_extra_devices(10_000), 0);
+    assert_eq!(BillingPlan::Perch.extra_device_messages(10_000), 0);
   }
 
   #[test]
