@@ -29,6 +29,17 @@ pub use contact::{
   MIN_CONTACT_MESSAGE_BYTES, format_contact_email, is_plausible_email,
 };
 
+// Tax identity for the billing entity -- the identifier types, the status
+// a lookup lands on, and the format rules dovecote's routes and fancier's
+// billing form both apply. Shared for the same reason `contact` is: one
+// definition of "well-formed" or the two drift.
+pub mod tax_id;
+pub use tax_id::{
+  EuVatId, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, PreparedTaxId, TaxIdDecision,
+  TaxIdFormatError, TaxIdStatus, TaxIdType, ViesOutcome, decide_status, normalize_other_tax_id,
+  parse_eu_vat, prepare_tax_id, recheck_status, tax_id_log_label,
+};
+
 // Client error-report envelope plus the normalizer/signature functions
 // dovecote's `POST /errors` route and fancier's capture hooks share --
 // see that module's own header for why the pure logic lives here.
@@ -1683,15 +1694,63 @@ pub struct OrganizationDetail {
   pub invites: Vec<OrganizationInvite>,
 }
 
+/// Body for `POST /orgs`. The business-detail fields are optional and
+/// default to absent, so a client that predates them keeps working; they
+/// exist here because the org IS the billing entity, and the cheapest
+/// moment to ask for a VAT registration is the moment somebody declares
+/// they are a business.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OrganizationCreateRequest {
   pub name: String,
+  #[serde(default)]
+  pub business_name: Option<String>,
+  #[serde(default)]
+  pub tax_id: Option<String>,
+  #[serde(default)]
+  pub tax_id_type: TaxIdType,
 }
 
 /// Body for `PUT /orgs/:org_id` (rename -- the only mutable org field).
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OrganizationRenameRequest {
   pub name: String,
+}
+
+/// An org's tax identity: who the invoice is made out to and under which
+/// registration, plus what we currently believe about that registration.
+///
+/// `tax_id` is NOT stripped on read, unlike connector tokens and invite
+/// tokens -- a VAT number is printed on every invoice its owner issues and
+/// is publicly checkable by anyone, so hiding it from the org's own members
+/// would protect nothing and would stop them noticing a typo.
+///
+/// `tax_id_validated_at` is when VIES last confirmed the number; it stays
+/// put when a later re-check comes back inconclusive, because "confirmed on
+/// the 3rd, could not reach VIES since" is the truth. `tax_id_checked_at`
+/// is when we last ASKED, answer or not, and is what paces the retry sweep.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrganizationBusinessDetails {
+  pub org_id: Uuid,
+  pub business_name: Option<String>,
+  pub tax_id: Option<String>,
+  pub tax_id_type: TaxIdType,
+  pub tax_id_status: TaxIdStatus,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub tax_id_validated_at: Option<OffsetDateTime>,
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub tax_id_checked_at: Option<OffsetDateTime>,
+}
+
+/// Body for `PUT /orgs/:org_id/business-details`. Every field is replaced
+/// wholesale: this is a small form the customer sees in full, so a partial
+/// update would mean guessing which blank meant "unchanged" and which meant
+/// "delete this".
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OrganizationBusinessDetailsRequest {
+  pub business_name: Option<String>,
+  pub tax_id: Option<String>,
+  #[serde(default)]
+  pub tax_id_type: TaxIdType,
 }
 
 /// Body for `PUT /orgs/:org_id/members/:user_id`.
