@@ -2,7 +2,7 @@ use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, e
 
 use crate::helpers::{
   evaluate_scheduled_alerts, probe_kratos_health, report_billing_meters, sweep_error_retention,
-  sweep_telemetry_history_retention,
+  sweep_pending_tax_ids, sweep_telemetry_history_retention,
 };
 
 /// Cron-Trigger entry point (`[triggers] crons`, `wrangler.toml`) for the
@@ -53,5 +53,14 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // where STRIPE_SECRET_KEY isn't configured; internally best-effort/logged.
   if let Err(e) = report_billing_meters(&env).await {
     console_error!("Billing meter report failed: {e}");
+  }
+
+  // VAT re-check sweep (helpers/business_details.rs) -- the other half of
+  // "a VIES outage never blocks a save". A registration we could not settle
+  // at save time is stored `pending`, and this is what eventually settles
+  // it. Same ride-the-cron reasoning and the same crash-proofing as the
+  // sweeps above; internally rate-limited to one attempt per org per hour.
+  if let Err(e) = sweep_pending_tax_ids(&env).await {
+    console_error!("Pending VAT re-check sweep failed: {e}");
   }
 }

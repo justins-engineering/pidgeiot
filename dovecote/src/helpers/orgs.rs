@@ -234,13 +234,16 @@ pub async fn load_org_roles(client: &Client, user_id_str: &str) -> Result<Vec<Or
 
 /// Creates an org and its founding `owner` membership row in one
 /// transaction -- an org can never exist without at least one owner.
+/// Borrows the client mutably rather than consuming it (the transaction
+/// needs `&mut`) so the caller still holds it afterwards -- `POST /orgs`
+/// writes the new org's business details on the same connection.
 pub async fn create_organization(
-  mut client: Client,
+  client: &mut Client,
   user_id_str: &str,
   email: Option<&str>,
   name: &str,
 ) -> Result<Organization> {
-  ensure_org_tables(&client).await?;
+  ensure_org_tables(client).await?;
   let user_uuid = parse_uuid(user_id_str, "X-User-Id")?;
 
   let tx = client.transaction().await.map_err(|e| {

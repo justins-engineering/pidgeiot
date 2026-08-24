@@ -37,6 +37,15 @@ pub use billing::load_org_billing_overview;
 pub use billing::load_org_subscription_state;
 pub use billing::mark_webhook_event_processed;
 
+pub mod vies;
+
+mod business_details;
+pub use business_details::ensure_business_details_columns;
+pub use business_details::load_business_details;
+pub use business_details::plan_business_details;
+pub use business_details::sweep_pending_tax_ids;
+pub use business_details::write_business_details;
+
 mod usage;
 pub use usage::EntitlementCap;
 pub use usage::INGEST_PAUSED_MESSAGE;

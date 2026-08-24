@@ -9,32 +9,34 @@ use crate::helpers::{
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
   delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
-  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
-  get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
-  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  ensure_business_details_columns, erase_user_error_reports, fetch_subscription, get_db_client,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer, get_organization,
+  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_org_billing_overview, load_org_roles, load_org_subscription_state,
+  load_business_details, load_org_billing_overview, load_org_roles, load_org_subscription_state,
   mark_webhook_event_processed, mint_invite_token, notify_contact_submission, org_role_of,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, readings_from_body, remove_member, rename_organization,
-  resolve_checkout_prices, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
-  store_contact_submission, stripe_configured, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
+  remove_member, rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
+  send_invite_email, sha256_hex, store_contact_submission, stripe_configured,
+  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_webhook_signature, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationCreateRequest,
-  OrganizationDetail, OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest,
-  OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest, OrganizationRenameRequest,
-  Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER,
-  TelemetryEndpoint, TelemetryHistoryBucket, TelemetryHistoryQuery, TelemetryReportBody,
+  FlockCreateRequest, MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationBusinessDetailsRequest,
+  OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
+  OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
+  OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
+  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TelemetryHistoryQuery, TelemetryReportBody,
 };
 use futures::future::join_all;
 use worker::{
@@ -3250,7 +3252,25 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       }
 
+      // Business details are optional here, and settled BEFORE the org is
+      // inserted: a VAT ID that VIES definitively rejects should refuse the
+      // whole creation rather than leave an org behind carrying a number we
+      // already know is wrong. A VIES outage is not a rejection -- the plan
+      // comes back `pending` and the sweep finishes the job.
+      let details_request = OrganizationBusinessDetailsRequest {
+        business_name: payload.business_name.clone(),
+        tax_id: payload.tax_id.clone(),
+        tax_id_type: payload.tax_id_type,
+      };
+      let plan = match plan_business_details(&details_request).await {
+        Ok(plan) => plan,
+        Err(message) => return Response::error(message, 400).unwrap().with_cors(&cors),
+      };
+
       get_db!(ctx.env, client, &cors);
+      // The org insert runs in a transaction, which needs the client
+      // mutably; the details write below then reuses the same connection.
+      let mut client = client;
 
       // Organization-count entitlement. Counts the organizations this
       // person already owns, so being a member of somebody else's spends
@@ -3259,8 +3279,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         return Response::error(message, 403).unwrap().with_cors(&cors);
       }
 
+      if !plan.is_empty() && ensure_business_details_columns(&client).await.is_err() {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
       let Ok(org) = create_organization(
-        client,
+        &mut client,
         &auth.user_id,
         auth.email.as_deref(),
         payload.name.trim(),
@@ -3271,6 +3297,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .unwrap()
           .with_cors(&cors);
       };
+
+      // Best-effort, and deliberately so: the org exists and the caller
+      // owns it, so failing the whole creation over a details write would
+      // strand them with an org they were told they do not have. A failure
+      // here leaves the details blank and editable.
+      if !plan.is_empty()
+        && let Err(e) = write_business_details(&client, &org.id, &plan).await
+      {
+        console_error!("Failed to store business details on new org {}: {e}", org.id);
+      }
 
       let headers = Headers::new();
       if headers.set("Location", &format!("/orgs/{}", org.id)).is_err() {
@@ -3904,6 +3940,127 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         }
       },
     )
+    // --- Business details / tax identity ---
+    // The org is the billing entity, so its tax registration lives here
+    // rather than on the Kratos identity: one person can belong to two orgs
+    // with two different registrations, and an identity trait could not
+    // express that. Reading is member-visible (a VAT number is public
+    // information, and a member who spots a typo should be able to say so);
+    // writing is manager-only, same split as the rest of the org surface.
+    .get_async(
+      "/orgs/:org_id/business-details",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if caller_role.is_none() {
+          return Response::error("Forbidden: not a member of this organization", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        if ensure_business_details_columns(&client).await.is_err() {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        match load_business_details(&client, &org_id).await {
+          Ok(Some(details)) => Response::from_json(&details)?.with_cors(&cors),
+          Ok(None) => Response::error("Not Found: no such organization", 404)
+            .unwrap()
+            .with_cors(&cors),
+          Err(_) => Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors),
+        }
+      },
+    )
+    .put_async(
+      "/orgs/:org_id/business-details",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Some(org_id) = ctx
+          .param("org_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Bad Request: invalid organization id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(payload) = req.json::<OrganizationBusinessDetailsRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON payload", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(caller_role) = org_role_of(&client, &org_id, &auth.user_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if !caller_role.is_some_and(|r| r.is_manager()) {
+          return Response::error(
+            "Forbidden: only owners/admins can change billing details",
+            403,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+
+        // Authorization first, then the VIES call -- a non-member must not
+        // be able to use this route as a free VAT-lookup oracle.
+        let plan = match plan_business_details(&payload).await {
+          Ok(plan) => plan,
+          Err(message) => return Response::error(message, 400).unwrap().with_cors(&cors),
+        };
+
+        if ensure_business_details_columns(&client).await.is_err() {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        match write_business_details(&client, &org_id, &plan).await {
+          Ok(Some(details)) => Response::from_json(&details)?.with_cors(&cors),
+          Ok(None) => Response::error("Not Found: no such organization", 404)
+            .unwrap()
+            .with_cors(&cors),
+          Err(_) => Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors),
+        }
+      },
+    )
     .post_async(
       "/orgs/:org_id/billing/checkout",
       |mut req, ctx: RouteContext<()>| async move {
@@ -4003,6 +4160,28 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
         };
 
+        // SEAM -- tax identity is collected but not yet sent to Stripe.
+        //
+        // `load_business_details(&client, &org_id)` has the org's
+        // `business_name`, `tax_id`, `tax_id_type` and `tax_id_status`.
+        // Consuming them here means passing `customer_update[name]=auto`
+        // plus `tax_id_data[0][type]`/`[value]` on the Checkout session (or
+        // POSTing `/v1/customers/:id/tax_ids` before it), which is what
+        // makes Stripe apply the B2B reverse charge to an EU sale instead
+        // of adding VAT to it.
+        //
+        // Two things to settle when that is wired, neither of which the
+        // storage layer decides:
+        //   - WHICH statuses may be sent. `validated` clearly; `pending` is
+        //     a judgment call (Stripe re-validates EU VAT itself, so
+        //     forwarding a pending id is defensible and lets a customer buy
+        //     during a VIES outage) and `invalid` clearly must not be.
+        //   - `tax_id_type: other` has no Stripe type. Stripe's enum is
+        //     jurisdiction-specific (`au_abn`, `ca_gst_hst`, `gb_vat`, ...)
+        //     and nothing here records which one, so a non-EU registration
+        //     needs the customer to name their jurisdiction before it can
+        //     be forwarded. Storing it unforwarded is the deliberate state
+        //     until then -- it is still what an invoice has to show.
         let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {
           Ok(prices) => prices,
           Err(e) => {
