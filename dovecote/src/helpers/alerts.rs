@@ -1,4 +1,4 @@
-use crate::helpers::{FlockAccess, PigeonAccess, get_db_client};
+use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client};
 use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
@@ -545,6 +545,48 @@ pub async fn check_telemetry_alerts(
     return Ok(());
   }
 
+  let mut reading = ResolvedReading::new((reported_at_ms / 1000) as i64, metrics.clone());
+  reading.previous = Some(previous.clone());
+  check_telemetry_alerts_batch(env, pigeon_id, &[reading]).await
+}
+
+/// The batched form, and the one that holds the evaluation loop -- a
+/// single report is a batch of one.
+///
+/// An alert has to see what a batch actually contains. A device buffering
+/// ten minutes of readings and sending them together must trip the same
+/// alerts, at the same points, as the device next to it sending each
+/// reading as it takes it; evaluating only the batch's final values would
+/// make a spike that rose and fell inside one batch invisible, and would
+/// hand `RateOfChange` a single jump where the device recorded a gradual
+/// climb. So this walks the batch chronologically, evaluating every
+/// definition against every reading, with each reading's own timestamp
+/// driving the debounce window.
+///
+/// What it does NOT do is call the transition machinery once per reading.
+/// The definitions are fetched once for the whole batch, and a transition
+/// is applied only where the condition's truth CHANGES, plus once at the
+/// end of the batch. That is enough to reproduce the sequential outcome:
+/// the first evaluation of a true run opens the debounce window and the
+/// last one closes it, which is exactly the pair of calls a stream of
+/// separate reports would have used to fire. It costs one round trip for
+/// a batch that holds steady rather than sixty-four, which is the whole
+/// reason the batch is worth sending.
+///
+/// The one visible difference from sequential arrival: a firing alert
+/// records the batch's last matching reading as `last_notified_at` rather
+/// than the earliest reading that satisfied the debounce. Nothing reads
+/// that column to decide whether to notify (there is no re-notify), so it
+/// costs an approximate timestamp and saves the round trips.
+pub async fn check_telemetry_alerts_batch(
+  env: &Env,
+  pigeon_id: &str,
+  readings: &[ResolvedReading],
+) -> Result<()> {
+  if readings.iter().all(|reading| reading.metrics.is_empty()) {
+    return Ok(());
+  }
+
   let client = get_db_client(env).await?;
   ensure_alert_tables(&client).await?;
 
@@ -570,69 +612,108 @@ pub async fn check_telemetry_alerts(
   for row in &rows {
     let def = AlertDefinition::from(row_to_alert_definition_row(row));
 
-    let is_true = match &def.condition {
-      AlertCondition::Threshold {
-        key,
-        comparator,
-        value,
-      } => {
-        let Some(raw) = metrics.get(key) else {
-          continue;
-        };
-        let Ok(observed) = raw.parse::<f64>() else {
-          continue;
-        };
-        comparator.evaluate(observed, *value)
-      }
-      AlertCondition::RateOfChange {
-        key,
-        max_delta,
-        window_secs,
-      } => {
-        let Some(raw) = metrics.get(key) else {
-          continue;
-        };
-        let Ok(observed) = raw.parse::<f64>() else {
-          continue;
-        };
-        // No previous row for this key -- either this pigeon's first-ever
-        // report of it, or the previous value wasn't numeric. Either way,
-        // nothing to diff against yet, so this can never fire on a first
-        // reading (capsules::AlertCondition::RateOfChange's own doc
-        // comment).
-        let Some(prev) = previous.get(key) else {
-          continue;
-        };
-        let Ok(prev_value) = prev.value.parse::<f64>() else {
-          continue;
-        };
-        if let Some(window) = window_secs {
-          let gap_secs = (reported_at_ms / 1000) as i64 - prev.reported_at;
-          if gap_secs > *window {
-            // The two samples are too far apart in time to call their
-            // difference a "rate" of anything (e.g. resuming after a long
-            // silence at a very different reading is not a spike) -- skip
-            // rather than fire.
-            continue;
-          }
-        }
-        (observed - prev_value).abs() > *max_delta
-      }
-      // DeviceState/MissingReport (and any future absence-of-signal
-      // variant) aren't ingest-evaluable here -- see AlertCondition's doc
-      // comment in capsules and evaluate_scheduled_alerts below.
-      AlertCondition::DeviceState { .. } | AlertCondition::MissingReport { .. } => continue,
-    };
+    // Only the readings this definition can actually be decided against:
+    // a reading missing the key, or carrying a non-numeric value for it,
+    // says nothing about the condition either way and must not be read as
+    // a recovery.
+    let evaluated: Vec<(i64, bool)> = readings
+      .iter()
+      .filter_map(|reading| {
+        evaluate_ingest_condition(&def.condition, reading).map(|is_true| (reading.at_secs, is_true))
+      })
+      .collect();
 
-    if let Err(e) = apply_alert_transition(&client, env, &def, pigeon_id, is_true).await {
-      console_error!(
-        "Alert transition failed for definition {} / pigeon {pigeon_id}: {e}",
-        def.id
-      );
+    for (at_secs, is_true) in transitions_to_apply(&evaluated) {
+      let at = OffsetDateTime::from_unix_timestamp(at_secs).unwrap_or(OffsetDateTime::now_utc());
+      if let Err(e) = apply_alert_transition(&client, env, &def, pigeon_id, is_true, at).await {
+        console_error!(
+          "Alert transition failed for definition {} / pigeon {pigeon_id}: {e}",
+          def.id
+        );
+      }
     }
   }
 
   Ok(())
+}
+
+/// Which of a batch's decided readings actually need a trip through the
+/// transition machinery: every reading where the condition's truth changes
+/// from the one before it, plus the batch's last decided reading.
+///
+/// Those two are what the state machine needs and all it needs. Opening a
+/// true run records when it began; closing it is what compares that
+/// against the debounce window and fires. Everything between the two would
+/// re-read and rewrite the same row to reach the same conclusion, which
+/// for a device buffering sixty-four readings is sixty-two round trips
+/// spent to change nothing.
+fn transitions_to_apply(evaluated: &[(i64, bool)]) -> Vec<(i64, bool)> {
+  let mut applied: Option<bool> = None;
+  let mut out = Vec::new();
+
+  for (index, (at_secs, is_true)) in evaluated.iter().enumerate() {
+    let is_last = index + 1 == evaluated.len();
+    if applied == Some(*is_true) && !is_last {
+      continue;
+    }
+    applied = Some(*is_true);
+    out.push((*at_secs, *is_true));
+  }
+
+  out
+}
+
+/// One reading against one condition: `Some(true)`/`Some(false)` when the
+/// reading decides it, `None` when it says nothing -- the key is absent,
+/// its value is not a number, or the condition is one of the
+/// absence-of-signal kinds that only the scheduled sweep can decide (see
+/// `AlertCondition`'s doc comment in `capsules`, and
+/// `evaluate_scheduled_alerts` below).
+fn evaluate_ingest_condition(
+  condition: &AlertCondition,
+  reading: &ResolvedReading,
+) -> Option<bool> {
+  match condition {
+    AlertCondition::Threshold {
+      key,
+      comparator,
+      value,
+    } => {
+      let observed = reading.metrics.get(key)?.parse::<f64>().ok()?;
+      Some(comparator.evaluate(observed, *value))
+    }
+    AlertCondition::RateOfChange {
+      key,
+      max_delta,
+      window_secs,
+    } => {
+      let observed = reading.metrics.get(key)?.parse::<f64>().ok()?;
+      // No previous entry for this key -- either this pigeon's first-ever
+      // report of it, or the previous value wasn't numeric. Either way,
+      // nothing to diff against yet, so this can never fire on a first
+      // reading (capsules::AlertCondition::RateOfChange's own doc
+      // comment). Inside a batch the previous entry is the reading before
+      // this one, so a climb is measured step by step.
+      let prev = reading.previous.as_ref()?.get(key)?;
+      let prev_value = prev.value.parse::<f64>().ok()?;
+
+      if let Some(window) = window_secs {
+        let gap_secs = reading.at_secs - prev.reported_at;
+        if gap_secs > *window {
+          // The two samples are too far apart in time to call their
+          // difference a "rate" of anything (e.g. resuming after a long
+          // silence at a very different reading is not a spike) -- say
+          // nothing rather than fire.
+          return None;
+        }
+      }
+
+      Some((observed - prev_value).abs() > *max_delta)
+    }
+    // DeviceState/MissingReport (and any future absence-of-signal
+    // variant) aren't ingest-evaluable here.
+    AlertCondition::DeviceState { .. } | AlertCondition::MissingReport { .. } => None,
+  }
 }
 
 /// Cron-Trigger-driven scheduled evaluator -- the counterpart to
@@ -757,7 +838,7 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
         AlertCondition::Threshold { .. } | AlertCondition::RateOfChange { .. } => continue,
       };
 
-      if let Err(e) = apply_alert_transition(&client, env, &def, &pigeon_id, is_true).await {
+      if let Err(e) = apply_alert_transition(&client, env, &def, &pigeon_id, is_true, now).await {
         console_error!(
           "Scheduled alert eval: transition failed for definition {} / pigeon {pigeon_id}: {e}",
           def.id
@@ -883,9 +964,8 @@ async fn apply_alert_transition(
   def: &AlertDefinition,
   pigeon_id: &str,
   is_true: bool,
+  now: OffsetDateTime,
 ) -> Result<()> {
-  let now = OffsetDateTime::now_utc();
-
   let row = client
     .query_typed_one(
       "INSERT INTO alert_state (alert_definition_id, pigeon_id, status)
@@ -1189,7 +1269,142 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
 
 #[cfg(test)]
 mod tests {
-  use super::redact_email;
+  use super::{ResolvedReading, evaluate_ingest_condition, redact_email, transitions_to_apply};
+  use crate::objects::pigeons::PreviousTelemetryValue;
+  use capsules::{AlertCondition, Comparator};
+  use std::collections::HashMap;
+
+  fn reading(at_secs: i64, key: &str, value: &str) -> ResolvedReading {
+    ResolvedReading::new(
+      at_secs,
+      [(key.to_string(), value.to_string())].into_iter().collect(),
+    )
+  }
+
+  fn with_previous(
+    mut reading: ResolvedReading,
+    key: &str,
+    value: &str,
+    at: i64,
+  ) -> ResolvedReading {
+    let mut previous = HashMap::new();
+    previous.insert(
+      key.to_string(),
+      PreviousTelemetryValue {
+        value: value.to_string(),
+        reported_at: at,
+      },
+    );
+    reading.previous = Some(previous);
+    reading
+  }
+
+  fn threshold_over(key: &str, value: f64) -> AlertCondition {
+    AlertCondition::Threshold {
+      key: key.to_string(),
+      comparator: Comparator::Gt,
+      value,
+    }
+  }
+
+  #[test]
+  fn a_reading_without_the_key_decides_nothing() {
+    let condition = threshold_over("temp", 30.0);
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(100, "humidity", "40")),
+      None
+    );
+  }
+
+  #[test]
+  fn a_non_numeric_value_decides_nothing_rather_than_recovering() {
+    let condition = threshold_over("temp", 30.0);
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(100, "temp", "warm")),
+      None
+    );
+  }
+
+  #[test]
+  fn a_threshold_is_decided_per_reading() {
+    let condition = threshold_over("temp", 30.0);
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(100, "temp", "35")),
+      Some(true)
+    );
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(100, "temp", "25")),
+      Some(false)
+    );
+  }
+
+  #[test]
+  fn rate_of_change_measures_the_step_from_the_reading_before_it() {
+    let condition = AlertCondition::RateOfChange {
+      key: "temp".to_string(),
+      max_delta: 10.0,
+      window_secs: Some(60),
+    };
+
+    // Five degrees in ten seconds -- inside the batch this is one step of
+    // a climb, not the whole climb.
+    let gradual = with_previous(reading(110, "temp", "25"), "temp", "20", 100);
+    assert_eq!(evaluate_ingest_condition(&condition, &gradual), Some(false));
+
+    // The same key jumping fifteen degrees in one step does fire.
+    let jump = with_previous(reading(110, "temp", "35"), "temp", "20", 100);
+    assert_eq!(evaluate_ingest_condition(&condition, &jump), Some(true));
+  }
+
+  #[test]
+  fn rate_of_change_says_nothing_on_a_first_sighting_or_across_a_long_gap() {
+    let condition = AlertCondition::RateOfChange {
+      key: "temp".to_string(),
+      max_delta: 10.0,
+      window_secs: Some(60),
+    };
+
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(110, "temp", "35")),
+      None
+    );
+
+    let stale = with_previous(reading(1_000, "temp", "35"), "temp", "20", 100);
+    assert_eq!(evaluate_ingest_condition(&condition, &stale), None);
+  }
+
+  #[test]
+  fn a_steady_batch_costs_one_transition_at_its_end() {
+    // Sixty-four true readings would be sixty-four round trips evaluated
+    // naively; the run only needs its open and its close, and here those
+    // are the same two calls that open the debounce window and fire it.
+    let evaluated: Vec<(i64, bool)> = (0..64).map(|i| (1_000 + i * 10, true)).collect();
+    assert_eq!(
+      transitions_to_apply(&evaluated),
+      vec![(1_000, true), (1_630, true)]
+    );
+  }
+
+  #[test]
+  fn a_spike_that_rose_and_fell_inside_the_batch_is_still_applied() {
+    let evaluated = vec![
+      (100, false),
+      (110, true),
+      (120, true),
+      (130, false),
+      (140, false),
+    ];
+    assert_eq!(
+      transitions_to_apply(&evaluated),
+      vec![(100, false), (110, true), (130, false), (140, false)]
+    );
+  }
+
+  #[test]
+  fn a_single_reading_applies_exactly_once() {
+    assert_eq!(transitions_to_apply(&[(100, true)]), vec![(100, true)]);
+    assert!(transitions_to_apply(&[]).is_empty());
+  }
 
   #[test]
   fn redact_email_keeps_domain_drops_local_part() {

@@ -176,6 +176,7 @@ pub use orgs::set_flock_org;
 
 mod alerts;
 pub use alerts::check_telemetry_alerts;
+pub use alerts::check_telemetry_alerts_batch;
 pub use alerts::create_flock_alert;
 pub use alerts::create_pigeon_alert;
 pub use alerts::delete_alert_definition;
