@@ -155,6 +155,11 @@ simple = { limit = 5, period = 60 }
 # CONTACT_LIMITER carries. Over the limit answers 429 with Retry-After
 # and never 401, and the check fails open on a binding fault: a limiter
 # outage must not take a fleet offline. See helpers/device_limits.rs.
+#
+# Verified enforcing on staging at this exact value: of 150 requests for
+# one pigeon inside a window, 99 reached the Durable Object and 51 were
+# refused without one. Counts this low do enforce; the firmware block
+# below documents what happens when they are not.
 [[ratelimits]]
 name = "DEVICE_SHADOW_LIMITER"
 namespace_id = "1007"
@@ -165,25 +170,38 @@ simple = { limit = 120, period = 60 }
 # Object round trip to resolve the pigeon's assigned target plus an R2
 # read, and one image is thousands of them.
 #
-# SIZING, deliberately generous. The device aborts an entire transfer on
-# its first chunk error, and refuses a firmware version outright after
-# three aborted attempts -- a count it persists across reboots, so
-# recovery needs an operator to push a different version. A false 429
-# here is therefore far more expensive than one on any other surface, and
-# the limit is set above every real download rate rather than near it.
-# Our own fleet downloads in 512-byte chunks with a 100ms inter-chunk
-# sleep, a hard ceiling of 600 req/min, and is measured at 21-83 req/min
-# over LTE-M. The library default is 2048-byte chunks with no sleep, where
-# the pace is bounded instead by a fresh TCP+TLS handshake per chunk.
-# 1800/60s clears the sleep-capped ceiling 3x and the handshake-bound one
-# with room to spare, while still capping a device looping on downloads.
+# WHY A 10 SECOND WINDOW, where every other limiter here uses 60. The
+# binding is documented as permissive and eventually consistent, its
+# counters cached locally and reconciled asynchronously, and measurement
+# against staging found where that bites: at limit = 1200 over 60s it
+# refused nothing at all across 3200 requests inside one window, and at
+# 1800 nothing across 3000. The same route with the same code refused 24%
+# of a 1500-request burst at limit = 400 over 10s, and refused hard at
+# limit = 120 over 60s. A high count on a long window is evidently never
+# reached locally before the window turns, which makes it not a loose
+# limit but no limit at all. The short window buys the same sustained
+# ceiling at a counter magnitude that actually enforces. Anyone retuning
+# this must re-measure rather than reason about the configured number.
 #
-# Same approximate/per-colo counters, 429-never-401, and fail-open-on-
-# fault behaviour as the shadow limiter above.
+# SIZING. 400/10s is 2400/min sustained, deliberately far above every
+# real download rate, because a false 429 here is expensive: the device
+# aborts the whole transfer on its first chunk error, and refuses a
+# firmware version outright after three aborted attempts -- a count it
+# persists across reboots, so recovery needs an operator to push a
+# different version. Our own fleet downloads in 512-byte chunks with a
+# 100ms inter-chunk sleep and is measured at 21-83 req/min over LTE-M,
+# around 2% of this. The demanding case is the library's own defaults
+# (2048-byte chunks, no sleep) on a fast link, where the pace is bounded
+# by a fresh TCP+TLS handshake per chunk; a staging run at a sustained
+# 22 req/s, above what that configuration reaches in practice, passed 600
+# consecutive chunks with no 429.
+#
+# Same 429-never-401 and fail-open-on-fault behaviour as the shadow
+# limiter above.
 [[ratelimits]]
 name = "DEVICE_FIRMWARE_LIMITER"
 namespace_id = "1010"
-simple = { limit = 1800, period = 60 }
+simple = { limit = 400, period = 10 }
 
 # Per-source-address budget for device requests that FAIL authentication,
 # across every /device/pigeons/:id/* route. Bounds token guessing and the
@@ -198,7 +216,12 @@ simple = { limit = 1800, period = 60 }
 # device whose token was rotated out from under it, which retries on its
 # own poll interval rather than in a loop. Once an address is over
 # budget, further attempts from it are refused in the isolate without a
-# round trip, which is the cost this limiter exists to bound.
+# round trip, which is the cost this limiter exists to bound. Measured on
+# staging: 36 failures got through before the counter cut over, then
+# every subsequent request was refused with no round trip at all. Ten is
+# where the budget is set, not where it bites -- the binding is
+# permissive by design, and this one only has to stop a loop, not the
+# first handful of attempts.
 #
 # The CoAP terminator is EXEMPT, by source address, via the same
 # COAP_SERVICE_ALLOWED_IPS allowlist that gates the internal PSK route:
@@ -337,7 +360,7 @@ simple = { limit = 120, period = 60 }
 [[env.staging.ratelimits]]
 name = "DEVICE_FIRMWARE_LIMITER"
 namespace_id = "1011"
-simple = { limit = 1800, period = 60 }
+simple = { limit = 400, period = 10 }
 
 # Own namespace_id -- see the production DEVICE_AUTH_FAIL_LIMITER block
 # above, including why the CoAP terminator is exempt from it.
@@ -439,7 +462,7 @@ simple = { limit = 120, period = 60 }
 [[env.dev.ratelimits]]
 name = "DEVICE_FIRMWARE_LIMITER"
 namespace_id = "1012"
-simple = { limit = 1800, period = 60 }
+simple = { limit = 400, period = 10 }
 
 # Own namespace_id -- see the production DEVICE_AUTH_FAIL_LIMITER block
 # above, including why the CoAP terminator is exempt from it.

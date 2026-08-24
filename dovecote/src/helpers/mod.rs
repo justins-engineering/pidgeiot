@@ -87,8 +87,7 @@ mod device_limits;
 pub use device_limits::DEVICE_FIRMWARE_LIMITER;
 pub use device_limits::DEVICE_SHADOW_LIMITER;
 pub use device_limits::DeviceAuthGuard;
-pub use device_limits::device_surface_allowed;
-pub use device_limits::rate_limited_response;
+pub use device_limits::device_surface_limit;
 
 mod environment;
 pub use environment::is_local_dev;

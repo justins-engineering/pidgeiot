@@ -5,28 +5,41 @@ use worker::{Cors, Date, Env, Request, Response, console_error};
 
 use super::coap_service::is_allowed_coap_service_ip;
 
+/// One rate-limiter binding together with the window it is configured
+/// with. The two travel as a pair because the window is what a limited
+/// caller has to wait out, and so what `Retry-After` must say -- keeping
+/// them together is what stops the two drifting apart.
+pub struct DeviceLimiter {
+  binding: &'static str,
+  window_secs: u32,
+}
+
 /// Per-pigeon throttle on `GET /device/pigeons/:id/shadow`. Sizing lives
 /// beside the binding in `wrangler.toml`.
-pub const DEVICE_SHADOW_LIMITER: &str = "DEVICE_SHADOW_LIMITER";
+pub const DEVICE_SHADOW_LIMITER: DeviceLimiter = DeviceLimiter {
+  binding: "DEVICE_SHADOW_LIMITER",
+  window_secs: 60,
+};
 
-/// Per-pigeon throttle on `GET /device/pigeons/:id/firmware`. Sizing
-/// lives beside the binding in `wrangler.toml`.
-pub const DEVICE_FIRMWARE_LIMITER: &str = "DEVICE_FIRMWARE_LIMITER";
+/// Per-pigeon throttle on `GET /device/pigeons/:id/firmware`. On the
+/// short window rather than the long one, for a reason measured against
+/// the real binding rather than assumed -- see `wrangler.toml`.
+pub const DEVICE_FIRMWARE_LIMITER: DeviceLimiter = DeviceLimiter {
+  binding: "DEVICE_FIRMWARE_LIMITER",
+  window_secs: 10,
+};
 
 /// Per-source-address budget for device requests that fail authentication.
 /// Only failures are counted, so it never sees healthy traffic.
-const DEVICE_AUTH_FAIL_LIMITER: &str = "DEVICE_AUTH_FAIL_LIMITER";
-
-/// Every one of these limiters is configured on a 60 second window, which
-/// is the longest period a Cloudflare rate-limiter binding accepts. It is
-/// also the honest `Retry-After`: a limited caller is inside a window that
-/// can only be waited out.
-const LIMIT_WINDOW_SECS: u32 = 60;
+const DEVICE_AUTH_FAIL_LIMITER: DeviceLimiter = DeviceLimiter {
+  binding: "DEVICE_AUTH_FAIL_LIMITER",
+  window_secs: 60,
+};
 
 /// How long an address stays short-circuited once it has exhausted its
-/// failed-auth budget. Deliberately the limiter's own window, so this
+/// failed-auth budget. Deliberately that limiter's own window, so this
 /// memory can never outlive the counter that justified it.
-const PENALTY_MS: u64 = LIMIT_WINDOW_SECS as u64 * 1000;
+const PENALTY_MS: u64 = DEVICE_AUTH_FAIL_LIMITER.window_secs as u64 * 1000;
 
 /// Ceiling on remembered addresses. A penalty box this full is itself the
 /// signature of a spread-out attempt, where per-address memory has stopped
@@ -68,20 +81,27 @@ thread_local! {
 /// backstop on runaway volume rather than a precise gate. A limiter fault
 /// taking a fleet offline would be a far worse failure than a window of
 /// unthrottled polling.
-pub async fn device_surface_allowed(env: &Env, binding: &str, pigeon_id: &str) -> bool {
-  let limiter = match env.rate_limiter(binding) {
-    Ok(limiter) => limiter,
+pub async fn device_surface_limit(
+  env: &Env,
+  limiter: &DeviceLimiter,
+  pigeon_id: &str,
+  cors: &Cors,
+) -> Option<worker::Result<Response>> {
+  let binding = limiter.binding;
+  let handle = match env.rate_limiter(binding) {
+    Ok(handle) => handle,
     Err(e) => {
       console_error!("device limits: {binding} binding unavailable (failing open): {e}");
-      return true;
+      return None;
     }
   };
 
-  match limiter.limit(pigeon_id.to_string()).await {
-    Ok(outcome) => outcome.success,
+  match handle.limit(pigeon_id.to_string()).await {
+    Ok(outcome) if !outcome.success => Some(rate_limited_response(cors, limiter.window_secs)),
+    Ok(_) => None,
     Err(e) => {
       console_error!("device limits: {binding} check failed (failing open): {e}");
-      true
+      None
     }
   }
 }
@@ -129,13 +149,12 @@ impl DeviceAuthGuard {
   /// should be refused before the Durable Object is touched. Reads
   /// isolate-local state only: no binding call, no network, and nothing
   /// charged to an address that has never failed.
-  pub fn is_blocked(&self) -> bool {
-    let Some(address) = self.address.as_deref() else {
-      return false;
-    };
+  pub fn blocked_response(&self, cors: &Cors) -> Option<worker::Result<Response>> {
+    let address = self.address.as_deref()?;
     let now_ms = Date::now().as_millis();
-    AUTH_FAILURE_PENALTIES
-      .with(|penalties| penalty_active_at(&mut penalties.borrow_mut(), address, now_ms))
+    let blocked = AUTH_FAILURE_PENALTIES
+      .with(|penalties| penalty_active_at(&mut penalties.borrow_mut(), address, now_ms));
+    blocked.then(|| rate_limited_response(cors, DEVICE_AUTH_FAIL_LIMITER.window_secs))
   }
 
   /// Charges one authentication failure to this address.
@@ -150,20 +169,20 @@ impl DeviceAuthGuard {
       return;
     };
 
-    let limiter = match env.rate_limiter(DEVICE_AUTH_FAIL_LIMITER) {
-      Ok(limiter) => limiter,
+    let binding = DEVICE_AUTH_FAIL_LIMITER.binding;
+    let handle = match env.rate_limiter(binding) {
+      Ok(handle) => handle,
       Err(e) => {
-        console_error!(
-          "device limits: {DEVICE_AUTH_FAIL_LIMITER} binding unavailable (failing open): {e}"
-        );
+        console_error!("device limits: {binding} binding unavailable (failing open): {e}");
         return;
       }
     };
 
-    match limiter.limit(address.to_string()).await {
+    match handle.limit(address.to_string()).await {
       Ok(outcome) if !outcome.success => {
         console_error!(
-          "device limits: device auth failures from {address} over budget; refusing further attempts from it for {LIMIT_WINDOW_SECS}s without a verify round trip"
+          "device limits: device auth failures from {address} over budget; refusing further attempts from it for {}s without a verify round trip",
+          DEVICE_AUTH_FAIL_LIMITER.window_secs
         );
         let now_ms = Date::now().as_millis();
         AUTH_FAILURE_PENALTIES.with(|penalties| {
@@ -171,9 +190,7 @@ impl DeviceAuthGuard {
         });
       }
       Ok(_) => {}
-      Err(e) => {
-        console_error!("device limits: {DEVICE_AUTH_FAIL_LIMITER} check failed (failing open): {e}")
-      }
+      Err(e) => console_error!("device limits: {binding} check failed (failing open): {e}"),
     }
   }
 }
@@ -191,11 +208,11 @@ impl DeviceAuthGuard {
 /// failure there, and is retried on the next cycle rather than escalated);
 /// it is here for correctness, for anything else that speaks HTTP, and for
 /// whoever is debugging this with curl.
-pub fn rate_limited_response(cors: &Cors) -> worker::Result<Response> {
+fn rate_limited_response(cors: &Cors, window_secs: u32) -> worker::Result<Response> {
   let mut response = Response::error("Too Many Requests", 429).unwrap();
   if response
     .headers_mut()
-    .set("Retry-After", &LIMIT_WINDOW_SECS.to_string())
+    .set("Retry-After", &window_secs.to_string())
     .is_err()
   {
     console_error!("device limits: failed to set Retry-After on a 429");

@@ -202,7 +202,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `POST /contact` — minimum time on the form | 2s (`capsules::MIN_CONTACT_FILL_MS`) | `capsules::contact::validate`, `400` under the floor |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
 | `GET /device/pigeons/:id/shadow` — requests per pigeon | 120 / 60s | `wrangler.toml` `DEVICE_SHADOW_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice the 60/min a 1s `telemetry_interval` produces, which is the fastest poll cadence the platform can express |
-| `GET /device/pigeons/:id/firmware` — Range requests per pigeon | 1800 / 60s | `wrangler.toml` `DEVICE_FIRMWARE_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Set well above any real download rate on purpose: a device aborts the whole transfer on its first chunk error |
+| `GET /device/pigeons/:id/firmware` — Range requests per pigeon | 400 / 10s (2400/min sustained) | `wrangler.toml` `DEVICE_FIRMWARE_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Set well above any real download rate on purpose: a device aborts the whole transfer on its first chunk error. The short window is load-bearing, not cosmetic — see the note below |
 | `/device/pigeons/:id/*` — **failed** device authentications per IP | 10 / 60s | `wrangler.toml` `DEVICE_AUTH_FAIL_LIMITER` + `helpers/device_limits.rs::DeviceAuthGuard`, `429` over the limit. Only `401`s are counted, so a healthy device never touches it; the CoAP terminator's own address is exempt (see below) |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /errors` — bytes in `note` (manual JSON body) | 4 KiB (reuses `capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -210,7 +210,18 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | Stored error events per signature | newest 200 kept (each group's oldest 5 and all manual reports exempt) | `helpers/errors.rs` retention sweep on the 5-minute cron |
 | Stored error events age | 90 days, keyed on server-side `received_at` | `helpers/errors.rs` retention sweep |
 
-Two notes on the device limiters, both consequences of who actually calls these routes:
+Three notes on the device limiters:
+
+- **A high count on a 60s window does not enforce.** Cloudflare's binding is documented as
+  permissive and eventually consistent, with counters cached per location and reconciled
+  asynchronously, and staging measurement found the practical edge of that: `limit = 1200,
+  period = 60` refused nothing across 3200 requests inside one window, and `1800` nothing across
+  3000, while `limit = 120, period = 60` and `limit = 400, period = 10` both refused hard on the
+  same route with the same code. That is why the firmware limiter uses the short window — it
+  buys the same sustained ceiling at a counter magnitude that actually binds. Every one of these
+  limits is also *permissive* at the margin: the failed-auth budget of 10/60s was measured
+  letting 36 failures through before it cut over. **Retune any of these by measuring, never by
+  reasoning about the configured number.**
 
 - **Devices cannot see a `429` as a `429`.** The Zephyr client surfaces neither the status code
   nor response headers to its callers, so a limited request is indistinguishable there from any
@@ -224,6 +235,13 @@ Two notes on the device limiters, both consequences of who actually calls these 
   already gates `GET /internal/coap-psk/:pigeon_id`. Those devices stay covered: the two
   per-pigeon limiters apply to everything the terminator forwards (the pigeon id is in the path),
   and the terminator applies its own per-source connection admission on the DTLS/TLS side.
+
+Measured on staging against the deployed configuration: 150 shadow polls for one pigeon inside a
+window produced 99 `200`s and 51 `429`s, with exactly 99 Durable Object invocations — a limited
+request costs no object round trip. A burst of bad tokens from one address produced 36 `401`s
+and then, on every subsequent request for the next 60s, a `429` with **zero** Durable Object
+invocations. A healthy device's own cadence (30s telemetry plus a shadow poll and report-back
+each cycle) saw no `429` at all, and a valid token works again as soon as the window passes.
 
 ---
 

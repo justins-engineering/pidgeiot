@@ -8,7 +8,7 @@ use crate::helpers::{
   constant_time_eq, count_billable_message, create_checkout_session, create_customer,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
-  delete_pigeon_pg_db, device_surface_allowed, ensure_billing_tables, ensure_billing_usage_tables,
+  delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
   erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
   get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
   grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
@@ -20,10 +20,10 @@ use crate::helpers::{
   proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, rate_limited_response, remove_member, rename_organization,
-  resolve_checkout_prices, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
-  store_contact_submission, stripe_configured, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  raise_message_allowance_floor, remove_member, rename_organization, resolve_checkout_prices,
+  revoke_invite, send_feedback_email, send_invite_email, sha256_hex, store_contact_submission,
+  stripe_configured, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
   verify_webhook_signature,
 };
@@ -469,8 +469,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // its failed-auth budget is refused without a Durable Object round
       // trip, which is the cost this limiter exists to bound.
       let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-      if auth_guard.is_blocked() {
-        return rate_limited_response(&cors);
+      if let Some(limited) = auth_guard.blocked_response(&cors) {
+        return limited;
       }
 
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
@@ -478,8 +478,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // Poll traffic is neither billed nor counted, so nothing else bounds
       // how often one pigeon can ask. Sized in wrangler.toml above what any
       // configurable device cadence can reach.
-      if !device_surface_allowed(&ctx.env, DEVICE_SHADOW_LIMITER, &pigeon_id).await {
-        return rate_limited_response(&cors);
+      if let Some(limited) =
+        device_surface_limit(&ctx.env, &DEVICE_SHADOW_LIMITER, &pigeon_id, &cors).await
+      {
+        return limited;
       }
 
       // No X-User-Id / Kratos session here — the DO verifies the device's
@@ -498,8 +500,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // its failed-auth budget is refused without a Durable Object round
       // trip, which is the cost this limiter exists to bound.
       let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-      if auth_guard.is_blocked() {
-        return rate_limited_response(&cors);
+      if let Some(limited) = auth_guard.blocked_response(&cors) {
+        return limited;
       }
 
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
@@ -547,8 +549,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // its failed-auth budget is refused without a Durable Object round
       // trip, which is the cost this limiter exists to bound.
       let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-      if auth_guard.is_blocked() {
-        return rate_limited_response(&cors);
+      if let Some(limited) = auth_guard.blocked_response(&cors) {
+        return limited;
       }
 
       let is_upgrade = req
@@ -586,8 +588,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // its failed-auth budget is refused without a Durable Object round
         // trip, which is the cost this limiter exists to bound.
         let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-        if auth_guard.is_blocked() {
-          return rate_limited_response(&cors);
+        if let Some(limited) = auth_guard.blocked_response(&cors) {
+          return limited;
         }
 
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
@@ -721,8 +723,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // its failed-auth budget is refused without a Durable Object round
       // trip, which is the cost this limiter exists to bound.
       let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-      if auth_guard.is_blocked() {
-        return rate_limited_response(&cors);
+      if let Some(limited) = auth_guard.blocked_response(&cors) {
+        return limited;
       }
 
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
@@ -758,8 +760,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // its failed-auth budget is refused without a Durable Object round
         // trip, which is the cost this limiter exists to bound.
         let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
-        if auth_guard.is_blocked() {
-          return rate_limited_response(&cors);
+        if let Some(limited) = auth_guard.blocked_response(&cors) {
+          return limited;
         }
 
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
@@ -770,8 +772,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // produce, because a false 429 here is expensive: the device
         // aborts the whole transfer on its first chunk error, and gives up
         // on a version entirely after three aborts.
-        if !device_surface_allowed(&ctx.env, DEVICE_FIRMWARE_LIMITER, &pigeon_id).await {
-          return rate_limited_response(&cors);
+        if let Some(limited) =
+          device_surface_limit(&ctx.env, &DEVICE_FIRMWARE_LIMITER, &pigeon_id, &cors).await
+        {
+          return limited;
         }
 
         // Extracted before proxy_to_pigeon_do consumes `req` below.
