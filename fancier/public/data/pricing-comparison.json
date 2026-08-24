@@ -89,7 +89,7 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do. Adopting them also starts with their west manifest and a pinned Zephyr revision, where pigeon is only ever a module you add to the workspace you already run, vanilla or NCS (their west-zephyr.yml, checked 24 August 2026)."
+          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do."
         },
         {
           "id": "thingsboard-steady",
@@ -448,5 +448,28 @@
       ],
       "build_your_own_intro": "AWS is cheaper here too, and still a message bus."
     }
-  ]
+  ],
+  "_page_silent": {
+    "why": "Findings that were checked, and deliberately kept OFF the page. Do not re-add without a new ruling.",
+    "golioth-zephyr-integration": {
+      "checked": "2026-08-24",
+      "sources": [
+        "https://github.com/golioth/golioth-firmware-sdk",
+        "https://raw.githubusercontent.com/golioth/golioth-firmware-sdk/main/west-zephyr.yml",
+        "https://raw.githubusercontent.com/golioth/golioth-firmware-sdk/main/examples/zephyr/README.md"
+      ],
+      "finding": [
+        "Golioth does NOT fork Zephyr. Their west-zephyr.yml declares zephyrproject-rtos/zephyr",
+        "upstream with import: true, pinned to a revision (v4.3.0 on main). A separate west-ncs.yml",
+        "covers nRF Connect SDK; their verified-devices table names Zephyr v4.2.1 and NCS v3.1.1.",
+        "Their documented quick start does make the SDK itself the manifest repository",
+        "(west init -m .../golioth-firmware-sdk.git --mf west-zephyr.yml), but the same README also",
+        "documents adding it as a module to an existing west.yml, so 'requires their manifest' is",
+        "false too. By contrast pigeon ships only zephyr/module.yml and no manifest at all.",
+        "Ruled off the page 2026-08-24: without the fork, the residual difference is too thin to",
+        "earn space on the page, and a differentiator a prospect can rebut in one reply costs more",
+        "than it earns."
+      ]
+    }
+  }
 }
