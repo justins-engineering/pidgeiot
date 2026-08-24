@@ -1911,7 +1911,7 @@ async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<R
 /// used to enforce `RateOfChange::window_secs`. Doubles as the per-key
 /// entry of the stored blob itself (`helpers::TelemetryBlob`), since a
 /// key's stored entry is exactly what the next report hands the evaluator.
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct PreviousTelemetryValue {
   pub value: String,
   pub reported_at: i64,

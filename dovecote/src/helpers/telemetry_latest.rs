@@ -14,7 +14,7 @@ use crate::objects::pigeons::PreviousTelemetryValue;
 use capsules::{
   MAX_TELEMETRY_KEY_BYTES, MAX_TELEMETRY_KEYS, MAX_TELEMETRY_VALUE_BYTES, TelemetryLatest,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The decoded latest-value store. `PreviousTelemetryValue` is reused as the
 /// per-key entry deliberately: a key's stored entry *is* what the next report
@@ -98,7 +98,7 @@ pub fn merge_report(blob: &mut TelemetryBlob, metrics: &HashMap<String, String>,
     );
   }
 
-  evict_to_cap(blob, metrics);
+  evict_to_cap(blob, &metrics.keys().map(String::as_str).collect());
 }
 
 /// Folds the retired per-key table's rows into the blob during a DO's lazy
@@ -114,7 +114,7 @@ pub fn fold_legacy_rows(blob: &mut TelemetryBlob, rows: Vec<LegacyTelemetryRow>)
     });
   }
 
-  evict_to_cap(blob, &HashMap::new());
+  evict_to_cap(blob, &HashSet::new());
 }
 
 /// Drops least-recently-reported keys until the blob is back within
@@ -122,14 +122,18 @@ pub fn fold_legacy_rows(blob: &mut TelemetryBlob, rows: Vec<LegacyTelemetryRow>)
 /// never candidates: a device that reports more distinct keys than it used to
 /// should shed its abandoned keys, not the ones it just sent. Ties break on
 /// the key name so the outcome is deterministic rather than hash-order.
-fn evict_to_cap(blob: &mut TelemetryBlob, protected: &HashMap<String, String>) {
+///
+/// `protected` is a key set rather than the report itself because a batched
+/// report protects the union of every reading's keys, not any one reading's
+/// (`helpers::telemetry_batch::merge_batch`).
+pub(crate) fn evict_to_cap(blob: &mut TelemetryBlob, protected: &HashSet<&str>) {
   if blob.len() <= MAX_TELEMETRY_KEYS {
     return;
   }
 
   let mut candidates: Vec<(i64, String)> = blob
     .iter()
-    .filter(|(key, _)| !protected.contains_key(*key))
+    .filter(|(key, _)| !protected.contains(key.as_str()))
     .map(|(key, entry)| (entry.reported_at, key.clone()))
     .collect();
   candidates.sort();

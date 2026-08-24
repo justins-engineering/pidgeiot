@@ -102,6 +102,8 @@ pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
 pub use telemetry::write_telemetry_history;
 
+mod telemetry_batch;
+
 mod telemetry_latest;
 pub use telemetry_latest::LegacyTelemetryRow;
 pub use telemetry_latest::TelemetryBlob;

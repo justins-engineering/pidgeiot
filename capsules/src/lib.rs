@@ -524,6 +524,156 @@ pub const MAX_TELEMETRY_KEY_BYTES: usize = 128;
 /// dovecote, so this is the only thing bounding one.
 pub const MAX_TELEMETRY_VALUE_BYTES: usize = 1024;
 
+/// Most readings one batched telemetry report may carry. A device that
+/// accumulates locally and sends periodically pays one worker request, one
+/// Durable Object round trip and one queue message for the whole batch
+/// instead of one of each per reading, which is the entire point of the
+/// batch form -- see `docs/api.md`'s Telemetry section for the arithmetic.
+///
+/// 64 rather than a larger number because the win is already almost
+/// entirely banked by then (64x fewer messages leaves the per-message
+/// component at 1.6% of its original share) while the batch stays small
+/// enough to survive one WebSocket frame, and because a device buffering
+/// more than this many readings has a reporting-cadence problem that a
+/// deeper buffer only hides.
+pub const MAX_TELEMETRY_BATCH_READINGS: usize = 64;
+
+/// Largest raw body a batched telemetry report may occupy, matching
+/// [`MAX_LOG_CHUNK_BYTES`] and `objects/ws::MAX_WS_FRAME_BYTES` -- the
+/// batch form is offered over the device WebSocket as well as HTTP, and a
+/// batch that fits one transport but not the other would be a trap. It is
+/// also what keeps the fan-out bounded: the per-reading key cap alone
+/// would allow a batch expanding to thousands of history rows, while a 16
+/// KiB body cannot express more than a couple of thousand key/value pairs
+/// however they are distributed.
+pub const MAX_TELEMETRY_BATCH_BYTES: usize = 16 * 1024;
+
+/// How far into the past a batched reading's own timestamp may reach
+/// before the server clamps it. Device-supplied timestamps are advisory:
+/// an older reading is pulled forward to this boundary rather than
+/// refused, so a device that was offline longer than this still delivers
+/// its buffer (visibly stacked at the boundary) instead of losing it.
+/// A day covers any realistic accumulate-while-offline window while
+/// bounding how far a device can rewrite its own history.
+pub const MAX_TELEMETRY_BACKDATE_SECS: i64 = 86_400;
+
+/// One reading inside a batched telemetry report: the metrics a device
+/// sampled at one moment, plus when it sampled them.
+///
+/// Two spellings of "when", because the devices that need this feature
+/// most cannot express the obvious one. `~/pigeon` has no wall clock at
+/// all -- NTP was removed in 0.13.6 and there is no RTC, so `k_uptime_get()`
+/// (monotonic milliseconds since boot) is the only time source on the
+/// device -- which makes [`age_secs`](Self::age_secs), "this many seconds
+/// before I sent the batch", the form real firmware can actually fill in.
+/// [`at`](Self::at) is for clients that do have a clock (the pigeonhole
+/// bridge, a gateway, a test harness) and is the more natural shape when
+/// one is available.
+///
+/// Neither is trusted: both resolve against the server's own receive time
+/// and are clamped into `[now - MAX_TELEMETRY_BACKDATE_SECS, now]`. A
+/// reading with neither field is treated as "now".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TelemetryReading {
+  /// Absolute unix seconds. Clamped, never trusted; a future timestamp
+  /// resolves to the receive time.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub at: Option<i64>,
+  /// Seconds before the batch was sent, for a device with no wall clock.
+  /// Takes precedence over `at` if a client somehow sends both: a client
+  /// filling this in is telling us it does not trust its own clock, and
+  /// the relative form is the one that survives a wrong one.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub age_secs: Option<i64>,
+  pub metrics: std::collections::HashMap<String, String>,
+}
+
+/// The batched form of a telemetry report body. Deliberately a struct with
+/// one named field rather than a bare array so it can be told apart from
+/// the flat `{"key":"value"}` form by shape alone -- see
+/// [`TelemetryReportBody`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TelemetryBatch {
+  pub reports: Vec<TelemetryReading>,
+}
+
+/// What `POST /device/pigeons/:id/telemetry` (and the WebSocket
+/// `telemetry` frame's `metrics`) accepts: the original flat map of one
+/// reading's key/value pairs, or a batch of timestamped readings.
+///
+/// `#[serde(untagged)]` with `Batch` first is what makes the two
+/// distinguishable without a version field. A flat report can only ever be
+/// a map of strings to strings, so a body whose `reports` field holds an
+/// array of objects cannot be a flat report, and a device that happens to
+/// use `reports` as a telemetry key sends a *string* there, which fails
+/// the batch shape and falls through to `Flat` unharmed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum TelemetryReportBody {
+  Batch(TelemetryBatch),
+  Flat(std::collections::HashMap<String, String>),
+}
+
+#[cfg(test)]
+mod telemetry_report_body_tests {
+  use super::*;
+
+  fn parse(json: &str) -> TelemetryReportBody {
+    serde_json::from_str(json).expect("body should parse")
+  }
+
+  #[test]
+  fn a_flat_map_still_parses_as_a_flat_report() {
+    let TelemetryReportBody::Flat(metrics) = parse(r#"{"temp":"21.5","status":"ok"}"#) else {
+      panic!("flat body should not parse as a batch");
+    };
+    assert_eq!(metrics["temp"], "21.5");
+  }
+
+  #[test]
+  fn a_reports_array_parses_as_a_batch() {
+    let TelemetryReportBody::Batch(batch) = parse(
+      r#"{"reports":[{"age_secs":10,"metrics":{"temp":"21.5"}},{"at":1784390937,"metrics":{"temp":"21.6"}}]}"#,
+    ) else {
+      panic!("batch body should not parse as a flat report");
+    };
+    assert_eq!(batch.reports.len(), 2);
+    assert_eq!(batch.reports[0].age_secs, Some(10));
+    assert_eq!(batch.reports[0].at, None);
+    assert_eq!(batch.reports[1].at, Some(1784390937));
+    assert_eq!(batch.reports[1].metrics["temp"], "21.6");
+  }
+
+  #[test]
+  fn a_reading_may_omit_both_timestamp_forms() {
+    let TelemetryReportBody::Batch(batch) = parse(r#"{"reports":[{"metrics":{"temp":"21.5"}}]}"#)
+    else {
+      panic!("batch body should not parse as a flat report");
+    };
+    assert_eq!(batch.reports[0].at, None);
+    assert_eq!(batch.reports[0].age_secs, None);
+  }
+
+  #[test]
+  fn a_device_reporting_a_key_named_reports_is_not_mistaken_for_a_batch() {
+    // The whole basis for telling the two forms apart without a version
+    // field: a telemetry value is always a string, never an array.
+    let TelemetryReportBody::Flat(metrics) = parse(r#"{"reports":"3","temp":"21.5"}"#) else {
+      panic!("a string-valued `reports` key is a flat report, not a batch");
+    };
+    assert_eq!(metrics["reports"], "3");
+    assert_eq!(metrics.len(), 2);
+  }
+
+  #[test]
+  fn an_empty_batch_parses_and_is_left_for_the_caller_to_refuse() {
+    let TelemetryReportBody::Batch(batch) = parse(r#"{"reports":[]}"#) else {
+      panic!("an empty batch is still a batch");
+    };
+    assert!(batch.reports.is_empty());
+  }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TelemetryLatest {
   pub key: String,
