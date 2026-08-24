@@ -85,6 +85,9 @@ pub struct Profile {
   /// exactly the anchoring the surrounding paragraph exists to answer, so
   /// it is shown below that argument rather than ranked against tiers.
   pub build_your_own: Vec<Row>,
+  /// The argument a reader meets BEFORE those rates, which is the whole
+  /// point of keeping them out of the table.
+  pub build_your_own_intro: String,
   /// The one line worth saying after a reader has looked at the numbers.
   #[serde(default)]
   pub closing: Option<String>,

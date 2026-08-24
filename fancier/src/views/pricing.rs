@@ -183,9 +183,10 @@ fn FigureSource(row: Row, stale: bool) -> Element {
   }
 }
 
-/// One vendor's row, shared by the priced table and the build-it-yourself
-/// block below it so a raw-infrastructure rate is held to visibly the same
-/// standard as a product's: same cells, same source, same date.
+/// One vendor: what they charge, and in one line, the thing that actually
+/// decides it. The difference sits with the platform name rather than in a
+/// list below the table, because a reader comparing prices will not scroll
+/// to find out what a price buys.
 #[component]
 fn ComparisonRow(row: Row, columns: Vec<Column>, today: Date, stale_after: i64) -> Element {
   let stale = row.is_stale(today, stale_after);
@@ -198,6 +199,9 @@ fn ComparisonRow(row: Row, columns: Vec<Column>, today: Date, stale_after: i64) 
           if let Some(plan) = row.plan.as_ref() {
             span { class: "font-normal text-base-content/70", " · {plan}" }
           }
+        }
+        if let Some(note) = row.note.as_ref() {
+          div { class: "mt-0.5 text-sm font-normal text-base-content/70", "{note}" }
         }
         FigureSource { row: row.clone(), stale }
       }
@@ -219,39 +223,12 @@ fn ComparisonRow(row: Row, columns: Vec<Column>, today: Date, stale_after: i64) 
   }
 }
 
-/// The numeric worth of a display figure like "$0.045", for the one place
-/// that has to rank figures rather than print them. Unparseable text sorts
-/// last rather than first, so a malformed entry can never win a comparison
-/// by being unreadable.
-fn dollars(value: &str) -> f64 {
-  value
-    .trim_start_matches('$')
-    .replace(',', "")
-    .parse()
-    .unwrap_or(f64::MAX)
-}
-
-/// One cadence: its table of things you can buy, the reasons those numbers
-/// are what they are, and the separate question of assembling it yourself.
+/// One cadence: one table of things you can buy, then the separate
+/// question of assembling it yourself.
 #[component]
 fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element {
-  // The rate a reader is most likely to have anchored on, named in the
-  // argument rather than left to be discovered in a table. Falls back to
-  // the table's own wording if the data file ever stops carrying it, so
-  // the sentence cannot end in a blank.
-  let cheapest_raw = profile
-    .build_your_own
-    .iter()
-    .filter_map(|row| row.figure_by_key("thousand"))
-    // Compared as money, not as text. A lexicographic minimum over these
-    // strings happens to be right for today's figures and would silently
-    // stop being right the first time one crossed into two digits.
-    .min_by(|a, b| dollars(&a.value).total_cmp(&dollars(&b.value)))
-    .map(|figure| figure.value.clone())
-    .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string());
-
   rsx! {
-    div { class: "mt-14 first:mt-0",
+    div { class: "mt-16 first:mt-0",
       h3 { class: "text-2xl md:text-3xl font-extrabold tracking-tight", "{profile.heading}" }
       p { class: "mt-3 text-base-content/70 leading-relaxed", "{profile.subhead}" }
 
@@ -282,70 +259,37 @@ fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element
         }
       }
 
-      // Under the table rather than inside it: these are the reasons a
-      // vendor's number is what it is, and a reader scanning the columns
-      // for the shape of the market should reach them second, not first.
-      ul { class: "mt-5 flex flex-col gap-3 text-sm text-base-content/70 leading-relaxed",
-        for row in profile.rows.iter() {
-          if let Some(note) = row.note.as_ref() {
-            li { key: "{row.id}",
-              span { class: "font-bold text-base-content/85", "{row.platform}. " }
-              "{note}"
-            }
-          }
-        }
-      }
-
       if let Some(closing) = profile.closing.as_ref() {
-        p { class: "mt-6 text-base-content/80 leading-relaxed font-medium", "{closing}" }
+        p { class: "mt-5 text-base-content/80 leading-relaxed font-medium", "{closing}" }
       }
 
-      // The argument comes before the numbers on purpose. A raw
-      // infrastructure rate dropped into a price table anchors a reader at
-      // cents and no amount of feature list pulls them back, so they meet
-      // the reason first and the figures second, in a block that reads as
-      // a footnote rather than a ranking.
-      div { class: "mt-8 rounded-2xl border border-base-300 bg-base-100 p-5 md:p-6",
-        h4 { class: "font-bold", "What about assembling it yourself?" }
-        p { class: "mt-2 text-sm text-base-content/70 leading-relaxed",
-          "We won't claim to be cheaper than raw AWS or Azure. Nobody is, and the cheapest of them lands near "
-          span { class: "font-bold", "{cheapest_raw}" }
-          " per device at a thousand. What we're cheaper than is "
-          span { class: "italic", "building on" }
-          " them, because a message bus isn't a device list, a shadow editor, graphs, a log viewer, OTA orchestration and alerting. Every screen you would have to build is missing from these rates, and so is the engineer who maintains it."
+      // Raw infrastructure, deliberately not a row in the table above. A
+      // rate in cents sitting in a price column anchors a reader before any
+      // feature list reaches them, so they meet the reason first and the
+      // rates second, as a footnote rather than a ranking.
+      div { class: "mt-6 rounded-2xl border border-base-300 bg-base-100 p-5",
+        p { class: "text-sm text-base-content/75 leading-relaxed",
+          "{profile.build_your_own_intro}"
         }
-        div { class: "mt-4 overflow-x-auto rounded-xl border border-base-300",
-          table { class: "table table-sm",
-            thead {
-              tr {
-                th { "Assembled from" }
-                for column in profile.columns.iter() {
-                  th { key: "{column.key}", class: "text-right", "{column.label}" }
-                }
-              }
-            }
-            tbody {
-              for row in profile.build_your_own.iter() {
-                ComparisonRow {
-                  key: "{row.id}",
-                  row: row.clone(),
-                  columns: profile.columns.clone(),
-                  today,
-                  stale_after,
-                }
-              }
-            }
-          }
-        }
-        ul { class: "mt-4 flex flex-col gap-2 text-xs text-base-content/70 leading-relaxed",
+        ul { class: "mt-3 flex flex-col gap-1.5 text-xs text-base-content/60",
           for row in profile.build_your_own.iter() {
-            if let Some(note) = row.note.as_ref() {
-              li { key: "{row.id}",
-                span { class: "font-bold text-base-content/85", "{row.platform}" }
+            li { key: "{row.id}", class: "flex flex-wrap items-baseline gap-x-2",
+              span { class: "font-bold text-base-content/80",
+                "{row.platform}"
                 if let Some(plan) = row.plan.as_ref() {
-                  span { class: "font-bold text-base-content/85", ", {plan}" }
+                  span { class: "font-normal", ", {plan}" }
                 }
-                ". {note}"
+              }
+              span { class: "font-bold text-base-content/80",
+                "{cheapest_shown(&row, &profile.columns)}"
+              }
+              if let Some(note) = row.note.as_ref() {
+                span { "{note}" }
+              }
+              if let Some(host) = row.source_host() {
+                span { class: if row.is_stale(today, stale_after) { "text-warning font-medium" },
+                  "{host}, checked {row.verified_label()}"
+                }
               }
             }
           }
@@ -353,6 +297,33 @@ fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element
       }
     }
   }
+}
+
+/// The rate to print for a build-it-yourself line, which is cited rather
+/// than tabulated: the cheapest fleet size it publishes, since that is the
+/// number a reader would have anchored on before arriving here.
+fn cheapest_shown(row: &Row, columns: &[Column]) -> String {
+  columns
+    .iter()
+    .filter_map(|column| row.figure(column))
+    // Compared as money, not as text. A lexicographic minimum over these
+    // strings happens to be right for today's figures and would silently
+    // stop being right the first time one crossed into two digits.
+    .min_by(|a, b| dollars(&a.value).total_cmp(&dollars(&b.value)))
+    .map(|figure| figure.value.clone())
+    .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string())
+}
+
+/// The numeric worth of a display figure like "$0.045", for the one place
+/// that has to rank figures rather than print them. Unparseable text sorts
+/// last rather than first, so a malformed entry can never win a comparison
+/// by being unreadable.
+fn dollars(value: &str) -> f64 {
+  value
+    .trim_start_matches('$')
+    .replace(',', "")
+    .parse()
+    .unwrap_or(f64::MAX)
 }
 
 /// The competitor comparison, rendered from `public/data/pricing-comparison.json`
@@ -387,10 +358,7 @@ fn ComparisonTable() -> Element {
       "What everyone else charges for the same fleet"
     }
     p { class: "mt-4 text-base-content/75 leading-relaxed",
-      "Vendors price in units that refuse to compare: per device, per message, per data operation, per datapoint, per megabyte, per connection minute, in blocks and in seats. So each figure below is the same arithmetic run against the same device, normalized to what one device costs for one month on the cheapest tier that legitimately fits that fleet."
-    }
-    p { class: "mt-3 text-base-content/75 leading-relaxed",
-      "The five-minute device is not a thought experiment. It is a departure board we run: a report every 300 seconds, four readings, about 104 bytes, read off its own firmware config and a real soak log rather than assumed."
+      "Vendors price in units that refuse to compare: per device, per message, per datapoint, per event, in blocks. So every figure below is the same device, normalized to what one costs for a month, with each vendor on the cheapest tier that genuinely fits."
     }
 
     for profile in data.profiles.iter() {
@@ -403,6 +371,7 @@ fn ComparisonTable() -> Element {
     }
   }
 }
+
 #[component]
 fn Answer(question: String, body: String) -> Element {
   rsx! {
