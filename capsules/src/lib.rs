@@ -1580,6 +1580,44 @@ impl BillingPlan {
     !matches!(self, BillingPlan::Perch)
   }
 
+  /// Members an organization may hold, counting seats already filled and
+  /// invites still outstanding. `None` is unlimited -- a seat costs us
+  /// nothing to serve (Kratos is our own), so from Growth up the ceiling
+  /// is deliberately absent rather than merely large.
+  pub fn included_seats(&self) -> Option<i64> {
+    match self {
+      BillingPlan::Perch => Some(1),
+      BillingPlan::Builder => Some(3),
+      BillingPlan::Growth | BillingPlan::Scale | BillingPlan::Fleet => None,
+    }
+  }
+
+  /// Alert definitions an account may hold across all of its flocks and
+  /// pigeons, pigeon- and flock-scoped alike. `None` is unlimited.
+  pub fn included_alerts(&self) -> Option<i64> {
+    match self {
+      BillingPlan::Perch => Some(1),
+      BillingPlan::Builder => Some(10),
+      BillingPlan::Growth | BillingPlan::Scale | BillingPlan::Fleet => None,
+    }
+  }
+
+  /// Organizations one person may own. `None` is unlimited.
+  ///
+  /// The free tier gets one, not none, and the difference is structural
+  /// rather than generous: billing attaches to an organization, and
+  /// checkout runs against an organization that already exists, so a free
+  /// account refused its first one could never reach a paid tier at all.
+  /// What the free tier does not get is a *team* -- that is the one seat
+  /// above, which is the limit that actually decides whether an
+  /// organization is more than a container for one person's own devices.
+  pub fn included_organizations(&self) -> Option<i64> {
+    match self {
+      BillingPlan::Perch | BillingPlan::Builder => Some(1),
+      BillingPlan::Growth | BillingPlan::Scale | BillingPlan::Fleet => None,
+    }
+  }
+
   /// Pooled messages one billed extra device adds to the account's
   /// allowance. It is not a separate figure to keep in step with the
   /// ladder: every tier's own allowance divided by its own device count is

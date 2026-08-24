@@ -38,11 +38,15 @@ pub use billing::load_org_subscription_state;
 pub use billing::mark_webhook_event_processed;
 
 mod usage;
-pub use usage::DeviceCap;
+pub use usage::EntitlementCap;
 pub use usage::INGEST_PAUSED_MESSAGE;
 pub use usage::IngestFuse;
 pub use usage::check_device_cap;
+pub use usage::check_flock_alert_cap;
+pub use usage::check_org_cap;
 pub use usage::check_perch_ingest_fuse;
+pub use usage::check_pigeon_alert_cap;
+pub use usage::check_seat_cap;
 pub use usage::count_billable_message;
 pub use usage::ensure_billing_usage_tables;
 pub use usage::raise_message_allowance_floor;

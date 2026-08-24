@@ -1,28 +1,30 @@
 use crate::helpers::{
-  DeviceCap, INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET,
-  StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite,
-  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_device_cap, check_perch_ingest_fuse,
-  check_pigeon_authz, claim_webhook_event, constant_time_eq, count_billable_message,
-  create_checkout_session, create_customer, create_flock_alert, create_invite, create_organization,
-  create_pigeon_alert, create_portal_session, create_user_flock, delete_alert_definition,
-  delete_organization_if_empty, delete_pigeon_pg_db, ensure_billing_tables,
-  ensure_billing_usage_tables, erase_user_error_reports, fetch_subscription, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer, get_organization,
-  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_demo_pigeon, list_demo_pigeon_alerts, list_flock_alert_state,
-  list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
-  list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
-  load_org_roles, load_org_subscription_state, mark_webhook_event_processed, mint_invite_token,
-  notify_contact_submission, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
-  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, raise_message_allowance_floor, remove_member,
-  rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
-  send_invite_email, sha256_hex, store_contact_submission, stripe_configured,
-  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
-  validate_telemetry_report, verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal,
+  STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage,
+  WebhookClaim, accept_invite, apply_subscription, attach_stripe_customer, authenticate_browser,
+  backfill_owner_email, build_invite_url, change_member_role, check_device_cap,
+  check_flock_alert_cap, check_org_cap, check_perch_ingest_fuse, check_pigeon_alert_cap,
+  check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
+  count_billable_message, create_checkout_session, create_customer, create_flock_alert,
+  create_invite, create_organization, create_pigeon_alert, create_portal_session,
+  create_user_flock, delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
+  ensure_billing_tables, ensure_billing_usage_tables, erase_user_error_reports, fetch_subscription,
+  get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
+  get_organization, get_user_flocks, grant_org_acl_via_do, ingest_error_report,
+  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon,
+  list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts, list_flock_firmware,
+  list_org_invites, list_org_members, list_pigeon_alert_state, list_pigeon_alerts,
+  list_user_organizations, load_org_billing_overview, load_org_roles, load_org_subscription_state,
+  mark_webhook_event_processed, mint_invite_token, notify_contact_submission, org_role_of,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
+  raise_message_allowance_floor, remove_member, rename_organization, resolve_checkout_prices,
+  revoke_invite, send_feedback_email, send_invite_email, sha256_hex, store_contact_submission,
+  stripe_configured, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
+  verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -1033,17 +1035,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // check_device_cap. A refusal blocks growth only -- existing devices
       // keep ingesting -- and the check fails open on lookup errors, so a
       // Postgres blip can't block provisioning.
-      if let DeviceCap::Refuse { device_count, cap } =
-        check_device_cap(&client, &payload.flock_id).await
-      {
-        return Response::error(
-          format!(
-            "Forbidden: the free tier includes {cap} devices and this account already has {device_count} -- upgrade to add more"
-          ),
-          403,
-        )
-        .unwrap()
-        .with_cors(&cors);
+      if let EntitlementCap::Refuse(message) = check_device_cap(&client, &payload.flock_id).await {
+        return Response::error(message, 403).unwrap().with_cors(&cors);
       }
 
       let Ok(namespace) = ctx.durable_object("PIGEONS") else {
@@ -2337,6 +2330,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         get_db!(ctx.env, client, &cors);
 
+        // Alert-count entitlement. The limit is per account across every
+        // flock and pigeon it owns, not per pigeon.
+        if let EntitlementCap::Refuse(message) = check_pigeon_alert_cap(&client, &access).await {
+          return Response::error(message, 403).unwrap().with_cors(&cors);
+        }
+
         let Ok(alert) = create_pigeon_alert(&client, &access, &user_id, &payload).await else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
@@ -2471,6 +2470,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+
+        // Alert-count entitlement, same per-account limit as the
+        // pigeon-scoped route.
+        if let EntitlementCap::Refuse(message) = check_flock_alert_cap(&client, &flock_access).await
+        {
+          return Response::error(message, 403).unwrap().with_cors(&cors);
+        }
 
         let Ok(alert) = create_flock_alert(&client, &flock_access, &user_id, &payload).await
         else {
@@ -3097,6 +3103,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       get_db!(ctx.env, client, &cors);
 
+      // Organization-count entitlement. Counts the organizations this
+      // person already owns, so being a member of somebody else's spends
+      // none of their own allowance.
+      if let EntitlementCap::Refuse(message) = check_org_cap(&client, &auth.user_id).await {
+        return Response::error(message, 403).unwrap().with_cors(&cors);
+      }
+
       let Ok(org) = create_organization(
         client,
         &auth.user_id,
@@ -3496,6 +3509,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let Ok(Some(organization)) = get_organization(&client, &org_id).await else {
           return Response::error("Not Found", 404).unwrap().with_cors(&cors);
         };
+
+        // Seat entitlement, checked after authorization so a non-manager
+        // learns they may not invite rather than how full the org is.
+        // Pending invites count as spent seats -- see check_seat_cap.
+        if let EntitlementCap::Refuse(message) = check_seat_cap(&client, &org_id).await {
+          return Response::error(message, 403).unwrap().with_cors(&cors);
+        }
 
         let Ok((token, token_hash)) = mint_invite_token() else {
           return Response::error("Internal Server Error", 500)

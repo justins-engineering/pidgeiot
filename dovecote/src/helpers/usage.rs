@@ -5,7 +5,9 @@ use tokio_postgres::types::Type;
 use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
+use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
+use crate::helpers::pigeons::PigeonAccess;
 
 /// Runtime schema bootstrap, same lazy-DDL convention as
 /// `ensure_billing_tables` (`helpers/billing.rs`) -- but deliberately
@@ -517,22 +519,95 @@ pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
   }
 }
 
-/// The pigeon-creation entitlement decision. Refusal blocks growth only --
-/// nothing about an existing device's ingestion changes here.
-pub enum DeviceCap {
+// --- Creation-time entitlement gates ---
+//
+// One shape for every published per-tier quantity the product can refuse
+// to exceed: devices, seats, alerts, organizations. Each gate resolves the
+// tier through `effective_plan` (status before plan, as everywhere),
+// counts what already exists the way the billing overview counts it, and
+// either allows or hands back a finished refusal.
+//
+// Two rules they all share. They fail OPEN on a lookup error, logged: an
+// infrastructure blip must not block a customer from using what they pay
+// for, and the count is re-derived on the next attempt anyway. And a
+// refusal blocks growth only -- nothing that already exists is disturbed,
+// so an account that lands above its limit by downgrading keeps every
+// device, seat, alert and organization it has, and is simply refused the
+// next one.
+
+/// A creation-time entitlement decision. `Refuse` carries the finished
+/// message rather than the raw numbers so that every gate's phrasing comes
+/// from one place -- a customer who hits two different limits should not
+/// be told about them in two different voices.
+pub enum EntitlementCap {
   Allow,
-  Refuse { device_count: i64, cap: i64 },
+  Refuse(String),
+}
+
+/// How a refusal names the tier being refused. The free tier is named for
+/// what it is rather than by its product name: someone who never chose a
+/// plan has no reason to recognize "Perch" as the thing they are on.
+fn tier_phrase(plan: BillingPlan) -> &'static str {
+  match plan {
+    BillingPlan::Perch => "the free tier",
+    BillingPlan::Builder => "the Builder tier",
+    BillingPlan::Growth => "the Growth tier",
+    BillingPlan::Scale => "the Scale tier",
+    BillingPlan::Fleet => "the Fleet tier",
+  }
+}
+
+/// The one refusal sentence every gate speaks: what the tier includes,
+/// what the account already has, and what to do about it. `noun` is the
+/// singular ("device", "seat"); every noun these gates use pluralizes
+/// regularly. `detail` is an optional parenthetical for a count whose
+/// composition isn't self-evident from the noun alone.
+pub fn cap_refusal(
+  plan: BillingPlan,
+  limit: i64,
+  current: i64,
+  noun: &str,
+  detail: Option<&str>,
+) -> String {
+  let noun = if limit == 1 {
+    noun.to_string()
+  } else {
+    format!("{noun}s")
+  };
+  let detail = match detail {
+    Some(detail) => format!(" ({detail})"),
+    None => String::new(),
+  };
+  format!(
+    "Forbidden: {} includes {limit} {noun} and this account already has {current}{detail} -- upgrade to add more",
+    tier_phrase(plan)
+  )
+}
+
+/// Applies a tier's published limit to a current count. `None` is an
+/// unlimited rung and always allows.
+fn apply_cap(
+  plan: BillingPlan,
+  limit: Option<i64>,
+  current: i64,
+  noun: &str,
+  detail: Option<&str>,
+) -> EntitlementCap {
+  match limit {
+    Some(limit) if current >= limit => {
+      EntitlementCap::Refuse(cap_refusal(plan, limit, current, noun, detail))
+    }
+    _ => EntitlementCap::Allow,
+  }
 }
 
 /// Whether the account owning `flock_id` may add another device. Only an
 /// account served at the free tier has a hard cap; a paid, entitled tier
 /// past its included device count is allowed through and billed per-device
-/// overage instead (the reporter's job). Status gates before plan, as
-/// everywhere.
-///
-/// Fail-open on lookup errors (logged): an infrastructure blip must not
-/// block provisioning, and the count is re-derived on the next attempt
-/// anyway.
+/// overage instead (the reporter's job). That makes this the one gate here
+/// whose limit is a price rather than a ceiling above the free tier --
+/// devices are sold by the unit, seats and alerts and organizations are
+/// not.
 ///
 /// Counts provisioned rows, deliberately unlike `report_device_overage`,
 /// which counts only devices that reported in the period. The two answer
@@ -540,7 +615,7 @@ pub enum DeviceCap {
 /// cap is on how many pigeons may exist (each one occupies a Durable
 /// Object whether or not it ever powers on), while the meter charges only
 /// for devices in use.
-pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> DeviceCap {
+pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> EntitlementCap {
   let rows = match client
     .query_typed(
       "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
@@ -559,30 +634,205 @@ pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> DeviceCap {
     Ok(rows) => rows,
     Err(e) => {
       console_error!("Device cap check failed for flock {flock_id} (failing open): {e}");
-      return DeviceCap::Allow;
+      return EntitlementCap::Allow;
     }
   };
 
   // Unknown flock: the route's own authorization already 403s that case;
   // nothing for the cap to add.
   let Some(row) = rows.first() else {
-    return DeviceCap::Allow;
+    return EntitlementCap::Allow;
   };
 
   let org_plan: Option<String> = row.get("org_plan");
   let org_status: Option<String> = row.get("org_status");
   let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
   if plan != BillingPlan::Perch {
-    return DeviceCap::Allow;
+    return EntitlementCap::Allow;
   }
 
-  let device_count: i64 = row.get("device_count");
-  let cap = BillingPlan::Perch.included_devices();
-  if device_count >= cap {
-    DeviceCap::Refuse { device_count, cap }
-  } else {
-    DeviceCap::Allow
-  }
+  apply_cap(
+    plan,
+    Some(BillingPlan::Perch.included_devices()),
+    row.get("device_count"),
+    "device",
+    None,
+  )
+}
+
+/// Whether `org_id` may hold another seat. A seat is a member row, and an
+/// invite that has been sent but not yet accepted is counted as one too --
+/// a seat that has been promised to someone is spent, and counting only
+/// filled ones would let an organization at its limit invite its way past
+/// it and then discover the problem at the moment a colleague accepts,
+/// which is the worst place to find out.
+///
+/// The pending predicate matches `list_org_invites` exactly (unaccepted
+/// and unexpired), so the number counted here is the number the
+/// organization's own page shows.
+pub async fn check_seat_cap(client: &Client, org_id: &Uuid) -> EntitlementCap {
+  let rows = match client
+    .query_typed(
+      "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+         (SELECT COUNT(*)::bigint FROM organization_members m
+            WHERE m.org_id = o.id) AS member_count,
+         (SELECT COUNT(*)::bigint FROM organization_invites i
+            WHERE i.org_id = o.id AND i.accepted_at IS NULL
+              AND i.expires_at > now()) AS pending_count
+       FROM organizations o
+       WHERE o.id = $1;",
+      &[(org_id, Type::UUID)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Seat cap check failed for org {org_id} (failing open): {e}");
+      return EntitlementCap::Allow;
+    }
+  };
+
+  // Unknown org: the route's own authorization already refused that case.
+  let Some(row) = rows.first() else {
+    return EntitlementCap::Allow;
+  };
+
+  let org_plan: Option<String> = row.get("org_plan");
+  let org_status: Option<String> = row.get("org_status");
+  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
+  let member_count: i64 = row.get("member_count");
+  let pending_count: i64 = row.get("pending_count");
+
+  apply_cap(
+    plan,
+    plan.included_seats(),
+    member_count + pending_count,
+    "seat",
+    Some("members plus pending invites"),
+  )
+}
+
+// The scope halves of the alert-count query: which account the alert being
+// created would belong to. Both resolve to a flock, which is what carries
+// the org/user ownership every count here is grouped by.
+const ALERT_SCOPE_BY_PIGEON: &str =
+  "SELECT f.org_id, f.user_id FROM pigeons p JOIN flocks f ON f.id = p.flock_id WHERE p.id = $1";
+const ALERT_SCOPE_BY_FLOCK: &str = "SELECT f.org_id, f.user_id FROM flocks f WHERE f.id = $1::uuid";
+
+/// Whether the account owning this pigeon may define another alert.
+pub async fn check_pigeon_alert_cap(client: &Client, access: &PigeonAccess) -> EntitlementCap {
+  check_alert_cap(client, ALERT_SCOPE_BY_PIGEON, access.pigeon_id()).await
+}
+
+/// Whether the account owning this flock may define another alert.
+pub async fn check_flock_alert_cap(client: &Client, access: &FlockAccess) -> EntitlementCap {
+  check_alert_cap(client, ALERT_SCOPE_BY_FLOCK, access.flock_id()).await
+}
+
+/// The alert-count gate behind both scopes. The limit is per account, not
+/// per pigeon or per flock: the tier sells a number of alerts, and an
+/// account that could hold ten per flock would hold as many as it liked by
+/// making more flocks. So the count sweeps every alert the account owns,
+/// pigeon- and flock-scoped alike, reached through each alert's own flock
+/// -- the same account-scoping shape `check_device_cap` uses one table
+/// over.
+///
+/// `scope_id` is a route parameter that has already passed the route's own
+/// authorization, and `scope_sql` is one of the two constants above, never
+/// anything from a request.
+async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> EntitlementCap {
+  let rows = match client
+    .query_typed(
+      &format!(
+        "WITH scope AS ({scope_sql})
+         SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+           (SELECT COUNT(*)::bigint
+              FROM alert_definitions a
+              LEFT JOIN pigeons ap ON ap.id = a.pigeon_id
+              JOIN flocks af ON af.id = COALESCE(a.flock_id, ap.flock_id)
+              WHERE (s.org_id IS NOT NULL AND af.org_id = s.org_id)
+                 OR (s.org_id IS NULL AND af.org_id IS NULL
+                     AND af.user_id = s.user_id)) AS alert_count
+         FROM scope s
+         LEFT JOIN organizations o ON o.id = s.org_id;"
+      ),
+      &[(&scope_id, Type::TEXT)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Alert cap check failed (failing open): {e}");
+      return EntitlementCap::Allow;
+    }
+  };
+
+  // Unknown pigeon or flock: the route's own authorization already
+  // refused that case.
+  let Some(row) = rows.first() else {
+    return EntitlementCap::Allow;
+  };
+
+  let org_plan: Option<String> = row.get("org_plan");
+  let org_status: Option<String> = row.get("org_status");
+  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
+
+  apply_cap(
+    plan,
+    plan.included_alerts(),
+    row.get("alert_count"),
+    "alert",
+    None,
+  )
+}
+
+/// Whether this user may create another organization. Counts the ones
+/// they own, not the ones they belong to: being invited into somebody
+/// else's organization spends none of your own entitlement, and an
+/// organization you own can be deleted to free its slot again.
+///
+/// The tier is the best one any of those organizations is entitled to,
+/// resolved through the same `effective_plan` as everywhere else. There is
+/// no other place a person's own tier could come from -- a plan lives on
+/// an organization, so someone's first organization is necessarily created
+/// from the free tier's allowance of exactly one, and paying for that one
+/// is what buys the next.
+pub async fn check_org_cap(client: &Client, user_id_str: &str) -> EntitlementCap {
+  let rows = match client
+    .query_typed(
+      "SELECT o.plan AS org_plan, o.subscription_status AS org_status
+       FROM organization_members m
+       JOIN organizations o ON o.id = m.org_id
+       WHERE m.user_id = $1::uuid AND m.role = 'owner';",
+      &[(&user_id_str, Type::TEXT)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Organization cap check failed (failing open): {e}");
+      return EntitlementCap::Allow;
+    }
+  };
+
+  let owned_count = rows.len() as i64;
+  let plan = rows
+    .iter()
+    .map(|row| {
+      let org_plan: Option<String> = row.get("org_plan");
+      let org_status: Option<String> = row.get("org_status");
+      effective_plan(org_plan.as_deref(), org_status.as_deref())
+    })
+    .max()
+    .unwrap_or(BillingPlan::Perch);
+
+  apply_cap(
+    plan,
+    plan.included_organizations(),
+    owned_count,
+    "organization",
+    None,
+  )
 }
 
 // --- Stripe meter reporting ---
@@ -962,8 +1212,127 @@ async fn post_unposted_reports(
 
 #[cfg(test)]
 mod tests {
-  use super::{effective_plan, period_message_allowance};
+  use super::{EntitlementCap, apply_cap, cap_refusal, effective_plan, period_message_allowance};
   use capsules::BillingPlan;
+
+  fn refusal(cap: EntitlementCap) -> Option<String> {
+    match cap {
+      EntitlementCap::Allow => None,
+      EntitlementCap::Refuse(message) => Some(message),
+    }
+  }
+
+  #[test]
+  fn a_cap_refuses_at_the_limit_not_past_it() {
+    // The limit is what the tier includes, so an account holding exactly
+    // that many is full: the refusal is on the next one.
+    assert!(refusal(apply_cap(BillingPlan::Builder, Some(10), 9, "alert", None)).is_none());
+    assert!(refusal(apply_cap(BillingPlan::Builder, Some(10), 10, "alert", None)).is_some());
+    // Already past the limit (a downgrade left it there) still only
+    // refuses the next one; nothing existing is disturbed.
+    assert!(refusal(apply_cap(BillingPlan::Builder, Some(10), 40, "alert", None)).is_some());
+  }
+
+  #[test]
+  fn an_unlimited_rung_allows_at_any_count() {
+    assert!(BillingPlan::Growth.included_alerts().is_none());
+    assert!(BillingPlan::Growth.included_seats().is_none());
+    assert!(BillingPlan::Growth.included_organizations().is_none());
+    assert!(
+      refusal(apply_cap(
+        BillingPlan::Growth,
+        BillingPlan::Growth.included_alerts(),
+        100_000,
+        "alert",
+        None
+      ))
+      .is_none()
+    );
+  }
+
+  #[test]
+  fn every_gate_refuses_in_the_same_voice() {
+    // The device refusal is the sentence that shipped first and the one
+    // the other three were shaped to match; this pins it verbatim so the
+    // shared builder can't drift away from it.
+    assert_eq!(
+      cap_refusal(BillingPlan::Perch, 10, 10, "device", None),
+      "Forbidden: the free tier includes 10 devices and this account already has 10 -- upgrade to add more"
+    );
+    // A limit of one takes the singular noun, and a paid tier is named by
+    // its product name where the free tier is named for what it is.
+    assert_eq!(
+      cap_refusal(BillingPlan::Builder, 1, 1, "organization", None),
+      "Forbidden: the Builder tier includes 1 organization and this account already has 1 -- upgrade to add more"
+    );
+    // The seat count is the one that isn't self-evident from the noun, so
+    // it says what it counted.
+    assert_eq!(
+      cap_refusal(
+        BillingPlan::Builder,
+        3,
+        3,
+        "seat",
+        Some("members plus pending invites")
+      ),
+      "Forbidden: the Builder tier includes 3 seats and this account already has 3 (members plus pending invites) -- upgrade to add more"
+    );
+  }
+
+  #[test]
+  fn the_published_ladder_is_what_the_gates_enforce() {
+    // The pricing page's own rows, in the order it prints them: Perch
+    // "1 seat, 1 alert", Builder "3 seats, 10 alerts, 1 org", and
+    // unlimited from Growth up. A change here is a change to what we sell.
+    assert_eq!(BillingPlan::Perch.included_seats(), Some(1));
+    assert_eq!(BillingPlan::Perch.included_alerts(), Some(1));
+    assert_eq!(BillingPlan::Builder.included_seats(), Some(3));
+    assert_eq!(BillingPlan::Builder.included_alerts(), Some(10));
+    assert_eq!(BillingPlan::Builder.included_organizations(), Some(1));
+    for plan in [BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
+      assert_eq!(plan.included_seats(), None);
+      assert_eq!(plan.included_alerts(), None);
+      assert_eq!(plan.included_organizations(), None);
+    }
+  }
+
+  #[test]
+  fn the_free_tier_may_still_own_the_organization_it_would_subscribe_with() {
+    // The bootstrap the org gate must not break: billing attaches to an
+    // organization and checkout runs against one that already exists, so
+    // refusing a free account its first organization would wall off every
+    // paid tier. The second is what costs money.
+    assert!(
+      refusal(apply_cap(
+        BillingPlan::Perch,
+        BillingPlan::Perch.included_organizations(),
+        0,
+        "organization",
+        None
+      ))
+      .is_none()
+    );
+    assert!(
+      refusal(apply_cap(
+        BillingPlan::Perch,
+        BillingPlan::Perch.included_organizations(),
+        1,
+        "organization",
+        None
+      ))
+      .is_some()
+    );
+  }
+
+  #[test]
+  fn a_lapsed_subscription_is_gated_at_the_free_tier_not_its_old_one() {
+    // Status before plan, the same rule the allowance follows: an org
+    // whose subscription died keeps its plan column, and reading that
+    // without the status gate would keep serving its seats forever.
+    let plan = effective_plan(Some("growth"), Some("canceled"));
+    assert_eq!(plan.included_seats(), Some(1));
+    assert!(refusal(apply_cap(plan, plan.included_seats(), 4, "seat", None)).is_some());
+  }
 
   #[test]
   fn period_allowance_is_the_higher_of_tier_and_floor() {
