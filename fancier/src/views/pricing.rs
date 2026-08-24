@@ -278,7 +278,11 @@ pub fn PricingPage() -> Element {
               span { class: "text-base-content/60", "/mo" }
             }
             p { class: "mt-1 mb-4 text-xs text-base-content/60", "indicative · not billing yet" }
-            a { class: "btn btn-outline font-bold", href: "mailto:code@jes.contact", "Talk to us" }
+            // A plain href, not a Link: the funnel context rides in the
+            // query string, which a Route with no query prop cannot carry
+            // (see views/contact.rs for why it has none). The destination
+            // is prerendered, so the full-page load paints immediately.
+            a { class: "btn btn-outline font-bold", href: "/contact/?about=fleet", "Talk to us" }
           }
         }
 

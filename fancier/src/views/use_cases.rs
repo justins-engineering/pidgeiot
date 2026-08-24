@@ -1,11 +1,8 @@
 use crate::Route;
-use crate::components::FeedbackForm;
 use dioxus::prelude::*;
 
 #[component]
 pub fn UseCasesPage() -> Element {
-  let mut feedback = use_context::<FeedbackForm>();
-
   rsx! {
     section { id: "use-cases-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
@@ -241,11 +238,10 @@ pub fn UseCasesPage() -> Element {
           "Tell us what it reports and we'll tell you honestly whether we fit."
         }
         div { class: "flex flex-col sm:flex-row justify-center gap-3 mt-7",
-          button {
-            r#type: "button",
+          Link {
             class: "btn btn-lg font-bold border-0",
             style: "background:var(--color-primary-content);color:var(--color-primary)",
-            onclick: move |_| feedback.0.set(true),
+            to: Route::ContactPage {},
             "Talk to us"
           }
           Link {

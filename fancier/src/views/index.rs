@@ -669,9 +669,9 @@ pub fn Index() -> Element {
               to: Route::Architecture {},
               "Read the Architecture"
             }
-            a {
+            Link {
               class: "btn btn-outline rounded-full font-bold",
-              href: "mailto:code@jes.contact",
+              to: Route::ContactPage {},
               Icon { icon: LdMail, class: "mr-2", title: "Email" }
               "Talk to Us"
             }

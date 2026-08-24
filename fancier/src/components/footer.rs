@@ -198,9 +198,9 @@ pub fn Footer() -> Element {
                     }
                   }
                   li {
-                    a {
+                    Link {
                       class: "hover:text-secondary transition-colors duration-300 group",
-                      href: "mailto:code@jes.contact",
+                      to: Route::ContactPage {},
                       Icon {
                         icon: LdChevronRight,
                         class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
