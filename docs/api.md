@@ -154,9 +154,9 @@ models above; dev and production don't set these vars, so it's a no-op there.
 - `GET /device/pigeons/:pigeon_id/ws` is the one exception to "error responses are plain text
   HTTP status codes": a rejected upgrade (bad `Upgrade` header, bad token) is still a normal HTTP
   error response (`400`/`401`/`429`), but a problem discovered *after* the socket is open (oversize
-  frame, malformed frame, frame flood, spent message allowance) has no HTTP status to report,
-  so it's a WebSocket close code instead (`4001`-`4009` and `4029`; see that route's own section for
-  the full list).
+  frame, malformed frame, frame flood, spent message allowance, token rotated, pigeon deleted)
+  has no HTTP status to report, so it's a WebSocket close code instead (`4001`-`4009` and `4029`;
+  see that route's own section for the full list).
 
 ## Rate & size limits
 
@@ -1725,6 +1725,17 @@ websocat -H 'Authorization: Bearer <device_token>' \
 than coexisting with it — the old socket is closed (code `4009`, reason "replaced by new
 connection") as part of accepting the new one. Useful for a device that reconnects after a
 network blip before its old socket has timed out.
+
+**Token refresh and pigeon deletion close the open socket.** Bearer auth on this endpoint is
+checked once, at accept, not per frame — so a socket opened before `POST
+/pigeons/:pigeon_id/token/refresh` or `DELETE /pigeons/:pigeon_id` would otherwise keep running on
+a credential (or a pigeon) that no longer exists, until it happened to drop on its own. Both
+routes close any open device socket for the pigeon as part of the same request: a refresh closes
+it with code `4004`, reason "token revoked"; a deletion closes it with code `4005`, reason
+"pigeon deleted". Either way the device's WS client reconnects on any close and re-authenticates
+with whatever token it currently holds — a refresh is what makes that reconnect attempt actually
+fail once it retries with the now-superseded token, and a deletion's reconnect fails the same way
+since `is_authorized_device` finds no `pigeons` row left to check against.
 
 **Shadow snapshot on connect.** Immediately after the socket is accepted, the server pushes one
 `shadow_update` frame (same shape as every other `shadow_update` — see the frame table below)

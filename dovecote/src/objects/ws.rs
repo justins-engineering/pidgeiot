@@ -30,6 +30,27 @@ pub const WS_RATE_LIMIT_MAX_FRAMES: u32 = 50;
 /// path.
 pub const WS_CLOSE_INGEST_PAUSED: u16 = 4029;
 
+/// Close code for a device's open socket when its bearer token is rotated
+/// (`refresh_token`, `objects/pigeons.rs`). Auth on this endpoint is
+/// checked once, at accept, not per frame -- so without an explicit close
+/// here a socket opened under the old token keeps receiving `shadow_update`
+/// pushes and relaying `shell_cmd` after that token is supposed to be dead.
+/// The device's WS client treats any close as reconnect-with-backoff, and a
+/// reconnect attempt carries the (still-old, until reflashed/reprovisioned)
+/// token, which then fails `is_authorized_device` at the handshake -- so
+/// this close is what actually makes "refresh the token" mean "kick off
+/// whoever was using the old one," not just "stop minting new sessions with
+/// it."
+pub const WS_CLOSE_TOKEN_REVOKED: u16 = 4004;
+
+/// Close code for a device's open socket when its pigeon is deleted
+/// (`delete`, `objects/pigeons.rs`). The DO's storage wipe alone does not
+/// end the connection -- an already-accepted hibernating socket has no tie
+/// to the SQL rows it reads/writes, so it would otherwise linger, still
+/// answering `ping` and silently no-oping `telemetry`/`shadow_report`
+/// frames against now-empty tables, until it happened to drop on its own.
+pub const WS_CLOSE_PIGEON_DELETED: u16 = 4005;
+
 /// Tag applied to every device-class socket accepted by
 /// `accept_websocket_device` (`objects/pigeons.rs`). Scoping "close the old
 /// socket"/"broadcast a shadow push" to this tag (via

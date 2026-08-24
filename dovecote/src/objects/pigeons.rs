@@ -1,7 +1,7 @@
 use crate::helpers::{LegacyTelemetryRow, TelemetryBlob};
 use crate::objects::ws::{
-  MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame,
-  check_rate_limit,
+  MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_CLOSE_PIGEON_DELETED, WS_CLOSE_TOKEN_REVOKED,
+  WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
 };
 use crate::objects::{mint_coap_psk, mint_device_credential, verify_device_token};
 use crate::queue::TelemetryMessage;
@@ -460,6 +460,20 @@ fn clear_shell_waiters(pigeons: &Pigeons, reason: &str) {
   }
 }
 
+/// Closes every open device-class socket for this pigeon with `code`/
+/// `reason`. Shared by the socket-steal path in `accept_websocket_device`
+/// and the token-revoke/pigeon-delete paths below -- all three are the same
+/// operation (evict whoever is currently holding this pigeon's one device
+/// socket), just triggered by different events and reported with a
+/// different code. `get_websockets_with_tag` returns at most one entry in
+/// practice (one socket per pigeon is enforced at accept), but this walks
+/// the whole set rather than assuming that invariant holds.
+fn close_device_sockets(pigeons: &Pigeons, code: u16, reason: &str) {
+  for socket in pigeons.state.get_websockets_with_tag(WS_DEVICE_TAG) {
+    let _ = socket.close(Some(code), Some(reason));
+  }
+}
+
 /// The two access levels a dashboard-facing DO route can require -- the
 /// literal role string `"owner"` on a matching `pigeon_acl` row is the
 /// only special-cased value.
@@ -893,6 +907,15 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     ],
   ) {
     Ok(_) => {
+      // The old key is already unverifiable at this point, but a socket
+      // opened under it was authenticated once, at accept, not per frame
+      // (see `websocket_message`) -- without this it would keep receiving
+      // `shadow_update` pushes and relaying `shell_cmd` on the credential
+      // this refresh was meant to kill. The device's WS client reconnects
+      // on any close and re-authenticates with whatever token it currently
+      // has, which is where a stale reconnect actually gets refused.
+      close_device_sockets(pigeons, WS_CLOSE_TOKEN_REVOKED, "token revoked");
+
       match pigeons.sql.exec(
         &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
@@ -994,7 +1017,16 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
     "DELETE FROM pigeons WHERE id = ?;",
     vec![pigeons.state.id().to_string().into()],
   ) {
-    Ok(_) => Response::ok("Pigeon Deleted"),
+    Ok(_) => {
+      // The storage wipe above doesn't end an already-open socket -- a
+      // hibernating connection has no tie to the SQL rows it reads/writes,
+      // so left alone it would linger, still answering `ping` and silently
+      // no-oping `telemetry`/`shadow_report` against now-empty tables,
+      // until it happened to drop on its own. Close it explicitly so a
+      // deleted pigeon stops looking connected.
+      close_device_sockets(pigeons, WS_CLOSE_PIGEON_DELETED, "pigeon deleted");
+      Response::ok("Pigeon Deleted")
+    }
     Err(e) => {
       console_error!("Pigeon delete execution error: {e}");
       Response::error("Internal Server Error", 500)
@@ -1381,9 +1413,7 @@ async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Resp
   // One active device socket per pigeon: a new connection (e.g. a device
   // reconnecting after a network blip, before its old socket has timed out)
   // replaces the old one rather than coexisting with it.
-  for existing in pigeons.state.get_websockets_with_tag(WS_DEVICE_TAG) {
-    let _ = existing.close(Some(4009), Some("replaced by new connection"));
-  }
+  close_device_sockets(pigeons, 4009, "replaced by new connection");
 
   let pair = WebSocketPair::new()?;
   pigeons
