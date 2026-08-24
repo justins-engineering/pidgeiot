@@ -144,7 +144,8 @@ models above; dev and production don't set these vars, so it's a no-op there.
 - Status codes used throughout: `400` (malformed JSON, missing/invalid path param, empty or
   over-cap telemetry report, empty log chunk), `401` (missing/invalid session cookie or device
   token),
-  `403` (authenticated but not authorized — wrong ACL role, or CF Access rejection on staging),
+  `403` (authenticated but not authorized — wrong ACL role, CF Access rejection on staging, or a
+  per-tier limit reached: see [Per-tier limits](#per-tier-limits)),
   `404` (no matching route), `413` (log chunk over the size cap), `500` (internal error — DB
   connection failure, Durable Object dispatch failure, etc).
 - A deleted pigeon's Durable Object is never actually destroyed (Cloudflare DOs have no
@@ -177,6 +178,10 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 | Free-tier pooled messages per billing period | Tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_perch_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
+| Devices per account | Tier's included count, free tier only (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
+| Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
+| Alert definitions per account | Tier's alert count, across every flock and pigeon | `helpers/usage.rs::check_pigeon_alert_cap`/`check_flock_alert_cap`, `403` at both alert `POST`s |
+| Organizations owned per user | Tier's organization count | `helpers/usage.rs::check_org_cap`, `403` at `POST /orgs` |
 | `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
 | `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -313,6 +318,11 @@ Creates an organization; the caller becomes its founding `owner` (an org can nev
 without one). Body: `capsules::OrganizationCreateRequest` (`{ name }`). Returns
 `capsules::Organization` with `201` and a `Location: /orgs/<org_id>` header.
 
+**Organization-count entitlement.** `403` past the caller's tier's allowance (see
+[Per-tier limits](#per-tier-limits)). Counts the organizations this person already *owns*, so
+belonging to somebody else's spends none of their own allowance, and the tier is the best one
+any of those organizations is entitled to. Deleting an organization frees its slot.
+
 #### `GET /orgs`
 
 Lists every org the caller belongs to, with the caller's own role —
@@ -362,6 +372,15 @@ the cleartext token ever appears** (write-once, same convention as device connec
 
 Invites expire after **7 days** and are **single-use** (consumed atomically on accept).
 
+**Seat entitlement.** `403` past the org's tier's seat count (see
+[Per-tier limits](#per-tier-limits)), checked after the role checks so a non-manager learns
+they may not invite rather than how full the org is. **A pending invite counts as a spent
+seat** — the count is members plus unaccepted, unexpired invites, the same set `GET
+/orgs/:org_id/invites` returns. Counting only filled seats would let an org at its limit invite
+its way past it and discover the problem when a colleague accepts, which is the worst place to
+find out. `POST /invites/accept` is therefore not gated: the seat was already spent when the
+invite was sent.
+
 #### `GET /orgs/:org_id/invites` — owner/admin
 
 Pending (unconsumed, unexpired) invites — `Vec<capsules::OrganizationInvite>`.
@@ -395,6 +414,44 @@ Stripe hosts every payment surface — these routes mint redirect URLs and read 
 never touches this API. The read side is member-visible; the session mints are manager-only
 (owner/admin), matching the rest of the org permission matrix.
 
+#### Per-tier limits
+
+Every published per-tier quantity is enforced at the route that would create one more of the
+thing. The tier is the **effective** one (subscription status is checked before the stored
+plan, so a cancelled org is gated at the free tier, not at the tier it used to hold).
+
+| | Perch (free) | Builder | Growth | Scale | Fleet |
+|---|---:|---:|---:|---:|---:|
+| Devices | 10 (hard cap) | 50 | 250 | 1,500 | 10,000 |
+| Pooled messages/period | 300 K | 1.5 M | 7.5 M | 45 M | 300 M |
+| Seats per org | 1 | 3 | unlimited | unlimited | unlimited |
+| Alerts per account | 1 | 10 | unlimited | unlimited | unlimited |
+| Organizations owned | 1 | 1 | unlimited | unlimited | unlimited |
+
+Devices are the one row that is a *price* rather than a ceiling above the free tier: past the
+included count a paid tier bills per-device overage instead of refusing, and only the free tier
+hard-caps. Seats, alerts and organizations refuse on every tier that publishes a number.
+
+A refusal is always `403` with a plain-text body in one shape:
+
+```
+Forbidden: the free tier includes 1 seat and this account already has 1 (members plus pending invites) -- upgrade to add more
+```
+
+Four rules hold for all of them:
+
+- **A refusal blocks growth only.** Nothing that already exists is disturbed, so an account
+  that lands above a limit by downgrading keeps every device, seat, alert and organization it
+  has and is simply refused the next one.
+- **They fail open.** A lookup failure allows the request and logs; an infrastructure blip must
+  not block a customer from using what they pay for.
+- **Counts are per account, not per container.** The alert limit spans every flock and pigeon
+  the account owns (a per-pigeon limit would be no limit, since flocks are free); the device
+  count spans every flock; the seat count is per organization, which is what a seat belongs to.
+- **The free tier keeps one organization on purpose.** Billing attaches to an organization and
+  checkout runs against one that already exists, so a free account refused its first could
+  never reach a paid tier. What the free tier does not get is a *team* — that is the one seat.
+
 #### `GET /orgs/:org_id/billing` — org: member
 
 Returns `capsules::OrganizationBillingOverview`: the stored `plan`, `subscription_status`,
@@ -406,6 +463,15 @@ precondition for the portal), the usage-period bounds, and usage against allowan
 bounds are the org's Stripe billing period while a live subscription covers now, the calendar
 month otherwise — the same anchoring the usage tally itself uses. `403` for non-members,
 `404` for an unknown org.
+
+`included_messages` is the allowance the meter actually charges against, which is why it can
+exceed the tier's own pooled figure: **each billed extra device adds 30 K messages to the
+pool** (`connected_device_count` beyond `included_devices`, times 30 K — the same per-device
+budget every tier's own allowance works out to), and a mid-period downgrade's recorded floor
+keeps the outgoing tier's allowance from shrinking retroactively. The extra pool is why a
+fleet a little past its device count no longer bills device overage and message overage for a
+single act of growth. The free tier has no billed extras at any device count, so its allowance
+— and the ingest fuse trained on it — is exactly the tier's own 300 K.
 
 #### `POST /orgs/:org_id/billing/checkout` — org: manage
 
@@ -489,8 +555,10 @@ device endpoint URL and credential).
 **Device-count entitlement.** An account served at the free tier (no org, or an org whose
 subscription status isn't entitled) is capped at its included device count — creation past the
 cap answers `403` with an upgrade hint. Paid, entitled tiers are never refused here; devices
-past the included count bill as per-device overage instead. The check fails open on lookup
-errors, and a refusal only ever blocks *growth*: existing devices keep ingesting regardless.
+past the included count bill as per-device overage instead. The check counts *provisioned*
+pigeons, deliberately unlike the per-device meter's connected count: a pigeon occupies a
+Durable Object whether or not it ever powers on. Shared rules (fail-open, growth-only) and the
+refusal shape are in [Per-tier limits](#per-tier-limits).
 
 > **CoAP is terminated by a dedicated service (`loft`), not by the edge Worker.** The `Coap`
 > connector variant mints PSK credentials (`tls_psk_identity` = the pigeon's own id,
@@ -1129,6 +1197,10 @@ can't turn this into an arbitrary spam relay).
 Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel }`;
 `severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`).
 
+**Alert-count entitlement.** `403` past the owning account's tier's alert count (see
+[Per-tier limits](#per-tier-limits)). The limit spans every alert the account owns — pigeon-
+and flock-scoped alike, across all of its flocks — not just this pigeon's.
+
 ```sh
 curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
   -H 'Cookie: ory_kratos_session=<session_token>' \
@@ -1201,7 +1273,9 @@ Postgres; `first_true_at`/`last_notified_at` are `null` while `"Ok"` and never h
 Same body/response shape as the pigeon-scoped `POST` above, with `scope: {"Flock":"<flock_id>"}`
 in the response. Stricter than pigeon-scoped creation: only a flock **manager** (personal owner,
 or an `owner`/`admin` org role on an org-owned flock) may create a flock-scoped alert, whereas any
-ACL'd pigeon member may create a pigeon-scoped one.
+ACL'd pigeon member may create a pigeon-scoped one. Subject to the same account-wide
+alert-count entitlement as the pigeon-scoped route (see
+[Per-tier limits](#per-tier-limits)).
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/alerts \
