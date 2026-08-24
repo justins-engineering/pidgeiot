@@ -3,7 +3,8 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBookOpen, LdChevronRight, LdCode, LdFileText, LdPlay, LdRadio, LdRocket,
+  LdActivity, LdBookOpen, LdChevronRight, LdCode, LdFileText, LdLifeBuoy, LdMail, LdPlay, LdRadio,
+  LdRocket,
 };
 
 #[component]
@@ -80,7 +81,7 @@ pub fn DocumentationPage() -> Element {
     }
 
     // Reference & source
-    section { id: "docs-reference", class: "pb-24 md:pb-32",
+    section { id: "docs-reference", class: "pb-16 md:pb-24",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight", "Reference & Source" }
         div { class: "grid grid-cols-1 md:grid-cols-2 gap-6",
@@ -119,6 +120,69 @@ pub fn DocumentationPage() -> Element {
             body: "Board-level sample applications built on the pigeon library — bring-up references for real hardware targets.",
             href: Some("https://github.com/justins-engineering/pigeon-examples"),
             route: None,
+          }
+        }
+      }
+    }
+
+    section { id: "docs-support", class: "pb-24 md:pb-32",
+      div { class: "max-w-4xl mx-auto px-4 md:px-8",
+        h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight", "Support" }
+        p { class: "text-base-content/70 leading-relaxed mb-10 max-w-3xl",
+          "PidgeIoT is built and run by one engineer, so here is the honest version: you will get a considered reply from the person who wrote the code, and it will usually take a day, not a minute."
+        }
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-10",
+          DocLink {
+            icon: rsx! {
+              Icon { icon: LdMail, class: "size-7 stroke-primary", title: "Envelope" }
+            },
+            title: "support@pidgeiot.com",
+            body: "Email for anything already broken, plus billing and account questions. Expect a reply within two business days.",
+            href: Some("mailto:support@pidgeiot.com"),
+            route: None,
+          }
+          DocLink {
+            icon: rsx! {
+              Icon { icon: LdActivity, class: "size-7 stroke-primary", title: "Activity" }
+            },
+            title: "Status page",
+            body: "Live availability of the API, authentication and dashboard, plus any incident we are working on. Check here first.",
+            href: Some("https://status.pidgeiot.com"),
+            route: None,
+          }
+          DocLink {
+            icon: rsx! {
+              Icon { icon: LdLifeBuoy, class: "size-7 stroke-primary", title: "Life buoy" }
+            },
+            title: "Contact form",
+            body: "Sales questions, feature requests, and anything with enough detail to be worth structuring. It reaches the same inbox.",
+            href: Some("/contact/"),
+            route: None,
+          }
+          DocLink {
+            icon: rsx! {
+              Icon { icon: FaGithub, class: "size-7 stroke-primary", title: "GitHub" }
+            },
+            title: "Issues and discussion",
+            body: "Bugs in the open-source device library or the platform itself are best raised where the code lives.",
+            href: Some("https://github.com/justins-engineering"),
+            route: None,
+          }
+        }
+        div { class: "p-6 md:p-8 rounded-2xl bg-base-300/50 border border-base-content/10",
+          h3 { class: "text-xl font-bold mb-4", "What to include" }
+          p { class: "text-base-content/70 leading-relaxed mb-4",
+            "A report with these five things can usually be answered on the first reply instead of the third:"
+          }
+          ul { class: "space-y-2 text-base-content/70 leading-relaxed list-disc list-inside",
+            li { "The email address on your account." }
+            li { "The flock and pigeon involved, by id." }
+            li { "What you expected to happen, and what happened instead." }
+            li { "When it happened, in UTC, and whether it is still happening." }
+            li { "The transport the device uses: HTTPS, WebSocket, or CoAP." }
+          }
+          p { class: "text-base-content/70 leading-relaxed mt-6",
+            "Never send a device token, a pre-shared key, or any other credential. Nothing we need to diagnose a problem requires one, and a token pasted into an email should be treated as compromised and rotated."
           }
         }
       }
