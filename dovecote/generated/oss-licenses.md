@@ -600,7 +600,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [log 0.4.33](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits)
+**Used by:** [log 0.4.34](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits)
 
 
 ````text
@@ -633,7 +633,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.24.1](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.25.0](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -2094,7 +2094,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.18](https://github.com/dtolnay/itoa), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.3](https://github.com/dtolnay/syn), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.6.0](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
+**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.18](https://github.com/dtolnay/itoa), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.6.0](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
 
 
 ````text
