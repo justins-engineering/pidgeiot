@@ -10,10 +10,11 @@
 
 use crate::api::{fetch_json, fetch_json_any_status};
 use capsules::{
-  Flock, FlockTransferRequest, OrgRole, Organization, OrganizationCreateRequest,
-  OrganizationDetail, OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest,
-  OrganizationInviteCreated, OrganizationMember, OrganizationMemberRoleUpdateRequest,
-  OrganizationMembership, OrganizationRenameRequest,
+  Flock, FlockTransferRequest, OrgRole, Organization, OrganizationBusinessDetails,
+  OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
+  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
+  OrganizationMember, OrganizationMemberRoleUpdateRequest, OrganizationMembership,
+  OrganizationRenameRequest,
 };
 use dioxus::prelude::*;
 use uuid::Uuid;
@@ -50,12 +51,28 @@ pub async fn list() -> Option<Vec<OrganizationMembership>> {
   parse(response).await
 }
 
-pub async fn create(name: &str) -> Option<Organization> {
-  let body = to_body(&OrganizationCreateRequest {
-    name: name.to_string(),
-  })?;
-  let response = fetch_json("POST", "/orgs", Some(&body)).await?;
-  parse(response).await
+/// Creates an org, optionally with the business details it will be
+/// invoiced under.
+///
+/// `Err` carries the server's own message rather than collapsing to
+/// `None`, unlike most of this module: a creation can now be refused for a
+/// reason the person can act on -- a malformed VAT ID, or one VIES
+/// definitively rejects -- and "Failed to create organization" would throw
+/// away the only sentence that tells them what to fix.
+pub async fn create(request: &OrganizationCreateRequest) -> Result<Organization, String> {
+  let Some(body) = to_body(request) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("POST", "/orgs", Some(&body)).await else {
+    return Err("Network error".to_string());
+  };
+  if response.ok() {
+    parse(response)
+      .await
+      .ok_or_else(|| "Failed to parse response".to_string())
+  } else {
+    Err(error_text(&response).await)
+  }
 }
 
 pub async fn detail(org_id: Uuid) -> Option<OrganizationDetail> {
@@ -69,6 +86,44 @@ pub async fn rename(org_id: Uuid, name: &str) -> Option<Organization> {
   })?;
   let response = fetch_json("PUT", &format!("/orgs/{org_id}"), Some(&body)).await?;
   parse(response).await
+}
+
+/// The org's tax identity. Member-visible, like the billing overview: a
+/// VAT number is public information, and a member who spots a typo in it
+/// should be able to say so.
+pub async fn business_details(org_id: Uuid) -> Option<OrganizationBusinessDetails> {
+  let response = fetch_json("GET", &format!("/orgs/{org_id}/business-details"), None).await?;
+  parse(response).await
+}
+
+/// Replaces the org's business details wholesale. `Err` carries the
+/// server's own message, which is the only place a shape complaint ("that
+/// is not the shape of a DE VAT number") or a VIES refusal is phrased --
+/// the form shows it verbatim rather than inventing its own wording for a
+/// verdict it did not reach.
+pub async fn set_business_details(
+  org_id: Uuid,
+  request: &OrganizationBusinessDetailsRequest,
+) -> Result<OrganizationBusinessDetails, String> {
+  let Some(body) = to_body(request) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status(
+    "PUT",
+    &format!("/orgs/{org_id}/business-details"),
+    Some(&body),
+  )
+  .await
+  else {
+    return Err("Network error".to_string());
+  };
+  if response.ok() {
+    parse(response)
+      .await
+      .ok_or_else(|| "Failed to parse response".to_string())
+  } else {
+    Err(error_text(&response).await)
+  }
 }
 
 /// `Err` carries the server's own message (e.g. the 409 "still owns

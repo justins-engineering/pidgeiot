@@ -7,7 +7,9 @@
 
 use crate::{Create, Route, api};
 use capsules::{
-  BillingPlan, OrgRole, OrganizationBillingOverview, OrganizationDetail, OrganizationInviteCreated,
+  BillingPlan, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole, OrganizationBillingOverview,
+  OrganizationBusinessDetails, OrganizationBusinessDetailsRequest, OrganizationDetail,
+  OrganizationInviteCreated, TaxIdStatus, TaxIdType,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -118,6 +120,10 @@ pub fn OrgView(org_id: Uuid) -> Element {
             org_id,
             caller_role: d.caller_role,
             action_error,
+          }
+          BusinessDetailsSection {
+            org_id,
+            caller_role: d.caller_role,
           }
           RenameOrgModal { org_id, refresh }
         },
@@ -653,6 +659,242 @@ fn BillingPanel(
               }
             }
           }
+        }
+      }
+    }
+  }
+}
+
+/// Who the invoice is made out to, and under which tax registration.
+///
+/// Sits beside billing rather than in account settings because it belongs
+/// to the org: the org is what Stripe bills, and one person can belong to
+/// two orgs with two different registrations. Members can read it (a VAT
+/// number is on every invoice its owner issues, and a member who spots a
+/// typo should be able to say so); only managers can change it.
+#[component]
+fn BusinessDetailsSection(org_id: Uuid, caller_role: OrgRole) -> Element {
+  let mut refresh = use_signal(|| 0u32);
+  let details_resource = use_resource(move || async move {
+    let _ = refresh();
+    api::orgs::business_details(org_id).await
+  });
+  let details = details_resource.read().clone();
+
+  rsx! {
+    section { id: "org-business-details", class: "mb-10",
+      h2 { class: "text-lg font-semibold mb-3", "Business details" }
+      match details {
+        None => rsx! {
+          div { class: "flex justify-center p-6",
+            span { class: "loading loading-spinner loading-md" }
+          }
+        },
+        Some(None) => rsx! {
+          p { class: "text-base-content/60 text-sm",
+            "Business details are unavailable right now."
+          }
+        },
+        Some(Some(d)) => rsx! {
+          BusinessDetailsPanel {
+            org_id,
+            caller_role,
+            details: d,
+            on_saved: move |_| refresh += 1,
+          }
+        },
+      }
+    }
+  }
+}
+
+/// The honest rendering of what we know about a stored registration. Each
+/// arm says what we actually did, not what we would like the customer to
+/// assume: `pending` in particular must read as "we have it, we could not
+/// reach the authority", never as a soft yes.
+fn tax_status_badge(status: TaxIdStatus) -> (&'static str, &'static str) {
+  match status {
+    TaxIdStatus::Validated => ("badge-success", "Validated with VIES"),
+    TaxIdStatus::Pending => ("badge-warning", "Awaiting VIES"),
+    TaxIdStatus::Invalid => ("badge-error", "Rejected by VIES"),
+    TaxIdStatus::Unverified => ("badge-ghost", "Stored, not verified"),
+    TaxIdStatus::None => ("badge-ghost", "None on file"),
+  }
+}
+
+/// The longer sentence under the badge. Worth the words: "pending" is the
+/// state a customer is most likely to misread, and the one where saying
+/// nothing would let them assume they are covered for reverse charge when
+/// they are not yet.
+fn tax_status_detail(details: &OrganizationBusinessDetails) -> Option<String> {
+  match details.tax_id_status {
+    TaxIdStatus::Validated => details
+      .tax_id_validated_at
+      .map(|at| format!("Confirmed as a live registration on {}.", at.date())),
+    TaxIdStatus::Pending => Some(
+      "Saved. VIES could not be reached for a verdict, so we keep asking in the background -- \
+       nothing is wrong with the ID as far as we know."
+        .to_string(),
+    ),
+    TaxIdStatus::Invalid => Some(
+      "VIES no longer recognizes this as a live registration. Check it against your \
+       registration certificate and save it again."
+        .to_string(),
+    ),
+    TaxIdStatus::Unverified => Some(
+      "Held for your invoices. We only verify EU VAT IDs, so this one is stored exactly as \
+       you entered it."
+        .to_string(),
+    ),
+    TaxIdStatus::None => None,
+  }
+}
+
+#[component]
+fn BusinessDetailsPanel(
+  org_id: Uuid,
+  caller_role: OrgRole,
+  details: OrganizationBusinessDetails,
+  on_saved: EventHandler<()>,
+) -> Element {
+  let mut business_name = use_signal(|| details.business_name.clone().unwrap_or_default());
+  let mut tax_id = use_signal(|| details.tax_id.clone().unwrap_or_default());
+  let mut tax_id_type = use_signal(|| details.tax_id_type);
+  let mut busy = use_signal(|| false);
+  let mut error = use_signal(|| Option::<String>::None);
+  let mut notice = use_signal(|| Option::<String>::None);
+
+  let (badge_class, badge_label) = tax_status_badge(details.tax_id_status);
+  let status_detail = tax_status_detail(&details);
+  let editable = caller_role.is_manager();
+
+  rsx! {
+    div { class: "bg-base-100 border border-base-content/10 rounded-box p-4 flex flex-col gap-4",
+      div { class: "flex items-center gap-3 flex-wrap",
+        span { class: "text-sm text-base-content/60", "Tax ID status" }
+        span { class: "badge {badge_class} badge-sm", "{badge_label}" }
+        if details.tax_id_type != TaxIdType::None {
+          span { class: "text-xs text-base-content/50 font-mono", "{details.tax_id_type}" }
+        }
+      }
+
+      if let Some(detail) = status_detail {
+        p { class: "text-xs text-base-content/60", "{detail}" }
+      }
+
+      if editable {
+        div { class: "flex flex-col gap-3",
+          label { class: "form-control w-full",
+            span { class: "label-text text-sm mb-1 block", "Registered business name" }
+            input {
+              class: "input input-bordered w-full",
+              r#type: "text",
+              maxlength: MAX_BUSINESS_NAME_CHARS as i64,
+              placeholder: "The legal entity on your invoices",
+              value: "{business_name}",
+              oninput: move |e| business_name.set(e.value()),
+            }
+          }
+
+          div { class: "flex flex-col sm:flex-row gap-3",
+            label { class: "form-control",
+              span { class: "label-text text-sm mb-1 block", "Tax ID type" }
+              select {
+                class: "select select-bordered",
+                value: "{tax_id_type().as_str()}",
+                onchange: move |e| {
+                    if let Ok(parsed) = e.value().parse::<TaxIdType>() {
+                        tax_id_type.set(parsed);
+                    }
+                },
+                option { value: "none", "None" }
+                option { value: "eu_vat", "EU VAT" }
+                option { value: "other", "Other" }
+              }
+            }
+            label { class: "form-control grow",
+              span { class: "label-text text-sm mb-1 block", "Tax ID" }
+              input {
+                class: "input input-bordered w-full font-mono",
+                r#type: "text",
+                maxlength: MAX_TAX_ID_CHARS as i64,
+                disabled: tax_id_type() == TaxIdType::None,
+                placeholder: match tax_id_type() {
+                    TaxIdType::EuVat => "IE6388047V",
+                    TaxIdType::Other => "Your registration number",
+                    TaxIdType::None => "Choose a type first",
+                },
+                value: "{tax_id}",
+                oninput: move |e| tax_id.set(e.value()),
+              }
+            }
+          }
+
+          p { class: "text-xs text-base-content/50",
+            "EU VAT IDs are checked against the European Commission's VIES service. If VIES \
+             can't be reached, we save the ID anyway and keep checking."
+          }
+
+          if let Some(err) = error.read().as_ref() {
+            div { class: "alert alert-error text-sm", "{err}" }
+          }
+          if let Some(msg) = notice.read().as_ref() {
+            div { class: "alert alert-success text-sm", "{msg}" }
+          }
+
+          div {
+            button {
+              class: "btn btn-primary btn-sm",
+              disabled: busy(),
+              onclick: move |_| async move {
+                  busy.set(true);
+                  error.set(None);
+                  notice.set(None);
+                  let kind = tax_id_type();
+                  let request = OrganizationBusinessDetailsRequest {
+                      business_name: Some(business_name()),
+                      tax_id: if kind == TaxIdType::None { None } else { Some(tax_id()) },
+                      tax_id_type: kind,
+                  };
+                  match api::orgs::set_business_details(org_id, &request).await {
+                      Ok(saved) => {
+                          notice
+                              .set(
+                                  Some(
+                                      match saved.tax_id_status {
+                                          TaxIdStatus::Pending => {
+                                              "Saved. VIES didn't answer, so verification is still pending."
+                                                  .to_string()
+                                          }
+                                          _ => "Saved.".to_string(),
+                                      },
+                                  ),
+                              );
+                          on_saved.call(());
+                      }
+                      Err(msg) => error.set(Some(msg)),
+                  }
+                  busy.set(false);
+              },
+              "Save details"
+            }
+          }
+        }
+      } else {
+        div { class: "text-sm text-base-content/70 flex flex-col gap-1",
+          div {
+            "Business name: "
+            span { class: "font-semibold",
+              "{details.business_name.clone().unwrap_or_else(|| \"not set\".to_string())}"
+            }
+          }
+          div {
+            "Tax ID: "
+            span { class: "font-mono",
+              "{details.tax_id.clone().unwrap_or_else(|| \"not set\".to_string())}"
+            }
+          }
+          p { class: "text-xs text-base-content/50", "Only owners and admins can change these." }
         }
       }
     }

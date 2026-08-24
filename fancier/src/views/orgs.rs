@@ -4,7 +4,7 @@
 //! `api/orgs.rs`'s module comment.
 
 use crate::{Route, api};
-use capsules::OrganizationMembership;
+use capsules::{OrganizationCreateRequest, OrganizationMembership, TaxIdType};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::LdX;
@@ -100,6 +100,9 @@ fn OrgCard(membership: OrganizationMembership) -> Element {
 fn CreateOrgModal(refresh: Signal<u32>) -> Element {
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
+  // Only the select needs a signal -- the text inputs are read from the
+  // submitted form, same as `name`.
+  let mut tax_id_type = use_signal(|| TaxIdType::EuVat);
 
   rsx! {
     dialog { class: "modal", id: "create_org_modal",
@@ -114,21 +117,37 @@ fn CreateOrgModal(refresh: Signal<u32>) -> Element {
           onsubmit: move |evt: FormEvent| async move {
               evt.prevent_default();
               let mut name = String::new();
+              let mut business_name = String::new();
+              let mut tax_id = String::new();
               for (key, val) in evt.values() {
-                  if let FormValue::Text(val) = val && key == "name" {
-                      name = val;
+                  if let FormValue::Text(val) = val {
+                      match key.as_str() {
+                          "name" => name = val,
+                          "business_name" => business_name = val,
+                          "tax_id" => tax_id = val,
+                          _ => {}
+                      }
                   }
               }
+              let tax_id = tax_id.trim().to_string();
+              let request = OrganizationCreateRequest {
+                  name,
+                  business_name: Some(business_name),
+                  tax_id: if tax_id.is_empty() { None } else { Some(tax_id.clone()) },
+                  tax_id_type: if tax_id.is_empty() { TaxIdType::None } else { tax_id_type() },
+              };
               is_saving.set(true);
               submit_error.set(None);
-              if api::orgs::create(&name).await.is_some() {
-                  is_saving.set(false);
-                  refresh += 1;
-                  document::eval(r#"document.getElementById("create_org_modal").close();"#);
-              } else {
-                  is_saving.set(false);
-                  submit_error
-                      .set(Some("Failed to create organization. Please try again.".to_string()));
+              match api::orgs::create(&request).await {
+                  Ok(_) => {
+                      is_saving.set(false);
+                      refresh += 1;
+                      document::eval(r#"document.getElementById("create_org_modal").close();"#);
+                  }
+                  Err(msg) => {
+                      is_saving.set(false);
+                      submit_error.set(Some(msg));
+                  }
               }
           },
           fieldset { class: "fieldset mt-5",
@@ -140,6 +159,50 @@ fn CreateOrgModal(refresh: Signal<u32>) -> Element {
                 placeholder: "e.g. Pioneer Valley Transit Authority",
                 r#type: "text",
                 required: true,
+              }
+            }
+          }
+          // Optional, and behind a disclosure, because an org is also how a
+          // single person groups their own devices. The fields are here at
+          // all because this is the moment the billing entity comes into
+          // existence, and a VAT registration entered now is one nobody has
+          // to remember to add before the first invoice.
+          details { class: "collapse collapse-arrow bg-base-200 mt-4",
+            summary { class: "collapse-title text-sm font-medium min-h-0 py-2",
+              "Business details (optional)"
+            }
+            div { class: "collapse-content flex flex-col gap-3",
+              label { class: "input w-full focus:outline-0",
+                input {
+                  class: "grow focus:outline-0",
+                  name: "business_name",
+                  placeholder: "Registered business name",
+                  r#type: "text",
+                }
+              }
+              div { class: "flex gap-2",
+                select {
+                  class: "select select-bordered select-sm",
+                  value: "{tax_id_type().as_str()}",
+                  onchange: move |e| {
+                      if let Ok(parsed) = e.value().parse::<TaxIdType>() {
+                          tax_id_type.set(parsed);
+                      }
+                  },
+                  option { value: "eu_vat", "EU VAT" }
+                  option { value: "other", "Other" }
+                }
+                label { class: "input grow focus:outline-0",
+                  input {
+                    class: "grow focus:outline-0 font-mono",
+                    name: "tax_id",
+                    placeholder: "Tax ID",
+                    r#type: "text",
+                  }
+                }
+              }
+              p { class: "text-xs text-base-content/50",
+                "EU VAT IDs are checked against VIES. You can add or change these later."
               }
             }
           }
