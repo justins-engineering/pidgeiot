@@ -159,6 +159,21 @@ pub struct Figure {
   pub qualifier: Option<String>,
 }
 
+impl Figure {
+  /// The number a display string like "$3,887" or "$0.045" stands for.
+  /// `None` for anything this cannot read, which the tests below refuse to
+  /// let into the file, so callers may treat it as a formatting fault
+  /// rather than a value they have to render around.
+  pub fn amount(&self) -> Option<f64> {
+    self
+      .value
+      .trim_start_matches('$')
+      .replace(',', "")
+      .parse()
+      .ok()
+  }
+}
+
 /// How much weight a figure carries. Kept as a string in the file and
 /// resolved here rather than deserialized into an enum: an unrecognized
 /// token degrades to `Unknown` and shows no claim, where a strict enum
@@ -395,7 +410,7 @@ pub async fn fetch_published() -> Option<Comparison> {
 #[cfg(test)]
 #[cfg(test)]
 mod the_data_file_says_what_it_claims {
-  use super::{BAKED_COMPARISON, Column, Provenance, Row, View};
+  use super::{BAKED_COMPARISON, Column, Figure, Provenance, Row, View};
 
   /// Every row on the page, table and build-it-yourself alike, paired with
   /// the columns it will be rendered against. Both kinds are hand-edited
@@ -718,6 +733,111 @@ mod the_data_file_says_what_it_claims {
       short.len() < 160,
       "Golioth's sales-page note is no longer the one-line version"
     );
+  }
+
+  // A dollar figure is a string, so nothing about the file's shape stops a
+  // thousands separator being typed as a period or a decimal point as a
+  // comma. $1.499 and $1,499 are both real ThingsBoard numbers a thousand
+  // apart, which is exactly the kind of pair that gets "corrected" into the
+  // wrong one. These are the arithmetic that settles it.
+  //
+  // Note what is deliberately NOT a rule: three digits after the point.
+  // Two dozen figures here are legitimately quoted to a tenth of a cent
+  // ($0.349, $6.604, $0.045), so a shape-based check would condemn most of
+  // the file.
+  #[test]
+  fn every_figure_is_a_number_this_code_can_read() {
+    for (row, _) in every_row() {
+      for (key, figure) in &row.figures {
+        assert!(
+          figure.amount().is_some(),
+          "{}'s {key} figure {:?} does not parse as an amount",
+          row.id,
+          figure.value
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_comma_is_only_ever_a_thousands_separator() {
+    for (row, _) in every_row() {
+      for (key, figure) in &row.figures {
+        if !figure.value.contains(',') {
+          continue;
+        }
+        let digits = figure.value.trim_start_matches('$');
+        let (whole, _) = digits.split_once('.').unwrap_or((digits, ""));
+        let mut groups = whole.split(',');
+        let first = groups.next().unwrap_or_default();
+        assert!(
+          (1..=3).contains(&first.len()) && groups.clone().all(|g| g.len() == 3),
+          "{}'s {key} figure {:?} groups its digits in something other than thousands",
+          row.id,
+          figure.value
+        );
+        assert!(
+          figure.amount().is_some_and(|n| n >= 1000.0),
+          "{}'s {key} figure {:?} carries a thousands separator but is under a thousand, which is \
+           what a decimal point mistyped as a comma looks like",
+          row.id,
+          figure.value
+        );
+      }
+    }
+  }
+
+  /// No IoT platform charges four figures per device per month. A rate that
+  /// large is a fleet total that lost its decimal point, and it would
+  /// overstate a competitor by a thousand times on a page whose whole value
+  /// is being checkable.
+  #[test]
+  fn a_per_device_rate_is_never_four_figures() {
+    for (row, columns) in every_row() {
+      for column in columns {
+        if !column.unit.contains("device/month") {
+          continue;
+        }
+        if let Some(figure) = row.figure(column) {
+          let amount = figure.amount().unwrap_or_default();
+          assert!(
+            amount < 1000.0,
+            "{}'s {} figure {:?} is a four-figure rate per device per month, which is a mangled \
+             separator rather than a price",
+            row.id,
+            column.key,
+            figure.value
+          );
+        }
+      }
+    }
+  }
+
+  /// The cross-check that makes the per-device and total columns hold each
+  /// other honest: a monthly figure has to be its own per-device rate times
+  /// the fleet it is quoted at. Either one drifting on its own fails here.
+  #[test]
+  fn a_monthly_total_is_its_per_device_rate_times_the_fleet() {
+    for (row, _) in every_row() {
+      let (Some(per_device), Some(monthly)) = (
+        row.figures.get("thousand").and_then(Figure::amount),
+        row
+          .figures
+          .get("monthly_at_thousand")
+          .and_then(Figure::amount),
+      ) else {
+        continue;
+      };
+      let expected = per_device * 1000.0;
+      assert!(
+        (monthly - expected).abs() <= expected * 0.01,
+        "{}: {} a month against {} per device across a thousand devices, which is {expected} -- \
+         one of the two has lost or gained a factor",
+        row.id,
+        monthly,
+        per_device
+      );
+    }
   }
 
   #[test]

@@ -21,7 +21,8 @@
     "cents sitting in a price column anchors a reader before any feature list reaches them.",
     "Figures come from pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9.",
     "TWO pages render this file. /pricing/ shows each profile's summary_rows at its summary_columns and never shows build_your_own; /compare/ shows every row at full_columns plus the build_your_own citations. One figure, edited once, corrects both.",
-    "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/."
+    "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/.",
+    "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000."
   ],
   "schema": 2,
   "stale_after_days": 90,
@@ -425,13 +426,14 @@
             },
             "thousand": {
               "value": "$1.499",
-              "unit": "USD/device/month"
+              "unit": "USD/device/month",
+              "qualifier": "$1,499/mo across the fleet"
             }
           },
           "status": "verified",
           "last_verified": "2026-08-23",
           "source": "https://thingsboard.io/pricing/",
-          "note": "One device alone blows the free datapoint ceiling; a thousand forces Private Cloud."
+          "note": "At five readings per report one device emits 1.3 million data points a month against the free tier's one million ceiling, and a thousand devices force Private Cloud at $1,499 a month even though the device count fits Business exactly."
         },
         {
           "id": "particle-chatty",
