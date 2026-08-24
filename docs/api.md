@@ -162,8 +162,16 @@ models above; dev and production don't set these vars, so it's a no-op there.
 ## Rate & size limits
 
 There is no general-purpose rate limiting in `dovecote` today (beyond whatever Cloudflare
-applies at the platform level); the one route with a real per-IP limiter is `POST /errors`,
-via Cloudflare's rate-limiter binding. The limits that do exist are:
+applies at the platform level). The routes that carry a real limiter carry it individually,
+through Cloudflare's rate-limiter binding: the two public unauthenticated forms (`POST /errors`,
+`POST /contact`, keyed per IP) and the device surfaces that are neither billed nor counted
+(shadow polls and FOTA chunk downloads, keyed per pigeon, plus a per-IP budget on requests that
+fail device authentication). Every one of them shares the same properties, and they are worth
+stating once rather than in each row: the counters are approximate and roughly per-colo, so a
+limit bounds runaway volume rather than gating precisely; over the limit answers `429` with
+`Retry-After` and **never** `401`, which the dashboard treats as a sign-out signal; and each
+check fails **open** on a binding fault, because a limiter outage taking a fleet offline would
+be worse than a window of unthrottled traffic. The limits that do exist are:
 
 | Limit | Value | Where |
 |---|---|---|
@@ -193,11 +201,29 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `POST /contact` — `name` / `email` / `company` / `about` length | 128 / 254 / 128 / 32 bytes (`capsules::MAX_CONTACT_*_BYTES`) | `capsules::contact::validate`, `400` over the cap |
 | `POST /contact` — minimum time on the form | 2s (`capsules::MIN_CONTACT_FILL_MS`) | `capsules::contact::validate`, `400` under the floor |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
+| `GET /device/pigeons/:id/shadow` — requests per pigeon | 120 / 60s | `wrangler.toml` `DEVICE_SHADOW_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice the 60/min a 1s `telemetry_interval` produces, which is the fastest poll cadence the platform can express |
+| `GET /device/pigeons/:id/firmware` — Range requests per pigeon | 1800 / 60s | `wrangler.toml` `DEVICE_FIRMWARE_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Set well above any real download rate on purpose: a device aborts the whole transfer on its first chunk error |
+| `/device/pigeons/:id/*` — **failed** device authentications per IP | 10 / 60s | `wrangler.toml` `DEVICE_AUTH_FAIL_LIMITER` + `helpers/device_limits.rs::DeviceAuthGuard`, `429` over the limit. Only `401`s are counted, so a healthy device never touches it; the CoAP terminator's own address is exempt (see below) |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /errors` — bytes in `note` (manual JSON body) | 4 KiB (reuses `capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
 | New-signature ops emails | 5 / hour, global; overflow folded into the next allowed email as a suppressed count | `helpers/errors.rs` |
 | Stored error events per signature | newest 200 kept (each group's oldest 5 and all manual reports exempt) | `helpers/errors.rs` retention sweep on the 5-minute cron |
 | Stored error events age | 90 days, keyed on server-side `received_at` | `helpers/errors.rs` retention sweep |
+
+Two notes on the device limiters, both consequences of who actually calls these routes:
+
+- **Devices cannot see a `429` as a `429`.** The Zephyr client surfaces neither the status code
+  nor response headers to its callers, so a limited request is indistinguishable there from any
+  other transport failure and is simply retried on the next cycle. `Retry-After` is emitted for
+  correctness and for anything else that speaks HTTP, not because a device reads it. No failure
+  on these routes clears a device's configuration, credentials, or provisioning.
+- **The CoAP terminator is exempt from the failed-auth IP budget, deliberately.** It proxies the
+  whole CoAP fleet onto these same routes from one egress address, so a single device looping on
+  a rotated token would spend the shared budget and lock every other CoAP device out behind it.
+  The exemption is by source address, reusing the `COAP_SERVICE_ALLOWED_IPS` allowlist that
+  already gates `GET /internal/coap-psk/:pigeon_id`. Those devices stay covered: the two
+  per-pigeon limiters apply to everything the terminator forwards (the pigeon id is in the path),
+  and the terminator applies its own per-source connection admission on the DTLS/TLS side.
 
 ---
 
