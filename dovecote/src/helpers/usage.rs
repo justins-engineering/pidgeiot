@@ -92,6 +92,27 @@ impl ServedPlan {
   pub fn bills_overage(&self) -> bool {
     matches!(self.source, PlanSource::Subscription)
   }
+
+  /// The message allowance this account's usage is measured against.
+  ///
+  /// An account that cannot bill gets its tier's bare allowance and
+  /// nothing else. The extra-device pool exists to match devices that are
+  /// being *charged for*, so an account buying no extra devices earns no
+  /// extra pool -- and, more importantly, this is the number the ingest
+  /// fuse trips on, so anything that widened it here without widening the
+  /// fuse would show a customer a ceiling their traffic never reaches
+  /// before being paused. The two must be the same number, and this is
+  /// where that is guaranteed.
+  pub fn period_message_allowance(
+    &self,
+    floor_messages: Option<i64>,
+    connected_devices: i64,
+  ) -> i64 {
+    if !self.bills_overage() {
+      return self.plan.included_messages();
+    }
+    period_message_allowance(self.plan, floor_messages, connected_devices)
+  }
 }
 
 /// The tier an account is actually served at, right now, and why.
@@ -613,7 +634,7 @@ pub async fn check_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
   }
 
   let billable: Option<i64> = row.get("billable_messages");
-  if billable.unwrap_or(0) >= served.plan.included_messages() {
+  if billable.unwrap_or(0) >= served.period_message_allowance(None, 0) {
     IngestFuse::Pause
   } else {
     IngestFuse::Allow
@@ -1372,6 +1393,31 @@ mod tests {
       EntitlementCap::Allow => None,
       EntitlementCap::Refuse(message) => Some(message),
     }
+  }
+
+  #[test]
+  fn an_unbilled_account_is_shown_the_same_ceiling_its_fuse_trips_on() {
+    // The trap this closes: the dashboard's denominator comes from the
+    // overview and the pause comes from the fuse. If the extra-device pool
+    // reached one and not the other, a comped org would watch a 1.8M bar
+    // fill to 83% and stop dead, with nothing on the page explaining why.
+    let comped = served_plan(Some("perch"), Some("none"), Some("builder"));
+    let with_devices = comped.period_message_allowance(None, 150);
+    let fuse_threshold = comped.period_message_allowance(None, 0);
+    assert_eq!(with_devices, fuse_threshold);
+    assert_eq!(with_devices, BillingPlan::Builder.included_messages());
+    // A floor cannot raise it either: a floor records a tier this account
+    // was entitled to, and a comped account was entitled to none.
+    assert_eq!(
+      comped.period_message_allowance(Some(45_000_000), 150),
+      1_500_000
+    );
+    // The free tier, same rule, same number as before any of this.
+    let free = served_plan(None, None, None);
+    assert_eq!(free.period_message_allowance(None, 10_000), 300_000);
+    // A real subscription keeps the pool it is being billed for.
+    let paid = served_plan(Some("builder"), Some("active"), None);
+    assert_eq!(paid.period_message_allowance(None, 150), 4_500_000);
   }
 
   #[test]

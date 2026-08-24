@@ -311,11 +311,8 @@ pub async fn load_org_billing_overview(
   // billed extra devices carry.
   let connected_device_count: i64 = row.get("connected_device_count");
   let allowance_floor_messages: Option<i64> = row.get("allowance_floor_messages");
-  let included_messages = super::usage::period_message_allowance(
-    effective_plan,
-    allowance_floor_messages,
-    connected_device_count,
-  );
+  let included_messages =
+    served.period_message_allowance(allowance_floor_messages, connected_device_count);
 
   Ok(Some(OrganizationBillingOverview {
     plan,
