@@ -1,0 +1,80 @@
+# The status page: a separate Worker script, on purpose.
+#
+# This is not a route on dovecote and not a page in fancier. If it were
+# either, it would share a deployment, a config and a blast radius with the
+# thing it is supposed to report on -- a bad deploy of the product would
+# take its own status page with it, which is the one failure a status page
+# may not have. It is a wholly separate script whose only binding is its own
+# KV namespace.
+#
+# There is no [build] section because there is nothing to build. The source
+# is plain ESM, so `wrangler deploy` uploads it as-is and redeploying during
+# an incident needs no toolchain.
+name = "pidgeiot-status"
+main = "src/index.mjs"
+compatibility_date = "2026-08-24"
+send_metrics = false
+workers_dev = false
+
+# Provisions and serves status.pidgeiot.com. `custom_domain = true` means
+# the FIRST production deploy creates the proxied DNS record itself -- do
+# not hand-create an A/CNAME for this name beforehand, or the deploy will
+# collide with it.
+[[routes]]
+pattern = "status.pidgeiot.com"
+custom_domain = true
+zone_name = "pidgeiot.com"
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+# STATUS_ENV -- "production" renders the page plainly; anything else adds a
+# banner saying the deployment is a rehearsal, so a staging copy can never
+# be mistaken for the real page during an incident.
+[vars]
+STATUS_ENV = "production"
+
+# Every surface's URL is defined once in src/probes.mjs, defaulting to the
+# production endpoints. Set PROBE_API_URL / PROBE_AUTH_URL / PROBE_SITE_URL
+# here only to point a deployment somewhere else.
+
+# Current state, rolling history and the manually published incidents all
+# live here. One namespace per environment: a staging cron writing into
+# production's state would publish fiction to customers.
+#
+# OWNER STEP -- the production namespace does not exist yet. Create it and
+# replace the id below:
+#   bunx wrangler kv namespace create STATUS_KV
+[[kv_namespaces]]
+binding = "STATUS_KV"
+id = "REPLACE_WITH_PRODUCTION_KV_NAMESPACE_ID"
+
+# Every five minutes. Modest by design: this is 288 cycles a day, which is
+# three cheap requests per cycle against the product and exactly one KV
+# write, keeping the page inside free-tier allowances and keeping the probe
+# far below anything that could register as load on the platform.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Staging: a SEPARATE script named `pidgeiot-status-staging` via wrangler's
+# default <name>-<env> naming, reachable only on workers.dev. `routes = []`
+# overrides the inherited custom domain so a staging deploy can never take
+# over status.pidgeiot.com.
+[env.staging]
+workers_dev = true
+routes = []
+
+[env.staging.vars]
+STATUS_ENV = "staging"
+
+# Staging probes the same production URLs the real page watches. That is
+# deliberate: it makes the staging deploy a true rehearsal of the page
+# customers will see, and the probe is three GETs against public endpoints.
+# The banner from STATUS_ENV is what keeps the two pages distinguishable.
+[[env.staging.kv_namespaces]]
+binding = "STATUS_KV"
+id = "aafcb4c91d4d4472aa6723faad479ed2"
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
