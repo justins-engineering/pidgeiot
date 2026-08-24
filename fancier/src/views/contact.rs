@@ -53,20 +53,36 @@ fn preselected_fleet_size(about: Option<&str>) -> Option<ContactFleetSize> {
 
 #[component]
 pub fn ContactPage() -> Element {
-  // Read once on entry, from the address bar rather than a route prop.
-  // A client-side navigation remounts the component, so this re-reads.
-  let about = use_hook(|| url_query_param("about"));
-  let about_is_fleet = about.as_deref() == Some("fleet");
-
   let mut name = use_signal(String::new);
   let mut email = use_signal(String::new);
   let mut company = use_signal(String::new);
   let mut message = use_signal(String::new);
-  let mut fleet_size = use_signal(|| {
-    preselected_fleet_size(about.as_deref())
-      .map(|s| s.wire().to_string())
-      .unwrap_or_default()
+  let mut fleet_size = use_signal(String::new);
+
+  // The funnel context arrives as a state change AFTER mount, never as
+  // part of the first render. A prerendered page hydrates by adopting the
+  // markup it was served: a value that differs only on the client changes
+  // nothing on screen, because the initial render is not re-run against
+  // it -- verified in a browser, where the address bar plainly said
+  // `?about=fleet` while the page went on rendering the generic copy. A
+  // `use_future` does not run during the synchronous prerender, so what
+  // it sets is a real reactive update that patches the DOM.
+  let mut about = use_signal(|| None::<String>);
+  use_future(move || async move {
+    let Some(value) = url_query_param("about") else {
+      return;
+    };
+    // A default, not an override: `peek` rather than `read` so this never
+    // subscribes, and an answer the visitor already picked wins over the
+    // link's guess.
+    if let Some(size) = preselected_fleet_size(Some(value.as_str()))
+      && fleet_size.peek().is_empty()
+    {
+      fleet_size.set(size.wire().to_string());
+    }
+    about.set(Some(value));
   });
+  let about_is_fleet = about().as_deref() == Some("fleet");
   // The honeypot's bound value. Always empty from a real browser, since
   // the field is off-screen, aria-hidden and out of the tab order.
   let mut website = use_signal(String::new);
@@ -99,7 +115,7 @@ pub fn ContactPage() -> Element {
         (!value.is_empty()).then_some(value)
       },
       fleet_size: ContactFleetSize::from_wire(&fleet_size.read()),
-      about: about.clone(),
+      about: about(),
       website: Some(website.read().clone()),
       elapsed_ms: Some(elapsed),
     };
