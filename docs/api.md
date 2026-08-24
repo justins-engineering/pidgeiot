@@ -355,6 +355,8 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Org-shared pigeons: owner-level routes (delete, token refresh, ACL changes, shell) | yes | yes | no |
 | View billing overview (`GET /orgs/:id/billing`) | yes | yes | yes |
 | Manage billing (`POST /orgs/:id/billing/checkout`, `POST /orgs/:id/billing/portal`, `PUT /orgs/:id/billing/plan`) | yes | yes | no |
+| View business details (`GET /orgs/:id/business-details`) | yes | yes | yes |
+| Change business details (`PUT /orgs/:id/business-details`) | yes | yes | no |
 
 Last-owner protection: an org must always retain at least one `owner` — demoting or removing
 the only owner is refused with `409`, regardless of who asks.
@@ -367,8 +369,18 @@ rights; `member` is capped at member-level. Per-user ACL rows are unaffected.
 #### `POST /orgs`
 
 Creates an organization; the caller becomes its founding `owner` (an org can never exist
-without one). Body: `capsules::OrganizationCreateRequest` (`{ name }`). Returns
+without one). Body: `capsules::OrganizationCreateRequest`
+(`{ name, business_name?, tax_id?, tax_id_type? }` — the last three optional and defaulting
+to absent/`none`, so a client that predates them is unaffected). Returns
 `capsules::Organization` with `201` and a `Location: /orgs/<org_id>` header.
+
+**Business details are settled before the org is inserted.** A `tax_id` that fails the format
+check, or that VIES definitively rejects, refuses the whole creation with `400` and leaves no
+organization behind. Everything else about the details write is best-effort *after* the
+insert: the caller has been granted the org, so a details write that fails leaves the fields
+blank and editable rather than failing a creation that already succeeded. See
+[Business details](#business-details) for the full semantics — the create path applies exactly
+the same rules as `PUT /orgs/:org_id/business-details`.
 
 **Organization-count entitlement.** `403` past the caller's tier's allowance (see
 [Per-tier limits](#per-tier-limits)). Counts the organizations this person already *owns*, so
@@ -458,6 +470,113 @@ and the inviter's ability to revoke pending invites and remove members. The alte
 (require `session email == invited email`) is stricter against forwarded/leaked invite
 emails; if that ever matters more than invitee flexibility, the accept handler is the single
 place to add the check.
+
+### Business details
+
+Who an organization's invoices are made out to, and under which tax registration. These live
+on the **organization**, not on the Kratos identity: the org is the billing entity (it is what
+carries `stripe_customer_id`), it survives a change of individual owner, and one person can
+belong to two orgs with two different registrations — an identity trait could not express
+that, and it would put a VAT field in front of every hobbyist at signup.
+
+A stored `tax_id` is **not** stripped on read, unlike connector tokens and invite tokens. A VAT
+number is printed on every invoice its owner issues and is publicly checkable by anyone; hiding
+it from the org's own members would protect nothing and would stop them noticing a typo. Logs
+never carry one in full — only its kind, country prefix and length (`capsules::tax_id_log_label`).
+
+**Types** (`capsules::TaxIdType`, serialized snake_case):
+
+| `tax_id_type` | Meaning | Checked remotely? |
+|---|---|---|
+| `none` | Nothing on file. Sending it with a non-empty `tax_id` is a `400`; it is how the field is cleared. | — |
+| `eu_vat` | An EU (or Northern Ireland, `XI`) VAT number. | Yes, against VIES |
+| `other` | Any other jurisdiction — GST, ABN, EIN. Format sanity only. | No |
+
+**Statuses** (`capsules::TaxIdStatus`):
+
+| `tax_id_status` | Meaning |
+|---|---|
+| `none` | Nothing on file. |
+| `pending` | An EU VAT number we hold but could not get a verdict for. Retried by the scheduled sweep. |
+| `validated` | VIES confirmed a live registration. `tax_id_validated_at` is when. |
+| `invalid` | VIES said it is not a registration. **Only reachable via a re-check** — see below. |
+| `unverified` | Held but not checked, because `tax_id_type` is `other`. |
+
+#### VIES semantics — the rule that matters
+
+EU VAT numbers are validated against the European Commission's VIES REST endpoint,
+`POST https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number` with
+`{"countryCode","vatNumber"}`. No key, no registration, no published quota. Observed latency
+is ~0.3–0.5 s.
+
+**A VIES outage never blocks a save.** A lookup has exactly three outcomes, and only one of
+them refuses anything:
+
+- **`valid: true`** → stored `validated`, `tax_id_validated_at` stamped.
+- **`valid: false`** → the save is **refused** with `400`. This is the only refusal.
+- **anything else** → stored `pending`, and the scheduled sweep asks again. "Anything else"
+  means: a transport failure, a non-2xx, a body we cannot parse, or an `errorWrappers`
+  envelope — `MS_UNAVAILABLE`, `TIMEOUT`, `SERVICE_UNAVAILABLE`, the concurrency limits. None
+  of these is evidence about the number.
+
+The distinction is in the wire protocol, not inferred: **`MS_UNAVAILABLE` arrives with HTTP
+200**, so a client that checks only the status code and then reads `valid` as false-by-absence
+would declare a genuine registration invalid every time its own tax authority went down. VIES
+routinely has one or two of its twenty-eight member states listed `Unavailable`
+(`GET /rest-api/check-status` reports them live).
+
+**Why `invalid` is unreachable from a save.** At save time a definitive `invalid` refuses the
+write, so nothing lands in that state by being entered. It is reachable only through the sweep
+re-checking a row that already exists — a number that was `pending`, or one that was
+`validated` and has since been deregistered. That asymmetry is deliberate: a save can refuse
+because there is nothing to leave behind, and a re-check cannot because there already is.
+
+**Format checks run first, locally**, so a typo is refused without spending a VIES call and
+with a specific reason (`"that is not the shape of a DE VAT number"`). They are per-country
+shape rules only. They stop short of national check digits on purpose — VIES already rejects a
+checksum-failing number itself, without contacting the member state, so a second implementation
+would only be a second thing to get wrong. `GR` is accepted as an alias for Greece's VAT prefix
+`EL` and stored as `EL`.
+
+**The retry sweep** rides the existing 5-minute cron (`dovecote/src/scheduled.rs`, same
+5-cron-trigger account limit as the other passengers). It takes `pending` + `eu_vat` rows whose
+last attempt is over an hour old, oldest first, at most 20 per sweep. `tax_id_checked_at`
+records every attempt and is what paces this; `tax_id_validated_at` records only confirmations
+and is deliberately *not* disturbed by an inconclusive re-check, so "confirmed on the 3rd,
+unreachable since" stays readable. The update is guarded on the row still holding the same
+number and still being `pending`, so an edit made mid-sweep is never overwritten by an answer
+about the previous number.
+
+**Not yet wired to Stripe.** These fields are collected and stored but not sent to Stripe at
+checkout; `tax_id_data` on the Checkout session is the seam, marked in
+`dovecote/src/lib.rs`'s checkout route. Until then, storing a validated EU VAT ID records the
+reverse-charge position without applying it.
+
+#### `GET /orgs/:org_id/business-details` — any member
+
+Returns `capsules::OrganizationBusinessDetails`:
+`{ org_id, business_name, tax_id, tax_id_type, tax_id_status, tax_id_validated_at, tax_id_checked_at }`.
+`404` if no such org; `403` if the caller is not a member.
+
+#### `PUT /orgs/:org_id/business-details` — owner/admin
+
+Body: `capsules::OrganizationBusinessDetailsRequest`
+(`{ business_name?, tax_id?, tax_id_type }`). **Replaces every field wholesale** — this is a
+small form the customer sees in full, so a partial update would mean guessing which blank meant
+"unchanged" and which meant "delete this". Returns the updated
+`capsules::OrganizationBusinessDetails`.
+
+Authorization is checked **before** the VIES call, so a non-member cannot use this route as a
+free VAT-lookup oracle.
+
+`400` for: a business name over 200 characters; a tax ID over 32 characters after
+normalization; a `tax_id` supplied alongside `tax_id_type: none`, or a type without an ID
+(both ambiguous, so both are refused rather than half-honoured); a country code VIES does not
+serve (`GB` no longer qualifies — only `XI`); a shape that is wrong for its country; and a VAT
+ID VIES definitively rejects. `403` for a non-manager; `404` if no such org.
+
+Normalization before storage: uppercased, with whitespace, `.`, `-` and `/` stripped. So
+`" ie 6388047v "`, `IE-6388047-V` and `ie/6388047/v` all store as `IE6388047V`.
 
 ### Billing
 
@@ -2313,6 +2432,10 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `OrganizationCreateRequest`, `OrganizationRenameRequest`,
   `OrganizationMemberRoleUpdateRequest`, `OrganizationInviteCreateRequest`,
   `OrganizationInviteAcceptRequest`, `OrgRoleEntry` (internal `X-Org-Roles` header entry)
+- `OrganizationBusinessDetails`, `OrganizationBusinessDetailsRequest`, `TaxIdType`,
+  `TaxIdStatus`, `MAX_TAX_ID_CHARS`, `MAX_BUSINESS_NAME_CHARS` — `capsules/src/tax_id.rs`,
+  which also holds the shared format rules (`prepare_tax_id`, `parse_eu_vat`) and the
+  save-versus-recheck state machine (`decide_status`, `recheck_status`)
 - `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`, `PigeonDetail`
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
