@@ -22,7 +22,8 @@
     "Figures come from pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9.",
     "TWO pages render this file. /pricing/ shows each profile's summary_rows at its summary_columns and never shows build_your_own; /compare/ shows every row at full_columns plus the build_your_own citations. One figure, edited once, corrects both.",
     "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/.",
-    "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000."
+    "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000.",
+    "A 10,000-device chatty figure is only published where the vendor's model is flat by the record (Golioth, Blues, AWS) or computable from our own published grid. Ours is Fleet's $1,499 plus overage on the messages past its 300M pool. Where a vendor's own arithmetic could not be reproduced at that size, the cell stays empty rather than estimated."
   ],
   "schema": 2,
   "stale_after_days": 90,
@@ -360,7 +361,8 @@
         "blues-steady"
       ],
       "summary_heading": "1,000 devices, reporting every five minutes",
-      "summary_subhead": "Published list prices, cheapest tier that legitimately fits the fleet. Each figure carries the date we last checked it."
+      "summary_subhead": "Published list prices, cheapest tier that legitimately fits the fleet. Each figure carries the date we last checked it.",
+      "closing": "Golioth is cheaper than us up to about 1,225 devices and we are cheaper above it: 18% at 1,500, 21% at 2,000, 47% at ten thousand. Our per-device price falls as each tier fills; a flat rate per device never does."
     },
     {
       "id": "chatty",
@@ -376,6 +378,11 @@
           "key": "thousand",
           "label": "1,000 devices",
           "unit": "USD/device/month"
+        },
+        {
+          "key": "ten_thousand",
+          "label": "10,000 devices",
+          "unit": "USD/device/month"
         }
       ],
       "rows": [
@@ -389,13 +396,20 @@
               "qualifier": "inside the free pool"
             },
             "thousand": {
-              "value": "$6.80",
-              "unit": "USD/device/month"
+              "value": "$1.50",
+              "unit": "USD/device/month",
+              "qualifier": "Fleet, pool covers it"
+            },
+            "ten_thousand": {
+              "value": "$7.03",
+              "unit": "USD/device/month",
+              "qualifier": "Fleet plus overage"
             }
           },
           "status": "ours",
           "last_verified": "2026-08-23",
-          "note": "$0.35 of base plus $6.45 of overage. We are not the cheapest here and will not pretend to be."
+          "note": "A thousand chatty devices fit inside Fleet's own message pool, so $1,499 buys the fleet at $1.50 each; ten thousand overrun that pool and pay overage on the difference. Golioth is still cheaper here and we are not going to pretend otherwise.",
+          "summary_note": "Buying Fleet for its message pool costs $1.50 a device, not the $6.80 a smaller tier plus overage would."
         },
         {
           "id": "golioth-chatty",
@@ -409,12 +423,16 @@
             "thousand": {
               "value": "$0.665",
               "unit": "USD/device/month"
+            },
+            "ten_thousand": {
+              "value": "$0.665",
+              "unit": "USD/device/month"
             }
           },
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "Beats us outright at this cadence too, and still ships no multi-tenant dashboard, no organizations or RBAC and no alerting."
+          "note": "Their rate is flat at any fleet size and beats us at this cadence throughout, and they still ship no multi-tenant dashboard, no organizations or RBAC and no alerting."
         },
         {
           "id": "thingsboard-chatty",
@@ -433,7 +451,7 @@
           "status": "verified",
           "last_verified": "2026-08-23",
           "source": "https://thingsboard.io/pricing/",
-          "note": "At five readings per report one device emits 1.3 million data points a month against the free tier's one million ceiling, and a thousand devices force Private Cloud at $1,499 a month even though the device count fits Business exactly."
+          "note": "At five readings per report one device emits 1.3 million data points a month against the free tier's one million ceiling, and a thousand devices force Private Cloud at $1,499 a month even though the device count fits Business exactly. Ten thousand of them break the throughput cap on the tier they land on, and the next tier up publishes no message ceiling we could price against."
         },
         {
           "id": "particle-chatty",
@@ -451,7 +469,7 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://particle.io/pricing/",
-          "note": "One chatty device eats an entire $299 block by itself."
+          "note": "One chatty device eats an entire $299 block by itself. We could not reduce their block arithmetic to a figure we would stand behind at ten thousand, so we are not printing one."
         },
         {
           "id": "blues-chatty",
@@ -463,6 +481,10 @@
               "unit": "USD/device/month"
             },
             "thousand": {
+              "value": "$194.40",
+              "unit": "USD/device/month"
+            },
+            "ten_thousand": {
               "value": "$194.40",
               "unit": "USD/device/month"
             }
@@ -487,6 +509,10 @@
             "thousand": {
               "value": "$1.241",
               "unit": "USD/device/month"
+            },
+            "ten_thousand": {
+              "value": "$1.241",
+              "unit": "USD/device/month"
             }
           },
           "status": "single-fetch",
@@ -499,7 +525,8 @@
       "reference_column": "thousand",
       "full_columns": [
         "one",
-        "thousand"
+        "thousand",
+        "ten_thousand"
       ],
       "summary_columns": [
         "one",
