@@ -182,6 +182,11 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — `contact_email` / `page_context` length | 254 / 512 bytes (`capsules::MAX_FEEDBACK_CONTACT_EMAIL_BYTES`/`MAX_FEEDBACK_PAGE_CONTEXT_BYTES`) | `lib.rs`, `400` over the cap |
 | `POST /feedback` — `diagnostics` length | 2 KiB (`capsules::MAX_FEEDBACK_DIAGNOSTICS_BYTES`) | `lib.rs`, `400` over the cap |
+| `POST /contact` — requests per IP | 5 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` |
+| `POST /contact` — bytes per raw body | 8 KiB (`capsules::MAX_CONTACT_BODY_BYTES`) | `lib.rs`, `413` over the cap |
+| `POST /contact` — bytes in `message` | 10 B to 4 KiB (`capsules::MIN_CONTACT_MESSAGE_BYTES`/`MAX_CONTACT_MESSAGE_BYTES`) | `capsules::contact::validate`, `400` under / `413` over |
+| `POST /contact` — `name` / `email` / `company` / `about` length | 128 / 254 / 128 / 32 bytes (`capsules::MAX_CONTACT_*_BYTES`) | `capsules::contact::validate`, `400` over the cap |
+| `POST /contact` — minimum time on the form | 2s (`capsules::MIN_CONTACT_FILL_MS`) | `capsules::contact::validate`, `400` under the floor |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /errors` — bytes in `note` (manual JSON body) | 4 KiB (reuses `capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -1284,9 +1289,74 @@ Rejections:
 - `413` if the raw body exceeds `capsules::MAX_FEEDBACK_BODY_BYTES` or `message` exceeds
   `capsules::MAX_FEEDBACK_MESSAGE_BYTES` (see the size-limits table above).
 
-There is no per-IP rate limiting in-route (see "Rate & size limits" above — `POST /errors`
-is the one route that carries one); platform-level protection (a Cloudflare WAF rate rule on
-`POST /feedback`, or Turnstile) is the intended follow-up if abuse appears.
+There is no per-IP rate limiting in-route on this one (see "Rate & size limits" above —
+`POST /errors` and `POST /contact` are the routes that carry one); platform-level protection
+(a Cloudflare WAF rate rule on `POST /feedback`, or Turnstile) is the intended follow-up if
+abuse appears.
+
+### Contact
+
+#### `POST /contact` — **no auth required** (optionally authenticated)
+
+The public contact form at `https://pidgeiot.com/contact/`, which every "Contact" and "Talk to
+us" link on the site now opens. Unauthenticated by definition: the people it exists for do not
+have accounts yet. If a valid session cookie happens to be present it is resolved server-side
+and stored alongside the enquiry, so a note from an existing user is recognisable; the
+submitter is never trusted from the request body.
+
+Body: `capsules::ContactRequest`. `name`, `email` and `message` are required. `company` is
+optional free text; `fleet_size` is optional and, when present, one of `"under_50"`,
+`"50_to_250"`, `"250_to_1500"`, `"1500_to_10000"`, `"over_10000"`, `"not_sure"` (an unknown
+value fails deserialization, surfacing as a `400` rather than being silently coerced); `about`
+is an optional lowercase slug naming the link that opened the form (`"fleet"` from the pricing
+page's Fleet tier).
+
+Two further fields exist only as abuse controls and are not part of the enquiry:
+
+- `website` — a honeypot. The form renders it off-screen with `aria-hidden` and
+  `tabindex="-1"`, so a real browser always sends it empty. A non-empty value answers `202`
+  exactly like a success and stores and mails **nothing**: telling a script which control
+  caught it tells it what to change.
+- `elapsed_ms` — milliseconds between the form mounting and the submit click. Under
+  `capsules::MIN_CONTACT_FILL_MS`, or absent entirely, is a `400` with a message inviting a
+  retry (recoverable on purpose: the floor is one no human reaches, but silently discarding a
+  real enquiry is the worse failure).
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/contact \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Dana Okafor","email":"dana@example.com","company":"Meterworks",
+       "fleet_size":"250_to_1500","about":"fleet","elapsed_ms":9000,
+       "message":"We have about 900 water meters and need OTA updates."}'
+```
+
+Returns `202` with an empty JSON object once the enquiry is **stored**. Unlike
+`POST /feedback`, this route persists before it notifies: the row in `contact_submissions`
+(`infra/migrations/2026-08-24-contact-submissions.sql`) is what keeps an enquiry from being
+lost to a mail-transport outage, so a storage failure is a real `500`. The notification email
+is then best-effort through the same `OPS_ALERT_EMAIL` + Resend transport every other ops mail
+uses (`helpers/contact.rs`), stamping `notified_at` only once a send succeeds — `OPS_ALERT_EMAIL`
+is set in production's `[vars]` block only, so staging and dev store the row and log the
+formatted email instead of sending it.
+
+Validation is `capsules::contact::validate`, called by both this route and the form that
+produced the request, so the two cannot disagree about what a valid enquiry is.
+
+Rejections:
+
+- `400` if `Content-Type` is not `application/json`, the JSON is invalid, `name`/`email` are
+  empty, `email` fails the shape check, `message` is shorter than
+  `capsules::MIN_CONTACT_MESSAGE_BYTES`, `about` is not a plain slug, any field exceeds its
+  length cap, or `elapsed_ms` is missing or under the fill-time floor. The response body is the
+  user-facing sentence the form renders verbatim (`ContactRejection::message`).
+- `413` if the raw body exceeds `capsules::MAX_CONTACT_BODY_BYTES` or `message` exceeds
+  `capsules::MAX_CONTACT_MESSAGE_BYTES`.
+- `429` if the per-IP limiter (5 / 60s) is over its window. Deliberately never `401`, which the
+  dashboard treats as a sign-out signal.
+- `500` if the enquiry could not be stored.
+
+Cloudflare Turnstile is the intended next control and is not wired up (it needs a site key from
+the account owner). The seam is marked in `lib.rs` immediately after the rate-limiter check.
 
 ### Error reporting
 

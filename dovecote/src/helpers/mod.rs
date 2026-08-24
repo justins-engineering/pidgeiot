@@ -118,6 +118,10 @@ pub use firmware::upsert_flock_firmware;
 mod ops_probe;
 pub use ops_probe::probe_kratos_health;
 
+mod contact;
+pub use contact::notify_contact_submission;
+pub use contact::store_contact_submission;
+
 mod feedback;
 pub use feedback::send_feedback_email;
 

@@ -124,6 +124,17 @@ name = "ERROR_INGEST_LIMITER"
 namespace_id = "1001"
 simple = { limit = 20, period = 60 }
 
+# Public contact form. Tighter than the error limiter because the traffic
+# is a person filling in a form, not a crash reporter: five in a minute
+# already covers a resend after a typo. Counters are roughly per-colo, so
+# this bounds request volume rather than the ops inbox -- the honeypot and
+# fill-time floor in capsules::contact::validate are what a distributed
+# script still has to beat.
+[[ratelimits]]
+name = "CONTACT_LIMITER"
+namespace_id = "1004"
+simple = { limit = 5, period = 60 }
+
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
@@ -228,6 +239,12 @@ name = "ERROR_INGEST_LIMITER"
 namespace_id = "1002"
 simple = { limit = 20, period = 60 }
 
+# Own namespace_id -- see the production CONTACT_LIMITER block above.
+[[env.staging.ratelimits]]
+name = "CONTACT_LIMITER"
+namespace_id = "1005"
+simple = { limit = 5, period = 60 }
+
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
 # dovecote-db-staging: staging's OWN database (dovecote_staging on the
@@ -302,6 +319,12 @@ bucket_name = "pidgeiot-firmware-dev"
 name = "ERROR_INGEST_LIMITER"
 namespace_id = "1003"
 simple = { limit = 20, period = 60 }
+
+# Own namespace_id -- see the production CONTACT_LIMITER block above.
+[[env.dev.ratelimits]]
+name = "CONTACT_LIMITER"
+namespace_id = "1006"
+simple = { limit = 5, period = 60 }
 
 [[env.dev.hyperdrive]]
 binding = "YugabyteDB"

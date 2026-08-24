@@ -14,15 +14,15 @@ use crate::helpers::{
   list_flock_alerts, list_flock_firmware, list_org_invites, list_org_members,
   list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations, load_org_billing_overview,
   load_org_roles, load_org_subscription_state, mark_webhook_event_processed, mint_invite_token,
-  org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do,
-  psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  notify_contact_submission, org_role_of, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, remove_member,
   rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
-  send_invite_email, sha256_hex, stripe_configured, update_alert_definition, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
-  verify_webhook_signature,
+  send_invite_email, sha256_hex, store_contact_submission, stripe_configured,
+  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware,
+  validate_telemetry_report, verify_cf_access, verify_device_via_do, verify_webhook_signature,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -2783,6 +2783,141 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // staging/dev, where OPS_ALERT_EMAIL is unset by design, delivery is
       // a logged no-op).
       send_feedback_email(&ctx.env, &subject, &text).await;
+
+      Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
+    })
+    // --- Contact Route ---
+    // The public "talk to us" form (`/contact/` in fancier). Public and
+    // unauthenticated by definition -- the people it exists for do not
+    // have accounts yet -- so it carries real abuse controls rather than
+    // the size caps alone that `POST /feedback` gets away with: a per-IP
+    // limiter, a honeypot field, and a minimum fill time
+    // (`capsules::contact::validate`). A session is resolved if one
+    // happens to be present, purely so an enquiry from an existing user
+    // is recognisable, and never trusted from the body.
+    //
+    // Unlike /feedback this route PERSISTS before it notifies. A contact
+    // form that answers 202 and then loses the message to a mail-transport
+    // outage drops business the sender believes reached us.
+    .post_async("/contact", |mut req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      // Cloudflare's rate-limiter binding, keyed on the connecting
+      // address; the key is checked and discarded, never stored. Over the
+      // limit answers 429 -- never 401, which the dashboard treats as
+      // "session gone" and would sign a signed-in visitor out for using a
+      // marketing page. A limiter fault fails open for the same reason
+      // `POST /errors` does, weighed the same way: one enquiry lost costs
+      // more than one window of junk that the honeypot and fill-time
+      // floor still have to get past.
+      match ctx.env.rate_limiter("CONTACT_LIMITER") {
+        Ok(limiter) => {
+          let key = req
+            .headers()
+            .get("CF-Connecting-IP")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+          match limiter.limit(key).await {
+            Ok(outcome) if !outcome.success => {
+              return Response::error("Too Many Requests", 429)
+                .unwrap()
+                .with_cors(&cors);
+            }
+            Ok(_) => {}
+            Err(e) => console_error!("contact: rate limiter check failed (failing open): {e}"),
+          }
+        }
+        Err(e) => console_error!("contact: rate limiter binding unavailable (failing open): {e}"),
+      }
+
+      // TURNSTILE SEAM. Cloudflare Turnstile is the right long-term
+      // control here and needs a site key that only the account owner can
+      // mint, so it is deliberately not wired up. Slotting it in is three
+      // edits and belongs exactly here, after the limiter and before the
+      // body is read: add `turnstile_token: Option<String>` to
+      // `capsules::ContactRequest`, render the widget in fancier's
+      // `views/contact.rs` and put its token in that field, then POST the
+      // token plus `CF-Connecting-IP` to
+      // https://challenges.cloudflare.com/turnstile/v0/siteverify with a
+      // `TURNSTILE_SECRET` Worker secret and return 403 unless the
+      // response's `success` is true. Nothing below needs to change.
+
+      let is_json = req
+        .headers()
+        .get("Content-Type")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
+      if !is_json {
+        return Response::error("Bad Request: Content-Type must be application/json", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      // Raw-body cap checked before JSON parsing starts, so oversized
+      // garbage is rejected without being deserialized.
+      let Ok(body_text) = req.text().await else {
+        return Response::error("Bad Request: Failed to read body", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if body_text.len() > capsules::MAX_CONTACT_BODY_BYTES {
+        return Response::error("Payload Too Large: Contact body exceeds size cap", 413)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let Ok(payload) = serde_json::from_str::<capsules::ContactRequest>(&body_text) else {
+        return Response::error("Bad Request: Invalid JSON payload", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      // One definition of valid, shared with the form that produced this
+      // (capsules::contact::validate) -- including the honeypot and the
+      // fill-time floor, so no abuse control here can be one the client
+      // knows nothing about or vice versa.
+      if let Err(rejection) = capsules::contact::validate(&payload) {
+        let status = rejection.status();
+        if status < 400 {
+          // The honeypot. Answering exactly like a success is the point:
+          // telling a script which control caught it tells it what to
+          // change. Nothing is stored and nothing is emailed.
+          console_log!("contact: honeypot tripped, submission dropped");
+          return Response::ok("{}")
+            .unwrap()
+            .with_status(status)
+            .with_cors(&cors);
+        }
+        return Response::error(rejection.message(), status)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      // Optional session, same as /feedback: a signed-out visitor's
+      // enquiry is stored without an identity, and a failed session check
+      // is never a 401.
+      let user_id = require_auth_session(&req, &ctx.env)
+        .await
+        .ok()
+        .and_then(|auth| uuid::Uuid::parse_str(&auth.user_id).ok());
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(submission_id) = store_contact_submission(&client, &payload, user_id).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let (subject, text) =
+        capsules::format_contact_email(&payload, time::OffsetDateTime::now_utc());
+
+      // Fire-and-log, same convention as every other notification path.
+      // Safe to be best-effort only because the row above is not: the
+      // enquiry is already durable, and `notified_at` stays NULL until a
+      // send actually succeeds.
+      notify_contact_submission(&ctx.env, &client, submission_id, &subject, &text).await;
 
       Response::ok("{}").unwrap().with_status(202).with_cors(&cors)
     })
