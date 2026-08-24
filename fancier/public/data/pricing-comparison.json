@@ -89,13 +89,13 @@
           "id": "memfault-steady",
           "platform": "Memfault",
           "figures": {
-            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free to 10" },
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free to 10, Nordic" },
             "thousand": { "value": "$3.495", "unit": "USD/device/month" }
           },
-          "status": "single-fetch",
-          "last_verified": "2026-08-12",
+          "status": "verified",
+          "last_verified": "2026-08-24",
           "source": "https://memfault.com/pricing/",
-          "note": "In fairness to them, Memfault is crash and firmware observability, not a telemetry platform, so this row is a scale reference rather than a like-for-like rival. Both paid tiers include exactly a thousand reporting devices and publish no overage, which is why ten thousand has no figure at all. Their session cap is 15 per device per day on Growth and 25 on Scale, against this profile's 288, so their published pricing does not look designed for continuous telemetry."
+          "note": "In fairness to them, Memfault is crash and firmware observability, not a telemetry platform, so this row is a scale reference rather than a like-for-like rival. Growth is $3,495 and Scale $6,695, and both include exactly a thousand monthly active devices with no overage rate published anywhere, which is why ten thousand has no figure at all. Their session cap is 15 per device per day on Growth and 25 on Scale, against this profile's 288, so the published pricing does not look designed for continuous telemetry. Their free tier is limited to Nordic parts."
         },
         {
           "id": "particle-steady",
@@ -130,19 +130,19 @@
           "figures": {
             "one": { "value": "$49.00", "unit": "USD/device/month" }
           },
-          "status": "single-fetch",
-          "last_verified": "2026-08-12",
+          "status": "verified",
+          "last_verified": "2026-08-24",
           "source": "https://tago.io/pricing",
-          "note": "Starter and Scale include the identical one million inputs a month, so the higher tier buys devices and dashboards rather than transactions. This profile crosses that ceiling at about 114 devices and no overage rate is published anywhere, which is what makes both larger fleets genuinely unpriceable from their public pages."
+          "note": "Starter at $49 includes a million inputs a month and Scale at $199 is written as a million and up, without saying up to what. This profile crosses a million inputs at about 114 devices, and their page publishes no overage rate at all, which is what makes both larger fleets genuinely unpriceable rather than merely expensive. There is a free plan for five devices, but its input allowance is not published either, so the single-device column prices Starter."
         },
         {
           "id": "datacake-steady",
           "platform": "Datacake",
           "figures": {},
           "status": "unpriced",
-          "last_verified": "2026-08-12",
+          "last_verified": "2026-08-24",
           "source": "https://datacake.co/pricing",
-          "note": "Their pricing page answered HTTP 429 on six attempts across several URLs, and the aggregator figures that turn up in search are unverified. We would rather leave this row empty than publish a number we cannot stand behind."
+          "note": "Their pricing page answered HTTP 429 on six attempts across several URLs, and again on a later re-check, so this is how their site behaves rather than one bad afternoon. The aggregator figures that turn up in search are unverified. We would rather leave this row empty than publish a number we cannot stand behind."
         }
       ],
       "build_your_own": [
