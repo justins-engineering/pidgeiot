@@ -73,3 +73,6 @@ pub use alerts_panel::{FlockAlerts, PigeonAlerts};
 
 mod feedback_modal;
 pub use feedback_modal::{FeedbackForm, FeedbackModal};
+
+mod comparison;
+pub use comparison::ComparisonTables;

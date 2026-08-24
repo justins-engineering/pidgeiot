@@ -19,7 +19,9 @@
     "all is status 'unpriced'. Never a guessed number in either case.",
     "build_your_own is raw infrastructure. It stays OUT of the table on purpose: a rate in",
     "cents sitting in a price column anchors a reader before any feature list reaches them.",
-    "Figures come from pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9."
+    "Figures come from pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9.",
+    "TWO pages render this file. /pricing/ shows each profile's summary_rows at its summary_columns and never shows build_your_own; /compare/ shows every row at full_columns plus the build_your_own citations. One figure, edited once, corrects both.",
+    "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/."
   ],
   "schema": 2,
   "stale_after_days": 90,
@@ -43,6 +45,11 @@
           "key": "ten_thousand",
           "label": "10,000 devices",
           "unit": "USD/device/month"
+        },
+        {
+          "key": "monthly_at_thousand",
+          "label": "Monthly total",
+          "unit": "USD/month at 1,000 devices"
         }
       ],
       "rows": [
@@ -62,6 +69,10 @@
             "ten_thousand": {
               "value": "$0.150",
               "unit": "USD/device/month"
+            },
+            "monthly_at_thousand": {
+              "value": "$349",
+              "unit": "USD/month at 1,000 devices"
             }
           },
           "status": "ours",
@@ -84,12 +95,17 @@
             "ten_thousand": {
               "value": "$0.285",
               "unit": "USD/device/month"
+            },
+            "monthly_at_thousand": {
+              "value": "$285",
+              "unit": "USD/month at 1,000 devices"
             }
           },
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do."
+          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do.",
+          "summary_note": "Cheaper than us below about 1,225 devices, and ships no multi-tenant dashboard, organizations or alerting."
         },
         {
           "id": "thingsboard-steady",
@@ -107,6 +123,10 @@
             "ten_thousand": {
               "value": "$0.200",
               "unit": "USD/device/month"
+            },
+            "monthly_at_thousand": {
+              "value": "$749",
+              "unit": "USD/month at 1,000 devices"
             }
           },
           "status": "verified",
@@ -172,6 +192,10 @@
             "ten_thousand": {
               "value": "$3.648",
               "unit": "USD/device/month"
+            },
+            "monthly_at_thousand": {
+              "value": "$3,887",
+              "unit": "USD/month at 1,000 devices"
             }
           },
           "status": "single-fetch",
@@ -195,6 +219,10 @@
             "ten_thousand": {
               "value": "$6.607",
               "unit": "USD/device/month"
+            },
+            "monthly_at_thousand": {
+              "value": "$6,604",
+              "unit": "USD/month at 1,000 devices"
             }
           },
           "status": "single-fetch",
@@ -313,7 +341,25 @@
         }
       ],
       "build_your_own_intro": "AWS and Azure are cheaper than us, and we will not pretend otherwise. What they sell is a message bus: the device list, shadow editor, graphs, log viewer, OTA orchestration and alerting are all yours to build, and then to keep running.",
-      "reference_column": "thousand"
+      "reference_column": "thousand",
+      "full_columns": [
+        "one",
+        "thousand",
+        "ten_thousand"
+      ],
+      "summary_columns": [
+        "thousand",
+        "monthly_at_thousand"
+      ],
+      "summary_rows": [
+        "pidgeiot-steady",
+        "golioth-steady",
+        "thingsboard-steady",
+        "particle-steady",
+        "blues-steady"
+      ],
+      "summary_heading": "1,000 devices, reporting every five minutes",
+      "summary_subhead": "Published list prices, cheapest tier that legitimately fits the fleet. Each figure carries the date we last checked it."
     },
     {
       "id": "chatty",
@@ -448,7 +494,17 @@
         }
       ],
       "build_your_own_intro": "AWS is cheaper here too, and still a message bus.",
-      "reference_column": "thousand"
+      "reference_column": "thousand",
+      "full_columns": [
+        "one",
+        "thousand"
+      ],
+      "summary_columns": [
+        "one",
+        "thousand"
+      ],
+      "summary_heading": "The same device, every ten seconds",
+      "summary_subhead": "Nothing changes but the cadence. This is where a meter denominated in datapoints, events or blocks stops agreeing with one denominated in devices."
     }
   ],
   "_page_silent": {

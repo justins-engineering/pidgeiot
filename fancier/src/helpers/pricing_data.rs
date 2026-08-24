@@ -74,11 +74,25 @@ pub struct Profile {
   pub id: String,
   pub heading: String,
   pub subhead: String,
-  /// Both the column headers and the order cells are rendered in. A row's
-  /// `figures` is keyed on `Column::key`. Per profile rather than shared,
-  /// since a cadence that nobody prices at ten thousand devices should not
-  /// carry an empty column across the whole page.
+  /// The catalogue of columns this profile has figures for. Which of them
+  /// a given page actually renders is `full_columns`/`summary_columns`
+  /// below -- one set of figures, two presentations, so a corrected number
+  /// fixes both pages at once and neither can drift from the other.
   pub columns: Vec<Column>,
+  /// What the full comparison renders: every fleet size, per device, so
+  /// the vendors are comparable to each other.
+  pub full_columns: Vec<String>,
+  /// What the sales page renders: fewer columns, chosen to be read rather
+  /// than studied.
+  pub summary_columns: Vec<String>,
+  /// The vendors the sales page shows. Absent means all of them. This is
+  /// the shorter list on purpose: the full field belongs on the comparison
+  /// page, and a pricing page that makes someone read nine rows to find
+  /// our number has spent their attention on someone else's product.
+  #[serde(default)]
+  pub summary_rows: Option<Vec<String>>,
+  pub summary_heading: String,
+  pub summary_subhead: String,
   pub rows: Vec<Row>,
   /// Raw infrastructure, kept out of `rows` on purpose. It is not a
   /// product you can buy, and a bare rate sitting in a price table invites
@@ -123,6 +137,11 @@ pub struct Row {
   pub source: Option<String>,
   #[serde(default)]
   pub note: Option<String>,
+  /// The shorter line the sales page shows instead, where a row's full
+  /// note belongs on the comparison page. Only for rows whose full
+  /// treatment is genuinely longer than a pricing table should carry.
+  #[serde(default)]
+  pub summary_note: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -187,6 +206,66 @@ impl Provenance {
   }
 }
 
+/// Which page is asking. The two differ in how much they show, never in
+/// what they claim: same rows, same figures, same dates, drawn from the
+/// same file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+  /// The sales page. Fewer columns, fewer vendors, no raw infrastructure.
+  Summary,
+  /// The comparison page. Everything, including the rates we lose to.
+  Full,
+}
+
+impl Profile {
+  fn column_keys(&self, view: View) -> &[String] {
+    match view {
+      View::Summary => &self.summary_columns,
+      View::Full => &self.full_columns,
+    }
+  }
+
+  /// The columns to render, resolved from this view's key list. A key with
+  /// no matching column is skipped rather than rendered blank; the tests
+  /// below are what stop one existing.
+  pub fn columns(&self, view: View) -> Vec<Column> {
+    self
+      .column_keys(view)
+      .iter()
+      .filter_map(|key| self.columns.iter().find(|c| &c.key == key))
+      .cloned()
+      .collect()
+  }
+
+  /// The rows to render. `Summary` honours `summary_rows` and keeps that
+  /// list's order, so the sales page can lead with us and then ascend by
+  /// price without depending on the order the file happens to store.
+  pub fn rows(&self, view: View) -> Vec<Row> {
+    match (view, self.summary_rows.as_ref()) {
+      (View::Summary, Some(ids)) => ids
+        .iter()
+        .filter_map(|id| self.rows.iter().find(|r| &r.id == id))
+        .cloned()
+        .collect(),
+      _ => self.rows.clone(),
+    }
+  }
+
+  pub fn heading(&self, view: View) -> &str {
+    match view {
+      View::Summary => &self.summary_heading,
+      View::Full => &self.heading,
+    }
+  }
+
+  pub fn subhead(&self, view: View) -> &str {
+    match view {
+      View::Summary => &self.summary_subhead,
+      View::Full => &self.subhead,
+    }
+  }
+}
+
 /// Rendered in a cell with no figure. A vendor whose pricing cannot be
 /// determined says so; it never gets an estimate standing in for a number
 /// they do not publish.
@@ -195,6 +274,16 @@ pub const NOT_PUBLISHED: &str = "not published";
 impl Row {
   pub fn provenance(&self) -> Provenance {
     Provenance::from_token(&self.status)
+  }
+
+  /// The note to show, which is the shorter one where the row has both.
+  /// Falls back rather than blanking: a row with no summary_note is the
+  /// normal case, since most notes are already one sentence.
+  pub fn note_for(&self, view: View) -> Option<&str> {
+    match view {
+      View::Summary => self.summary_note.as_deref().or(self.note.as_deref()),
+      View::Full => self.note.as_deref(),
+    }
   }
 
   pub fn figure(&self, column: &Column) -> Option<&Figure> {
@@ -306,7 +395,7 @@ pub async fn fetch_published() -> Option<Comparison> {
 #[cfg(test)]
 #[cfg(test)]
 mod the_data_file_says_what_it_claims {
-  use super::{BAKED_COMPARISON, Column, Provenance, Row};
+  use super::{BAKED_COMPARISON, Column, Provenance, Row, View};
 
   /// Every row on the page, table and build-it-yourself alike, paired with
   /// the columns it will be rendered against. Both kinds are hand-edited
@@ -557,6 +646,78 @@ mod the_data_file_says_what_it_claims {
         );
       }
     }
+  }
+
+  // The sales page's table is the simple one, so every cell in it has to
+  // be a number. One "not published" there reads as a gap in our homework
+  // rather than as a fact about a vendor, which is the opposite of what it
+  // means on the comparison page.
+  #[test]
+  fn the_sales_page_shows_a_figure_in_every_cell_it_renders() {
+    for profile in &BAKED_COMPARISON.profiles {
+      let columns = profile.columns(View::Summary);
+      assert_eq!(
+        columns.len(),
+        profile.summary_columns.len(),
+        "profile {} names a summary column it has no definition for",
+        profile.id
+      );
+      let rows = profile.rows(View::Summary);
+      assert_eq!(
+        rows.len(),
+        profile
+          .summary_rows
+          .as_ref()
+          .map_or(profile.rows.len(), Vec::len),
+        "profile {} names a summary row that does not exist",
+        profile.id
+      );
+      for row in &rows {
+        for column in &columns {
+          assert!(
+            row.figure(column).is_some(),
+            "{} has no {} figure, so the sales page would print 'not published' in its simple \
+             table",
+            row.id,
+            column.key
+          );
+        }
+      }
+    }
+  }
+
+  // Both pages have to concede this, in proportion: a line on the page
+  // that is selling, the whole arithmetic on the page that is comparing.
+  // Dropping it from the sales page is the tempting edit, and it is the
+  // one that would make the page a brochure.
+  #[test]
+  fn the_sales_page_still_admits_the_cheaper_competitor() {
+    let golioth = BAKED_COMPARISON
+      .profiles
+      .iter()
+      .find(|p| p.id == "steady")
+      .and_then(|p| {
+        p.rows(View::Summary)
+          .into_iter()
+          .find(|r| r.id == "golioth-steady")
+      })
+      .expect("the sales page prices Golioth");
+    let short = golioth
+      .note_for(View::Summary)
+      .expect("Golioth's sales-page row says something");
+
+    assert!(
+      short.contains("1,225"),
+      "the sales page stopped saying where Golioth is cheaper than us"
+    );
+    assert!(
+      short.contains("dashboard") || short.contains("alerting"),
+      "the sales page concedes the price without naming what they lack, which is only half of it"
+    );
+    assert!(
+      short.len() < 160,
+      "Golioth's sales-page note is no longer the one-line version"
+    );
   }
 
   #[test]
