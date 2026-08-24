@@ -1337,8 +1337,17 @@ fn is_authorized_device(
     .sql
     .exec("SELECT device_public_key FROM pigeons LIMIT 1;", None)
   {
-    Ok(cursor) => match one_row::<DevicePublicKeyRow>(&cursor) {
-      Ok(row) => row.device_public_key,
+    Ok(cursor) => match cursor.to_array::<DevicePublicKeyRow>() {
+      // An empty table is a deleted pigeon whose DO is still addressable,
+      // not a fault: the device holding that token is permanently
+      // unauthorized and needs to read it as such. Told 500 instead, a
+      // device retries a deletion forever, and a terminator holding the
+      // session open cannot tell the difference between deprovisioning and
+      // an outage.
+      Ok(rows) => match rows.into_iter().next() {
+        Some(row) => row.device_public_key,
+        None => return Err(Response::error("Unauthorized: Unknown pigeon", 401)),
+      },
       Err(e) => {
         console_error!("Pigeon public key deserialization error: {e}");
         return Err(Response::error("Internal Server Error", 500));
