@@ -20,6 +20,15 @@
   ! Cache-Control
   Cache-Control: public, max-age=300, must-revalidate
 
+# The pricing page's competitor figures (fancier/src/helpers/pricing_data.rs),
+# re-read by the running page on load so a corrected number ships with an
+# asset deploy instead of a Rust rebuild. Its URL is stable by design and
+# must stay revalidatable: an immutable cache here would pin a superseded
+# figure in every repeat visitor's browser for a year, which is exactly the
+# failure the per-figure dates exist to make visible.
+/data/*
+  Cache-Control: public, max-age=0, must-revalidate
+
 # Agent-discovery Link headers (RFC 8288; Cloudflare Agent Readiness:
 # Link Headers). Every response advertises the RFC 9727 API catalog so
 # an agent can find the API surface without parsing HTML; every page

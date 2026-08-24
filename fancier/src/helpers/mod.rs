@@ -66,3 +66,5 @@ pub use timer::sleep_ms;
 
 mod visibility;
 pub use visibility::is_page_hidden;
+
+pub mod pricing_data;
