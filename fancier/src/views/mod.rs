@@ -4,6 +4,9 @@ pub use index::Index;
 mod about;
 pub use about::AboutUs;
 
+mod contact;
+pub use contact::ContactPage;
+
 mod dashboard;
 pub use dashboard::Dashboard;
 

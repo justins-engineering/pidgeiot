@@ -62,6 +62,10 @@
       "title": "About — Justin's Engineering Services | PidgeIoT",
       "description": "PidgeIoT is built by Justin's Engineering Services, a small Massachusetts engineering company that got tired of IoT platforms punishing small fleets."
     },
+    "/contact/": {
+      "title": "Contact — Talk to the Team | PidgeIoT",
+      "description": "Questions about the platform, a fleet too big for the pricing page, or something that should work and doesn't: it reaches the same small team in Massachusetts."
+    },
     "/privacy/": {
       "title": "Privacy Policy | PidgeIoT",
       "description": "What PidgeIoT collects, where it lives, and what we deliberately don't do with it: no selling data, no ad tracking, and no tracking cookies."

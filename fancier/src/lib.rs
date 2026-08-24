@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, ApiReferencePage, Architecture, Dashboard, DemoPage, DocumentationPage, FeaturesPage,
-  Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow, OpenSourcePage,
-  OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow,
-  RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized, UseCasesPage,
-  VerificationFlow, Wrapper,
+  AboutUs, ApiReferencePage, Architecture, ContactPage, Dashboard, DemoPage, DocumentationPage,
+  FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow,
+  OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage,
+  RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized,
+  UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -87,6 +87,8 @@ enum Route {
   AboutUs {},
   #[route("/architecture/")]
   Architecture {},
+  #[route("/contact/")]
+  ContactPage {},
   #[route("/features/")]
   FeaturesPage {},
   #[route("/how-it-works/")]
@@ -411,6 +413,7 @@ mod public_route_trailing_slash {
 
   both_forms!(about, "/about", AboutUs);
   both_forms!(architecture, "/architecture", Architecture);
+  both_forms!(contact, "/contact", ContactPage);
   both_forms!(features, "/features", FeaturesPage);
   both_forms!(how_it_works, "/how-it-works", HowItWorksPage);
   both_forms!(use_cases, "/use-cases", UseCasesPage);

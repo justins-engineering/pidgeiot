@@ -1,5 +1,6 @@
 pub mod alerts;
 pub mod billing;
+pub mod contact;
 pub mod demo;
 pub mod feedback;
 pub mod firmware;

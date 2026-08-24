@@ -61,6 +61,8 @@ run_worker_first = [
   "/open-source/",
   "/about",
   "/about/",
+  "/contact",
+  "/contact/",
   "/privacy",
   "/privacy/",
   "/terms",
