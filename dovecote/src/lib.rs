@@ -5,7 +5,7 @@ use crate::helpers::{
   apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
   build_invite_url, change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse,
   check_org_cap, check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
-  constant_time_eq, count_billable_message, create_checkout_session, create_customer,
+  constant_time_eq, count_billable_messages, create_checkout_session, create_customer,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
   delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
@@ -588,7 +588,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // rejected request never counts. Best-effort inside: a failed tally
       // undercounts in the customer's favour, never fails the device's
       // confirmation.
-      count_billable_message(&ctx.env, &pigeon_id).await;
+      count_billable_messages(&ctx.env, &pigeon_id, 1).await;
 
       let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
 
@@ -813,7 +813,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // tallied here, only after the DO has verified the token and stored
       // the chunk; best-effort inside, so a failed tally undercounts
       // rather than failing the upload.
-      count_billable_message(&ctx.env, &pigeon_id).await;
+      count_billable_messages(&ctx.env, &pigeon_id, 1).await;
 
       do_response.with_cors(&cors)
     })

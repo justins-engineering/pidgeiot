@@ -6,7 +6,7 @@ use worker::{
 
 use crate::helpers::write_telemetry_default;
 use crate::helpers::{
-  build_line_protocol, check_telemetry_alerts, count_billable_message, post_line_protocol,
+  build_line_protocol, check_telemetry_alerts, count_billable_messages, post_line_protocol,
   url_encode_component,
 };
 use crate::objects::pigeons::{
@@ -350,7 +350,7 @@ async fn store_and_alert(
   // consumer, off the device path; internally best-effort, so a failed
   // increment undercounts in the customer's favour rather than failing or
   // delaying ingestion.
-  count_billable_message(env, pigeon_id).await;
+  count_billable_messages(env, pigeon_id, 1).await;
 
   match telemetry_endpoint {
     Some(endpoint) => {

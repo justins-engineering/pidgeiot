@@ -93,7 +93,7 @@ pub enum WsInboundFrame {
 impl WsInboundFrame {
   /// Whether this frame tallies a billable message, and so has to answer
   /// to the free-tier fuse. It must name exactly the frames whose handlers
-  /// reach `count_billable_message` -- a frame counted here but not fused
+  /// reach `count_billable_messages` -- a frame counted here but not fused
   /// is the gap this function exists to close, and one fused but not
   /// counted would cut off a device over an allowance it never spent.
   ///

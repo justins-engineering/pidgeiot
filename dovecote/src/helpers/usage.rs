@@ -265,11 +265,21 @@ struct BillableMessageTally {
   comp_plan: Option<String>,
 }
 
-/// Counts one billable device message against the owning account's current
-/// billing period, creating the period row on first use. Resolution and
-/// upsert are one statement so the queue consumer pays a single round
-/// trip: pigeon -> flock -> (org | user), anchored to the org's Stripe
-/// period when a live subscription covers now(), calendar month otherwise.
+/// Counts `count` billable device messages against the owning account's
+/// current billing period, creating the period row on first use.
+/// Resolution and upsert are one statement so the queue consumer pays a
+/// single round trip: pigeon -> flock -> (org | user), anchored to the
+/// org's Stripe period when a live subscription covers now(), calendar
+/// month otherwise.
+///
+/// `count` is above one only for a batched telemetry report, and it is
+/// the reading count, never the request count. The meter measures data a
+/// customer delivered, so batching has to leave their bill exactly where
+/// it was while cutting what the delivery costs us -- a batch that billed
+/// as one message would be a silent price cut, and one that billed the
+/// readings against the timestamps they carry would let a device backdate
+/// its way into a period that has already been invoiced. Both are avoided
+/// by counting readings, at arrival time.
 ///
 /// `None` means the pigeon has no Postgres mirror row (the mirror is
 /// best-effort by design), so there is no account to bill -- an undercount
@@ -284,9 +294,10 @@ struct BillableMessageTally {
 /// column the whole statement errors, so the tally undercounts and logs
 /// until the cron's `ensure_billing_usage_tables` adds it -- the same
 /// fail-open-and-undercount direction that bootstrap already documents.
-async fn record_billable_message(
+async fn record_billable_messages(
   client: &Client,
   pigeon_id: &str,
+  count: i64,
 ) -> Result<Option<BillableMessageTally>> {
   let rows = client
     .query_typed(
@@ -331,10 +342,10 @@ async fn record_billable_message(
                 ELSE date_trunc('month', now()) END,
            CASE WHEN use_org_period THEN org_period_end
                 ELSE date_trunc('month', now()) + interval '1 month' END,
-           1
+           $2
          FROM target
          ON CONFLICT (owner_kind, owner_id, period_start) DO UPDATE
-           SET billable_messages = billing_usage_periods.billable_messages + 1,
+           SET billable_messages = billing_usage_periods.billable_messages + $2,
                period_end = EXCLUDED.period_end,
                updated_at = now()
          RETURNING owner_kind, owner_id, period_start, billable_messages
@@ -342,7 +353,7 @@ async fn record_billable_message(
        SELECT u.owner_kind, u.owner_id, u.period_start, u.billable_messages,
               t.org_plan, t.org_status, t.comp_plan
        FROM upserted u CROSS JOIN target t;",
-      &[(&pigeon_id, Type::TEXT)],
+      &[(&pigeon_id, Type::TEXT), (&count, Type::INT8)],
     )
     .await
     .map_err(|e| {
@@ -361,12 +372,22 @@ async fn record_billable_message(
   }))
 }
 
-/// Counts one billable device message and, for free-tier accounts, runs
-/// the once-per-period threshold bookkeeping (80% warning email, allowance
-/// crossing stamp). Entirely best-effort: this runs in the queue consumer,
-/// off the device path, and a failure here logs and undercounts -- it must
-/// never fail or delay ingestion.
-pub async fn count_billable_message(env: &Env, pigeon_id: &str) {
+/// Counts `count` billable device messages and, for free-tier accounts,
+/// runs the once-per-period threshold bookkeeping (80% warning email,
+/// allowance crossing stamp). Entirely best-effort: this runs in the queue
+/// consumer, off the device path, and a failure here logs and undercounts
+/// -- it must never fail or delay ingestion.
+///
+/// A batched report passes its reading count here; every other surface
+/// passes one. The threshold comparisons below are all `>=`, so a batch
+/// that vaults the counter clean over 80% or over the allowance itself
+/// still trips both, rather than stepping past a threshold it never
+/// landed on.
+pub async fn count_billable_messages(env: &Env, pigeon_id: &str, count: i64) {
+  if count <= 0 {
+    return;
+  }
+
   let client = match get_db_client(env).await {
     Ok(client) => client,
     Err(e) => {
@@ -375,7 +396,7 @@ pub async fn count_billable_message(env: &Env, pigeon_id: &str) {
     }
   };
 
-  let tally = match record_billable_message(&client, pigeon_id).await {
+  let tally = match record_billable_messages(&client, pigeon_id, count).await {
     Ok(Some(tally)) => tally,
     // No Postgres mirror row for this pigeon -- nothing to bill against.
     Ok(None) => return,

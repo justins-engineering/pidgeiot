@@ -1723,7 +1723,7 @@ async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportR
   // HTTP report-back route and the WS telemetry frame (whose tally rides
   // the shared queue consumer). Same best-effort convention as the PG
   // sync below: a failed tally undercounts, never disturbs the socket.
-  crate::helpers::count_billable_message(&pigeons.env, &pigeon_id).await;
+  crate::helpers::count_billable_messages(&pigeons.env, &pigeon_id, 1).await;
 
   match crate::helpers::get_db_client(&pigeons.env).await {
     Ok(client) => {

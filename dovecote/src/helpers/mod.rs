@@ -47,7 +47,7 @@ pub use usage::check_ingest_fuse;
 pub use usage::check_org_cap;
 pub use usage::check_pigeon_alert_cap;
 pub use usage::check_seat_cap;
-pub use usage::count_billable_message;
+pub use usage::count_billable_messages;
 pub use usage::ensure_billing_usage_tables;
 pub use usage::raise_message_allowance_floor;
 pub use usage::report_billing_meters;
