@@ -498,14 +498,23 @@ fn BillingPanel(
     div { class: "bg-base-100 border border-base-content/10 rounded-box p-4 flex flex-col gap-4",
       div { class: "flex items-center gap-3 flex-wrap",
         span { class: "text-sm text-base-content/60", "Current plan" }
-        span { class: "badge badge-primary badge-outline font-mono", "{o.effective_plan}" }
+        // A complimentary org is neither paying nor on the free tier, and
+        // saying either would be a lie the customer could act on. Name the
+        // grant, and name the tier it grants.
+        if let Some(comp) = o.comp_plan {
+          span { class: "badge badge-secondary badge-outline font-mono",
+            "Complimentary ({comp})"
+          }
+        } else {
+          span { class: "badge badge-primary badge-outline font-mono", "{o.effective_plan}" }
+        }
         if o.status != capsules::SubscriptionStatus::None {
           span {
             class: if o.entitled { "badge badge-success badge-sm" } else { "badge badge-ghost badge-sm" },
             "{o.status}"
           }
         }
-        if o.plan != o.effective_plan {
+        if o.plan != o.effective_plan && o.comp_plan.is_none() {
           span { class: "text-xs text-base-content/50", "({o.plan} subscription is {o.status})" }
         }
         if o.cancel_at_period_end {
@@ -522,6 +531,12 @@ fn BillingPanel(
           class: "progress progress-primary w-full",
           value: usage_pct,
           max: 100.0,
+        }
+      }
+
+      if o.comp_plan.is_some() {
+        p { class: "text-xs text-base-content/60",
+          "These entitlements are granted, not billed. Nothing on this organization is charged."
         }
       }
 

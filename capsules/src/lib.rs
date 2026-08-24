@@ -1997,7 +1997,8 @@ pub struct BillingSessionUrl {
 /// against the allowance, in one read. `plan` is the stored tier;
 /// `effective_plan` is the tier actually served (entitlement-gated, so a
 /// cancelled org shows its old `plan` but an `effective_plan` of the free
-/// tier). Usage-period bounds are the org's Stripe period while a live
+/// tier -- or of a complimentary grant, if one is carrying it; see
+/// `comp_plan`). Usage-period bounds are the org's Stripe period while a live
 /// subscription covers now, the calendar month otherwise -- matching how
 /// usage itself is tallied.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -2006,6 +2007,16 @@ pub struct OrganizationBillingOverview {
   pub status: SubscriptionStatus,
   pub entitled: bool,
   pub effective_plan: BillingPlan,
+  /// Set only when a complimentary grant is what actually decided
+  /// `effective_plan` -- so the dashboard can say "Complimentary
+  /// (Builder)" rather than leaving an unpaid org looking either paid or
+  /// free. A grant sitting on an org whose live subscription outranks it
+  /// reads as `None` here, because nothing is being served on it.
+  ///
+  /// The grant's note stays server-side on purpose: it is our own record
+  /// of why the favour was extended, not something the recipient asked to
+  /// be shown.
+  pub comp_plan: Option<BillingPlan>,
   pub cancel_at_period_end: bool,
   /// Whether a Stripe customer exists for this org -- the precondition for
   /// the Billing Portal button.

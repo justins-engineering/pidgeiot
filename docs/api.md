@@ -177,8 +177,8 @@ via Cloudflare's rate-limiter binding. The limits that do exist are:
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
-| Free-tier pooled messages per billing period | Tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_perch_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
-| Devices per account | Tier's included count, free tier only (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
+| Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
+| Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
 | Alert definitions per account | Tier's alert count, across every flock and pigeon | `helpers/usage.rs::check_pigeon_alert_cap`/`check_flock_alert_cap`, `403` at both alert `POST`s |
 | Organizations owned per user | Tier's organization count | `helpers/usage.rs::check_org_cap`, `403` at `POST /orgs` |
@@ -417,8 +417,11 @@ never touches this API. The read side is member-visible; the session mints are m
 #### Per-tier limits
 
 Every published per-tier quantity is enforced at the route that would create one more of the
-thing. The tier is the **effective** one (subscription status is checked before the stored
-plan, so a cancelled org is gated at the free tier, not at the tier it used to hold).
+thing. The tier is the **effective** one, resolved in the order subscription, then
+complimentary grant, then free: subscription status is checked before the stored plan (so a
+cancelled org is gated at the free tier, not at the tier it used to hold), and an org carrying
+a complimentary grant is gated at the granted tier. See
+[Complimentary tiers](#complimentary-tiers).
 
 | | Perch (free) | Builder | Growth | Scale | Fleet |
 |---|---:|---:|---:|---:|---:|
@@ -428,9 +431,11 @@ plan, so a cancelled org is gated at the free tier, not at the tier it used to h
 | Alerts per account | 1 | 10 | unlimited | unlimited | unlimited |
 | Organizations owned | 1 | 1 | unlimited | unlimited | unlimited |
 
-Devices are the one row that is a *price* rather than a ceiling above the free tier: past the
-included count a paid tier bills per-device overage instead of refusing, and only the free tier
-hard-caps. Seats, alerts and organizations refuse on every tier that publishes a number.
+Devices are the one row that is a *price* rather than a ceiling: past the included count an
+account **with a live subscription** bills per-device overage instead of being refused. An
+account with no subscription to bill — free, or complimentary — hard-caps at its own served
+tier's device count. Seats, alerts and organizations refuse on every tier that publishes a
+number.
 
 A refusal is always `403` with a plain-text body in one shape:
 
@@ -452,6 +457,32 @@ Four rules hold for all of them:
   checkout runs against one that already exists, so a free account refused its first could
   never reach a paid tier. What the free tier does not get is a *team* — that is the one seat.
 
+#### Complimentary tiers
+
+An organization can be granted a paid tier's entitlements without a subscription — a partner
+fleet, a design-partner pilot. The grant lives in three nullable `organizations` columns
+(`comp_plan`, `comp_note`, `comp_granted_at`) and **no route reads or writes them**: granting
+and revoking are hand-run SQL, documented in `docs/infra/org-comps.md`. There is deliberately
+no self-service or admin surface, so nothing reachable from the internet can grant one.
+
+How it resolves:
+
+- **A live subscription outranks a grant**, even a richer one. A comp is a floor for an account
+  that is not paying, not a discount on one that is; a grant left on an org that later
+  subscribes is inert, and revoking it changes nobody's invoice. It starts serving again only
+  if that subscription lapses.
+- **A comped account is never billed.** It has no subscription to put an overage line on, so
+  the usage meters skip it entirely and nothing about it reaches Stripe.
+- **It is still bounded.** Because it cannot bill overage, it behaves like the free tier at the
+  edges of its granted tier: the ingest fuse pauses it at the granted tier's message allowance,
+  and the device cap is a hard cap at the granted tier's device count rather than the start of
+  per-device billing. A grant with no meter behind it would otherwise be an unbounded one.
+- **An unreadable or `perch` grant value is no grant**, and resolves to the free tier — a typo
+  under-serves rather than over-serving.
+
+`GET /orgs/:org_id/billing` reports it as `comp_plan`, set only when the grant is what actually
+decided `effective_plan`. The grant's note is not exposed over the API.
+
 #### `GET /orgs/:org_id/billing` — org: member
 
 Returns `capsules::OrganizationBillingOverview`: the stored `plan`, `subscription_status`,
@@ -459,7 +490,9 @@ whether that status is currently `entitled`, the **`effective_plan`** actually b
 (entitlement-gated — a cancelled org shows its old `plan` but an `effective_plan` of the free
 tier), `cancel_at_period_end`, `has_billing_account` (whether a Stripe customer exists — the
 precondition for the portal), the usage-period bounds, and usage against allowance:
-`billable_messages` / `included_messages`, `device_count` / `included_devices`. Usage-period
+`billable_messages` / `included_messages`, `device_count` / `included_devices`, and
+`comp_plan` (see [Complimentary tiers](#complimentary-tiers) — `null` for almost every org).
+Usage-period
 bounds are the org's Stripe billing period while a live subscription covers now, the calendar
 month otherwise — the same anchoring the usage tally itself uses. `403` for non-members,
 `404` for an unknown org.

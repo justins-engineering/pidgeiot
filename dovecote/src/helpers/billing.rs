@@ -295,6 +295,13 @@ pub async fn load_org_billing_overview(
   let served =
     super::usage::served_plan(Some(&plan_raw), Some(&status_raw), comp_plan_raw.as_deref());
   let effective_plan = served.plan;
+  // Only a grant that is actually carrying the tier is reported as one:
+  // an inert grant behind a live subscription would otherwise make a
+  // paying customer's dashboard call itself complimentary.
+  let comp_plan = match served.source {
+    super::usage::PlanSource::Comp => Some(served.plan),
+    _ => None,
+  };
 
   // The same allowance the meter charges against, not the bare tier
   // figure: the dashboard's usage bar is where a customer checks whether
@@ -315,6 +322,7 @@ pub async fn load_org_billing_overview(
     status,
     entitled: status.is_entitled(),
     effective_plan,
+    comp_plan,
     cancel_at_period_end: row.get("cancel_at_period_end"),
     has_billing_account: customer_id.is_some(),
     usage_period_start: row.get("usage_period_start"),
