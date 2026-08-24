@@ -62,22 +62,32 @@ pub struct Comparison {
   /// recheck cue. In the data file rather than a constant here so the
   /// threshold is tunable on the same asset-deploy path as the figures.
   pub stale_after_days: i64,
-  pub scenario: Scenario,
-  /// Both the column headers and the order cells are rendered in. A row's
-  /// `figures` is keyed on `Column::key`.
-  pub columns: Vec<Column>,
-  pub rows: Vec<Row>,
-  /// Raw infrastructure, kept out of `rows` on purpose. It is not a
-  /// product you can buy, and a bare total sitting in a price table
-  /// invites exactly the anchoring the surrounding paragraph exists to
-  /// answer, so it is cited in that prose instead of ranked against tiers.
-  pub build_your_own: Row,
+  /// One table per reporting cadence. The same vendors priced against the
+  /// same fleet sizes at a different message rate is the whole argument:
+  /// it is where a meter denominated in datapoints, events or blocks stops
+  /// agreeing with one denominated in devices.
+  pub profiles: Vec<Profile>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
-pub struct Scenario {
+pub struct Profile {
+  pub id: String,
   pub heading: String,
   pub subhead: String,
+  /// Both the column headers and the order cells are rendered in. A row's
+  /// `figures` is keyed on `Column::key`. Per profile rather than shared,
+  /// since a cadence that nobody prices at ten thousand devices should not
+  /// carry an empty column across the whole page.
+  pub columns: Vec<Column>,
+  pub rows: Vec<Row>,
+  /// Raw infrastructure, kept out of `rows` on purpose. It is not a
+  /// product you can buy, and a bare rate sitting in a price table invites
+  /// exactly the anchoring the surrounding paragraph exists to answer, so
+  /// it is shown below that argument rather than ranked against tiers.
+  pub build_your_own: Vec<Row>,
+  /// The one line worth saying after a reader has looked at the numbers.
+  #[serde(default)]
+  pub closing: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -91,7 +101,12 @@ pub struct Column {
 pub struct Row {
   pub id: String,
   pub platform: String,
-  pub plan: String,
+  /// Absent where the cheapest tier that fits changes with the fleet size,
+  /// which is most of them once a table spans three scales. Naming one
+  /// tier beside a row whose columns are priced on three different ones
+  /// would be worse than naming none; the note carries it instead.
+  #[serde(default)]
+  pub plan: Option<String>,
   pub figures: HashMap<String, Figure>,
   status: String,
   last_verified: String,
@@ -109,6 +124,11 @@ pub struct Figure {
   /// another column, or have its column relabelled underneath it, without
   /// something failing.
   pub unit: String,
+  /// What a bare number would misrepresent. "$0" is the case this exists
+  /// for: free to ten devices and free to a hundred are not the same
+  /// offer, and a zero in a price column says neither.
+  #[serde(default)]
+  pub qualifier: Option<String>,
 }
 
 /// How much weight a figure carries. Kept as a string in the file and
@@ -125,7 +145,10 @@ pub enum Provenance {
   Verified,
   /// Read once and not re-confirmed since.
   SingleFetch,
-  /// Checked, and the vendor publishes nothing that prices this fleet.
+  /// Checked, and came away with no usable figure at any fleet size --
+  /// distinct from a row that prices some sizes and not others, which
+  /// keeps its own fetch status and simply omits the cells nobody
+  /// publishes.
   Unpriced,
   Unknown,
 }
@@ -149,7 +172,7 @@ impl Provenance {
     match self {
       Self::Ours | Self::Verified => None,
       Self::SingleFetch => Some("one check"),
-      Self::Unpriced => Some("nothing published"),
+      Self::Unpriced => Some("no usable price found"),
       Self::Unknown => Some("unconfirmed"),
     }
   }
@@ -167,6 +190,12 @@ impl Row {
 
   pub fn figure(&self, column: &Column) -> Option<&Figure> {
     self.figures.get(&column.key)
+  }
+
+  /// For the prose that cites a build-it-yourself rate inline, where there
+  /// is no column in hand to look it up by.
+  pub fn figure_by_key(&self, key: &str) -> Option<&Figure> {
+    self.figures.get(key)
   }
 
   /// The source's host, so a citation reads as a place a reader already
@@ -266,19 +295,38 @@ pub async fn fetch_published() -> Option<Comparison> {
 // They run against the baked copy, which is the same bytes the asset deploy
 // ships.
 #[cfg(test)]
+#[cfg(test)]
 mod the_data_file_says_what_it_claims {
-  use super::{BAKED_COMPARISON, Provenance, Row};
+  use super::{BAKED_COMPARISON, Column, Provenance, Row};
 
-  fn every_row() -> impl Iterator<Item = &'static Row> {
+  /// Every row on the page, table and build-it-yourself alike, paired with
+  /// the columns it will be rendered against. Both kinds are hand-edited
+  /// and both reach a reader, so neither gets a weaker check than the
+  /// other.
+  fn every_row() -> Vec<(&'static Row, &'static [Column])> {
     BAKED_COMPARISON
-      .rows
+      .profiles
       .iter()
-      .chain(std::iter::once(&BAKED_COMPARISON.build_your_own))
+      .flat_map(|p| {
+        p.rows
+          .iter()
+          .chain(p.build_your_own.iter())
+          .map(|r| (r, p.columns.as_slice()))
+      })
+      .collect()
+  }
+
+  #[test]
+  fn there_is_more_than_one_cadence_to_compare() {
+    assert!(
+      BAKED_COMPARISON.profiles.len() >= 2,
+      "the comparison exists to show a meter behaving differently at a different message rate"
+    );
   }
 
   #[test]
   fn every_status_is_one_this_code_recognizes() {
-    for row in every_row() {
+    for (row, _) in every_row() {
       assert_ne!(
         row.provenance(),
         Provenance::Unknown,
@@ -290,7 +338,7 @@ mod the_data_file_says_what_it_claims {
 
   #[test]
   fn every_date_parses() {
-    for row in every_row() {
+    for (row, _) in every_row() {
       assert!(
         row.verified_on().is_some(),
         "{}'s last_verified is not a date, so its row can never go stale",
@@ -301,8 +349,8 @@ mod the_data_file_says_what_it_claims {
 
   #[test]
   fn every_figure_is_measured_in_its_column_s_unit() {
-    for row in every_row() {
-      for column in &BAKED_COMPARISON.columns {
+    for (row, columns) in every_row() {
+      for column in columns {
         if let Some(figure) = row.figure(column) {
           assert_eq!(
             figure.unit, column.unit,
@@ -316,41 +364,59 @@ mod the_data_file_says_what_it_claims {
 
   #[test]
   fn no_row_carries_a_figure_no_column_renders() {
-    for row in every_row() {
+    for (row, columns) in every_row() {
       for key in row.figures.keys() {
         assert!(
-          BAKED_COMPARISON.columns.iter().any(|c| &c.key == key),
-          "{} carries a {key} figure, which no column renders",
+          columns.iter().any(|c| &c.key == key),
+          "{} carries a {key} figure, which no column in its table renders",
           row.id
         );
       }
     }
   }
 
-  // The two halves of "we do not publish a number we could not find": the
-  // status a reader sees and the absent cell it describes. Either one alone
-  // can be edited, so they are asserted against each other.
+  // "Unpriced" is the whole-row verdict: we went looking and came away with
+  // nothing at any size. A row that prices one fleet size and not another
+  // is a different thing, and mislabelling it would tell a reader we never
+  // found a price when we found one and printed it.
   #[test]
-  fn unpriced_is_exactly_the_rows_missing_a_figure() {
-    for row in every_row() {
-      let complete = BAKED_COMPARISON
-        .columns
-        .iter()
-        .all(|c| row.figure(c).is_some());
+  fn unpriced_is_exactly_the_rows_with_no_figure_anywhere() {
+    for (row, _) in every_row() {
       assert_eq!(
-        complete,
-        row.provenance() != Provenance::Unpriced,
-        "{} is marked {:?} but {} a figure in every column",
+        row.figures.is_empty(),
+        row.provenance() == Provenance::Unpriced,
+        "{} is marked {:?} but carries {} figures",
         row.id,
         row.provenance(),
-        if complete { "carries" } else { "is missing" }
+        row.figures.len()
       );
     }
   }
 
+  // The state that makes the whole table honest rather than merely tidy,
+  // asserted so it cannot quietly disappear in an edit: at least one cell
+  // a vendor does not publish, and at least one vendor we could not price
+  // at all.
+  #[test]
+  fn the_page_still_admits_what_it_does_not_know() {
+    let rows = every_row();
+    assert!(
+      rows
+        .iter()
+        .any(|(r, cols)| cols.iter().any(|c| r.figure(c).is_none()) && !r.figures.is_empty()),
+      "no row omits a single cell, so 'not published' never renders"
+    );
+    assert!(
+      rows
+        .iter()
+        .any(|(r, _)| r.provenance() == Provenance::Unpriced),
+      "no vendor is recorded as unpriceable"
+    );
+  }
+
   #[test]
   fn every_competitor_figure_can_be_traced_to_a_page_someone_can_open() {
-    for row in every_row() {
+    for (row, _) in every_row() {
       if row.provenance() == Provenance::Ours {
         continue;
       }
@@ -366,32 +432,58 @@ mod the_data_file_says_what_it_claims {
     }
   }
 
-  // Our own row is the reference every other number is read against, so its
-  // absence would turn the table into a competitor list.
+  // Our own row is the reference every other number is read against, so
+  // its absence would turn a table into a competitor list.
   #[test]
-  fn our_own_price_is_in_the_table() {
-    assert_eq!(
-      BAKED_COMPARISON
-        .rows
-        .iter()
-        .filter(|r| r.provenance() == Provenance::Ours)
-        .count(),
-      1
-    );
+  fn our_own_price_is_in_every_table() {
+    for profile in &BAKED_COMPARISON.profiles {
+      assert_eq!(
+        profile
+          .rows
+          .iter()
+          .filter(|r| r.provenance() == Provenance::Ours)
+          .count(),
+        1,
+        "profile {} does not price us exactly once",
+        profile.id
+      );
+    }
+  }
+
+  // Raw infrastructure is deliberately not ranked among the tiers, because
+  // a bare rate in a price table is the anchor the surrounding argument
+  // exists to answer. This is that separation, asserted.
+  #[test]
+  fn raw_infrastructure_never_sits_in_a_priced_table() {
+    let infrastructure = ["aws", "azure"];
+    for profile in &BAKED_COMPARISON.profiles {
+      for row in &profile.rows {
+        assert!(
+          !infrastructure
+            .iter()
+            .any(|i| row.id.starts_with(i) || row.platform.to_lowercase().starts_with(i)),
+          "{} is raw infrastructure and belongs under build_your_own",
+          row.id
+        );
+      }
+      assert!(
+        !profile.build_your_own.is_empty(),
+        "profile {} makes the build-it-yourself argument with nothing to show for it",
+        profile.id
+      );
+    }
   }
 
   #[test]
   fn a_source_is_cited_by_its_host() {
-    let row = BAKED_COMPARISON
-      .rows
+    let (row, _) = *every_row()
       .iter()
-      .find(|r| r.id == "thingsboard-cloud-business")
+      .find(|(r, _)| r.id == "thingsboard-steady")
       .unwrap();
     assert_eq!(row.source_host(), Some("thingsboard.io"));
-    let ours = BAKED_COMPARISON
-      .rows
+    let (ours, _) = *every_row()
       .iter()
-      .find(|r| r.provenance() == Provenance::Ours)
+      .find(|(r, _)| r.provenance() == Provenance::Ours)
       .unwrap();
     assert_eq!(ours.source_host(), None);
   }
@@ -403,10 +495,10 @@ mod the_data_file_says_what_it_claims {
 
   #[test]
   fn a_date_past_the_threshold_reads_as_stale_and_one_inside_it_does_not() {
-    let row = BAKED_COMPARISON
-      .rows
+    let rows = every_row();
+    let (row, _) = rows
       .iter()
-      .find(|r| r.provenance() == Provenance::SingleFetch)
+      .find(|(r, _)| r.provenance() == Provenance::SingleFetch)
       .expect("the table has a single-fetch row to age");
     let checked = row.verified_on().unwrap();
     let window = BAKED_COMPARISON.stale_after_days;
@@ -417,12 +509,29 @@ mod the_data_file_says_what_it_claims {
 
   #[test]
   fn our_own_price_never_goes_stale() {
-    let ours = BAKED_COMPARISON
-      .rows
+    let rows = every_row();
+    let (ours, _) = rows
       .iter()
-      .find(|r| r.provenance() == Provenance::Ours)
+      .find(|(r, _)| r.provenance() == Provenance::Ours)
       .unwrap();
     let long_after = ours.verified_on().unwrap() + time::Duration::days(3650);
     assert!(!ours.is_stale(long_after, BAKED_COMPARISON.stale_after_days));
+  }
+
+  // A zero in a price column is the one number that means nothing on its
+  // own: free to ten devices and free to a hundred read identically.
+  #[test]
+  fn a_free_tier_says_what_it_is_free_up_to() {
+    for (row, _) in every_row() {
+      for (key, figure) in &row.figures {
+        if figure.value.trim() == "$0" {
+          assert!(
+            figure.qualifier.is_some(),
+            "{}'s {key} figure is a bare $0, which says nothing about what it is free up to",
+            row.id
+          );
+        }
+      }
+    }
   }
 }

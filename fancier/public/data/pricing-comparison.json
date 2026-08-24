@@ -1,121 +1,294 @@
 {
   "_how_to_update": [
     "This file is the only place the pricing page's competitor comparison numbers live.",
-    "To correct a figure: edit its row below, set last_verified to the date you checked",
-    "the source URL, set status to 'verified' (you fetched it today) or 'single-fetch'",
+    "To correct a figure: edit it below, set that row's last_verified to the date you checked",
+    "its source URL, set status to 'verified' (you fetched it today) or 'single-fetch'",
     "(one check, not re-confirmed since), and redeploy fancier's assets. The running page",
     "re-fetches this file on load, so an asset deploy is enough -- no Rust rebuild, no",
     "code change. Rebuilding only matters for the pre-JavaScript copy baked into the",
     "prerendered HTML, which catches up on the next full build.",
     "A figure older than stale_after_days renders with a visible 'recheck' cue, so letting",
     "one drift is loud rather than silent. Drop a whole competitor by deleting its row.",
-    "A row with no entry under a column renders as 'not published' -- that is how an",
-    "unpriceable vendor is recorded, never as a guessed number.",
-    "Figures come from pidgeiot-business/pricing-analysis-2026-08.md, whose profile B is a",
-    "real measured device: 1,000 devices reporting every 300 seconds. Never put a number",
-    "here that is not traceable to a source URL someone can open."
+    "A row with no entry under a column renders as 'not published' -- that is how a figure",
+    "nobody publishes is recorded, never as a guessed number. A row with no figures at all",
+    "is status 'unpriced': we tried and came away with nothing.",
+    "Every price is normalized the same way: what ONE device costs for ONE month on the",
+    "cheapest tier that legitimately fits that fleet size. Figures come from",
+    "pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9, whose steady",
+    "profile is a real measured device. Never put a number here that is not traceable to a",
+    "source URL someone can open."
   ],
 
-  "schema": 1,
+  "schema": 2,
   "stale_after_days": 90,
 
-  "scenario": {
-    "heading": "1,000 devices, reporting every five minutes",
-    "subhead": "Published list prices for the cheapest tier that legitimately fits the fleet. Every figure carries the date we last checked it against the vendor's own page."
-  },
-
-  "columns": [
-    { "key": "per_device", "label": "Per device", "unit": "USD/device/month" },
-    { "key": "monthly", "label": "Monthly total", "unit": "USD/month" }
-  ],
-
-  "rows": [
+  "profiles": [
     {
-      "id": "pidgeiot-scale",
-      "platform": "PidgeIoT",
-      "plan": "Scale",
-      "figures": {
-        "per_device": { "value": "$0.35", "unit": "USD/device/month" },
-        "monthly": { "value": "$349", "unit": "USD/month" }
-      },
-      "status": "ours",
-      "last_verified": "2026-08-23"
+      "id": "steady",
+      "heading": "A device reporting every five minutes",
+      "subhead": "What one device costs for one month, on the cheapest tier that legitimately fits the fleet. Every figure carries the date we last checked it against the vendor's own page.",
+      "columns": [
+        { "key": "one", "label": "1 device", "unit": "USD/device/month" },
+        { "key": "thousand", "label": "1,000 devices", "unit": "USD/device/month" },
+        { "key": "ten_thousand", "label": "10,000 devices", "unit": "USD/device/month" }
+      ],
+      "rows": [
+        {
+          "id": "pidgeiot-steady",
+          "platform": "PidgeIoT",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free tier" },
+            "thousand": { "value": "$0.349", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.150", "unit": "USD/device/month" }
+          },
+          "status": "ours",
+          "last_verified": "2026-08-23",
+          "note": "Perch is free to ten devices, Scale covers a thousand, Fleet covers ten thousand. The rate falls because the tier above is cheaper per device, not because anyone negotiated a discount."
+        },
+        {
+          "id": "golioth-steady",
+          "platform": "Golioth",
+          "plan": "Pay as you go",
+          "figures": {
+            "one": { "value": "$0.285", "unit": "USD/device/month" },
+            "thousand": { "value": "$0.285", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.285", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://golioth.io/pricing",
+          "note": "A flat $0.25 for every device that connects, plus data, which is why the rate never moves with the fleet. That beats us up to roughly 1,225 devices and loses above it, so below that line we would rather you weighed the dashboard, organizations and alerting they do not ship than the price."
+        },
+        {
+          "id": "thingsboard-steady",
+          "platform": "ThingsBoard Cloud",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free to 5" },
+            "thousand": { "value": "$0.749", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.200", "unit": "USD/device/month" }
+          },
+          "status": "verified",
+          "last_verified": "2026-08-23",
+          "source": "https://thingsboard.io/pricing/",
+          "note": "Free to five devices, $749 for a thousand on Business, and at ten thousand it is Private Cloud Launch at $1,499 plus five thousand extra devices at $0.10. Their meter counts data points rather than messages, so a device sending several readings per report reaches the ceiling long before its device count suggests."
+        },
+        {
+          "id": "balena-steady",
+          "platform": "Balena",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free to 10" },
+            "thousand": { "value": "$3.219", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$2.122", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://balena.io/pricing",
+          "note": "Their overage rate does not fall between Pilot and Production, so a buyer minimizing cost would stay on Pilot at any size: $20,209 against $21,219 at ten thousand devices. Production buys an SLA, not a volume discount. Their free device count read inconsistently across two fetches, ten in the headline copy against thirty on the plan card, so treat that one as unconfirmed."
+        },
+        {
+          "id": "memfault-steady",
+          "platform": "Memfault",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free to 10" },
+            "thousand": { "value": "$3.495", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://memfault.com/pricing/",
+          "note": "In fairness to them, Memfault is crash and firmware observability, not a telemetry platform, so this row is a scale reference rather than a like-for-like rival. Both paid tiers include exactly a thousand reporting devices and publish no overage, which is why ten thousand has no figure at all. Their session cap is 15 per device per day on Growth and 25 on Scale, against this profile's 288, so their published pricing does not look designed for continuous telemetry."
+        },
+        {
+          "id": "particle-steady",
+          "platform": "Particle",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "free tier" },
+            "thousand": { "value": "$3.887", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$3.648", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://particle.io/pricing/",
+          "note": "Sold in whole $299 blocks of 100 devices and 720,000 data operations; a thousand devices needs thirteen of them and ten thousand needs 122. There is no per-operation overage rate at all, so one operation over the line buys another entire block."
+        },
+        {
+          "id": "blues-steady",
+          "platform": "Blues",
+          "plan": "Essentials",
+          "figures": {
+            "one": { "value": "$2.86", "unit": "USD/device/month" },
+            "thousand": { "value": "$6.604", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$6.607", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://blues.com/pricing/",
+          "note": "$0.00075 per event that arrives, flat, whatever its size, which is why the rate is almost identical at every fleet size. Frequent small reports are the worst case for that model. Cellular data rides with the Notecard hardware and is not counted here."
+        },
+        {
+          "id": "tagoio-steady",
+          "platform": "TagoIO",
+          "figures": {
+            "one": { "value": "$49.00", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://tago.io/pricing",
+          "note": "Starter and Scale include the identical one million inputs a month, so the higher tier buys devices and dashboards rather than transactions. This profile crosses that ceiling at about 114 devices and no overage rate is published anywhere, which is what makes both larger fleets genuinely unpriceable from their public pages."
+        },
+        {
+          "id": "datacake-steady",
+          "platform": "Datacake",
+          "figures": {},
+          "status": "unpriced",
+          "last_verified": "2026-08-12",
+          "source": "https://datacake.co/pricing",
+          "note": "Their pricing page answered HTTP 429 on six attempts across several URLs, and the aggregator figures that turn up in search are unverified. We would rather leave this row empty than publish a number we cannot stand behind."
+        }
+      ],
+      "build_your_own": [
+        {
+          "id": "aws-per-datapoint",
+          "platform": "AWS IoT",
+          "plan": "one stored item per reading",
+          "figures": {
+            "one": { "value": "$0.045", "unit": "USD/device/month" },
+            "thousand": { "value": "$0.045", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.045", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://aws.amazon.com/iot-core/pricing/",
+          "note": "Costed line by line at this profile rather than taken from a headline rate: messaging, connectivity, shadow operations, the rules engine, Jobs for the firmware update, and the time-series writes. Those writes are DynamoDB, they are 59% of the total, and they never appear on the IoT pricing page at all."
+        },
+        {
+          "id": "aws-batched",
+          "platform": "AWS IoT",
+          "plan": "readings batched per report",
+          "figures": {
+            "one": { "value": "$0.029", "unit": "USD/device/month" },
+            "thousand": { "value": "$0.029", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.029", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://aws.amazon.com/dynamodb/pricing/on-demand/",
+          "note": "The same build with each report's four readings written as one item, which is what a competent team would do. We quote this one too rather than only the figure that flatters us."
+        },
+        {
+          "id": "azure-messaging",
+          "platform": "Azure IoT Hub",
+          "plan": "messaging only",
+          "figures": {
+            "thousand": { "value": "$0.010", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.005", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://azure.microsoft.com/en-us/pricing/details/iot-hub/",
+          "note": "The cheapest raw number in this whole comparison, and the one a technical buyer is most likely to have anchored on. Azure's pricing page renders its figures in the browser and returns nothing to a plain fetch, so these came from the public Retail Prices API for us-east."
+        },
+        {
+          "id": "azure-with-device-update",
+          "platform": "Azure IoT Hub",
+          "plan": "with Device Update",
+          "figures": {
+            "thousand": { "value": "$0.150", "unit": "USD/device/month" },
+            "ten_thousand": { "value": "$0.082", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://azure.microsoft.com/en-us/pricing/details/iot-hub/",
+          "note": "The same hub once firmware updates are added, at $70 a month per instance plus $0.07 per device. This is the honest comparison of the two, because shipping devices you cannot update is not a product."
+        }
+      ]
     },
     {
-      "id": "golioth-payg",
-      "platform": "Golioth",
-      "plan": "Pay as you go",
-      "figures": {
-        "per_device": { "value": "$0.285", "unit": "USD/device/month" },
-        "monthly": { "value": "$285", "unit": "USD/month" }
-      },
-      "status": "single-fetch",
-      "last_verified": "2026-08-12",
-      "source": "https://golioth.io/pricing",
-      "note": "A flat $0.25 for every device that connects, plus data. That beats us up to roughly 1,225 devices and loses above it, so below that line we would rather you weighed the dashboard, organizations and alerting they do not ship than the price."
-    },
-    {
-      "id": "thingsboard-cloud-business",
-      "platform": "ThingsBoard Cloud",
-      "plan": "Business",
-      "figures": {
-        "per_device": { "value": "$0.75", "unit": "USD/device/month" },
-        "monthly": { "value": "$749", "unit": "USD/month" }
-      },
-      "status": "verified",
-      "last_verified": "2026-08-23",
-      "source": "https://thingsboard.io/pricing/",
-      "note": "Includes 1,000 devices, up to 5,000 at $0.30 each. The meter counts data points rather than messages, so a device sending several readings per report reaches the ceiling long before its device count suggests."
-    },
-    {
-      "id": "particle-basic",
-      "platform": "Particle",
-      "plan": "Basic blocks",
-      "figures": {
-        "per_device": { "value": "$3.89", "unit": "USD/device/month" },
-        "monthly": { "value": "$3,887", "unit": "USD/month" }
-      },
-      "status": "single-fetch",
-      "last_verified": "2026-08-12",
-      "source": "https://particle.io/pricing/",
-      "note": "Sold in whole $299 blocks of 100 devices and 720,000 data operations; this fleet needs thirteen of them. There is no per-operation overage rate at all, so one operation over the line buys another entire block."
-    },
-    {
-      "id": "blues-essentials",
-      "platform": "Blues",
-      "plan": "Essentials",
-      "figures": {
-        "per_device": { "value": "$6.60", "unit": "USD/device/month" },
-        "monthly": { "value": "$6,604", "unit": "USD/month" }
-      },
-      "status": "single-fetch",
-      "last_verified": "2026-08-12",
-      "source": "https://blues.com/pricing/",
-      "note": "$0.00075 per event that arrives, flat, whatever its size. Frequent small reports are the worst case for that model, which is what this figure is measuring. Cellular data rides with the Notecard hardware and is not counted here."
-    },
-    {
-      "id": "tagoio-scale",
-      "platform": "TagoIO",
-      "plan": "Scale",
-      "figures": {},
-      "status": "unpriced",
-      "last_verified": "2026-08-12",
-      "source": "https://tago.io/pricing",
-      "note": "Starter and Scale include the same one million inputs a month, which this profile crosses at about 114 devices, and no overage rate is published anywhere. A fleet this size genuinely cannot be priced from their public pages, so we are not going to guess one."
+      "id": "chatty",
+      "heading": "The same device, reporting every ten seconds",
+      "subhead": "Nothing changes but the cadence. This is where metering models stop agreeing with each other, and where a buyer finds out which unit their vendor really charges in.",
+      "columns": [
+        { "key": "one", "label": "1 device", "unit": "USD/device/month" },
+        { "key": "thousand", "label": "1,000 devices", "unit": "USD/device/month" }
+      ],
+      "rows": [
+        {
+          "id": "pidgeiot-chatty",
+          "platform": "PidgeIoT",
+          "figures": {
+            "one": { "value": "$0", "unit": "USD/device/month", "qualifier": "inside the free pool" },
+            "thousand": { "value": "$6.80", "unit": "USD/device/month" }
+          },
+          "status": "ours",
+          "last_verified": "2026-08-23",
+          "note": "One device at this cadence fits inside Perch's 300,000 message pool, though it then starves the account's other nine. At a thousand devices it is $0.35 of base plus $6.45 of overage. We are not the cheapest here and are not going to pretend otherwise."
+        },
+        {
+          "id": "golioth-chatty",
+          "platform": "Golioth",
+          "plan": "Pay as you go",
+          "figures": {
+            "one": { "value": "$0.665", "unit": "USD/device/month" },
+            "thousand": { "value": "$0.665", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://golioth.io/pricing",
+          "note": "The clearest win for a per-device rate that barely moves with traffic. At this cadence they beat us outright, and the answer we would give you is the dashboard, organizations and alerting rather than the number."
+        },
+        {
+          "id": "thingsboard-chatty",
+          "platform": "ThingsBoard Cloud",
+          "figures": {
+            "one": { "value": "$49.00", "unit": "USD/device/month" },
+            "thousand": { "value": "$1.499", "unit": "USD/device/month" }
+          },
+          "status": "verified",
+          "last_verified": "2026-08-23",
+          "source": "https://thingsboard.io/pricing/",
+          "note": "At five readings per report a single device emits 1.3 million data points a month against the free tier's one million ceiling, while using barely half its message allowance. That is a cliff at one device, on a limit nobody was watching. At a thousand the same arithmetic forces the jump to Private Cloud even though the device count fits Business exactly."
+        },
+        {
+          "id": "particle-chatty",
+          "platform": "Particle",
+          "figures": {
+            "one": { "value": "$299.00", "unit": "USD/device/month" },
+            "thousand": { "value": "$31.15", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://particle.io/pricing/",
+          "note": "One chatty device exhausts a whole $299 block of data operations by itself, and blocks are the only unit on offer."
+        },
+        {
+          "id": "blues-chatty",
+          "platform": "Blues",
+          "plan": "Essentials",
+          "figures": {
+            "one": { "value": "$190.65", "unit": "USD/device/month" },
+            "thousand": { "value": "$194.40", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://blues.com/pricing/",
+          "note": "A flat charge per event, whatever its size, meets a device that sends 259,200 tiny events a month."
+        }
+      ],
+      "closing": "Blues at $194 per device per month for a ten-second cadence is the clearest illustration of why a flat charge per event is the wrong model for small frequent reports, and it is the clearest opening we have.",
+      "build_your_own": [
+        {
+          "id": "aws-chatty",
+          "platform": "AWS IoT",
+          "plan": "assembled yourself",
+          "figures": {
+            "one": { "value": "$1.241", "unit": "USD/device/month" },
+            "thousand": { "value": "$1.241", "unit": "USD/device/month" }
+          },
+          "status": "single-fetch",
+          "last_verified": "2026-08-12",
+          "source": "https://aws.amazon.com/iot-core/pricing/",
+          "note": "Time-series writes are 73% of it at this cadence, up from 59% at five minutes. The cost of a chatty device on AWS is almost entirely the cost of storing what it says."
+        }
+      ]
     }
-  ],
-
-  "build_your_own": {
-    "id": "aws-iot-profile-b",
-    "platform": "AWS IoT",
-    "plan": "assembled yourself",
-    "figures": {
-      "per_device": { "value": "$0.045", "unit": "USD/device/month" },
-      "monthly": { "value": "$45.28", "unit": "USD/month" }
-    },
-    "status": "single-fetch",
-    "last_verified": "2026-08-12",
-    "source": "https://aws.amazon.com/iot-core/pricing/",
-    "note": "Costed line by line at this profile rather than taken from a headline rate: messaging, connectivity, shadow operations, the rules engine, Jobs for the firmware update, and the time-series writes. Those writes are DynamoDB, they are 59% of the total, and they never appear on the IoT pricing page at all."
-  }
+  ]
 }

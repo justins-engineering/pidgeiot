@@ -1,10 +1,11 @@
 use super::org::redirect_to;
-use crate::helpers::pricing_data::{self, Provenance, Row};
+use crate::helpers::pricing_data::{self, Column, Profile, Provenance, Row};
 use crate::{Route, Session, api};
 use capsules::BillingPlan;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdCheck, LdPlay};
+use time::Date;
 
 /// One rung of the ladder. Every paid tier carries a "planned" badge and a
 /// price note saying it is not billing, because publishing numbers we do not
@@ -182,6 +183,178 @@ fn FigureSource(row: Row, stale: bool) -> Element {
   }
 }
 
+/// One vendor's row, shared by the priced table and the build-it-yourself
+/// block below it so a raw-infrastructure rate is held to visibly the same
+/// standard as a product's: same cells, same source, same date.
+#[component]
+fn ComparisonRow(row: Row, columns: Vec<Column>, today: Date, stale_after: i64) -> Element {
+  let stale = row.is_stale(today, stale_after);
+
+  rsx! {
+    tr { class: if row.provenance() == Provenance::Ours { "font-bold" },
+      td {
+        div {
+          "{row.platform}"
+          if let Some(plan) = row.plan.as_ref() {
+            span { class: "font-normal text-base-content/70", " · {plan}" }
+          }
+        }
+        FigureSource { row: row.clone(), stale }
+      }
+      for column in columns.iter() {
+        td { key: "{column.key}", class: "text-right whitespace-nowrap align-top",
+          if let Some(figure) = row.figure(column) {
+            div { "{figure.value}" }
+            if let Some(qualifier) = figure.qualifier.as_ref() {
+              div { class: "text-xs font-normal text-base-content/60", "{qualifier}" }
+            }
+          } else {
+            span { class: "font-normal italic text-base-content/50",
+              "{pricing_data::NOT_PUBLISHED}"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The numeric worth of a display figure like "$0.045", for the one place
+/// that has to rank figures rather than print them. Unparseable text sorts
+/// last rather than first, so a malformed entry can never win a comparison
+/// by being unreadable.
+fn dollars(value: &str) -> f64 {
+  value
+    .trim_start_matches('$')
+    .replace(',', "")
+    .parse()
+    .unwrap_or(f64::MAX)
+}
+
+/// One cadence: its table of things you can buy, the reasons those numbers
+/// are what they are, and the separate question of assembling it yourself.
+#[component]
+fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element {
+  // The rate a reader is most likely to have anchored on, named in the
+  // argument rather than left to be discovered in a table. Falls back to
+  // the table's own wording if the data file ever stops carrying it, so
+  // the sentence cannot end in a blank.
+  let cheapest_raw = profile
+    .build_your_own
+    .iter()
+    .filter_map(|row| row.figure_by_key("thousand"))
+    // Compared as money, not as text. A lexicographic minimum over these
+    // strings happens to be right for today's figures and would silently
+    // stop being right the first time one crossed into two digits.
+    .min_by(|a, b| dollars(&a.value).total_cmp(&dollars(&b.value)))
+    .map(|figure| figure.value.clone())
+    .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string());
+
+  rsx! {
+    div { class: "mt-14 first:mt-0",
+      h3 { class: "text-2xl md:text-3xl font-extrabold tracking-tight", "{profile.heading}" }
+      p { class: "mt-3 text-base-content/70 leading-relaxed", "{profile.subhead}" }
+
+      div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
+        table { class: "table",
+          thead {
+            tr {
+              th { "Platform" }
+              for column in profile.columns.iter() {
+                th { key: "{column.key}", class: "text-right",
+                  div { "{column.label}" }
+                  div { class: "font-normal text-base-content/60", "{column.unit}" }
+                }
+              }
+            }
+          }
+          tbody {
+            for row in profile.rows.iter() {
+              ComparisonRow {
+                key: "{row.id}",
+                row: row.clone(),
+                columns: profile.columns.clone(),
+                today,
+                stale_after,
+              }
+            }
+          }
+        }
+      }
+
+      // Under the table rather than inside it: these are the reasons a
+      // vendor's number is what it is, and a reader scanning the columns
+      // for the shape of the market should reach them second, not first.
+      ul { class: "mt-5 flex flex-col gap-3 text-sm text-base-content/70 leading-relaxed",
+        for row in profile.rows.iter() {
+          if let Some(note) = row.note.as_ref() {
+            li { key: "{row.id}",
+              span { class: "font-bold text-base-content/85", "{row.platform}. " }
+              "{note}"
+            }
+          }
+        }
+      }
+
+      if let Some(closing) = profile.closing.as_ref() {
+        p { class: "mt-6 text-base-content/80 leading-relaxed font-medium", "{closing}" }
+      }
+
+      // The argument comes before the numbers on purpose. A raw
+      // infrastructure rate dropped into a price table anchors a reader at
+      // cents and no amount of feature list pulls them back, so they meet
+      // the reason first and the figures second, in a block that reads as
+      // a footnote rather than a ranking.
+      div { class: "mt-8 rounded-2xl border border-base-300 bg-base-100 p-5 md:p-6",
+        h4 { class: "font-bold", "What about assembling it yourself?" }
+        p { class: "mt-2 text-sm text-base-content/70 leading-relaxed",
+          "We won't claim to be cheaper than raw AWS or Azure. Nobody is, and the cheapest of them lands near "
+          span { class: "font-bold", "{cheapest_raw}" }
+          " per device at a thousand. What we're cheaper than is "
+          span { class: "italic", "building on" }
+          " them, because a message bus isn't a device list, a shadow editor, graphs, a log viewer, OTA orchestration and alerting. Every screen you would have to build is missing from these rates, and so is the engineer who maintains it."
+        }
+        div { class: "mt-4 overflow-x-auto rounded-xl border border-base-300",
+          table { class: "table table-sm",
+            thead {
+              tr {
+                th { "Assembled from" }
+                for column in profile.columns.iter() {
+                  th { key: "{column.key}", class: "text-right", "{column.label}" }
+                }
+              }
+            }
+            tbody {
+              for row in profile.build_your_own.iter() {
+                ComparisonRow {
+                  key: "{row.id}",
+                  row: row.clone(),
+                  columns: profile.columns.clone(),
+                  today,
+                  stale_after,
+                }
+              }
+            }
+          }
+        }
+        ul { class: "mt-4 flex flex-col gap-2 text-xs text-base-content/70 leading-relaxed",
+          for row in profile.build_your_own.iter() {
+            if let Some(note) = row.note.as_ref() {
+              li { key: "{row.id}",
+                span { class: "font-bold text-base-content/85", "{row.platform}" }
+                if let Some(plan) = row.plan.as_ref() {
+                  span { class: "font-bold text-base-content/85", ", {plan}" }
+                }
+                ". {note}"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /// The competitor comparison, rendered from `public/data/pricing-comparison.json`
 /// rather than written into this file. See `helpers::pricing_data` for why
 /// the numbers live in a data file and how a correction reaches a running
@@ -191,14 +364,15 @@ fn ComparisonTable() -> Element {
   let mut comparison = use_signal(pricing_data::baked);
 
   // Same shape as views::demo's poll, and never runs during the
-  // synchronous SSG pass for the same reason -- so the prerendered table
-  // is the baked copy, and this is only the hydrated page catching up with
-  // whatever the deployed file says now.
+  // synchronous SSG pass for the same reason -- so the prerendered tables
+  // are the baked copy, and this is only the hydrated page catching up
+  // with whatever the deployed file says now.
   //
   // Sets the signal even when the fetch fails, because `today()` below is
   // evaluated at render time and the prerendered HTML evaluated it at
-  // build time. This is the first chance to age the table against the
-  // reader's own date rather than the build's.
+  // build time. A prerendered page hydrates by adopting its own markup, so
+  // without a post-hydration write nothing would re-render and the table
+  // would keep the build's verdict on its own staleness.
   use_future(move || async move {
     let published = pricing_data::fetch_published().await;
     comparison.set(published.unwrap_or_else(pricing_data::baked));
@@ -207,106 +381,28 @@ fn ComparisonTable() -> Element {
   let data = comparison();
   let today = pricing_data::today();
   let stale_after = data.stale_after_days;
-  let build_your_own_stale = data.build_your_own.is_stale(today, stale_after);
-  let build_your_own_monthly = build_your_own_figure(&data, "monthly");
-  let build_your_own_per_device = build_your_own_figure(&data, "per_device");
 
   rsx! {
-    h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight", "{data.scenario.heading}" }
-    p { class: "mt-3 text-base-content/70", "{data.scenario.subhead}" }
-
-    div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
-      table { class: "table",
-        thead {
-          tr {
-            th { "Platform" }
-            for column in data.columns.iter() {
-              th { key: "{column.key}", class: "text-right",
-                div { "{column.label}" }
-                div { class: "font-normal text-base-content/60", "{column.unit}" }
-              }
-            }
-          }
-        }
-        tbody {
-          for row in data.rows.iter() {
-            tr {
-              key: "{row.id}",
-              class: if row.provenance() == Provenance::Ours { "font-bold" },
-              td {
-                div { "{row.platform} · {row.plan}" }
-                FigureSource { row: row.clone(), stale: row.is_stale(today, stale_after) }
-              }
-              for column in data.columns.iter() {
-                td { key: "{column.key}", class: "text-right whitespace-nowrap align-top",
-                  if let Some(figure) = row.figure(column) {
-                    "{figure.value}"
-                  } else {
-                    span { class: "font-normal italic text-base-content/50",
-                      "{pricing_data::NOT_PUBLISHED}"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+    h2 { class: "text-3xl md:text-4xl font-extrabold tracking-tight",
+      "What everyone else charges for the same fleet"
+    }
+    p { class: "mt-4 text-base-content/75 leading-relaxed",
+      "Vendors price in units that refuse to compare: per device, per message, per data operation, per datapoint, per megabyte, per connection minute, in blocks and in seats. So each figure below is the same arithmetic run against the same device, normalized to what one device costs for one month on the cheapest tier that legitimately fits that fleet."
+    }
+    p { class: "mt-3 text-base-content/75 leading-relaxed",
+      "The five-minute device is not a thought experiment. It is a departure board we run: a report every 300 seconds, four readings, about 104 bytes, read off its own firmware config and a real soak log rather than assumed."
     }
 
-    // Under the table rather than inside it: these are the reasons a
-    // vendor's number is what it is, and a reader scanning three columns
-    // for the shape of the market should reach them second, not first.
-    ul { class: "mt-5 flex flex-col gap-3 text-sm text-base-content/70 leading-relaxed",
-      for row in data.rows.iter() {
-        if let Some(note) = row.note.as_ref() {
-          li { key: "{row.id}",
-            span { class: "font-bold text-base-content/85", "{row.platform}. " }
-            "{note}"
-          }
-        }
-      }
-    }
-
-    p { class: "mt-6 text-base-content/70 leading-relaxed",
-      "We won't claim to be cheaper than raw AWS or Azure. Nobody is, and costed line by line at this same profile "
-      "{data.build_your_own.platform} comes to "
-      span { class: "font-bold", "{build_your_own_monthly}" }
-      " a month, "
-      span { class: "font-bold", "{build_your_own_per_device}" }
-      " per device. What we're cheaper than is "
-      span { class: "italic", "building on" }
-      " them, because a message bus isn't a device list, a shadow editor, graphs, a log viewer, OTA orchestration and alerting."
-    }
-    // Held to the same standard as a table row even though it is cited in
-    // prose: the figure a reader is most likely to challenge is the one
-    // that makes us look expensive, so it shows its working and its date.
-    div { class: "mt-3 rounded-xl border border-base-300 bg-base-100 p-4",
-      if let Some(note) = data.build_your_own.note.as_ref() {
-        p { class: "text-sm text-base-content/70 leading-relaxed", "{note}" }
-      }
-      FigureSource {
-        row: data.build_your_own.clone(),
-        stale: build_your_own_stale,
+    for profile in data.profiles.iter() {
+      ProfileComparison {
+        key: "{profile.id}",
+        profile: profile.clone(),
+        today,
+        stale_after,
       }
     }
   }
 }
-
-/// One cell of the build-it-yourself figure, for the sentence that cites it
-/// inline. An absent figure would mean the data file stopped publishing a
-/// number the prose is built around, so it falls back to the same wording
-/// the table uses rather than to an empty gap in a sentence.
-fn build_your_own_figure(data: &pricing_data::Comparison, key: &str) -> String {
-  data
-    .columns
-    .iter()
-    .find(|column| column.key == key)
-    .and_then(|column| data.build_your_own.figure(column))
-    .map(|figure| figure.value.clone())
-    .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string())
-}
-
 #[component]
 fn Answer(question: String, body: String) -> Element {
   rsx! {
