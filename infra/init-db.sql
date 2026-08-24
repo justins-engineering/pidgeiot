@@ -350,6 +350,33 @@ CREATE TABLE IF NOT EXISTS error_events (
   CONSTRAINT error_events_identity_requires_note CHECK (user_id IS NULL OR report_note IS NOT NULL)
 );
 
+-- Public contact-form enquiries (`POST /contact`). The ops notification
+-- email is the working surface; this row is what makes an enquiry
+-- survive a mail-transport outage, and what makes "did anyone reply?"
+-- answerable. No IP column by design: the rate limiter keys on
+-- CF-Connecting-IP and discards it, and the sender's own address is the
+-- only identifier needed to reply. Account-deletion erasure NULLs
+-- `user_id` rather than deleting the row -- the enquiry is business
+-- correspondence the sender addressed to us.
+CREATE TABLE IF NOT EXISTS contact_submissions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  company TEXT,
+  -- capsules::ContactFleetSize wire value, or NULL when unanswered.
+  fleet_size TEXT,
+  -- Which link opened the form ('fleet' from the pricing page's Fleet
+  -- tier), so the funnel is attributable without asking the sender.
+  about TEXT,
+  message TEXT NOT NULL,
+  -- Only when a session happened to be present; resolved server-side,
+  -- never trusted from the body (same as error_events).
+  user_id UUID,
+  -- NULL means the enquiry landed but nobody was told.
+  notified_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS organization_members (
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
@@ -424,3 +451,7 @@ CREATE INDEX IF NOT EXISTS idx_error_groups_last_seen ON error_groups(last_seen 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_customer ON organizations(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_subscription ON organizations(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_unprocessed ON stripe_webhook_events(received_at) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_contact_submissions_received ON contact_submissions(received_at DESC);
+-- Partial: the "landed but never mailed" sweep, and almost every row is
+-- notified.
+CREATE INDEX IF NOT EXISTS idx_contact_submissions_unnotified ON contact_submissions(received_at) WHERE notified_at IS NULL;
