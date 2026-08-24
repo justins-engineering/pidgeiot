@@ -239,6 +239,27 @@ CREATE TABLE IF NOT EXISTS organizations (
   comp_plan TEXT,
   comp_note TEXT,
   comp_granted_at TIMESTAMPTZ,
+  -- Tax identity of the entity being invoiced. It lives here, and not on
+  -- the Kratos identity, because the org is the billing entity: one person
+  -- can belong to two orgs with two different registrations, and a tax
+  -- field on the identity would face every hobbyist at signup.
+  --
+  -- `tax_id` is normalized (uppercase, separators stripped) and is NOT a
+  -- secret -- a VAT number is on every invoice its owner issues, so no read
+  -- path strips it. Logs still never carry it in full.
+  --
+  -- `tax_id_status` is 'none' | 'pending' | 'validated' | 'invalid' |
+  -- 'unverified'. 'pending' is what lets a VIES outage cost the customer
+  -- nothing: the number is stored, the answer is owed, and the 5-minute
+  -- cron asks again. `tax_id_checked_at` (last attempt) paces that retry;
+  -- `tax_id_validated_at` (last confirmation) is what the dashboard shows
+  -- and is deliberately not disturbed by an inconclusive re-check.
+  business_name TEXT,
+  tax_id TEXT,
+  tax_id_type TEXT NOT NULL DEFAULT 'none',
+  tax_id_status TEXT NOT NULL DEFAULT 'none',
+  tax_id_validated_at TIMESTAMPTZ,
+  tax_id_checked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -256,6 +277,12 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS billing_event_at TIMESTAMPTZ;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_plan TEXT;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_note TEXT;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_granted_at TIMESTAMPTZ;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS business_name TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_id TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_id_type TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_id_status TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_id_validated_at TIMESTAMPTZ;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_id_checked_at TIMESTAMPTZ;
 
 -- Webhook idempotency. Stripe retries a delivery for up to three days and
 -- can send the same event more than once even after a 2xx, so every
@@ -462,6 +489,9 @@ CREATE INDEX IF NOT EXISTS idx_error_groups_last_seen ON error_groups(last_seen 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_customer ON organizations(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_subscription ON organizations(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_unprocessed ON stripe_webhook_events(received_at) WHERE processed_at IS NULL;
+-- Partial: the VAT re-check sweep's only query, oldest attempt first. Every
+-- settled row would be dead weight here, and settled is the vast majority.
+CREATE INDEX IF NOT EXISTS idx_organizations_tax_id_pending ON organizations(tax_id_checked_at) WHERE tax_id_status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_contact_submissions_received ON contact_submissions(received_at DESC);
 -- Partial: the "landed but never mailed" sweep, and almost every row is
 -- notified.
