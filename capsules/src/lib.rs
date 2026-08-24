@@ -17,6 +17,18 @@ pub use feedback::{
   MAX_FEEDBACK_PAGE_CONTEXT_BYTES, format_feedback_email,
 };
 
+// Contact-form request/validation/email types shared with fancier's
+// `/contact/` page. Validation lives in the shared crate on purpose: the
+// form and dovecote's route must agree on what a valid enquiry is, and
+// calling one function is the only way that stays true.
+pub mod contact;
+pub use contact::{
+  ContactFleetSize, ContactRejection, ContactRequest, MAX_CONTACT_ABOUT_BYTES,
+  MAX_CONTACT_BODY_BYTES, MAX_CONTACT_COMPANY_BYTES, MAX_CONTACT_EMAIL_BYTES,
+  MAX_CONTACT_MESSAGE_BYTES, MAX_CONTACT_NAME_BYTES, MIN_CONTACT_FILL_MS,
+  MIN_CONTACT_MESSAGE_BYTES, format_contact_email, is_plausible_email,
+};
+
 // Client error-report envelope plus the normalizer/signature functions
 // dovecote's `POST /errors` route and fancier's capture hooks share --
 // see that module's own header for why the pure logic lives here.
