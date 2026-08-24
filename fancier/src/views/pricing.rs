@@ -1,4 +1,5 @@
 use super::org::redirect_to;
+use crate::helpers::pricing_data::{self, Provenance, Row};
 use crate::{Route, Session, api};
 use capsules::BillingPlan;
 use dioxus::prelude::*;
@@ -143,6 +144,167 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
       p { class: "text-error text-xs mt-2", "{msg}" }
     }
   }
+}
+
+/// Where one figure came from and when we last looked. Deliberately quiet:
+/// a small line under the platform name, not a column of its own, because
+/// a reader comparing prices should be able to ignore it right up until it
+/// matters. It stops being quiet only when the figure has gone unchecked
+/// past the data file's own threshold, which is the one case where the
+/// number on screen might not be the number the vendor charges.
+#[component]
+fn FigureSource(row: Row, stale: bool) -> Element {
+  rsx! {
+    div { class: "mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-normal text-base-content/60",
+      if let (Some(href), Some(host)) = (row.source.clone(), row.source_host()) {
+        a {
+          class: "link link-hover",
+          href,
+          target: "_blank",
+          rel: "nofollow noopener",
+          "{host}"
+        }
+      } else {
+        span { "our own published price" }
+      }
+      span { class: if stale { "text-warning font-medium" }, "checked {row.verified_label()}" }
+      if let Some(qualifier) = row.provenance().qualifier() {
+        span { "· {qualifier}" }
+      }
+      if stale {
+        span {
+          class: "badge badge-warning badge-xs",
+          title: "This figure has gone long enough unchecked that the vendor may have repriced since.",
+          "recheck"
+        }
+      }
+    }
+  }
+}
+
+/// The competitor comparison, rendered from `public/data/pricing-comparison.json`
+/// rather than written into this file. See `helpers::pricing_data` for why
+/// the numbers live in a data file and how a correction reaches a running
+/// page without a rebuild.
+#[component]
+fn ComparisonTable() -> Element {
+  let mut comparison = use_signal(pricing_data::baked);
+
+  // Same shape as views::demo's poll, and never runs during the
+  // synchronous SSG pass for the same reason -- so the prerendered table
+  // is the baked copy, and this is only the hydrated page catching up with
+  // whatever the deployed file says now.
+  //
+  // Sets the signal even when the fetch fails, because `today()` below is
+  // evaluated at render time and the prerendered HTML evaluated it at
+  // build time. This is the first chance to age the table against the
+  // reader's own date rather than the build's.
+  use_future(move || async move {
+    let published = pricing_data::fetch_published().await;
+    comparison.set(published.unwrap_or_else(pricing_data::baked));
+  });
+
+  let data = comparison();
+  let today = pricing_data::today();
+  let stale_after = data.stale_after_days;
+  let build_your_own_stale = data.build_your_own.is_stale(today, stale_after);
+  let build_your_own_monthly = build_your_own_figure(&data, "monthly");
+  let build_your_own_per_device = build_your_own_figure(&data, "per_device");
+
+  rsx! {
+    h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight", "{data.scenario.heading}" }
+    p { class: "mt-3 text-base-content/70", "{data.scenario.subhead}" }
+
+    div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
+      table { class: "table",
+        thead {
+          tr {
+            th { "Platform" }
+            for column in data.columns.iter() {
+              th { key: "{column.key}", class: "text-right",
+                div { "{column.label}" }
+                div { class: "font-normal text-base-content/60", "{column.unit}" }
+              }
+            }
+          }
+        }
+        tbody {
+          for row in data.rows.iter() {
+            tr {
+              key: "{row.id}",
+              class: if row.provenance() == Provenance::Ours { "font-bold" },
+              td {
+                div { "{row.platform} · {row.plan}" }
+                FigureSource { row: row.clone(), stale: row.is_stale(today, stale_after) }
+              }
+              for column in data.columns.iter() {
+                td { key: "{column.key}", class: "text-right whitespace-nowrap align-top",
+                  if let Some(figure) = row.figure(column) {
+                    "{figure.value}"
+                  } else {
+                    span { class: "font-normal italic text-base-content/50",
+                      "{pricing_data::NOT_PUBLISHED}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Under the table rather than inside it: these are the reasons a
+    // vendor's number is what it is, and a reader scanning three columns
+    // for the shape of the market should reach them second, not first.
+    ul { class: "mt-5 flex flex-col gap-3 text-sm text-base-content/70 leading-relaxed",
+      for row in data.rows.iter() {
+        if let Some(note) = row.note.as_ref() {
+          li { key: "{row.id}",
+            span { class: "font-bold text-base-content/85", "{row.platform}. " }
+            "{note}"
+          }
+        }
+      }
+    }
+
+    p { class: "mt-6 text-base-content/70 leading-relaxed",
+      "We won't claim to be cheaper than raw AWS or Azure. Nobody is, and costed line by line at this same profile "
+      "{data.build_your_own.platform} comes to "
+      span { class: "font-bold", "{build_your_own_monthly}" }
+      " a month, "
+      span { class: "font-bold", "{build_your_own_per_device}" }
+      " per device. What we're cheaper than is "
+      span { class: "italic", "building on" }
+      " them, because a message bus isn't a device list, a shadow editor, graphs, a log viewer, OTA orchestration and alerting."
+    }
+    // Held to the same standard as a table row even though it is cited in
+    // prose: the figure a reader is most likely to challenge is the one
+    // that makes us look expensive, so it shows its working and its date.
+    div { class: "mt-3 rounded-xl border border-base-300 bg-base-100 p-4",
+      if let Some(note) = data.build_your_own.note.as_ref() {
+        p { class: "text-sm text-base-content/70 leading-relaxed", "{note}" }
+      }
+      FigureSource {
+        row: data.build_your_own.clone(),
+        stale: build_your_own_stale,
+      }
+    }
+  }
+}
+
+/// One cell of the build-it-yourself figure, for the sentence that cites it
+/// inline. An absent figure would mean the data file stopped publishing a
+/// number the prose is built around, so it falls back to the same wording
+/// the table uses rather than to an empty gap in a sentence.
+fn build_your_own_figure(data: &pricing_data::Comparison, key: &str) -> String {
+  data
+    .columns
+    .iter()
+    .find(|column| column.key == key)
+    .and_then(|column| data.build_your_own.figure(column))
+    .map(|figure| figure.value.clone())
+    .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string())
 }
 
 #[component]
@@ -326,52 +488,7 @@ pub fn PricingPage() -> Element {
     }
 
     section { id: "pricing-example", class: "px-4 md:px-10 py-14 bg-base-200 border-y border-base-300",
-      div { class: "max-w-4xl mx-auto",
-        h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight",
-          "1,000 devices, reporting every five minutes"
-        }
-        p { class: "mt-3 text-base-content/70",
-          "Published list prices, checked 12 Aug 2026. Cheapest tier that legitimately fits the fleet."
-        }
-        div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
-          table { class: "table",
-            thead {
-              tr {
-                th { "Platform" }
-                th { class: "text-right", "Per device" }
-                th { class: "text-right", "monthly, USD" }
-              }
-            }
-            tbody {
-              tr { class: "font-bold",
-                td { "PidgeIoT · Scale" }
-                td { class: "text-right", "$0.35" }
-                td { class: "text-right", "$349" }
-              }
-              tr {
-                td { "ThingsBoard Cloud · Business" }
-                td { class: "text-right", "$0.75" }
-                td { class: "text-right", "$749" }
-              }
-              tr {
-                td { "Particle · Basic blocks" }
-                td { class: "text-right", "$3.89" }
-                td { class: "text-right", "$3,887" }
-              }
-              tr {
-                td { "Blues · Essentials" }
-                td { class: "text-right", "$6.60" }
-                td { class: "text-right", "$6,604" }
-              }
-            }
-          }
-        }
-        p { class: "mt-5 text-base-content/70 leading-relaxed",
-          "We won't claim to be cheaper than raw AWS or Azure — nobody is. We're cheaper than "
-          span { class: "italic", "building on" }
-          " them, because a message bus isn't a device list, a shadow editor, graphs, a log viewer, OTA orchestration and alerting. Ask us for the line-item comparison; we'll send the arithmetic."
-        }
-      }
+      div { class: "max-w-4xl mx-auto", ComparisonTable {} }
     }
 
     section { id: "pricing-faq", class: "px-4 md:px-10 py-14",

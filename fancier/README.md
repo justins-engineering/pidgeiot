@@ -67,3 +67,22 @@ Run the following command in the root of your project to bundle the assets:
 ```sh
 bunx wrangler dev --ip 127.0.0.1 --port 4455
 ```
+
+## Content
+
+### Correcting a competitor price
+
+The comparison table on `/pricing/` renders from
+`public/data/pricing-comparison.json`, not from Rust. Edit the figure there,
+set its `last_verified` to the date you checked the row's `source` url, set
+`status` to `verified` (you fetched it yourself just now) or `single-fetch`
+(one look, not re-confirmed since), and deploy the assets. The running page
+re-reads that file on load, so no rebuild is needed to correct a number; a
+rebuild only refreshes the copy baked into the prerendered HTML, which is
+what a reader sees before the page's JavaScript runs.
+
+A figure left longer than the file's own `stale_after_days` renders with a
+visible recheck cue, so letting one drift shows on the page rather than
+going quiet. The file's `_how_to_update` block says the same thing to
+whoever opens it, and `src/helpers/pricing_data.rs` has the tests that fail
+if an edit breaks the shape.
