@@ -1,28 +1,29 @@
 use crate::helpers::{
-  EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal,
-  STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage,
-  WebhookClaim, accept_invite, apply_subscription, attach_stripe_customer, authenticate_browser,
-  backfill_owner_email, build_invite_url, change_member_role, check_device_cap,
-  check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
-  check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
-  count_billable_message, create_checkout_session, create_customer, create_flock_alert,
-  create_invite, create_organization, create_pigeon_alert, create_portal_session,
-  create_user_flock, delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
-  ensure_billing_tables, ensure_billing_usage_tables, erase_user_error_reports, fetch_subscription,
-  get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer,
-  get_organization, get_user_flocks, grant_org_acl_via_do, ingest_error_report,
-  insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev,
-  list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts, list_flock_firmware,
-  list_org_invites, list_org_members, list_pigeon_alert_state, list_pigeon_alerts,
-  list_user_organizations, load_org_billing_overview, load_org_roles, load_org_subscription_state,
+  DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
+  INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET,
+  StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite,
+  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
+  build_invite_url, change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse,
+  check_org_cap, check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
+  constant_time_eq, count_billable_message, create_checkout_session, create_customer,
+  create_flock_alert, create_invite, create_organization, create_pigeon_alert,
+  create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
+  delete_pigeon_pg_db, device_surface_allowed, ensure_billing_tables, ensure_billing_usage_tables,
+  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
+  get_hyperdrive_conn, get_org_stripe_customer, get_organization, get_user_flocks,
+  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
+  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
+  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
+  load_org_billing_overview, load_org_roles, load_org_subscription_state,
   mark_webhook_event_processed, mint_invite_token, notify_contact_submission, org_role_of,
   proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, remove_member, rename_organization, resolve_checkout_prices,
-  revoke_invite, send_feedback_email, send_invite_email, sha256_hex, store_contact_submission,
-  stripe_configured, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
-  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  raise_message_allowance_floor, rate_limited_response, remove_member, rename_organization,
+  resolve_checkout_prices, revoke_invite, send_feedback_email, send_invite_email, sha256_hex,
+  store_contact_submission, stripe_configured, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, validate_telemetry_report, verify_cf_access, verify_device_via_do,
   verify_webhook_signature,
 };
@@ -463,22 +464,52 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .get_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
+
+      // Ahead of every step that costs anything: an address already over
+      // its failed-auth budget is refused without a Durable Object round
+      // trip, which is the cost this limiter exists to bound.
+      let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+      if auth_guard.is_blocked() {
+        return rate_limited_response(&cors);
+      }
+
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // Poll traffic is neither billed nor counted, so nothing else bounds
+      // how often one pigeon can ask. Sized in wrangler.toml above what any
+      // configurable device cadence can reach.
+      if !device_surface_allowed(&ctx.env, DEVICE_SHADOW_LIMITER, &pigeon_id).await {
+        return rate_limited_response(&cors);
+      }
 
       // No X-User-Id / Kratos session here — the DO verifies the device's
       // own Authorization header (forwarded by proxy_to_pigeon_do) against
       // this pigeon's stored public key.
-      proxy_to_pigeon_do(req, "", None, &obj_id, "/device/shadow")
-        .await?
-        .with_cors(&cors)
+      let do_response = proxy_to_pigeon_do(req, "", None, &obj_id, "/device/shadow").await?;
+      if do_response.status_code() == 401 {
+        auth_guard.note_failure(&ctx.env).await;
+      }
+      do_response.with_cors(&cors)
     })
     .post_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
+
+      // Ahead of every step that costs anything: an address already over
+      // its failed-auth budget is refused without a Durable Object round
+      // trip, which is the cost this limiter exists to bound.
+      let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+      if auth_guard.is_blocked() {
+        return rate_limited_response(&cors);
+      }
+
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
       // Same device-auth model as the GET route above — no X-User-Id here.
       let do_response = proxy_to_pigeon_do(req, "", None, &obj_id, "/device/shadow/report").await?;
       if do_response.status_code() >= 400 {
+        if do_response.status_code() == 401 {
+          auth_guard.note_failure(&ctx.env).await;
+        }
         return do_response.with_cors(&cors);
       }
 
@@ -512,6 +543,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     .get_async("/device/pigeons/:pigeon_id/ws", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
 
+      // Ahead of every step that costs anything: an address already over
+      // its failed-auth budget is refused without a Durable Object round
+      // trip, which is the cost this limiter exists to bound.
+      let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+      if auth_guard.is_blocked() {
+        return rate_limited_response(&cors);
+      }
+
       let is_upgrade = req
         .headers()
         .get("Upgrade")
@@ -532,14 +571,25 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // (see is_authorized_device/accept_websocket_device,
       // objects/pigeons.rs) — a rejected token comes back as a normal 401
       // response instead of a 101 upgrade.
-      proxy_websocket_to_pigeon_do(req, &obj_id, "/device/ws")
-        .await?
-        .with_cors(&cors)
+      let do_response = proxy_websocket_to_pigeon_do(req, &obj_id, "/device/ws").await?;
+      if do_response.status_code() == 401 {
+        auth_guard.note_failure(&ctx.env).await;
+      }
+      do_response.with_cors(&cors)
     })
     .post_async(
       "/device/pigeons/:pigeon_id/telemetry",
       |mut req, ctx| async move {
         let cors = build_cors(&ctx.env, &req);
+
+        // Ahead of every step that costs anything: an address already over
+        // its failed-auth budget is refused without a Durable Object round
+        // trip, which is the cost this limiter exists to bound.
+        let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+        if auth_guard.is_blocked() {
+          return rate_limited_response(&cors);
+        }
+
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
         // Telemetry queue -- bound in both env.staging.queues and the
@@ -607,6 +657,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let verify_resp =
           verify_device_via_do(auth_header, &obj_id, "/device/telemetry/verify").await?;
         if verify_resp.status_code() >= 400 {
+          if verify_resp.status_code() == 401 {
+            auth_guard.note_failure(&ctx.env).await;
+          }
           return verify_resp.with_cors(&cors);
         }
 
@@ -663,6 +716,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     )
     .post_async("/device/pigeons/:pigeon_id/logs", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
+
+      // Ahead of every step that costs anything: an address already over
+      // its failed-auth budget is refused without a Durable Object round
+      // trip, which is the cost this limiter exists to bound.
+      let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+      if auth_guard.is_blocked() {
+        return rate_limited_response(&cors);
+      }
+
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
 
       // Same device-auth model as the other /device/pigeons/:id/* routes —
@@ -672,6 +734,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // text()-based forwarding, which would corrupt non-UTF-8 bytes.
       let do_response = proxy_binary_to_pigeon_do(req, &obj_id, "/device/logs").await?;
       if do_response.status_code() >= 400 {
+        if do_response.status_code() == 401 {
+          auth_guard.note_failure(&ctx.env).await;
+        }
         return do_response.with_cors(&cors);
       }
 
@@ -688,7 +753,26 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       "/device/pigeons/:pigeon_id/firmware",
       |req, ctx| async move {
         let cors = build_cors(&ctx.env, &req);
+
+        // Ahead of every step that costs anything: an address already over
+        // its failed-auth budget is refused without a Durable Object round
+        // trip, which is the cost this limiter exists to bound.
+        let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+        if auth_guard.is_blocked() {
+          return rate_limited_response(&cors);
+        }
+
         get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+        // One Range request per chunk, and each one costs a DO round trip
+        // to resolve the target plus an R2 read. Sized in wrangler.toml
+        // above the fastest cadence the device library's own chunking can
+        // produce, because a false 429 here is expensive: the device
+        // aborts the whole transfer on its first chunk error, and gives up
+        // on a version entirely after three aborts.
+        if !device_surface_allowed(&ctx.env, DEVICE_FIRMWARE_LIMITER, &pigeon_id).await {
+          return rate_limited_response(&cors);
+        }
 
         // Extracted before proxy_to_pigeon_do consumes `req` below.
         let range = req
@@ -706,6 +790,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // R2 object to stream.
         let do_response = proxy_to_pigeon_do(req, "", None, &obj_id, "/device/firmware/target").await?;
         if do_response.status_code() >= 400 {
+          if do_response.status_code() == 401 {
+            auth_guard.note_failure(&ctx.env).await;
+          }
           return do_response.with_cors(&cors);
         }
 

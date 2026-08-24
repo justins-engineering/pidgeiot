@@ -83,6 +83,13 @@ pub use retention::sweep_telemetry_history_retention;
 mod coap_service;
 pub use coap_service::is_allowed_coap_service_ip;
 
+mod device_limits;
+pub use device_limits::DEVICE_FIRMWARE_LIMITER;
+pub use device_limits::DEVICE_SHADOW_LIMITER;
+pub use device_limits::DeviceAuthGuard;
+pub use device_limits::device_surface_allowed;
+pub use device_limits::rate_limited_response;
+
 mod environment;
 pub use environment::is_local_dev;
 

@@ -135,6 +135,86 @@ name = "CONTACT_LIMITER"
 namespace_id = "1004"
 simple = { limit = 5, period = 60 }
 
+# Per-pigeon throttle on the device shadow poll (GET
+# /device/pigeons/:id/shadow) -- a surface that is neither billed nor
+# counted, so nothing else bounds how often one pigeon can ask.
+#
+# SIZING. The device library issues exactly one shadow GET per poll
+# cycle, and the cycle period is the pigeon's own `telemetry_interval`
+# shadow value: the firmware restarts its poll timer from whatever the
+# dashboard pushes and applies no minimum of its own. Our fleet's
+# compiled default is 300s, or 0.2 req/min. The fastest cadence the
+# platform can express at all is a 1s interval, which is 60 req/min.
+# 120/60s is twice that floor, so no healthy device can reach it under
+# any configuration a dashboard could push, while a device stuck in a hot
+# loop drops from thousands of Durable Object requests a minute to 120.
+#
+# Counters are approximate and roughly per-colo -- devices are
+# colo-sticky, which is what makes that acceptable -- so this is a
+# backstop on runaway volume rather than a precise gate, the same caveat
+# CONTACT_LIMITER carries. Over the limit answers 429 with Retry-After
+# and never 401, and the check fails open on a binding fault: a limiter
+# outage must not take a fleet offline. See helpers/device_limits.rs.
+[[ratelimits]]
+name = "DEVICE_SHADOW_LIMITER"
+namespace_id = "1007"
+simple = { limit = 120, period = 60 }
+
+# Per-pigeon throttle on FOTA chunk downloads (GET
+# /device/pigeons/:id/firmware). Every Range request costs a Durable
+# Object round trip to resolve the pigeon's assigned target plus an R2
+# read, and one image is thousands of them.
+#
+# SIZING, deliberately generous. The device aborts an entire transfer on
+# its first chunk error, and refuses a firmware version outright after
+# three aborted attempts -- a count it persists across reboots, so
+# recovery needs an operator to push a different version. A false 429
+# here is therefore far more expensive than one on any other surface, and
+# the limit is set above every real download rate rather than near it.
+# Our own fleet downloads in 512-byte chunks with a 100ms inter-chunk
+# sleep, a hard ceiling of 600 req/min, and is measured at 21-83 req/min
+# over LTE-M. The library default is 2048-byte chunks with no sleep, where
+# the pace is bounded instead by a fresh TCP+TLS handshake per chunk.
+# 1800/60s clears the sleep-capped ceiling 3x and the handshake-bound one
+# with room to spare, while still capping a device looping on downloads.
+#
+# Same approximate/per-colo counters, 429-never-401, and fail-open-on-
+# fault behaviour as the shadow limiter above.
+[[ratelimits]]
+name = "DEVICE_FIRMWARE_LIMITER"
+namespace_id = "1010"
+simple = { limit = 1800, period = 60 }
+
+# Per-source-address budget for device requests that FAIL authentication,
+# across every /device/pigeons/:id/* route. Bounds token guessing and the
+# stale-token-in-a-tight-loop case, where each attempt would otherwise buy
+# a Durable Object round trip to check a signature against the pigeon's
+# public key.
+#
+# SIZING. Only failures are counted -- the counter is charged after the
+# Durable Object has rejected a credential, never before -- so a healthy
+# device never touches it and the budget does not have to accommodate
+# one. Ten a minute is generous for the one real non-hostile case, a
+# device whose token was rotated out from under it, which retries on its
+# own poll interval rather than in a loop. Once an address is over
+# budget, further attempts from it are refused in the isolate without a
+# round trip, which is the cost this limiter exists to bound.
+#
+# The CoAP terminator is EXEMPT, by source address, via the same
+# COAP_SERVICE_ALLOWED_IPS allowlist that gates the internal PSK route:
+# every CoAP device in the fleet arrives from its single egress address,
+# so one device with a rotated token would otherwise spend the shared
+# budget and lock the whole transport out behind it. Those devices stay
+# covered by the two per-pigeon limiters above (the terminator forwards
+# the pigeon id in the path) and by its own per-source connection
+# admission on the transport side. In dev this same mechanism exempts all
+# local traffic, whose allowlist is the loopback addresses.
+# See helpers/device_limits.rs::DeviceAuthGuard.
+[[ratelimits]]
+name = "DEVICE_AUTH_FAIL_LIMITER"
+namespace_id = "1013"
+simple = { limit = 10, period = 60 }
+
 [durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
 
@@ -245,6 +325,27 @@ name = "CONTACT_LIMITER"
 namespace_id = "1005"
 simple = { limit = 5, period = 60 }
 
+# Own namespace_id -- see the production DEVICE_SHADOW_LIMITER block above
+# for the sizing arithmetic.
+[[env.staging.ratelimits]]
+name = "DEVICE_SHADOW_LIMITER"
+namespace_id = "1008"
+simple = { limit = 120, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_FIRMWARE_LIMITER block
+# above for the sizing arithmetic.
+[[env.staging.ratelimits]]
+name = "DEVICE_FIRMWARE_LIMITER"
+namespace_id = "1011"
+simple = { limit = 1800, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_AUTH_FAIL_LIMITER block
+# above, including why the CoAP terminator is exempt from it.
+[[env.staging.ratelimits]]
+name = "DEVICE_AUTH_FAIL_LIMITER"
+namespace_id = "1014"
+simple = { limit = 10, period = 60 }
+
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"
 # dovecote-db-staging: staging's OWN database (dovecote_staging on the
@@ -325,6 +426,27 @@ simple = { limit = 20, period = 60 }
 name = "CONTACT_LIMITER"
 namespace_id = "1006"
 simple = { limit = 5, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_SHADOW_LIMITER block above
+# for the sizing arithmetic.
+[[env.dev.ratelimits]]
+name = "DEVICE_SHADOW_LIMITER"
+namespace_id = "1009"
+simple = { limit = 120, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_FIRMWARE_LIMITER block
+# above for the sizing arithmetic.
+[[env.dev.ratelimits]]
+name = "DEVICE_FIRMWARE_LIMITER"
+namespace_id = "1012"
+simple = { limit = 1800, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_AUTH_FAIL_LIMITER block
+# above, including why the CoAP terminator is exempt from it.
+[[env.dev.ratelimits]]
+name = "DEVICE_AUTH_FAIL_LIMITER"
+namespace_id = "1015"
+simple = { limit = 10, period = 60 }
 
 [[env.dev.hyperdrive]]
 binding = "YugabyteDB"
