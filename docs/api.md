@@ -150,7 +150,7 @@ models above; dev and production don't set these vars, so it's a no-op there.
   token),
   `403` (authenticated but not authorized — wrong ACL role, CF Access rejection on staging, or a
   per-tier limit reached: see [Per-tier limits](#per-tier-limits)),
-  `404` (no matching route), `413` (log chunk over the size cap), `500` (internal error — DB
+  `404` (no matching route), `413` (log chunk or telemetry batch over the size cap), `500` (internal error — DB
   connection failure, Durable Object dispatch failure, etc).
 - A deleted pigeon's Durable Object is never actually destroyed (Cloudflare DOs have no
   "delete yourself" API — see `objects/pigeons.rs`'s `delete` handler) — its tables are just
@@ -185,6 +185,10 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | Stored latest-value telemetry keys per pigeon | 128 (`capsules::MAX_TELEMETRY_KEYS`) — least-recently-reported keys silently evicted, not an error | `helpers/telemetry_latest.rs`, see [Telemetry](#telemetry) |
 | Telemetry keys per report | 128 (`capsules::MAX_TELEMETRY_KEYS`) | `helpers/telemetry_latest.rs`, `400` over the cap (nothing applied) |
 | Telemetry key / value length | 128 / 1024 bytes (`capsules::MAX_TELEMETRY_KEY_BYTES`/`MAX_TELEMETRY_VALUE_BYTES`) | `helpers/telemetry_latest.rs`, `400` over the cap (nothing applied) |
+| Readings per batched telemetry report | 64 (`capsules::MAX_TELEMETRY_BATCH_READINGS`) | `helpers/telemetry_batch.rs`, `400` over the cap (nothing applied) |
+| Distinct keys across a whole batch | 128 (`capsules::MAX_TELEMETRY_KEYS`) — the union, not each reading's own count | `helpers/telemetry_batch.rs`, `400` over the cap (nothing applied) |
+| Bytes per batched telemetry report | 16 KiB (`capsules::MAX_TELEMETRY_BATCH_BYTES`) — batch form only; a flat report is bounded by the key/value caps as before | `lib.rs`, `413` over the cap |
+| How far back a batched reading may be timestamped | 24 h (`capsules::MAX_TELEMETRY_BACKDATE_SECS`) — clamped to the boundary, not an error; a future timestamp clamps to the receive time | `helpers/telemetry_batch.rs`, see [Telemetry](#telemetry) |
 | `GET .../telemetry/history` points per query | bucketed by default (`capsules::TELEMETRY_HISTORY_BUCKET_TARGET` = 360 buckets, unlimited range, no cap); `raw=true` caps at 5000 (`capsules::TELEMETRY_HISTORY_MAX_POINTS`) — the range's **newest** 5000, flagged by `X-Telemetry-Truncated`, not an error | `helpers/telemetry.rs` |
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
@@ -1001,6 +1005,67 @@ timestamp rather than a single store-wide one. The whole store lives in one JSON
 Durable Object SQLite row (DO SQLite bills per row read and written, and this is the platform's
 hottest write path), which is what the key cap below bounds.
 
+**Batched reports.** A device may deliver several timestamped readings in one request instead
+of one reading per request — see [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry)
+for the body, and the WebSocket [`telemetry` frame](#get-devicepigeonspigeon_idws) for the same
+shape over a socket. A batch merges reading by reading in chronological order, so the store ends
+up holding the newest value per key exactly as if the readings had arrived one at a time, each
+key stamped with its own reading's timestamp rather than the delivery's. A reading older than
+what the store already holds for a key updates history but does not move the stored latest value
+backwards.
+
+**Device timestamps are advisory, and are clamped.** The `pigeon` device library has no wall
+clock — no RTC, and NTP was removed in 0.13.6 — so the form its firmware can actually fill in is
+`age_secs`, "this reading was taken this many seconds before I sent the batch". `at` (absolute
+unix seconds) is there for clients that do have a clock, such as a gateway or bridge relaying on
+a device's behalf. Neither is trusted:
+
+- Both resolve against the **server's** receive time, and the result is clamped into
+  `[now - capsules::MAX_TELEMETRY_BACKDATE_SECS, now]` (24 h).
+- A timestamp in the future clamps to the receive time. A reading cannot be placed past the end
+  of a range a dashboard would query, and a fast clock cannot post readings into a billing
+  period that has not started.
+- A timestamp older than the backdate window clamps to that boundary rather than being refused,
+  so a device that was offline for a week still delivers its buffer — visibly stacked at the
+  boundary — instead of losing it.
+- `age_secs` wins if a client sends both. Filling it in is a statement that the client does not
+  trust its own clock, and the relative form survives a wrong one.
+- Readings are sorted chronologically after clamping, so a device may send them in any order.
+  Readings that resolve to the same second keep the order they were sent in.
+
+**A batch is billed by its readings, not by its envelope.** A batch of M readings counts as M
+billable device messages against the account's allowance, exactly as M separate reports would
+have. The meter measures data delivered; batching is a change to what delivery costs *us*, not a
+discount on what a customer sent. The count is charged when the batch **arrives**, never against
+the timestamps the readings carry, so a backdated reading always bills to the period it landed
+in — the one rule a device cannot move by lying about its clock. The [free-tier
+fuse](#post-devicepigeonspigeon_idtelemetry), by contrast, is a per-request gate: a paused
+account's batch is refused whole with one `429`.
+
+**What batching actually saves.** Per-device-month COGS at the chatty profile (one reading every
+10 s, 259,200 readings, 5 keys each), computed on the same Cloudflare rate card as the pricing
+model:
+
+| Readings per delivery | COGS/device-month | vs. unbatched |
+|---:|---:|---:|
+| 1 (unbatched) | $0.9057 | — |
+| 6 (one delivery/minute) | $0.2691 | 3.4x cheaper |
+| 12 | $0.2054 | 4.4x |
+| 30 | $0.1672 | 5.4x |
+| 64 (the cap) | $0.1537 | 5.9x |
+
+The saving comes from what a batch collapses: one worker request, one verify hop, one queue
+message (3 queue operations), one Durable Object round trip, one blob row written, one history
+INSERT, one line-protocol POST — for the whole batch rather than for each reading. Those four
+line items are 94% of the unbatched figure. What does **not** collapse is what measures readings
+rather than envelopes: history rows, line-protocol lines, and the billable count. Two footnotes
+worth knowing. The figures above hold the device's *shadow* poll at its original 10 s cadence,
+which is the single largest surviving cost; a device that also polls on its delivery cadence (or
+takes `shadow_update` pushes over the WebSocket instead of polling) reaches $0.156 at M=6 and
+$0.020 at M=64. And Postgres history growth — ~168 MB/device-month, ~$0.017/month and cumulative
+— is untouched by any of this, so past the first few months it dominates a batched device's cost
+and a retention policy matters more than it used to.
+
 **Key cap and eviction.** A pigeon's store holds at most `capsules::MAX_TELEMETRY_KEYS` = 128
 distinct keys. Past that, the least-recently-reported keys are evicted to make room — silently,
 not an error — so a device that renames its keys across firmware versions sheds the abandoned
@@ -1763,13 +1828,38 @@ is stored, so a refused report is neither stored nor counted.
 
 ### `POST /device/pigeons/:pigeon_id/telemetry`
 
-Reports telemetry. Body: a **flat JSON object of string key/value pairs** — no nesting, no
-typed values; this matches the wire shape the `pigeon` Zephyr device library's
+Reports telemetry, in either of two body shapes.
+
+**Flat** — a JSON object of string key/value pairs, one reading taken now. No nesting, no typed
+values; this matches the wire shape the `pigeon` Zephyr device library's
 `pigeon_set_shadow_param()`/`pigeon_shadow_flush()` calls produce. `400` if the body is empty
 or not a flat string map, or if it breaks one of the [telemetry caps](#telemetry) (more than 128
 keys, a key over 128 bytes, a value over 1024 bytes) — an over-cap report is refused whole, with
 none of its keys applied. The report merges into the pigeon's stored keys rather than replacing
 them; see [Telemetry](#telemetry) above for what that means for per-key timestamps.
+
+**Batched** — `{"reports": [ ... ]}`, where each entry is `{"metrics": {...}}` plus at most one
+timestamp field: `age_secs` (seconds before the batch was sent — the form a device with no wall
+clock can fill in) or `at` (absolute unix seconds). A reading with neither is treated as taken
+now. This lets a device accumulate readings locally and deliver a window of them in one request;
+see [Telemetry](#telemetry) above for the clamping rules, the ordering guarantees, and what it
+saves.
+
+The two are told apart by shape, not by a version field or a query param: a telemetry value is
+always a string, so a body whose `reports` field holds an *array* cannot be a flat report, and a
+device that happens to use `reports` as a telemetry key sends a string there and is read as flat.
+Nothing about the flat form changed.
+
+Caps specific to the batch form, each refusing the batch whole: more than 64 readings
+(`capsules::MAX_TELEMETRY_BATCH_READINGS`, `400`), more than 128 distinct keys across the whole
+batch (`400` — the union, so each reading being individually within the key cap is not enough),
+a reading with no metrics (`400`), or a raw body over 16 KiB
+(`capsules::MAX_TELEMETRY_BATCH_BYTES`, `413`). Every per-reading cap from the flat form applies
+to every reading.
+
+A batch counts as **one** request against the route's rate limiting and the free-tier fuse, and
+as **M** billable messages against the account's message allowance — see
+[Telemetry](#telemetry) for why those two differ.
 
 **Free-tier allowance fuse.** On a free-tier account that has exhausted its monthly pooled
 message allowance, this route answers `429 Too Many Requests` (after the bearer token has been
@@ -1786,6 +1876,22 @@ curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
   -H 'Authorization: Bearer <device_token>' \
   -H 'Content-Type: application/json' \
   -d '{"temp":"21.5","status":"ok"}'
+```
+
+```sh
+# Batched: six readings taken 10s apart, delivered together. The device
+# never needs to know the time -- only how long ago it took each reading.
+curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry \
+  -H 'Authorization: Bearer <device_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"reports":[
+        {"age_secs":50,"metrics":{"temp":"21.1"}},
+        {"age_secs":40,"metrics":{"temp":"21.2"}},
+        {"age_secs":30,"metrics":{"temp":"21.3"}},
+        {"age_secs":20,"metrics":{"temp":"21.4"}},
+        {"age_secs":10,"metrics":{"temp":"21.5"}},
+        {"age_secs":0,"metrics":{"temp":"21.6"}}
+      ]}'
 ```
 
 **Response behavior differs by environment.** In an environment with a telemetry queue bound
@@ -1811,7 +1917,8 @@ synchronously in one round trip and returns:
 {"temp":"21.5","status":"ok"}
 ```
 
-(the metrics you just sent, echoed back).
+(the metrics you just sent, echoed back — for a batch, the merged newest-value-per-key union of
+every reading in it).
 
 ### `POST /device/pigeons/:pigeon_id/logs`
 
@@ -1931,7 +2038,7 @@ was sent for a while.
 
 | Direction | `type` | Fields | Effect |
 |---|---|---|---|
-| device → server | `telemetry` | `metrics: {string: string}` | Same handling as `POST /device/pigeons/:id/telemetry`: an immediate merge into the pigeon's own Durable Object latest-value store, plus (environment-dependent — see below) a queued write for history/forwarding. The same [telemetry caps](#telemetry) apply, but a frame has no reply of its own to carry a `400`: an over-cap frame is logged server-side and dropped whole, and the socket stays open. |
+| device → server | `telemetry` | `metrics: {string: string}` **or** `reports: [{metrics, age_secs \| at}]` | Same handling as `POST /device/pigeons/:id/telemetry`, in both of that route's body shapes: an immediate merge into the pigeon's own Durable Object latest-value store, plus (environment-dependent — see below) a queued write for history/forwarding. The two fields are alternatives, not a pair — `metrics` is one reading taken now, `reports` a batch of timestamped ones, and the same clamping rules apply as on the HTTP route. Sending only `metrics` is what shipped firmware does and is unchanged. The same [telemetry caps](#telemetry) apply, plus the batch caps when `reports` is used, but a frame has no reply of its own to carry a `400`: an over-cap frame is logged server-side and dropped whole, and the socket stays open. A batched frame is **one** frame against the socket's frame-rate limit and **M** billable messages. |
 | device → server | `shadow_report` | `current_version: int`, `current_config: <JSON object>` | Same handling as `POST /device/pigeons/:id/shadow`: updates `pigeon_shadow.current_config`/`current_version` and best-effort syncs the result to Postgres. |
 | device → server | `ping` | — | Server replies with `{"type":"pong"}`. |
 | device → server | `pong` | — | Liveness acknowledgement only; no reply, no other effect. |
@@ -1943,6 +2050,7 @@ was sent for a while.
 ```json
 // device -> server
 {"type":"telemetry","metrics":{"temp":"21.5","status":"ok"}}
+{"type":"telemetry","reports":[{"age_secs":10,"metrics":{"temp":"21.5"}},{"age_secs":0,"metrics":{"temp":"21.6"}}]}
 {"type":"shadow_report","current_version":1,"current_config":{"telemetry_interval":60}}
 {"type":"ping"}
 {"type":"shell_output","request_id":"01991a2b-...","output":"target_version=2 current_version=1\n","exit_code":0,"truncated":false}
