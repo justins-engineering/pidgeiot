@@ -3,14 +3,15 @@ use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_CLOSE_PIGEON_DELETED, WS_CLOSE_TOKEN_REVOKED,
   WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
 };
-use crate::objects::{mint_coap_psk, mint_device_credential, verify_device_token};
+use crate::objects::{mint_device_credential, mint_device_psk, verify_device_token};
 use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
-  CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, Pigeon, PigeonAcl,
-  PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonLogChunkRow,
-  PigeonRow, PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
-  PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
+  CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
+  MqttConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail,
+  PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
+  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
+  unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -83,6 +84,53 @@ pub fn build_coap_endpoint(env: &Env, do_id: &str) -> String {
   endpoint.push_str(&host);
   endpoint.push_str(DEVICE_PIGEONS_PATH);
   endpoint.push_str(do_id);
+  endpoint
+}
+
+/// Host minted into `mqtts://` endpoints. `MQTT_DEVICE_HOST`
+/// ([vars]/[env.*.vars], wrangler.toml) when set and non-empty -- the MQTT
+/// broker (`pigeonhole`, its own repo) is a separate deployment from this
+/// Worker on its own DNS-only hostname, exactly as the CoAP terminator is
+/// -- with the pre-broker fallback to `DEVICE_API_HOST` for any env that
+/// leaves it empty. The fallback drops that value's port if it carries
+/// one: an authority names a single port and the broker's is appended to
+/// whatever comes back here, so dev's `127.0.0.1:8787` has to arrive as
+/// `127.0.0.1` or the minted endpoint would name two.
+fn mqtt_device_host(env: &Env) -> String {
+  env
+    .var("MQTT_DEVICE_HOST")
+    .map(|v| v.to_string())
+    .ok()
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| host_without_port(&device_api_host(env)).to_string())
+}
+
+/// The host part of an `authority`, dropping an explicit `:port`. Bracketed
+/// IPv6 literals keep their brackets and lose only what follows them; a
+/// bare IPv6 literal is returned whole, since every colon in it belongs to
+/// the address.
+fn host_without_port(authority: &str) -> &str {
+  if let Some(bracket) = authority.rfind(']') {
+    return &authority[..=bracket];
+  }
+  match authority.split_once(':') {
+    Some((host, port)) if !port.contains(':') => host,
+    _ => authority,
+  }
+}
+
+/// Mints the `mqtts://<host>:8883` form: an authority and nothing else. A
+/// topic names the resource (`capsules::MQTT_TOPIC_*`), and the CONNECT
+/// handshake binds the session to one pigeon, so there is no per-pigeon
+/// path to carry the way the HTTPS and CoAP endpoints do.
+#[inline]
+pub fn build_mqtt_endpoint(env: &Env) -> String {
+  let host = mqtt_device_host(env);
+  let mut endpoint = String::with_capacity(16 + host.len());
+  endpoint.push_str("mqtts://");
+  endpoint.push_str(&host);
+  endpoint.push(':');
+  endpoint.push_str(&MQTT_TLS_PORT.to_string());
   endpoint
 }
 
@@ -322,7 +370,7 @@ impl DurableObject for Pigeons {
       "/pigeon/logs/get" => get_logs(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
-      "/pigeon/internal/psk" => get_coap_psk_internal(self, req).await,
+      "/pigeon/internal/psk" => get_device_psk_internal(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
       "/pigeon/shell/execute" => execute_shell_command(self, req).await,
       _ => Response::error("Not Found", 404),
@@ -579,6 +627,12 @@ fn strip_secrets(pigeon: &mut Pigeon) {
       tls_psk_identity: c.tls_psk_identity,
       tls_psk_secret: None,
     }),
+    Connector::Mqtt(c) => Connector::Mqtt(MqttConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity,
+      tls_psk_secret: None,
+    }),
   };
 
   if let Some(endpoint) = pigeon.telemetry_endpoint.as_mut() {
@@ -742,9 +796,9 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }),
     Connector::Coap(_) => {
       // Separate short PSK: the bearer token is too long to be a PSK on
-      // constrained stacks (see mint_coap_psk). Minted here so one create/
-      // refresh rotates both credentials together.
-      let psk = match mint_coap_psk() {
+      // constrained stacks (see mint_device_psk). Minted here so one
+      // create/refresh rotates both credentials together.
+      let psk = match mint_device_psk() {
         Ok(p) => p,
         Err(e) => {
           console_error!("CoAP PSK mint error: {e}");
@@ -753,6 +807,24 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       };
       Connector::Coap(CoapConfig {
         endpoint: build_coap_endpoint(&pigeons.env, &do_id),
+        token: device_token,
+        tls_psk_identity: Some(do_id.clone()),
+        tls_psk_secret: Some(psk),
+      })
+    }
+    // Both credentials, because the broker accepts both handshakes on one
+    // listener: a certificate session authenticates with the token as its
+    // CONNECT password, a PSK session with the pair.
+    Connector::Mqtt(_) => {
+      let psk = match mint_device_psk() {
+        Ok(p) => p,
+        Err(e) => {
+          console_error!("MQTT PSK mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
+      Connector::Mqtt(MqttConfig {
+        endpoint: build_mqtt_endpoint(&pigeons.env),
         token: device_token,
         tls_psk_identity: Some(do_id.clone()),
         tls_psk_secret: Some(psk),
@@ -873,7 +945,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       })
     }
     Connector::Coap(_) => {
-      let psk = match mint_coap_psk() {
+      let psk = match mint_device_psk() {
         Ok(p) => p,
         Err(e) => {
           console_error!("CoAP PSK mint error: {e}");
@@ -882,6 +954,21 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       };
       Connector::Coap(CoapConfig {
         endpoint: build_coap_endpoint(&pigeons.env, &do_id),
+        token: device_token,
+        tls_psk_identity: Some(do_id.clone()),
+        tls_psk_secret: Some(psk),
+      })
+    }
+    Connector::Mqtt(_) => {
+      let psk = match mint_device_psk() {
+        Ok(p) => p,
+        Err(e) => {
+          console_error!("MQTT PSK mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
+      Connector::Mqtt(MqttConfig {
+        endpoint: build_mqtt_endpoint(&pigeons.env),
         token: device_token,
         tls_psk_identity: Some(do_id.clone()),
         tls_psk_secret: Some(psk),
@@ -940,21 +1027,25 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   }
 }
 
-/// Trusted-internal PSK lookup for the CoAP terminator (`loft`) --
-/// dispatched at `/pigeon/internal/psk`, reached only from the gateway's
-/// service-secret-gated `GET /internal/coap-psk/:pigeon_id` route (this DO
-/// is never internet-reachable, same trust argument as
-/// `grant_acl_internal` above; the gateway has already verified the
-/// terminator's shared service secret before dispatching here). Returns
-/// this pigeon's PSK pair plus its bearer token -- the ONE deliberate
-/// exception to the strip-on-read rule for connector secrets, because a
-/// PSK terminator can neither complete a handshake without the key nor act
-/// upstream for the device without the token. Possession grants exactly
-/// "act as this one device": every proxied request still passes the device
-/// routes' own `verify_device_token` check end-to-end. 404 for an
-/// Https-connector pigeon (nothing to hand out) and for a deleted/
-/// never-created pigeon's empty DO (via `one_row`).
-async fn get_coap_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Response> {
+/// Trusted-internal PSK lookup for the protocol terminators -- the CoAP
+/// one (`loft`) and the MQTT broker (`pigeonhole`), both in their own
+/// repos. Dispatched at `/pigeon/internal/psk`, reached only from the
+/// gateway's service-secret-gated `GET /internal/device-psk/:pigeon_id`
+/// route or its older `/internal/coap-psk/:pigeon_id` name (this DO is
+/// never internet-reachable, same trust argument as `grant_acl_internal`
+/// above; the gateway has already verified the terminator's shared service
+/// secret before dispatching here). Returns this pigeon's PSK pair plus
+/// its bearer token -- the ONE deliberate exception to the strip-on-read
+/// rule for connector secrets, because a PSK terminator can neither
+/// complete a handshake without the key nor act upstream for the device
+/// without the token. Possession grants exactly "act as this one device":
+/// every proxied request still passes the device routes' own
+/// `verify_device_token` check end-to-end. Answers for any PSK-bearing
+/// connector, since which transport minted the pair says nothing about
+/// which terminator is entitled to resolve it -- both hold the same
+/// service secret. 404 for an Https-connector pigeon (nothing to hand out)
+/// and for a deleted/never-created pigeon's empty DO (via `one_row`).
+async fn get_device_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Response> {
   let pigeon = match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
@@ -973,19 +1064,15 @@ async fn get_coap_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Respo
     }
   };
 
-  match pigeon.connector {
-    Connector::Coap(CoapConfig {
-      tls_psk_identity: Some(identity),
-      tls_psk_secret: Some(secret),
-      token,
-      ..
-    }) => Response::from_json(&capsules::CoapPskLookup {
-      identity,
-      secret,
-      token,
-    }),
-    _ => Response::error("Not Found", 404),
-  }
+  let Some((identity, secret)) = pigeon.connector.psk() else {
+    return Response::error("Not Found", 404);
+  };
+
+  Response::from_json(&capsules::CoapPskLookup {
+    identity: identity.to_string(),
+    secret: secret.to_string(),
+    token: pigeon.connector.token().to_string(),
+  })
 }
 
 /// Deletes this pigeon. Durable Objects have no explicit "delete yourself"
@@ -2449,5 +2536,28 @@ fn broadcast_shadow_update(pigeons: &Pigeons, shadow: &PigeonShadow) {
         pigeons.state.id()
       );
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::host_without_port;
+
+  #[test]
+  fn a_port_is_dropped_only_when_the_authority_carries_one() {
+    assert_eq!(host_without_port("127.0.0.1:8787"), "127.0.0.1");
+    assert_eq!(host_without_port("mqtt.pidgeiot.com"), "mqtt.pidgeiot.com");
+    assert_eq!(
+      host_without_port("dovecote-staging.workers.dev"),
+      "dovecote-staging.workers.dev"
+    );
+  }
+
+  #[test]
+  fn an_ipv6_literal_keeps_its_address_colons() {
+    assert_eq!(host_without_port("[::1]:8787"), "[::1]");
+    assert_eq!(host_without_port("[::1]"), "[::1]");
+    // Unbracketed, so there is no port to find: every colon is address.
+    assert_eq!(host_without_port("::1"), "::1");
   }
 }

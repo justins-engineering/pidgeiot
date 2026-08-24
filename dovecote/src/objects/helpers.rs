@@ -49,13 +49,15 @@ pub fn mint_device_credential() -> worker::Result<(String, String, OffsetDateTim
   Ok((public_key, token, expires_at))
 }
 
-/// Mints a fresh CoAP TLS-PSK secret: 16 random bytes as 32 lowercase hex
-/// chars. Deliberately short and hex-only -- RFC 4279 only obliges peers
-/// to support PSKs up to 64 bytes, mbedTLS's default MBEDTLS_PSK_MAX_LEN
-/// is 32, and libcoap's client caps at 64, so the 92-char bearer token
-/// cannot serve as the PSK on the constrained stacks CoAP targets. 128
-/// bits of entropy matches the AES-128 PSK ciphersuites it keys.
-pub fn mint_coap_psk() -> worker::Result<String> {
+/// Mints a fresh TLS-PSK secret for the connectors that take one (`Coap`,
+/// `Mqtt`): 16 random bytes as 32 lowercase hex chars. Deliberately short
+/// and hex-only -- RFC 4279 only obliges peers to support PSKs up to 64
+/// bytes, mbedTLS's default MBEDTLS_PSK_MAX_LEN is 32, and libcoap's
+/// client caps at 64, so the 92-char bearer token cannot serve as the PSK
+/// on the constrained stacks these transports exist for. 128 bits of
+/// entropy matches the AES-128 PSK ciphersuites it keys. One mint per
+/// create/refresh, so a pigeon's PSK and token always rotate together.
+pub fn mint_device_psk() -> worker::Result<String> {
   let mut bytes = [0u8; 16];
   getrandom::getrandom(&mut bytes)
     .map_err(|e| worker::Error::RustError(format!("RNG error: {e}")))?;

@@ -8,8 +8,9 @@ use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::gps_track;
 use crate::{Route, api};
 use capsules::{
-  CoapConfig, Connector, HttpsConfig, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
+  CoapConfig, Connector, HttpsConfig, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, MqttConfig, Pigeon,
+  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -531,6 +532,112 @@ fn ConnectorInfo(
                               },
                               Icon { icon: LdCopy }
                             }
+                          }
+                        }
+                      }
+                    }
+                }
+                Connector::Mqtt(config) => {
+                    let endpoint = config.endpoint.clone();
+                    let tls_psk_identity = config.tls_psk_identity.clone();
+                    let username = pigeon_id.clone();
+                    // The broker's own authority, for a client that takes
+                    // host and port separately rather than a URL.
+                    let authority = endpoint.trim_start_matches("mqtts://").to_string();
+                    let host = authority
+                        .rsplit_once(':')
+                        .map(|(h, _)| h)
+                        .unwrap_or(&authority)
+                        .to_string();
+                    let sample = format!(
+                        "mosquitto_pub -h {host} -p {MQTT_TLS_PORT} -u {username} -P '<device_token>' -t {MQTT_TOPIC_TELEMETRY} -m '{{\"temp\":\"21.5\"}}'",
+                    );
+                    rsx! {
+                      tr {
+                        th { "Protocol" }
+                        td { "MQTT" }
+                        td {}
+                      }
+                      tr {
+                        th { "Endpoint" }
+                        td {
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{endpoint}" }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&endpoint);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                      tr {
+                        th { "Username" }
+                        td {
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                            "{username}"
+                          }
+                          div { class: "text-xs text-base-content/60 mt-1",
+                            "The CONNECT password is the device token below."
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&username);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                      if let Some(identity) = tls_psk_identity {
+                        tr {
+                          th { "TLS Identity" }
+                          td {
+                            div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                              "{identity}"
+                            }
+                          }
+                          td {
+                            button {
+                              class: "btn btn-square btn-ghost btn-sm",
+                              onclick: move |_| {
+                                  #[cfg(feature = "web")]
+                                  if let Some(window) = web_sys::window() {
+                                      let _ = window.navigator().clipboard().write_text(&identity);
+                                  }
+                              },
+                              Icon { icon: LdCopy }
+                            }
+                          }
+                        }
+                      }
+                      tr {
+                        th { "Publish" }
+                        td {
+                          div { class: "font-mono bg-base-200 rounded px-2 py-1 w-fit break-all text-xs",
+                            "{sample}"
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&sample);
+                                }
+                            },
+                            Icon { icon: LdCopy }
                           }
                         }
                       }
@@ -1264,6 +1371,7 @@ fn DeletePigeonModal(
 fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
   let mut selected_connector = use_signal(|| match pigeon.connector {
     Connector::Coap(_) => "Coap".to_string(),
+    Connector::Mqtt(_) => "Mqtt".to_string(),
     Connector::Https(_) => "Https".to_string(),
   });
   let mut is_saving = use_signal(|| false);
@@ -1312,6 +1420,7 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                   // Build Connector enum from select value
                   pur.connector = match selected_connector.read().as_str() {
                       "Coap" => Some(Connector::Coap(CoapConfig::default())),
+                      "Mqtt" => Some(Connector::Mqtt(MqttConfig::default())),
                       _ => Some(Connector::Https(HttpsConfig::default())),
                   };
 
@@ -1379,6 +1488,11 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                   value: "Coap",
                   selected: selected_connector() == "Coap",
                   "CoAP (DTLS/TLS)"
+                }
+                option {
+                  value: "Mqtt",
+                  selected: selected_connector() == "Mqtt",
+                  "MQTT (TLS)"
                 }
               }
             }

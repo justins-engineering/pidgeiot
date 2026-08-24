@@ -10,5 +10,8 @@ pub fn ConnectorBadge(connector: Connector) -> Element {
     Connector::Coap(_) => rsx! {
       div { class: "badge badge-secondary badge-outline badge-sm", "CoAP" }
     },
+    Connector::Mqtt(_) => rsx! {
+      div { class: "badge badge-accent badge-outline badge-sm", "MQTT" }
+    },
   }
 }

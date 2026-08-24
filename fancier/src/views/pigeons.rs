@@ -3,7 +3,7 @@ use crate::components::{
 };
 use crate::helpers::connection_state;
 use crate::{Route, api};
-use capsules::{CoapConfig, Connector, HttpsConfig, Pigeon, PigeonCreateRequest};
+use capsules::{CoapConfig, Connector, HttpsConfig, MqttConfig, Pigeon, PigeonCreateRequest};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTriangleAlert, LdX};
@@ -503,6 +503,7 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
 
                   pcr.connector = match selected_connector.read().as_str() {
                       "Coap" => Connector::Coap(CoapConfig::default()),
+                      "Mqtt" => Connector::Mqtt(MqttConfig::default()),
                       _ => Connector::Https(HttpsConfig::default()),
                   };
 
@@ -566,6 +567,7 @@ fn CreatePigeonModal(flock_id: uuid::Uuid, on_created: EventHandler<(String, Str
                 },
                 option { value: "Https", selected: true, "HTTPS (REST API)" }
                 option { value: "Coap", "CoAP (DTLS/TLS)" }
+                option { value: "Mqtt", "MQTT (TLS)" }
               }
             }
             div {

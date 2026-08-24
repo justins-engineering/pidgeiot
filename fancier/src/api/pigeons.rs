@@ -1,8 +1,8 @@
 use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
-  Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk,
-  PigeonShadow, PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest,
-  PigeonUpdateRequest, TelemetryEndpoint,
+  LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonShadow,
+  PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -105,11 +105,7 @@ pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, String)> {
   pigeon_list.insert(id.clone(), detail.pigeon.clone());
   pigeon_list.write();
 
-  // Extract token from connector
-  let token = match &detail.pigeon.connector {
-    Connector::Https(c) => c.token.clone(),
-    Connector::Coap(c) => c.token.clone(),
-  };
+  let token = detail.pigeon.connector.token().to_string();
 
   Some((id, token))
 }
@@ -138,10 +134,7 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<String> {
   let json = JsFuture::from(response.json().ok()?).await.ok()?;
 
   let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
-  let token = match &pigeon.connector {
-    Connector::Https(c) => c.token.clone(),
-    Connector::Coap(c) => c.token.clone(),
-  };
+  let token = pigeon.connector.token().to_string();
 
   // Update cache with new connector data
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;

@@ -68,8 +68,23 @@ head_sampling_rate = 1
 # keeps that until a staging terminator exists). Port is implied: 5684 is
 # the registered coaps port and the device client's default.
 #
+# MQTT_DEVICE_HOST (all three [vars]/[env.*.vars] blocks) -- the host
+# minted into an Mqtt-connector pigeon's `mqtts://<host>:8883` endpoint
+# (objects/pigeons.rs::mqtt_device_host). The MQTT broker (`pigeonhole`,
+# its own repo) is a separate deployment from this Worker, so
+# mqtt.pidgeiot.com is a DNS-only (grey-cloud) record for the same reason
+# coap.pidgeiot.com is -- Cloudflare's proxy carries neither MQTT nor port
+# 8883. Empty/unset falls back to DEVICE_API_HOST minus any port it
+# carries, the same pre-terminator behavior COAP_DEVICE_HOST has; staging
+# and dev keep that until a broker of their own exists, harmless because a
+# test client dials its broker explicitly rather than reading the minted
+# endpoint. Unlike coaps, the port is written into the endpoint: 8883 is
+# the only listener there is (no cleartext 1883), so it is stated rather
+# than implied by the scheme.
+#
 # Companion Worker SECRET (never here): COAP_SERVICE_SECRET -- the shared
-# secret the terminator presents on GET /internal/coap-psk/:pigeon_id
+# secret a terminator presents on GET /internal/device-psk/:pigeon_id
+# (and its older /internal/coap-psk/:pigeon_id name)
 # (same never-[vars] convention as RESEND_API_KEY; `wrangler secret put
 # COAP_SERVICE_SECRET` per env, dovecote/.dev.vars for local dev). The
 # route fails closed while it's unset.
@@ -89,6 +104,7 @@ KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
 DEVICE_API_HOST = "api.pidgeiot.com"
 COAP_DEVICE_HOST = "coap.pidgeiot.com"
+MQTT_DEVICE_HOST = "mqtt.pidgeiot.com"
 # Recipient for platform-ops notifications (helpers/ops_probe.rs -- the
 # 5-minute cron's Kratos readiness probe emails state TRANSITIONS here via
 # Resend). Doubles as the probe's only enable switch: set in production
@@ -315,6 +331,8 @@ DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
 # No staging terminator yet -- empty falls back to DEVICE_API_HOST (see
 # the COAP_DEVICE_HOST note above the production [vars] block).
 COAP_DEVICE_HOST = ""
+# No staging broker either -- same fallback, same note.
+MQTT_DEVICE_HOST = ""
 # Staging's own demo pigeon (see the DEMO_PIGEON_IDS note above) -- lives in
 # the "Demo Flock" flock, created for this purpose; NOT the prod demo id.
 DEMO_PIGEON_IDS = "0ec346b8c062431d0bada55f93ffa6089c6fd35eda5d64c75aff0381c4ea12a3"
@@ -410,6 +428,9 @@ DEVICE_API_HOST = "127.0.0.1:8787"
 # to 0.0.0.0:5684, and the coaps
 # port 5684 is implied by the scheme, so no port suffix here).
 COAP_DEVICE_HOST = "127.0.0.1"
+# Empty rather than a literal: the fallback already yields
+# mqtts://127.0.0.1:8883, which is where a locally run broker listens.
+MQTT_DEVICE_HOST = ""
 # No demo pigeon in dev -- empty, not unset, matching the other per-env
 # vars' pattern of every environment declaring the key explicitly.
 DEMO_PIGEON_IDS = ""

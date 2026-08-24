@@ -408,11 +408,87 @@ pub struct CoapConfig {
   pub tls_psk_secret: Option<String>,
 }
 
+// MQTT connector, terminated by `pigeonhole` (its own repo) on one TLS
+// listener that accepts both handshakes. A certificate session presents the
+// pigeon's id as the CONNECT username and `token` as the password; a PSK
+// session completes the handshake with `tls_psk_secret` under
+// `tls_psk_identity` and the broker resolves the token for itself. Same
+// two-credential split as `CoapConfig`, for the same reason: the 92-char
+// token cannot serve as a PSK on constrained stacks. The endpoint carries
+// no path -- MQTT names resources with topics (`MQTT_TOPIC_*`) and the
+// session is bound to one pigeon by its handshake, not by a URL.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
+pub struct MqttConfig {
+  pub endpoint: String,
+  pub token: String,
+  pub tls_psk_identity: Option<String>,
+  pub tls_psk_secret: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Connector {
   Https(HttpsConfig),
   Coap(CoapConfig),
+  Mqtt(MqttConfig),
 }
+
+impl Connector {
+  /// The device bearer token, whichever transport carries it. Every
+  /// variant has one: the transport differs, the credential that
+  /// authorizes the device's upstream requests does not. Empty on any
+  /// `Pigeon` that came back from a read route, which strip secrets.
+  pub fn token(&self) -> &str {
+    match self {
+      Connector::Https(c) => &c.token,
+      Connector::Coap(c) => &c.token,
+      Connector::Mqtt(c) => &c.token,
+    }
+  }
+
+  /// The TLS-PSK pair as `(identity, secret)`, for the variants that mint
+  /// one. `None` for `Https`, whose transport authenticates the platform
+  /// with its own certificate and the device with the bearer token alone,
+  /// and for any connector read back with its secrets stripped.
+  pub fn psk(&self) -> Option<(&str, &str)> {
+    let (identity, secret) = match self {
+      Connector::Coap(c) => (&c.tls_psk_identity, &c.tls_psk_secret),
+      Connector::Mqtt(c) => (&c.tls_psk_identity, &c.tls_psk_secret),
+      Connector::Https(_) => return None,
+    };
+    Some((identity.as_deref()?, secret.as_deref()?))
+  }
+}
+
+// --- MQTT wire contract ---
+//
+// The topic names and port below are the halves of the `pigeonhole`
+// contract this repo needs: dovecote mints the endpoint that names the
+// port, and the dashboard shows a device's topics. The broker mirrors
+// these in its own wire crate, the same way `loft` carries its own copy of
+// `CoapPskLookup` -- changing one means changing both.
+
+/// Port every minted `mqtts://` endpoint names and the broker listens on
+/// (IANA `secure-mqtt`). Stated in the endpoint rather than left implicit
+/// the way `coaps://`'s 5684 is, because there is deliberately no
+/// cleartext 1883 listener for a client to fall back to.
+pub const MQTT_TLS_PORT: u16 = 8883;
+
+/// Device -> platform, the body `POST /device/pigeons/:id/telemetry`
+/// takes. QoS 0 rides the pigeon's device WebSocket, QoS 1 the HTTP route.
+pub const MQTT_TOPIC_TELEMETRY: &str = "pigeon/telemetry";
+
+/// Device -> platform, the body `POST /device/pigeons/:id/shadow` takes.
+pub const MQTT_TOPIC_SHADOW_REPORT: &str = "pigeon/shadow/report";
+
+/// Device -> platform, one dictionary-log chunk, capped at
+/// [`MAX_LOG_CHUNK_BYTES`] exactly as the HTTP log route is.
+pub const MQTT_TOPIC_LOGS: &str = "pigeon/logs";
+
+/// Platform -> device, retained: the pigeon's shadow as
+/// `GET /device/pigeons/:id/shadow` returns it. The retained value is the
+/// Durable Object's own live shadow, republished when `target_version`
+/// changes.
+pub const MQTT_TOPIC_SHADOW_TARGET: &str = "pigeon/shadow/target";
 
 impl Default for Connector {
   fn default() -> Self {
