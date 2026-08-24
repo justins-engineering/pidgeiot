@@ -72,6 +72,9 @@ pub use documentation::DocumentationPage;
 mod getting_started;
 pub use getting_started::GettingStartedPage;
 
+mod compare;
+pub use compare::ComparePage;
+
 mod pricing;
 pub use pricing::PricingPage;
 

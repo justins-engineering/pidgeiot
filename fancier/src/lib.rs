@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, ApiReferencePage, Architecture, ContactPage, Dashboard, DemoPage, DocumentationPage,
-  FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow,
-  OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage,
-  RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage, Unauthorized,
-  UseCasesPage, VerificationFlow, Wrapper,
+  AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DemoPage,
+  DocumentationPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept,
+  LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage,
+  PrivacyPage, RecoveryFlow, RegisterFlow, ServerError, SessionInfo, SettingsFlow, TermsPage,
+  Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -101,6 +101,8 @@ enum Route {
   GettingStartedPage {},
   #[route("/pricing/")]
   PricingPage {},
+  #[route("/compare/")]
+  ComparePage {},
   #[route("/demo/")]
   DemoPage {},
   #[route("/api-reference/")]
@@ -420,6 +422,7 @@ mod public_route_trailing_slash {
   both_forms!(documentation, "/documentation", DocumentationPage);
   both_forms!(getting_started, "/getting-started", GettingStartedPage);
   both_forms!(pricing, "/pricing", PricingPage);
+  both_forms!(compare, "/compare", ComparePage);
   both_forms!(demo, "/demo", DemoPage);
   both_forms!(api_reference, "/api-reference", ApiReferencePage);
   both_forms!(privacy, "/privacy", PrivacyPage);

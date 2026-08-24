@@ -34,6 +34,10 @@
       "title": "Pricing — Free During Early Access | PidgeIoT",
       "description": "All of PidgeIoT is free during early access, no credit card required. Fair, simple pricing for larger fleets will come later — one product, one price."
     },
+    "/compare/": {
+      "title": "Compare IoT Platforms by Real Fleet Cost | PidgeIoT",
+      "description": "Every IoT platform price we could verify, normalized to one device per month at three fleet sizes, each with its source and the date we checked it."
+    },
     "/documentation/": {
       "title": "Documentation — Connect Your First Device | PidgeIoT",
       "description": "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, tokens, shadows, telemetry, alerts, and over-the-air firmware updates."

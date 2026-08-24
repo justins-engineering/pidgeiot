@@ -47,6 +47,8 @@ run_worker_first = [
   "/use-cases/",
   "/pricing",
   "/pricing/",
+  "/compare",
+  "/compare/",
   "/documentation",
   "/documentation/",
   "/api-reference",

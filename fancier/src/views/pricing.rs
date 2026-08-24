@@ -330,6 +330,15 @@ pub fn PricingPage() -> Element {
     section { id: "pricing-example", class: "px-4 md:px-10 py-14 bg-base-200 border-y border-base-300",
       div { class: "max-w-4xl mx-auto",
         ComparisonTables { view: View::Summary }
+        // The rest of the field, the fleet sizes either side of this one,
+        // and the rates we lose to all live one click away. They answer
+        // "how do you compare", which is a different question from "what
+        // does this cost", and mixing the two costs the second its clarity.
+        p { class: "mt-8 text-sm",
+          Link { class: "link link-hover font-medium", to: Route::ComparePage {},
+            "Full comparison: nine platforms, three fleet sizes, and what AWS and Azure cost \u{2192}"
+          }
+        }
       }
     }
 
