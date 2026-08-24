@@ -312,7 +312,8 @@
           "note": "Device Update adds $70 a month per instance plus $0.07 per device."
         }
       ],
-      "build_your_own_intro": "AWS and Azure are cheaper than us, and we will not pretend otherwise. What they sell is a message bus: the device list, shadow editor, graphs, log viewer, OTA orchestration and alerting are all yours to build, and then to keep running."
+      "build_your_own_intro": "AWS and Azure are cheaper than us, and we will not pretend otherwise. What they sell is a message bus: the device list, shadow editor, graphs, log viewer, OTA orchestration and alerting are all yours to build, and then to keep running.",
+      "reference_column": "thousand"
     },
     {
       "id": "chatty",
@@ -446,7 +447,8 @@
           "note": "Time-series writes are 73% of it at this cadence."
         }
       ],
-      "build_your_own_intro": "AWS is cheaper here too, and still a message bus."
+      "build_your_own_intro": "AWS is cheaper here too, and still a message bus.",
+      "reference_column": "thousand"
     }
   ],
   "_page_silent": {

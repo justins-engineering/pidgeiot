@@ -271,7 +271,10 @@ fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element
         p { class: "text-sm text-base-content/75 leading-relaxed",
           "{profile.build_your_own_intro}"
         }
-        ul { class: "mt-3 flex flex-col gap-1.5 text-xs text-base-content/60",
+        p { class: "mt-3 text-xs text-base-content/50",
+          "Per device per month at {reference_label(&profile)}:"
+        }
+        ul { class: "mt-1.5 flex flex-col gap-1.5 text-xs text-base-content/60",
           for row in profile.build_your_own.iter() {
             li { key: "{row.id}", class: "flex flex-wrap items-baseline gap-x-2",
               span { class: "font-bold text-base-content/80",
@@ -281,7 +284,7 @@ fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element
                 }
               }
               span { class: "font-bold text-base-content/80",
-                "{cheapest_shown(&row, &profile.columns)}"
+                "{rate_at_reference(&row, &profile)}"
               }
               if let Some(note) = row.note.as_ref() {
                 span { "{note}" }
@@ -299,31 +302,30 @@ fn ProfileComparison(profile: Profile, today: Date, stale_after: i64) -> Element
   }
 }
 
-/// The rate to print for a build-it-yourself line, which is cited rather
-/// than tabulated: the cheapest fleet size it publishes, since that is the
-/// number a reader would have anchored on before arriving here.
-fn cheapest_shown(row: &Row, columns: &[Column]) -> String {
-  columns
+/// The rate to print for a build-it-yourself line: the one at the
+/// profile's reference scale, named beside the list so it is never a bare
+/// number. Quoting each row's own cheapest instead would have printed
+/// Azure's ten-thousand-device rate next to AWS's thousand-device one,
+/// with nothing on the page saying they were measured differently.
+fn rate_at_reference(row: &Row, profile: &Profile) -> String {
+  profile
+    .columns
     .iter()
-    .filter_map(|column| row.figure(column))
-    // Compared as money, not as text. A lexicographic minimum over these
-    // strings happens to be right for today's figures and would silently
-    // stop being right the first time one crossed into two digits.
-    .min_by(|a, b| dollars(&a.value).total_cmp(&dollars(&b.value)))
+    .find(|column| column.key == profile.reference_column)
+    .and_then(|column| row.figure(column))
     .map(|figure| figure.value.clone())
     .unwrap_or_else(|| pricing_data::NOT_PUBLISHED.to_string())
 }
 
-/// The numeric worth of a display figure like "$0.045", for the one place
-/// that has to rank figures rather than print them. Unparseable text sorts
-/// last rather than first, so a malformed entry can never win a comparison
-/// by being unreadable.
-fn dollars(value: &str) -> f64 {
-  value
-    .trim_start_matches('$')
-    .replace(',', "")
-    .parse()
-    .unwrap_or(f64::MAX)
+/// The reference column's own label, for the line that says what scale
+/// those rates are quoted at.
+fn reference_label(profile: &Profile) -> String {
+  profile
+    .columns
+    .iter()
+    .find(|column| column.key == profile.reference_column)
+    .map(|column| column.label.clone())
+    .unwrap_or_default()
 }
 
 /// The competitor comparison, rendered from `public/data/pricing-comparison.json`

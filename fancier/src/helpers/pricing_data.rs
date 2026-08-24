@@ -88,6 +88,12 @@ pub struct Profile {
   /// The argument a reader meets BEFORE those rates, which is the whole
   /// point of keeping them out of the table.
   pub build_your_own_intro: String,
+  /// Which column the cited build-it-yourself rates are quoted at. One
+  /// named scale for all of them, rather than each row's own cheapest:
+  /// those rates are only comparable to each other, and to us, if they are
+  /// all measured at the same fleet size, and a figure quoted without
+  /// saying which size it belongs to is not a comparison at all.
+  pub reference_column: String,
   /// The one line worth saying after a reader has looked at the numbers.
   #[serde(default)]
   pub closing: Option<String>,
@@ -523,6 +529,33 @@ mod the_data_file_says_what_it_claims {
         "Golioth's row stopped naming {lacking}, which is half of why we lose on price and still \
          win the sale"
       );
+    }
+  }
+
+  // The cited rates are only a comparison if they are all measured at one
+  // fleet size. A reference column naming a key nothing carries would not
+  // fail loudly -- every cited rate would quietly read "not published",
+  // which looks like a claim about the vendors rather than a typo.
+  #[test]
+  fn the_reference_scale_exists_and_every_cited_rate_is_quoted_at_it() {
+    for profile in &BAKED_COMPARISON.profiles {
+      let reference = profile
+        .columns
+        .iter()
+        .find(|c| c.key == profile.reference_column)
+        .unwrap_or_else(|| {
+          panic!(
+            "profile {} quotes its rates at a column it does not have",
+            profile.id
+          )
+        });
+      for row in &profile.build_your_own {
+        assert!(
+          row.figure(reference).is_some(),
+          "{} has no figure at the scale its rate is cited at, so it would read as unpublished",
+          row.id
+        );
+      }
     }
   }
 
