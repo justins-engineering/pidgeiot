@@ -1306,11 +1306,11 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
 /// check, since it verifies auth in a separate hop and never reaches these
 /// handlers.
 ///
-/// Fail-open lives inside `check_perch_ingest_fuse`, along with the note
+/// Fail-open lives inside `check_ingest_fuse`, along with the note
 /// on why Hyperdrive's result cache makes a per-report check affordable.
 async fn device_ingest_paused(pigeons: &Pigeons) -> bool {
   matches!(
-    crate::helpers::check_perch_ingest_fuse(&pigeons.env, &pigeons.state.id().to_string()).await,
+    crate::helpers::check_ingest_fuse(&pigeons.env, &pigeons.state.id().to_string()).await,
     crate::helpers::IngestFuse::Pause
   )
 }

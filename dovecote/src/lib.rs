@@ -3,7 +3,7 @@ use crate::helpers::{
   STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage,
   WebhookClaim, accept_invite, apply_subscription, attach_stripe_customer, authenticate_browser,
   backfill_owner_email, build_invite_url, change_member_role, check_device_cap,
-  check_flock_alert_cap, check_org_cap, check_perch_ingest_fuse, check_pigeon_alert_cap,
+  check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
   check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
   count_billable_message, create_checkout_session, create_customer, create_flock_alert,
   create_invite, create_organization, create_pigeon_alert, create_portal_session,
@@ -597,7 +597,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // 401 (that status is reserved for "session gone") and fail-open
         // inside the check, so a lookup failure can't brick ingestion.
         if matches!(
-          check_perch_ingest_fuse(&ctx.env, &pigeon_id).await,
+          check_ingest_fuse(&ctx.env, &pigeon_id).await,
           IngestFuse::Pause
         ) {
           return Response::error(INGEST_PAUSED_MESSAGE, 429)

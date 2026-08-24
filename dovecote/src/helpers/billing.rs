@@ -245,6 +245,7 @@ pub async fn load_org_billing_overview(
          FROM organizations o WHERE o.id = $1
        )
        SELECT a.plan, a.subscription_status, a.stripe_customer_id, a.cancel_at_period_end,
+         a.comp_plan, a.comp_note, a.comp_granted_at,
          CASE WHEN a.use_org_period THEN a.current_period_start
               ELSE date_trunc('month', now()) END AS usage_period_start,
          CASE WHEN a.use_org_period THEN a.current_period_end
@@ -290,7 +291,10 @@ pub async fn load_org_billing_overview(
   // unknown status string reads as unentitled-but-subscribed, never as
   // "never subscribed".
   let status: SubscriptionStatus = status_raw.parse().unwrap_or(SubscriptionStatus::Incomplete);
-  let effective_plan = super::usage::effective_plan(Some(&plan_raw), Some(&status_raw));
+  let comp_plan_raw: Option<String> = row.get("comp_plan");
+  let served =
+    super::usage::served_plan(Some(&plan_raw), Some(&status_raw), comp_plan_raw.as_deref());
+  let effective_plan = served.plan;
 
   // The same allowance the meter charges against, not the bare tier
   // figure: the dashboard's usage bar is where a customer checks whether

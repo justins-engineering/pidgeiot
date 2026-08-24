@@ -61,23 +61,105 @@ pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
     })
 }
 
-/// The tier an account is actually served at, right now. The entitlement
-/// gate comes FIRST: a cancelled or unpaid org keeps a tier in its `plan`
-/// column (the recoverable states deliberately remember it), so reading
-/// `plan` without checking status would serve a dead subscription its old
-/// allowance forever -- silently, and in the customer's favour, so nothing
-/// would surface it. No org row at all is a personal account, which cannot
-/// hold a subscription -- free tier.
-pub fn effective_plan(org_plan: Option<&str>, org_status: Option<&str>) -> BillingPlan {
+/// Where the tier an account is served at came from. The distinction the
+/// rest of this file needs is not which tier but whether anyone can be
+/// charged for exceeding it: only a live subscription can absorb overage,
+/// so an account without one has to stop instead, whatever tier it is
+/// being served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanSource {
+  /// An entitled Stripe subscription. The only source that bills.
+  Subscription,
+  /// A complimentary grant (`organizations.comp_plan`), granted by hand --
+  /// see `docs/infra/org-comps.md`.
+  Comp,
+  /// Neither. The free tier's own entitlements.
+  Free,
+}
+
+/// The tier an account is served at, and where that came from.
+pub struct ServedPlan {
+  pub plan: BillingPlan,
+  pub source: PlanSource,
+}
+
+impl ServedPlan {
+  /// Whether usage past the allowance can become metered overage. False
+  /// for a complimentary account for exactly the reason it is false for a
+  /// free one: there is no subscription behind either, so there is nothing
+  /// to put an overage line on and the only honest response to running out
+  /// is to stop.
+  pub fn bills_overage(&self) -> bool {
+    matches!(self.source, PlanSource::Subscription)
+  }
+}
+
+/// The tier an account is actually served at, right now, and why.
+///
+/// Order is subscription, then comp, then free.
+///
+/// **Subscription status gates before the plan column.** A cancelled or
+/// unpaid org keeps a tier in its `plan` column (the recoverable states
+/// deliberately remember it), so reading `plan` without checking status
+/// would serve a dead subscription its old allowance forever -- silently,
+/// and in the customer's favour, so nothing would surface it.
+///
+/// **A live subscription outranks a comp.** Comp is a floor for an account
+/// that is not paying, not a discount applied to one that is: an org that
+/// subscribes while holding a grant is served -- and billed -- on the
+/// subscription, even if the grant names a higher tier. That keeps the
+/// grant from quietly becoming a permanent price cut on a paying account,
+/// and it means revoking one has no effect on anybody's invoice. A grant
+/// left behind on an org that later subscribes is inert, not a discount;
+/// it starts serving again only if the subscription lapses, which is the
+/// safety net a comp is for.
+///
+/// **An unparseable or free-tier comp value is no comp.** A typo
+/// under-serves loudly rather than over-serving silently, and a comp to
+/// the tier an org would get anyway is a NULL that somebody wrote the long
+/// way.
+///
+/// No org row at all is a personal account, which can hold neither a
+/// subscription nor a grant -- free tier.
+pub fn served_plan(
+  org_plan: Option<&str>,
+  org_status: Option<&str>,
+  comp_plan: Option<&str>,
+) -> ServedPlan {
   let entitled = org_status
     .and_then(|raw| raw.parse::<SubscriptionStatus>().ok())
     .is_some_and(|status| status.is_entitled());
-  if !entitled {
-    return BillingPlan::Perch;
+
+  if entitled {
+    return ServedPlan {
+      plan: org_plan
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(BillingPlan::Perch),
+      source: PlanSource::Subscription,
+    };
   }
-  org_plan
-    .and_then(|raw| raw.parse().ok())
-    .unwrap_or(BillingPlan::Perch)
+
+  match comp_plan.and_then(|raw| raw.parse::<BillingPlan>().ok()) {
+    Some(plan) if plan != BillingPlan::Perch => ServedPlan {
+      plan,
+      source: PlanSource::Comp,
+    },
+    _ => ServedPlan {
+      plan: BillingPlan::Perch,
+      source: PlanSource::Free,
+    },
+  }
+}
+
+/// `served_plan` for the callers that need only the tier -- the
+/// entitlement gates, which apply a published limit and do not care
+/// whether it was paid for.
+pub fn effective_plan(
+  org_plan: Option<&str>,
+  org_status: Option<&str>,
+  comp_plan: Option<&str>,
+) -> BillingPlan {
+  served_plan(org_plan, org_status, comp_plan).plan
 }
 
 /// The message allowance a period is charged against: the tier's own
@@ -159,6 +241,7 @@ struct BillableMessageTally {
   billable_messages: i64,
   org_plan: Option<String>,
   org_status: Option<String>,
+  comp_plan: Option<String>,
 }
 
 /// Counts one billable device message against the owning account's current
@@ -199,7 +282,8 @@ async fn record_billable_message(
            o.current_period_start AS org_period_start,
            o.current_period_end AS org_period_end,
            o.plan AS org_plan,
-           o.subscription_status AS org_status
+           o.subscription_status AS org_status,
+           o.comp_plan AS comp_plan
          FROM pigeons p
          JOIN flocks f ON f.id = p.flock_id
          LEFT JOIN organizations o ON o.id = f.org_id
@@ -235,7 +319,7 @@ async fn record_billable_message(
          RETURNING owner_kind, owner_id, period_start, billable_messages
        )
        SELECT u.owner_kind, u.owner_id, u.period_start, u.billable_messages,
-              t.org_plan, t.org_status
+              t.org_plan, t.org_status, t.comp_plan
        FROM upserted u CROSS JOIN target t;",
       &[(&pigeon_id, Type::TEXT)],
     )
@@ -252,6 +336,7 @@ async fn record_billable_message(
     billable_messages: row.get("billable_messages"),
     org_plan: row.get("org_plan"),
     org_status: row.get("org_status"),
+    comp_plan: row.get("comp_plan"),
   }))
 }
 
@@ -276,31 +361,38 @@ pub async fn count_billable_message(env: &Env, pigeon_id: &str) {
     Err(_) => return,
   };
 
-  // Paid tiers convert over-allowance usage into metered overage (the
-  // reporter's job); only the free tier warns and pauses.
-  if effective_plan(tally.org_plan.as_deref(), tally.org_status.as_deref()) != BillingPlan::Perch {
+  // A subscription converts over-allowance usage into metered overage
+  // (the reporter's job). Everything else -- free, and complimentary --
+  // warns and pauses at its own tier's allowance instead, because there
+  // is no subscription to put an overage line on.
+  let served = served_plan(
+    tally.org_plan.as_deref(),
+    tally.org_status.as_deref(),
+    tally.comp_plan.as_deref(),
+  );
+  if served.bills_overage() {
     return;
   }
 
-  let allowance = BillingPlan::Perch.included_messages();
+  let allowance = served.plan.included_messages();
 
   if tally.billable_messages >= allowance {
-    stamp_perch_pause(&client, &tally, allowance).await;
+    stamp_ingest_pause(&client, &tally, allowance).await;
   }
 
   // 8/10 in integers: the allowance is a round constant, so no precision
   // is lost, and it keeps the comparison in the same i64 domain as the
   // counter itself.
   if tally.billable_messages >= allowance * 8 / 10 {
-    send_perch_warning(env, &client, &tally, allowance).await;
+    send_allowance_warning(env, &client, &tally, allowance).await;
   }
 }
 
-/// Records the moment a free-tier account first crossed its allowance --
+/// Records the moment an unbilled account first crossed its allowance --
 /// observability for the ingest-path fuse, which enforces from the counter
 /// itself rather than from this stamp. Claimed atomically so concurrent
 /// consumers stamp exactly once.
-async fn stamp_perch_pause(client: &Client, tally: &BillableMessageTally, allowance: i64) {
+async fn stamp_ingest_pause(client: &Client, tally: &BillableMessageTally, allowance: i64) {
   match client
     .query_typed(
       "UPDATE billing_usage_periods
@@ -319,7 +411,7 @@ async fn stamp_perch_pause(client: &Client, tally: &BillableMessageTally, allowa
   {
     Ok(rows) if !rows.is_empty() => {
       console_log!(
-        "Perch fuse: {} {} crossed the free-tier message allowance ({allowance}) for the period starting {}",
+        "Ingest fuse: {} {} crossed its message allowance ({allowance}) for the period starting {}",
         tally.owner_kind,
         tally.owner_id,
         tally.period_start
@@ -327,7 +419,7 @@ async fn stamp_perch_pause(client: &Client, tally: &BillableMessageTally, allowa
     }
     Ok(_) => {}
     Err(e) => console_error!(
-      "Perch pause stamp failed for {} {}: {e}",
+      "Ingest pause stamp failed for {} {}: {e}",
       tally.owner_kind,
       tally.owner_id
     ),
@@ -337,7 +429,7 @@ async fn stamp_perch_pause(client: &Client, tally: &BillableMessageTally, allowa
 /// Sends the one-per-period 80% warning email, if this consumer wins the
 /// `warned_at` claim. Losing the claim (another consumer got there first,
 /// or the mail already went out) is silent by design.
-async fn send_perch_warning(
+async fn send_allowance_warning(
   env: &Env,
   client: &Client,
   tally: &BillableMessageTally,
@@ -362,7 +454,7 @@ async fn send_perch_warning(
     Ok(rows) => !rows.is_empty(),
     Err(e) => {
       console_error!(
-        "Perch warning claim failed for {} {}: {e}",
+        "Allowance warning claim failed for {} {}: {e}",
         tally.owner_kind,
         tally.owner_id
       );
@@ -377,7 +469,7 @@ async fn send_perch_warning(
   let Some(recipient) = resolve_billing_recipient(client, &tally.owner_kind, &tally.owner_id).await
   else {
     console_error!(
-      "Perch warning: no recipient resolvable for {} {} -- warning claimed but not sent",
+      "Allowance warning: no recipient resolvable for {} {} -- warning claimed but not sent",
       tally.owner_kind,
       tally.owner_id
     );
@@ -389,13 +481,13 @@ async fn send_perch_warning(
     .map(|v| v.to_string())
     .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
 
-  let subject = "PidgeIoT: free tier message allowance at 80%";
+  let subject = "PidgeIoT: message allowance at 80%";
   let text = format!(
     "Your PidgeIoT account has used {} of its {} included device messages for the current period.\n\n\
      If usage reaches 100%, telemetry ingestion pauses for the rest of the period. Devices using the \
      pigeon library keep unsent readings queued and deliver them once ingestion resumes, so data is \
      delayed rather than lost.\n\n\
-     Upgrading to a paid tier lifts the limit: {root_url}/pricing/\n",
+     A paid tier lifts the limit: {root_url}/pricing/\n",
     tally.billable_messages, allowance
   );
 
@@ -453,10 +545,12 @@ pub enum IngestFuse {
 pub const INGEST_PAUSED_MESSAGE: &str =
   "Too Many Requests: free tier message allowance exhausted for this billing period";
 
-/// Whether a device report should be refused because its account is a
-/// free-tier one that has exhausted this month's message allowance. Paid,
-/// entitled tiers always pass -- their over-allowance usage bills as
-/// metered overage instead of stopping.
+/// Whether a device report should be refused because its account has no
+/// subscription to bill and has exhausted this month's message allowance.
+/// Paid, entitled tiers always pass -- their over-allowance usage bills as
+/// metered overage instead of stopping. A complimentary account pauses at
+/// its granted tier's allowance, on the same reasoning as a free one: a
+/// grant with no meter behind it would otherwise be an unbounded one.
 ///
 /// Fail-open on every error path (connection, missing tables, missing
 /// mirror row): an infrastructure blip must never brick ingestion for the
@@ -464,22 +558,23 @@ pub const INGEST_PAUSED_MESSAGE: &str =
 /// absorbs the per-report cost; the same caching means the pause can
 /// engage up to a minute after the allowance is crossed, which is fine for
 /// a monthly quota.
-pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
+pub async fn check_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
   let client = match get_db_client(env).await {
     Ok(client) => client,
     Err(e) => {
-      console_error!("Perch fuse check skipped for '{pigeon_id}' (failing open): {e}");
+      console_error!("Ingest fuse check skipped for '{pigeon_id}' (failing open): {e}");
       return IngestFuse::Allow;
     }
   };
 
   // The usage join only needs the calendar-month period: an account is
-  // only pausable when it resolves to the free tier, and free-tier usage
-  // is always month-anchored (see record_billable_message).
+  // only pausable when it has no entitled subscription, and such an
+  // account's usage is always month-anchored -- the org-period branch in
+  // record_billable_message turns on the same entitlement check.
   let rows = match client
     .query_typed(
       "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
-              u.billable_messages
+              o.comp_plan AS comp_plan, u.billable_messages
        FROM pigeons p
        JOIN flocks f ON f.id = p.flock_id
        LEFT JOIN organizations o ON o.id = f.org_id
@@ -494,7 +589,7 @@ pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
   {
     Ok(rows) => rows,
     Err(e) => {
-      console_error!("Perch fuse check failed for '{pigeon_id}' (failing open): {e}");
+      console_error!("Ingest fuse check failed for '{pigeon_id}' (failing open): {e}");
       return IngestFuse::Allow;
     }
   };
@@ -507,12 +602,18 @@ pub async fn check_perch_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
 
   let org_plan: Option<String> = row.get("org_plan");
   let org_status: Option<String> = row.get("org_status");
-  if effective_plan(org_plan.as_deref(), org_status.as_deref()) != BillingPlan::Perch {
+  let comp_plan: Option<String> = row.get("comp_plan");
+  let served = served_plan(
+    org_plan.as_deref(),
+    org_status.as_deref(),
+    comp_plan.as_deref(),
+  );
+  if served.bills_overage() {
     return IngestFuse::Allow;
   }
 
   let billable: Option<i64> = row.get("billable_messages");
-  if billable.unwrap_or(0) >= BillingPlan::Perch.included_messages() {
+  if billable.unwrap_or(0) >= served.plan.included_messages() {
     IngestFuse::Pause
   } else {
     IngestFuse::Allow
@@ -601,13 +702,18 @@ fn apply_cap(
   }
 }
 
-/// Whether the account owning `flock_id` may add another device. Only an
-/// account served at the free tier has a hard cap; a paid, entitled tier
-/// past its included device count is allowed through and billed per-device
-/// overage instead (the reporter's job). That makes this the one gate here
-/// whose limit is a price rather than a ceiling above the free tier --
-/// devices are sold by the unit, seats and alerts and organizations are
-/// not.
+/// Whether the account owning `flock_id` may add another device. An
+/// account with a live subscription is never refused: past its included
+/// device count it is billed per-device overage instead (the reporter's
+/// job). That makes this the one gate here whose limit is a price rather
+/// than a ceiling -- devices are sold by the unit, seats and alerts and
+/// organizations are not.
+///
+/// An account with no subscription to bill has a hard cap at its own
+/// served tier's device count -- ten on the free tier, and the granted
+/// tier's count on a complimentary one. Same reasoning as the ingest
+/// fuse: a grant with no meter behind it would otherwise hand out
+/// unlimited devices, which is more than the granted tier promises.
 ///
 /// Counts provisioned rows, deliberately unlike `report_device_overage`,
 /// which counts only devices that reported in the period. The two answer
@@ -619,6 +725,7 @@ pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> EntitlementCa
   let rows = match client
     .query_typed(
       "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+         o.comp_plan AS comp_plan,
          (SELECT COUNT(*)::bigint
             FROM pigeons p JOIN flocks f2 ON f2.id = p.flock_id
             WHERE (f.org_id IS NOT NULL AND f2.org_id = f.org_id)
@@ -646,14 +753,19 @@ pub async fn check_device_cap(client: &Client, flock_id: &Uuid) -> EntitlementCa
 
   let org_plan: Option<String> = row.get("org_plan");
   let org_status: Option<String> = row.get("org_status");
-  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
-  if plan != BillingPlan::Perch {
+  let comp_plan: Option<String> = row.get("comp_plan");
+  let served = served_plan(
+    org_plan.as_deref(),
+    org_status.as_deref(),
+    comp_plan.as_deref(),
+  );
+  if served.bills_overage() {
     return EntitlementCap::Allow;
   }
 
   apply_cap(
-    plan,
-    Some(BillingPlan::Perch.included_devices()),
+    served.plan,
+    Some(served.plan.included_devices()),
     row.get("device_count"),
     "device",
     None,
@@ -674,6 +786,7 @@ pub async fn check_seat_cap(client: &Client, org_id: &Uuid) -> EntitlementCap {
   let rows = match client
     .query_typed(
       "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+         o.comp_plan AS comp_plan,
          (SELECT COUNT(*)::bigint FROM organization_members m
             WHERE m.org_id = o.id) AS member_count,
          (SELECT COUNT(*)::bigint FROM organization_invites i
@@ -699,7 +812,12 @@ pub async fn check_seat_cap(client: &Client, org_id: &Uuid) -> EntitlementCap {
 
   let org_plan: Option<String> = row.get("org_plan");
   let org_status: Option<String> = row.get("org_status");
-  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
+  let comp_plan: Option<String> = row.get("comp_plan");
+  let plan = effective_plan(
+    org_plan.as_deref(),
+    org_status.as_deref(),
+    comp_plan.as_deref(),
+  );
   let member_count: i64 = row.get("member_count");
   let pending_count: i64 = row.get("pending_count");
 
@@ -746,6 +864,7 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
       &format!(
         "WITH scope AS ({scope_sql})
          SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+           o.comp_plan AS comp_plan,
            (SELECT COUNT(*)::bigint
               FROM alert_definitions a
               LEFT JOIN pigeons ap ON ap.id = a.pigeon_id
@@ -775,7 +894,12 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
 
   let org_plan: Option<String> = row.get("org_plan");
   let org_status: Option<String> = row.get("org_status");
-  let plan = effective_plan(org_plan.as_deref(), org_status.as_deref());
+  let comp_plan: Option<String> = row.get("comp_plan");
+  let plan = effective_plan(
+    org_plan.as_deref(),
+    org_status.as_deref(),
+    comp_plan.as_deref(),
+  );
 
   apply_cap(
     plan,
@@ -800,7 +924,8 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
 pub async fn check_org_cap(client: &Client, user_id_str: &str) -> EntitlementCap {
   let rows = match client
     .query_typed(
-      "SELECT o.plan AS org_plan, o.subscription_status AS org_status
+      "SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+              o.comp_plan AS comp_plan
        FROM organization_members m
        JOIN organizations o ON o.id = m.org_id
        WHERE m.user_id = $1::uuid AND m.role = 'owner';",
@@ -821,7 +946,12 @@ pub async fn check_org_cap(client: &Client, user_id_str: &str) -> EntitlementCap
     .map(|row| {
       let org_plan: Option<String> = row.get("org_plan");
       let org_status: Option<String> = row.get("org_status");
-      effective_plan(org_plan.as_deref(), org_status.as_deref())
+      let comp_plan: Option<String> = row.get("comp_plan");
+      effective_plan(
+        org_plan.as_deref(),
+        org_status.as_deref(),
+        comp_plan.as_deref(),
+      )
     })
     .max()
     .unwrap_or(BillingPlan::Perch);
@@ -852,6 +982,7 @@ struct BillableOrg {
   period_end: OffsetDateTime,
   billable_messages: i64,
   allowance_floor_messages: Option<i64>,
+  comp_plan: Option<String>,
   /// Devices that sent at least one billable message during this period.
   /// Both meters read this one figure: the per-device overage charges on
   /// it, and the message allowance is widened by it, so the two can never
@@ -893,7 +1024,24 @@ pub async fn report_billing_meters(env: &Env) -> Result<()> {
   let mut event_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
   for org in orgs {
-    let plan = effective_plan(org.plan.as_deref(), Some(&org.status));
+    let served = served_plan(
+      org.plan.as_deref(),
+      Some(&org.status),
+      org.comp_plan.as_deref(),
+    );
+    // A complimentary org must never reach Stripe. `load_billable_orgs`
+    // already selects only entitled subscriptions, so a comp cannot be
+    // what resolved here today -- this is the second lock on the door,
+    // kept because the cost of it ever being wrong is charging money to
+    // someone we told we would not.
+    if served.source == PlanSource::Comp {
+      console_log!(
+        "Billing meter reporter: org {} is served on a complimentary grant -- skipping",
+        org.id
+      );
+      continue;
+    }
+    let plan = served.plan;
     if plan == BillingPlan::Perch {
       // Entitled but the plan column names no paid tier: refuse to meter
       // against a guess, same rule the webhook applies to plans.
@@ -948,7 +1096,7 @@ async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
   let rows = client
     .query_typed(
       "SELECT o.id, o.stripe_customer_id, o.plan, o.subscription_status,
-              o.current_period_start, o.current_period_end,
+              o.comp_plan, o.current_period_start, o.current_period_end,
               COALESCE(u.billable_messages, 0) AS billable_messages,
               u.allowance_floor_messages,
               (SELECT COUNT(*)::bigint
@@ -983,6 +1131,7 @@ async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
         customer_id: row.get("stripe_customer_id"),
         plan: row.get("plan"),
         status: row.get("subscription_status"),
+        comp_plan: row.get("comp_plan"),
         period_start: row.get("current_period_start"),
         period_end: row.get("current_period_end"),
         billable_messages: row.get("billable_messages"),
@@ -1212,7 +1361,10 @@ async fn post_unposted_reports(
 
 #[cfg(test)]
 mod tests {
-  use super::{EntitlementCap, apply_cap, cap_refusal, effective_plan, period_message_allowance};
+  use super::{
+    EntitlementCap, PlanSource, apply_cap, cap_refusal, effective_plan, period_message_allowance,
+    served_plan,
+  };
   use capsules::BillingPlan;
 
   fn refusal(cap: EntitlementCap) -> Option<String> {
@@ -1220,6 +1372,112 @@ mod tests {
       EntitlementCap::Allow => None,
       EntitlementCap::Refuse(message) => Some(message),
     }
+  }
+
+  #[test]
+  fn a_comp_serves_its_tier_to_an_account_with_no_subscription() {
+    let served = served_plan(Some("perch"), Some("none"), Some("builder"));
+    assert_eq!(served.plan, BillingPlan::Builder);
+    assert_eq!(served.source, PlanSource::Comp);
+    // And to one whose subscription died -- the case a comp is usually
+    // reached for, since the org keeps a plan column that no longer
+    // entitles it to anything.
+    let served = served_plan(Some("growth"), Some("canceled"), Some("builder"));
+    assert_eq!(served.plan, BillingPlan::Builder);
+    assert_eq!(served.source, PlanSource::Comp);
+  }
+
+  #[test]
+  fn a_live_subscription_outranks_a_comp_even_a_richer_one() {
+    // Comp is a floor for an account that is not paying, not a discount
+    // on one that is. A grant left behind on an org that later subscribes
+    // must be inert, or revoking it would change somebody's invoice.
+    let served = served_plan(Some("builder"), Some("active"), Some("fleet"));
+    assert_eq!(served.plan, BillingPlan::Builder);
+    assert_eq!(served.source, PlanSource::Subscription);
+    assert!(served.bills_overage());
+    // Past due is still entitled, so it still outranks.
+    assert_eq!(
+      served_plan(Some("builder"), Some("past_due"), Some("fleet")).plan,
+      BillingPlan::Builder
+    );
+  }
+
+  #[test]
+  fn a_comp_never_bills_and_never_reaches_the_meter() {
+    // The property the whole design rests on: a comped account is not
+    // billable, so every overage path must treat it like the free tier
+    // rather than like the tier it is being served.
+    let served = served_plan(None, Some("none"), Some("scale"));
+    assert_eq!(served.plan, BillingPlan::Scale);
+    assert!(!served.bills_overage());
+    assert!(!served_plan(None, None, Some("fleet")).bills_overage());
+    // ...while a real subscription at the same tier does bill.
+    assert!(served_plan(Some("scale"), Some("active"), None).bills_overage());
+  }
+
+  #[test]
+  fn a_junk_or_free_tier_comp_value_is_no_comp_at_all() {
+    // Under-serve on a typo rather than over-serve: an unreadable grant
+    // must not become a free Fleet account.
+    for raw in ["", "buidler", "enterprise", "TRUE", "perch"] {
+      let served = served_plan(Some("perch"), Some("none"), Some(raw));
+      assert_eq!(
+        served.plan,
+        BillingPlan::Perch,
+        "comp value '{raw}' should not have served a tier"
+      );
+      assert_eq!(served.source, PlanSource::Free);
+    }
+    assert_eq!(served_plan(None, None, None).source, PlanSource::Free);
+  }
+
+  #[test]
+  fn a_comped_account_is_gated_at_its_granted_tier() {
+    // The gates read the served tier, so a comp raises the ceilings it is
+    // supposed to raise -- and only to the granted tier, not past it.
+    let plan = effective_plan(Some("perch"), Some("none"), Some("builder"));
+    assert_eq!(plan.included_seats(), Some(3));
+    assert_eq!(plan.included_alerts(), Some(10));
+    // Two seats filled on a comped Builder org: allowed, where the free
+    // tier would already have refused.
+    assert!(matches!(
+      apply_cap(plan, plan.included_seats(), 2, "seat", None),
+      EntitlementCap::Allow
+    ));
+    // A third fills it, and the refusal names the tier being served.
+    let refused = apply_cap(plan, plan.included_seats(), 3, "seat", None);
+    assert!(matches!(refused, EntitlementCap::Refuse(_)));
+  }
+
+  #[test]
+  fn the_ingest_fuse_uses_the_comp_tier_allowance_not_the_free_one() {
+    // What the fuse actually compares against, for each of the three
+    // sources. A comp raises the bar to its granted tier but does not
+    // remove it -- an unmetered grant would be an unbounded one.
+    let free = served_plan(None, None, None);
+    assert!(!free.bills_overage());
+    assert_eq!(free.plan.included_messages(), 300_000);
+
+    let comped = served_plan(Some("perch"), Some("none"), Some("builder"));
+    assert!(!comped.bills_overage());
+    assert_eq!(comped.plan.included_messages(), 1_500_000);
+
+    let paid = served_plan(Some("builder"), Some("active"), None);
+    assert!(paid.bills_overage());
+  }
+
+  #[test]
+  fn a_comped_account_gets_no_extra_device_pool() {
+    // The extra-device pool exists to match devices that are being BILLED.
+    // A comped org buys no extra devices, so it earns no extra pool, and
+    // its device count cannot inflate the allowance its fuse trips on.
+    let comped = served_plan(Some("perch"), Some("none"), Some("builder"));
+    assert_eq!(comped.plan.billed_extra_devices(150), 100);
+    // The tier alone would grant a pool; the account is not billed for
+    // those devices, so the fuse must read the bare tier allowance -- which
+    // is exactly what check_ingest_fuse compares against.
+    assert_eq!(comped.plan.included_messages(), 1_500_000);
   }
 
   #[test]
@@ -1329,7 +1587,7 @@ mod tests {
     // Status before plan, the same rule the allowance follows: an org
     // whose subscription died keeps its plan column, and reading that
     // without the status gate would keep serving its seats forever.
-    let plan = effective_plan(Some("growth"), Some("canceled"));
+    let plan = effective_plan(Some("growth"), Some("canceled"), None);
     assert_eq!(plan.included_seats(), Some(1));
     assert!(refusal(apply_cap(plan, plan.included_seats(), 4, "seat", None)).is_some());
   }
@@ -1407,7 +1665,7 @@ mod tests {
     // And an unentitled org resolves to Perch before it ever gets here, so
     // a lapsed Fleet account with 10,000 devices connected is on the free
     // tier's allowance too, not a 300 M one.
-    let plan = effective_plan(Some("fleet"), Some("canceled"));
+    let plan = effective_plan(Some("fleet"), Some("canceled"), None);
     assert_eq!(
       period_message_allowance(plan, None, 10_000),
       BillingPlan::Perch.included_messages()
@@ -1421,19 +1679,19 @@ mod tests {
     // reading it without the status gate would serve the old allowance
     // forever.
     assert_eq!(
-      effective_plan(Some("growth"), Some("canceled")),
+      effective_plan(Some("growth"), Some("canceled"), None),
       BillingPlan::Perch
     );
     assert_eq!(
-      effective_plan(Some("fleet"), Some("unpaid")),
+      effective_plan(Some("fleet"), Some("unpaid"), None),
       BillingPlan::Perch
     );
     assert_eq!(
-      effective_plan(Some("scale"), Some("incomplete_expired")),
+      effective_plan(Some("scale"), Some("incomplete_expired"), None),
       BillingPlan::Perch
     );
     assert_eq!(
-      effective_plan(Some("builder"), Some("none")),
+      effective_plan(Some("builder"), Some("none"), None),
       BillingPlan::Perch
     );
   }
@@ -1441,30 +1699,33 @@ mod tests {
   #[test]
   fn entitled_statuses_serve_the_stored_plan() {
     assert_eq!(
-      effective_plan(Some("growth"), Some("active")),
+      effective_plan(Some("growth"), Some("active"), None),
       BillingPlan::Growth
     );
     assert_eq!(
-      effective_plan(Some("scale"), Some("trialing")),
+      effective_plan(Some("scale"), Some("trialing"), None),
       BillingPlan::Scale
     );
     // PastDue stays entitled while Stripe retries the card.
     assert_eq!(
-      effective_plan(Some("fleet"), Some("past_due")),
+      effective_plan(Some("fleet"), Some("past_due"), None),
       BillingPlan::Fleet
     );
   }
 
   #[test]
   fn missing_org_or_unparseable_values_resolve_free() {
-    assert_eq!(effective_plan(None, None), BillingPlan::Perch);
-    assert_eq!(effective_plan(Some("growth"), None), BillingPlan::Perch);
+    assert_eq!(effective_plan(None, None, None), BillingPlan::Perch);
     assert_eq!(
-      effective_plan(Some("growth"), Some("some_future_state")),
+      effective_plan(Some("growth"), None, None),
       BillingPlan::Perch
     );
     assert_eq!(
-      effective_plan(Some("not-a-plan"), Some("active")),
+      effective_plan(Some("growth"), Some("some_future_state"), None),
+      BillingPlan::Perch
+    );
+    assert_eq!(
+      effective_plan(Some("not-a-plan"), Some("active"), None),
       BillingPlan::Perch
     );
   }
