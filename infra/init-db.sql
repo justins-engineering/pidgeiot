@@ -231,6 +231,14 @@ CREATE TABLE IF NOT EXISTS organizations (
   current_period_end TIMESTAMPTZ,
   cancel_at_period_end BOOLEAN NOT NULL DEFAULT false,
   billing_event_at TIMESTAMPTZ,
+  -- Complimentary tier grant: a tier slug this org is served for free,
+  -- with no subscription behind it, plus why and when it was granted. A
+  -- live subscription outranks it (see helpers/usage.rs::served_plan);
+  -- revoking is setting comp_plan back to NULL. Granted by hand only --
+  -- docs/infra/org-comps.md, no route writes these.
+  comp_plan TEXT,
+  comp_note TEXT,
+  comp_granted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -245,6 +253,9 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS current_period_start TIMESTAM
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS billing_event_at TIMESTAMPTZ;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_plan TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_note TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_granted_at TIMESTAMPTZ;
 
 -- Webhook idempotency. Stripe retries a delivery for up to three days and
 -- can send the same event more than once even after a 2xx, so every

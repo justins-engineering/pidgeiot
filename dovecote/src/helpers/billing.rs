@@ -20,6 +20,9 @@ pub async fn ensure_billing_tables(client: &Client) -> Result<()> {
       ALTER TABLE organizations ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
       ALTER TABLE organizations ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT false;
       ALTER TABLE organizations ADD COLUMN IF NOT EXISTS billing_event_at TIMESTAMPTZ;
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_plan TEXT;
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_note TEXT;
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS comp_granted_at TIMESTAMPTZ;
       CREATE TABLE IF NOT EXISTS stripe_webhook_events (
         event_id TEXT PRIMARY KEY,
         event_type TEXT NOT NULL,
