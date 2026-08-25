@@ -1,5 +1,5 @@
 use crate::Route;
-use crate::components::ComparisonRow;
+use crate::components::ComparisonTable;
 use crate::helpers::pricing_data::{self, View};
 use crate::helpers::tco_data;
 use dioxus::prelude::*;
@@ -42,32 +42,13 @@ pub fn SelfHostingPage() -> Element {
         h2 { class: "text-2xl md:text-3xl font-extrabold tracking-tight", "{data.heading}" }
         p { class: "mt-3 text-base-content/70 leading-relaxed", "{data.subhead}" }
 
-        div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
-          table { class: "table",
-            thead {
-              tr {
-                th { "Option" }
-                for column in data.columns.iter() {
-                  th { key: "{column.key}", class: "text-right",
-                    div { "{column.label}" }
-                    div { class: "font-normal text-base-content/60", "{column.unit}" }
-                  }
-                }
-              }
-            }
-            tbody {
-              for row in data.rows.iter() {
-                ComparisonRow {
-                  key: "{row.id}",
-                  row: row.clone(),
-                  columns: data.columns.clone(),
-                  view: View::Full,
-                  today,
-                  stale_after,
-                }
-              }
-            }
-          }
+        ComparisonTable {
+          first_heading: "Option",
+          columns: data.columns.clone(),
+          rows: data.rows.clone(),
+          view: View::Full,
+          today,
+          stale_after,
         }
       }
     }
