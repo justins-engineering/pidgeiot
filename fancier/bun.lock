@@ -4,7 +4,7 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "daisyui": "^5.7.21",
+        "daisyui": "^5.7.22",
         "tailwindcss": "^4.3.3",
       },
       "devDependencies": {
