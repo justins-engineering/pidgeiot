@@ -636,6 +636,30 @@ the address; a business with a forwarded or entered tax ID sees the reverse char
 rate its jurisdiction applies instead of tax added. After paying they land back on the org
 page, and the plan updates within moments via the webhook.
 
+**Delayed payment methods (ACH Direct Debit).** ACH is a delayed-notification method: the
+Checkout session completes with `payment_status=unpaid`, and the debit clears or bounces days
+later. Entitlement is decided by the **subscription's** status (`trialing`/`active`/`past_due`),
+never by the session's `payment_status`, so the exposure follows two windows, both verified in
+Stripe test mode:
+
+- **Before the bank account is verified**, the subscription is `incomplete` and the account is
+  **not** entitled — the free tier still applies. Instant (Financial Connections) verification
+  clears this in seconds; manual microdeposit verification takes 1–2 business days.
+- **Once the account is verified**, the subscription becomes `active` while the first debit is
+  still processing (up to ~4 business days to settle), and the account **is** entitled before
+  the money arrives. If that first debit is then returned, Stripe emits
+  `checkout.session.async_payment_failed` and moves the subscription to `past_due` (still
+  entitled) and, through dunning, eventually `unpaid` (not entitled, tier remembered). A
+  cleared debit emits `checkout.session.async_payment_succeeded` and the subscription stays
+  `active`.
+
+The deliberate exposure is that second window: a customer whose first debit ultimately bounces
+holds entitlement from verification until dunning gives up. `async_payment_failed` is logged
+and mailed the moment it arrives so the bounce is visible well before the status change. This
+matches the policy for cards (entitle on `active`, keep entitlement through `past_due`); ACH
+only widens the gap between "entitled" and "paid". Recommended dunning: Smart Retries on, final
+action **mark unpaid** (not cancel), which is what the code models.
+
 #### Per-tier limits
 
 Every published per-tier quantity is enforced at the route that would create one more of the
@@ -830,6 +854,8 @@ subscribe to exactly these nine events:
 | `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed`, `.pending_update_applied`, `.pending_update_expired` | Writes plan/status/period onto the owning org, idempotently, with out-of-order-event protection. |
 | `checkout.session.completed` | Binds the Stripe customer to the originating org and applies the purchased subscription's state. |
 | `invoice.finalization_failed` | Reports and acks. With Stripe Tax computing, an invoice cannot finalize when the customer's address is unusable (`automatic_tax.status = requires_location_inputs`), and Stripe keeps the subscription **active** while it cannot be finalized — entitlement continues while nothing is collected. The sink logs the invoice, customer and subscription ids, the tax status and Stripe's `last_finalization_error`, and sends one `[OPS]` email to `OPS_ALERT_EMAIL` (production only, the same knob as the Kratos probe). A retry could change nothing, so it is acknowledged; the fix is the customer's address or tax settings in the Stripe Dashboard, then finalizing the invoice there. |
+| `checkout.session.async_payment_succeeded` | Logs and acks. A delayed-notification payment (ACH Direct Debit) cleared after the session completed. Entitlement is decided by the subscription's own status, so this only closes the loop the failure below opens. |
+| `checkout.session.async_payment_failed` | Reports and acks. The customer's first ACH debit was returned. This is the earliest signal a new customer has not actually paid — ahead of the subscription's own status change — so it logs an error with the org, customer and subscription ids and sends one `[OPS]` email. The subscription follows to `past_due` and then `unpaid` through `customer.subscription.updated`; no state is written here. |
 
 Anything else is acknowledged without acting. Deliveries are claimed in `stripe_webhook_events`
 before anything is applied, so replays and concurrent deliveries are acknowledged without being
