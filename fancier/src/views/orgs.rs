@@ -189,8 +189,9 @@ fn CreateOrgModal(refresh: Signal<u32>) -> Element {
                           tax_id_type.set(parsed);
                       }
                   },
-                  option { value: "eu_vat", "EU VAT" }
-                  option { value: "other", "Other" }
+                  for kind in TaxIdType::ALL.iter().filter(|kind| **kind != TaxIdType::None) {
+                    option { value: "{kind.as_str()}", "{kind.label()}" }
+                  }
                 }
                 label { class: "input grow focus:outline-0",
                   input {

@@ -31,10 +31,14 @@ pub const MAX_BUSINESS_NAME_CHARS: usize = 200;
 
 /// What kind of tax identifier an organization filed.
 ///
-/// The distinction is not cosmetic: `EuVat` is the only variant we can
-/// check against an authority, and it is the one that carries the
-/// commercial consequence -- a validated EU VAT registration is what makes
-/// a B2B sale reverse-charged rather than VAT-bearing.
+/// `EuVat` is the only variant we check against an authority ourselves.
+/// The jurisdiction-specific variants exist because a registration is only
+/// worth anything to the billing provider once it knows which authority
+/// issued it: Stripe's tax-ID enum is per jurisdiction, and a business tax
+/// ID it can place is what lets it zero-rate or reverse-charge a sale to a
+/// business abroad instead of adding tax to it. Their wire names are
+/// Stripe's own, so the mapping is the name. `Other` holds a registration
+/// from anywhere else: printed on the invoice, never forwarded.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TaxIdType {
@@ -45,18 +49,104 @@ pub enum TaxIdType {
   /// An EU (or Northern Ireland) VAT registration number, checkable
   /// against VIES.
   EuVat,
-  /// Any other jurisdiction's registration -- GST, ABN, a US EIN. Stored
-  /// as given, format-sanity-checked, never checked remotely.
+  /// United Kingdom VAT number (`GB...`).
+  GbVat,
+  /// Australian Business Number.
+  AuAbn,
+  /// Canadian GST/HST registration (`...RT0001`).
+  CaGstHst,
+  /// Canadian Business Number.
+  CaBn,
+  /// Indian GST registration.
+  InGst,
+  /// United States Employer Identification Number.
+  UsEin,
+  /// New Zealand GST number.
+  NzGst,
+  /// Singapore GST number.
+  SgGst,
+  /// Japanese Tax Registration Number (`T...`).
+  JpTrn,
+  /// Norwegian VAT number (`...MVA`).
+  NoVat,
+  /// South African VAT number.
+  ZaVat,
+  /// Any other jurisdiction's registration. Stored as given,
+  /// format-sanity-checked, never checked remotely, never forwarded.
   Other,
 }
 
 impl TaxIdType {
+  /// Every variant, in the order a picker should offer them.
+  pub const ALL: &'static [TaxIdType] = &[
+    TaxIdType::None,
+    TaxIdType::EuVat,
+    TaxIdType::GbVat,
+    TaxIdType::AuAbn,
+    TaxIdType::CaGstHst,
+    TaxIdType::CaBn,
+    TaxIdType::InGst,
+    TaxIdType::UsEin,
+    TaxIdType::NzGst,
+    TaxIdType::SgGst,
+    TaxIdType::JpTrn,
+    TaxIdType::NoVat,
+    TaxIdType::ZaVat,
+    TaxIdType::Other,
+  ];
+
   pub fn as_str(&self) -> &'static str {
     match self {
       TaxIdType::None => "none",
       TaxIdType::EuVat => "eu_vat",
+      TaxIdType::GbVat => "gb_vat",
+      TaxIdType::AuAbn => "au_abn",
+      TaxIdType::CaGstHst => "ca_gst_hst",
+      TaxIdType::CaBn => "ca_bn",
+      TaxIdType::InGst => "in_gst",
+      TaxIdType::UsEin => "us_ein",
+      TaxIdType::NzGst => "nz_gst",
+      TaxIdType::SgGst => "sg_gst",
+      TaxIdType::JpTrn => "jp_trn",
+      TaxIdType::NoVat => "no_vat",
+      TaxIdType::ZaVat => "za_vat",
       TaxIdType::Other => "other",
     }
+  }
+
+  /// What a person sees in a picker.
+  pub fn label(&self) -> &'static str {
+    match self {
+      TaxIdType::None => "None",
+      TaxIdType::EuVat => "EU VAT",
+      TaxIdType::GbVat => "UK VAT",
+      TaxIdType::AuAbn => "Australian ABN",
+      TaxIdType::CaGstHst => "Canadian GST/HST",
+      TaxIdType::CaBn => "Canadian BN",
+      TaxIdType::InGst => "Indian GST",
+      TaxIdType::UsEin => "US EIN",
+      TaxIdType::NzGst => "New Zealand GST",
+      TaxIdType::SgGst => "Singapore GST",
+      TaxIdType::JpTrn => "Japan tax registration",
+      TaxIdType::NoVat => "Norwegian VAT",
+      TaxIdType::ZaVat => "South African VAT",
+      TaxIdType::Other => "Other",
+    }
+  }
+
+  /// The Stripe tax-ID `type` this registration is forwarded as, or `None`
+  /// for the two kinds that cannot be: nothing on file, and a registration
+  /// whose jurisdiction Stripe's enum cannot name.
+  pub fn stripe_type(&self) -> Option<&'static str> {
+    match self {
+      TaxIdType::None | TaxIdType::Other => None,
+      forwardable => Some(forwardable.as_str()),
+    }
+  }
+
+  /// Whether we ask an authority about this kind ourselves.
+  pub fn is_checked_remotely(&self) -> bool {
+    matches!(self, TaxIdType::EuVat)
   }
 }
 
@@ -64,12 +154,11 @@ impl std::str::FromStr for TaxIdType {
   type Err = String;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s {
-      "none" => Ok(TaxIdType::None),
-      "eu_vat" => Ok(TaxIdType::EuVat),
-      "other" => Ok(TaxIdType::Other),
-      other => Err(format!("invalid tax id type '{other}'")),
-    }
+    TaxIdType::ALL
+      .iter()
+      .copied()
+      .find(|kind| kind.as_str() == s)
+      .ok_or_else(|| format!("invalid tax id type '{s}'"))
   }
 }
 
@@ -179,7 +268,6 @@ pub enum TaxIdDecision {
 pub fn decide_status(kind: TaxIdType, lookup: Option<ViesOutcome>) -> TaxIdDecision {
   match kind {
     TaxIdType::None => TaxIdDecision::Store(TaxIdStatus::None),
-    TaxIdType::Other => TaxIdDecision::Store(TaxIdStatus::Unverified),
     TaxIdType::EuVat => match lookup {
       Some(ViesOutcome::Valid) => TaxIdDecision::Store(TaxIdStatus::Validated),
       Some(ViesOutcome::Invalid) => TaxIdDecision::Refuse,
@@ -187,6 +275,8 @@ pub fn decide_status(kind: TaxIdType, lookup: Option<ViesOutcome>) -> TaxIdDecis
       // is kept and the sweep asks again.
       Some(ViesOutcome::Unknown) | None => TaxIdDecision::Store(TaxIdStatus::Pending),
     },
+    // Nothing else has an authority we ask; held as declared.
+    _ => TaxIdDecision::Store(TaxIdStatus::Unverified),
   }
 }
 
@@ -266,6 +356,14 @@ impl EuVatId {
 /// separators printed on real invoices; nothing else is removed, so a
 /// genuinely odd character still reaches the shape check and is rejected
 /// there rather than silently vanishing.
+///
+/// Public because it is also the equality the billing provider's copy of
+/// a number is compared under: Stripe stores what its own form was given,
+/// separators and all.
+pub fn normalize_tax_id(raw: &str) -> String {
+  normalize(raw)
+}
+
 fn normalize(raw: &str) -> String {
   raw
     .chars()
@@ -434,7 +532,7 @@ pub fn prepare_tax_id(
         lookup: Some(parsed),
       })
     }
-    TaxIdType::Other => {
+    _ => {
       let Some(raw) = raw else {
         return Err(TaxIdFormatError::Missing);
       };
@@ -461,8 +559,8 @@ pub fn tax_id_log_label(kind: TaxIdType, stored: &str) -> String {
       let prefix: String = stored.chars().take(2).collect();
       format!("eu_vat {prefix}/{len}")
     }
-    TaxIdType::Other => format!("other len {len}"),
     TaxIdType::None => "none".to_string(),
+    other => format!("{other} len {len}"),
   }
 }
 
@@ -732,17 +830,79 @@ mod tests {
   }
 
   #[test]
+  fn every_type_forwards_under_its_own_wire_name_or_is_explicitly_unforwardable() {
+    for kind in TaxIdType::ALL {
+      match kind.stripe_type() {
+        // The wire name IS Stripe's enum value; anything else here would
+        // be a second spelling to keep in step.
+        Some(stripe) => assert_eq!(stripe, kind.as_str(), "{kind}"),
+        None => assert!(
+          matches!(kind, TaxIdType::None | TaxIdType::Other),
+          "{kind} has no Stripe type but is not one of the two kinds that may lack one"
+        ),
+      }
+    }
+    assert!(TaxIdType::EuVat.is_checked_remotely());
+    assert!(
+      TaxIdType::ALL
+        .iter()
+        .filter(|k| k.is_checked_remotely())
+        .count()
+        == 1
+    );
+  }
+
+  #[test]
+  fn an_unknown_type_fails_to_parse_and_serde_refuses_it_too() {
+    assert!("xx_vat".parse::<TaxIdType>().is_err());
+    assert!("".parse::<TaxIdType>().is_err());
+    assert!("EU_VAT".parse::<TaxIdType>().is_err());
+    assert!(serde_json::from_str::<TaxIdType>("\"xx_vat\"").is_err());
+    assert_eq!(
+      serde_json::from_str::<TaxIdType>("\"ca_gst_hst\"").unwrap(),
+      TaxIdType::CaGstHst
+    );
+  }
+
+  #[test]
+  fn jurisdiction_types_are_held_as_declared_and_never_looked_up() {
+    let gb = prepare_tax_id(TaxIdType::GbVat, Some("GB 123 4567 89")).unwrap();
+    assert_eq!(gb.stored.as_deref(), Some("GB123456789"));
+    assert_eq!(gb.lookup, None);
+    assert_eq!(
+      decide_status(TaxIdType::GbVat, None),
+      TaxIdDecision::Store(TaxIdStatus::Unverified)
+    );
+    assert_eq!(
+      decide_status(TaxIdType::AuAbn, Some(ViesOutcome::Invalid)),
+      TaxIdDecision::Store(TaxIdStatus::Unverified)
+    );
+    assert_eq!(
+      tax_id_log_label(TaxIdType::GbVat, "GB123456789"),
+      "gb_vat len 11"
+    );
+    assert_eq!(normalize_tax_id(" de-123.456/789 "), "DE123456789");
+  }
+
+  #[test]
   fn wire_forms_round_trip_and_stored_forms_parse() {
     assert_eq!(
       serde_json::to_string(&TaxIdType::EuVat).unwrap(),
       "\"eu_vat\""
     );
     assert_eq!(
+      serde_json::to_string(&TaxIdType::CaGstHst).unwrap(),
+      "\"ca_gst_hst\""
+    );
+    assert_eq!(
       serde_json::to_string(&TaxIdStatus::Unverified).unwrap(),
       "\"unverified\""
     );
-    for kind in [TaxIdType::None, TaxIdType::EuVat, TaxIdType::Other] {
-      assert_eq!(kind.as_str().parse::<TaxIdType>().unwrap(), kind);
+    for kind in TaxIdType::ALL {
+      assert_eq!(kind.as_str().parse::<TaxIdType>().unwrap(), *kind);
+      let json = serde_json::to_string(kind).unwrap();
+      assert_eq!(json, format!("\"{}\"", kind.as_str()));
+      assert_eq!(serde_json::from_str::<TaxIdType>(&json).unwrap(), *kind);
     }
     for status in [
       TaxIdStatus::None,

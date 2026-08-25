@@ -23,9 +23,10 @@ use crate::helpers::{
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   remove_member, rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
   send_invite_email, sha256_hex, store_contact_submission, stripe_configured,
-  update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do, verify_webhook_signature, write_business_details,
+  sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
+  write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -36,7 +37,7 @@ use capsules::{
   OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
   OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
   TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody,
+  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label,
 };
 use futures::future::join_all;
 use worker::{
@@ -4128,6 +4129,20 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
         };
 
+        // The org's tax identity decides two things below: the name a
+        // brand-new Customer is created under, and what is forwarded to
+        // Stripe before the session is minted.
+        if ensure_business_details_columns(&client).await.is_err() {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        let Ok(business_details) = load_business_details(&client, &org_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
         let customer_id = match existing_customer {
           Some(id) => id,
           None => {
@@ -4136,10 +4151,19 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
                 .unwrap()
                 .with_cors(&cors);
             };
+            // The registered legal name is what an invoice is made out to;
+            // the org's display name is only a fallback for an org that
+            // never filled the form in.
+            let customer_name = business_details
+              .as_ref()
+              .and_then(|d| d.business_name.as_deref())
+              .map(str::trim)
+              .filter(|n| !n.is_empty())
+              .unwrap_or(&org.name);
             let created = match create_customer(
               &ctx.env,
               &org_id.to_string(),
-              &org.name,
+              customer_name,
               auth.email.as_deref(),
             )
             .await
@@ -4164,28 +4188,45 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
         };
 
-        // SEAM -- tax identity is collected but not yet sent to Stripe.
-        //
-        // `load_business_details(&client, &org_id)` has the org's
-        // `business_name`, `tax_id`, `tax_id_type` and `tax_id_status`.
-        // Consuming them here means passing `customer_update[name]=auto`
-        // plus `tax_id_data[0][type]`/`[value]` on the Checkout session (or
-        // POSTing `/v1/customers/:id/tax_ids` before it), which is what
-        // makes Stripe apply the B2B reverse charge to an EU sale instead
-        // of adding VAT to it.
-        //
-        // Two things to settle when that is wired, neither of which the
-        // storage layer decides:
-        //   - WHICH statuses may be sent. `validated` clearly; `pending` is
-        //     a judgment call (Stripe re-validates EU VAT itself, so
-        //     forwarding a pending id is defensible and lets a customer buy
-        //     during a VIES outage) and `invalid` clearly must not be.
-        //   - `tax_id_type: other` has no Stripe type. Stripe's enum is
-        //     jurisdiction-specific (`au_abn`, `ca_gst_hst`, `gb_vat`, ...)
-        //     and nothing here records which one, so a non-EU registration
-        //     needs the customer to name their jurisdiction before it can
-        //     be forwarded. Storing it unforwarded is the deliberate state
-        //     until then -- it is still what an invoice has to show.
+        // Forward the registration before the session exists: Checkout
+        // asks for a tax ID only when the Customer has none, so this is
+        // what spares a customer typing a number they already gave us, and
+        // what makes Stripe Tax reverse-charge an EU business sale rather
+        // than add VAT. Best-effort on purpose -- if Stripe refuses the
+        // number or is unreachable, the session still opens and Checkout
+        // collects the ID itself.
+        if let Some(details) = business_details.as_ref() {
+          let label = details
+            .tax_id
+            .as_deref()
+            .map(|stored| tax_id_log_label(details.tax_id_type, stored));
+          match sync_customer_tax_identity(&ctx.env, &customer_id, details).await {
+            Ok(done) if done.changed() => console_log!(
+              "Stripe tax identity for org {org_id} ({}): renamed={} removed={} forwarded={}",
+              label.as_deref().unwrap_or("none"),
+              done.renamed,
+              done.deleted,
+              done.created
+            ),
+            Ok(done) => {
+              if let (Some(label), Some(reason)) = (label.as_deref(), done.left) {
+                console_log!(
+                  "Stripe tax identity for org {org_id} ({label}): not forwarded, {reason}"
+                );
+              }
+            }
+            // Status, kind and code only: Stripe's message for a refused
+            // tax ID echoes the number, and logs never carry one in full.
+            Err(e) => console_error!(
+              "Stripe tax identity sync failed for org {org_id} ({}): stripe {} {} {} -- Checkout will collect",
+              label.as_deref().unwrap_or("none"),
+              e.status.map(|s| s.to_string()).unwrap_or_default(),
+              e.kind,
+              e.code.as_deref().unwrap_or("")
+            ),
+          }
+        }
+
         let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {
           Ok(prices) => prices,
           Err(e) => {

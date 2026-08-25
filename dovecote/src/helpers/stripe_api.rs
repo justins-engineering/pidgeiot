@@ -115,6 +115,10 @@ pub async fn stripe_get<T: DeserializeOwned>(env: &Env, path: &str) -> Result<T,
   stripe_request(env, Method::Get, path, None, None).await
 }
 
+pub async fn stripe_delete<T: DeserializeOwned>(env: &Env, path: &str) -> Result<T, StripeError> {
+  stripe_request(env, Method::Delete, path, None, None).await
+}
+
 async fn stripe_request<T: DeserializeOwned>(
   env: &Env,
   method: Method,

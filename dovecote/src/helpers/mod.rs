@@ -21,6 +21,9 @@ pub use stripe_api::resolve_checkout_prices;
 pub use stripe_api::stripe_configured;
 pub use stripe_api::update_subscription_tier;
 
+mod stripe_tax_identity;
+pub use stripe_tax_identity::sync_customer_tax_identity;
+
 mod stripe_webhook;
 pub use stripe_webhook::STRIPE_WEBHOOK_SECRET;
 pub use stripe_webhook::StripeWebhookEvent;
