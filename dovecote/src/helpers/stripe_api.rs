@@ -519,9 +519,11 @@ pub async fn create_portal_session(
   Ok(session.url)
 }
 
-/// The slice of a `checkout.session.completed` webhook object the handler
-/// needs: who paid (customer), what it bought (subscription), and which
-/// org started the session.
+/// The slice of a `checkout.session.*` webhook object the handler needs:
+/// who paid (customer), what it bought (subscription), which org started
+/// the session, and whether the money has actually arrived -- `unpaid` on
+/// a completed session means a delayed-notification method (ACH) is still
+/// processing.
 #[derive(Deserialize, Debug)]
 pub struct StripeCheckoutSessionRow {
   #[serde(default)]
@@ -530,6 +532,22 @@ pub struct StripeCheckoutSessionRow {
   pub subscription: Option<String>,
   #[serde(default)]
   pub client_reference_id: Option<String>,
+  #[serde(default)]
+  pub payment_status: Option<String>,
+}
+
+impl StripeCheckoutSessionRow {
+  /// One line naming the session's parties for a log: org, customer,
+  /// subscription, payment status. Stripe ids only.
+  pub fn summary(&self) -> String {
+    format!(
+      "org {} customer {} subscription {} payment_status {}",
+      self.client_reference_id.as_deref().unwrap_or("unknown"),
+      self.customer.as_deref().unwrap_or("unknown"),
+      self.subscription.as_deref().unwrap_or("none"),
+      self.payment_status.as_deref().unwrap_or("unknown"),
+    )
+  }
 }
 
 /// Fetches a subscription's current state -- used when a completed

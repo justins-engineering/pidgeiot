@@ -56,19 +56,28 @@ pub enum WebhookAction {
   /// subscription active while an invoice cannot be finalized, so it must
   /// be seen -- logged and mailed.
   ReportInvoiceFinalizationFailure,
+  /// `checkout.session.async_payment_succeeded`: a delayed-notification
+  /// payment (ACH Direct Debit) cleared after the session completed.
+  /// Entitlement is decided by the subscription's own status, so this is
+  /// only logged; it closes the loop the failure case opens.
+  ReportAsyncPaymentSucceeded,
+  /// `checkout.session.async_payment_failed`: the first debit bounced.
+  /// The subscription's own status change follows through Stripe's
+  /// dunning, later; this is the earliest signal that a new customer has
+  /// not actually paid, so it is logged and mailed.
+  ReportAsyncPaymentFailed,
   /// Everything else is acknowledged without acting.
   Acknowledge,
 }
 
 pub fn webhook_action(kind: &str) -> WebhookAction {
-  if kind.starts_with("customer.subscription.") {
-    WebhookAction::ApplySubscription
-  } else if kind == "checkout.session.completed" {
-    WebhookAction::ApplyCheckoutCompletion
-  } else if kind == "invoice.finalization_failed" {
-    WebhookAction::ReportInvoiceFinalizationFailure
-  } else {
-    WebhookAction::Acknowledge
+  match kind {
+    "checkout.session.completed" => WebhookAction::ApplyCheckoutCompletion,
+    "checkout.session.async_payment_succeeded" => WebhookAction::ReportAsyncPaymentSucceeded,
+    "checkout.session.async_payment_failed" => WebhookAction::ReportAsyncPaymentFailed,
+    "invoice.finalization_failed" => WebhookAction::ReportInvoiceFinalizationFailure,
+    _ if kind.starts_with("customer.subscription.") => WebhookAction::ApplySubscription,
+    _ => WebhookAction::Acknowledge,
   }
 }
 
@@ -359,6 +368,14 @@ mod tests {
       (
         "invoice.finalization_failed",
         WebhookAction::ReportInvoiceFinalizationFailure,
+      ),
+      (
+        "checkout.session.async_payment_succeeded",
+        WebhookAction::ReportAsyncPaymentSucceeded,
+      ),
+      (
+        "checkout.session.async_payment_failed",
+        WebhookAction::ReportAsyncPaymentFailed,
       ),
       ("invoice.finalized", WebhookAction::Acknowledge),
       ("invoice.paid", WebhookAction::Acknowledge),

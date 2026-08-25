@@ -4727,6 +4727,37 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           )
           .await;
         }
+        // Both are delayed-notification outcomes for a session that
+        // already completed. The subscription's own lifecycle events carry
+        // the state this code acts on; these arrive first and say plainly
+        // whether the customer's first debit cleared.
+        WebhookAction::ReportAsyncPaymentSucceeded => {
+          let session =
+            serde_json::from_value::<StripeCheckoutSessionRow>(event.data.object.clone()).ok();
+          console_log!(
+            "Stripe webhook: {} delayed payment succeeded -- {}",
+            event.id,
+            session.map(|s| s.summary()).unwrap_or_else(|| "unreadable session".into())
+          );
+        }
+        WebhookAction::ReportAsyncPaymentFailed => {
+          let summary = serde_json::from_value::<StripeCheckoutSessionRow>(event.data.object.clone())
+            .map(|s| s.summary())
+            .unwrap_or_else(|_| "unreadable session".into());
+          console_error!(
+            "Stripe webhook: {} first debit FAILED after checkout -- {summary}",
+            event.id
+          );
+          send_ops_email(
+            &ctx.env,
+            "[OPS] Stripe: a customer's first debit failed after checkout",
+            &format!(
+              "Stripe event {} ({}, livemode={}).\n\n{summary}\n\nThe checkout completed but the delayed-notification payment (ACH Direct Debit) was returned. The subscription is entitled until Stripe's dunning changes its status; expect past_due and then unpaid through customer.subscription.updated. Consider contacting the customer.",
+              event.id, event.kind, event.livemode
+            ),
+          )
+          .await;
+        }
         WebhookAction::Acknowledge => {}
       }
 
