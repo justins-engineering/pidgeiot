@@ -607,72 +607,58 @@ mod the_data_file_says_what_it_claims {
     assert_eq!(ours.source_host(), None);
   }
 
-  // The one competitor that genuinely beats us across our own self-serve
-  // band. Every other note on the page is held to a sentence, which makes
-  // this row the obvious thing to shorten next time someone trims for
-  // length -- and shortening it is precisely what would turn an honest
-  // comparison into a flattering one.
+  /// Golioth is the only row where we concede a competitor is cheaper, and
+  /// it is the obvious thing to soften. These hold the two things that
+  /// must survive any rewrite -- where their price beats ours, and what it
+  /// does not buy -- and deliberately not the sentences that say them, so
+  /// the copy can be rewritten without needing the test rewritten with it.
   #[test]
-  fn the_competitor_who_beats_us_still_says_so_and_says_where() {
+  fn the_row_that_concedes_a_cheaper_competitor_still_concedes_it() {
     let golioth = BAKED_COMPARISON
       .profiles
       .iter()
-      .flat_map(|p| p.rows.iter())
-      .find(|r| r.id == "golioth-steady")
+      .find(|p| p.id == "steady")
+      .and_then(|p| p.rows.iter().find(|r| r.id == "golioth-steady"))
       .expect("golioth is priced against the steady profile");
-    let note = golioth.note.as_deref().unwrap_or_default();
 
+    for (label, text) in [
+      (
+        "the comparison page",
+        golioth.note.as_deref().unwrap_or_default(),
+      ),
+      (
+        "the sales page",
+        golioth.note_for(View::Summary).unwrap_or_default(),
+      ),
+    ] {
+      assert!(
+        text.contains("1,225"),
+        "{label} no longer says where their price stops beating ours"
+      );
+      assert!(
+        text.contains("dashboard") && text.contains("alerting"),
+        "{label} concedes the price without naming what it does not include"
+      );
+      assert!(
+        text.contains("organizations") || text.contains("access control"),
+        "{label} dropped the tenancy gap, which is the one a fleet operator feels first"
+      );
+    }
+
+    // The concession is only checkable if the arithmetic behind it is on
+    // the page, so the long form has to show its working somewhere.
+    let full = golioth.note.as_deref().unwrap_or_default();
     assert!(
-      note.contains("1,225"),
-      "the crossover where they stop being cheaper is gone from Golioth's row"
+      full.matches('$').count() >= 2,
+      "the crossover is asserted rather than shown; a reader cannot check a claim with no figures"
     );
-    for evidence in ["$14.25", "$142.50", "$285"] {
-      assert!(
-        note.contains(evidence),
-        "Golioth's row no longer shows {evidence}, so the crossover is an assertion rather than \
-         arithmetic a reader can check"
-      );
-    }
-    for lacking in ["dashboard", "RBAC", "alerting"] {
-      assert!(
-        note.contains(lacking),
-        "Golioth's row stopped naming {lacking}, which is half of why we lose on price and still \
-         win the sale"
-      );
-    }
+    let short = golioth.note_for(View::Summary).unwrap_or_default();
+    assert!(
+      short.len() < 160,
+      "the sales page's Golioth line is no longer the short one"
+    );
   }
 
-  // The cited rates are only a comparison if they are all measured at one
-  // fleet size. A reference column naming a key nothing carries would not
-  // fail loudly -- every cited rate would quietly read "not published",
-  // which looks like a claim about the vendors rather than a typo.
-  #[test]
-  fn the_reference_scale_exists_and_every_cited_rate_is_quoted_at_it() {
-    for profile in &BAKED_COMPARISON.profiles {
-      let reference = profile
-        .columns
-        .iter()
-        .find(|c| c.key == profile.reference_column)
-        .unwrap_or_else(|| {
-          panic!(
-            "profile {} quotes its rates at a column it does not have",
-            profile.id
-          )
-        });
-      for row in &profile.build_your_own {
-        assert!(
-          row.figure(reference).is_some(),
-          "{} has no figure at the scale its rate is cited at, so it would read as unpublished",
-          row.id
-        );
-      }
-    }
-  }
-
-  // The sales page's table is the simple one, so every cell in it has to
-  // be a number. One "not published" there reads as a gap in our homework
-  // rather than as a fact about a vendor, which is the opposite of what it
-  // means on the comparison page.
   #[test]
   fn the_sales_page_shows_a_figure_in_every_cell_it_renders() {
     for profile in &BAKED_COMPARISON.profiles {

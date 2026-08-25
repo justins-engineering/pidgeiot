@@ -24,7 +24,8 @@
     "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/.",
     "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000.",
     "A 10,000-device chatty figure is only published where the vendor's model is flat by the record (Golioth, Blues, AWS) or computable from our own published grid. Ours is Fleet's $1,499 plus overage on the messages past its 300M pool. Where a vendor's own arithmetic could not be reproduced at that size, the cell stays empty rather than estimated.",
-    "Figures are not all in dollars. Datacake publishes in euro and we keep it that way; the per-device columns are headed 'per device / month' rather than a currency for exactly that reason, and each figure carries its own symbol. Never convert silently."
+    "Figures are not all in dollars. Datacake publishes in euro and we keep it that way; the per-device columns are headed 'per device / month' rather than a currency for exactly that reason, and each figure carries its own symbol. Never convert silently.",
+    "Golioth's rows are the only place we concede a competitor is cheaper. Keep the crossover and the three things their price does not include; the wording is free to change, and the tests hold those two things rather than any sentence."
   ],
   "schema": 2,
   "stale_after_days": 90,
@@ -107,8 +108,8 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "A flat $0.25 to connect a device, barely moved by traffic, which lands at $0.285 here, so they beat us from our free tier up to about 1,225 devices: $14.25 against our $29 at fifty, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Builder and Growth are therefore feature-sold against them and never price-sold, because they ship no multi-tenant dashboard, no organizations or RBAC and no alerting, and they chase the same Zephyr-first developers we do.",
-          "summary_note": "Cheaper than us below about 1,225 devices, and ships no multi-tenant dashboard, organizations or alerting."
+          "note": "Golioth charge a flat $0.25 for every device that connects, plus data, which comes to about $0.285 a device each month at a report every five minutes and does not fall as a fleet grows. Below roughly 1,225 devices that beats our price: $14.25 against our $29 at fifty devices, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Above that line ours is the cheaper number. What their price does not include is a multi-tenant dashboard, organizations and access control, or alerting, so the question worth answering is whether you would build those yourself or do without them.",
+          "summary_note": "Cheaper than us below roughly 1,225 devices, and without a multi-tenant dashboard, organizations and access control, or alerting."
         },
         {
           "id": "thingsboard-steady",
@@ -446,7 +447,7 @@
           "status": "single-fetch",
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
-          "note": "Their rate is flat at any fleet size and beats us at this cadence throughout, and they still ship no multi-tenant dashboard, no organizations or RBAC and no alerting."
+          "note": "Their rate is flat at any fleet size and stays below ours at this reporting rate, and it does not include a multi-tenant dashboard, organizations and access control, or alerting."
         },
         {
           "id": "thingsboard-chatty",
