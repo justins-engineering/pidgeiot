@@ -1,10 +1,11 @@
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
   INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET,
-  StripeCheckoutSessionRow, StripeWebhookEvent, TelemetryHistoryPage, WebhookClaim, accept_invite,
-  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse,
-  check_org_cap, check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
+  StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent, TelemetryHistoryPage,
+  WebhookAction, WebhookClaim, accept_invite, apply_subscription, attach_stripe_customer,
+  authenticate_browser, backfill_owner_email, build_invite_url, change_member_role,
+  check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
+  check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
   constant_time_eq, count_billable_messages, create_checkout_session, create_customer,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
@@ -22,11 +23,11 @@ use crate::helpers::{
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   remove_member, rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
-  send_invite_email, sha256_hex, store_contact_submission, stripe_configured,
+  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, stripe_configured,
   sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
-  write_business_details,
+  webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -4604,7 +4605,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // Applied inline rather than enqueued: this is one indexed UPDATE,
       // far inside Stripe's delivery timeout. Anything heavier belongs on
       // the existing queue, with the 200 returned before the work.
-      if event.kind.starts_with("customer.subscription.") {
+      match webhook_action(&event.kind) {
+        WebhookAction::ApplySubscription => {
         let Ok(subscription) =
           serde_json::from_value::<capsules::StripeSubscriptionRow>(event.data.object.clone())
         else {
@@ -4635,7 +4637,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             event.kind
           );
         }
-      } else if event.kind == "checkout.session.completed" {
+        }
+        WebhookAction::ApplyCheckoutCompletion => {
         let Ok(session) =
           serde_json::from_value::<StripeCheckoutSessionRow>(event.data.object.clone())
         else {
@@ -4700,6 +4703,31 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           ),
           None => {}
         }
+        }
+        WebhookAction::ReportInvoiceFinalizationFailure => {
+          // Stripe keeps the subscription active while an invoice cannot
+          // be finalized, so entitlement continues while nothing is
+          // collected until somebody looks. Reported, then acked: a retry
+          // could change nothing, and the fix is in the Dashboard.
+          let invoice =
+            serde_json::from_value::<StripeInvoiceFailureRow>(event.data.object.clone())
+              .unwrap_or_default();
+          let summary = invoice.summary();
+          console_error!(
+            "Stripe webhook: {} invoice finalization failed -- {summary}",
+            event.id
+          );
+          send_ops_email(
+            &ctx.env,
+            "[OPS] Stripe invoice failed to finalize",
+            &format!(
+              "Stripe event {} ({}, livemode={}).\n\n{summary}\n\nStripe keeps the subscription active while its invoice cannot be finalized, so nothing is collected until the cause is fixed. Check the customer's billing address and tax settings in the Stripe Dashboard, then finalize the invoice there.",
+              event.id, event.kind, event.livemode
+            ),
+          )
+          .await;
+        }
+        WebhookAction::Acknowledge => {}
       }
 
       if mark_webhook_event_processed(&client, &event.id).await.is_err() {
