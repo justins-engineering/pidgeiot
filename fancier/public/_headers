@@ -3,20 +3,24 @@
 # copy, same as robots.txt). Without this, every asset ships the platform
 # default `Cache-Control: public, max-age=0, must-revalidate`, so repeat
 # visitors revalidate (and on ETag miss, re-download) the ~1.3MB-compressed
-# wasm bundle on every visit. Everything under /assets/ except the two
+# wasm bundle on every visit. Everything under /assets/ except the
 # exceptions below is content-hashed by dx (`-dxh<hash>` filenames), so a
 # new deploy changes the URL and immutable is safe.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
 # NOT content-hashed: the literal-path CSS copy that works around dx's
-# [web.resource] pre-hash-path bug (see build-release.sh) and the static
-# theme-init.js. Both keep the same URL across deploys, so they must stay
-# revalidatable. `!` detaches the /assets/* rule's header before re-adding.
+# [web.resource] pre-hash-path bug (see build-release.sh) and the two
+# pre-boot scripts Dioxus.toml loads by literal path, theme-init.js and
+# error-shim.js. All three keep the same URL across deploys, so they must
+# stay revalidatable. `!` detaches the /assets/* rule's header before re-adding.
 /assets/styling/main.css
   ! Cache-Control
   Cache-Control: public, max-age=300, must-revalidate
 /assets/theme-init.js
+  ! Cache-Control
+  Cache-Control: public, max-age=300, must-revalidate
+/assets/error-shim.js
   ! Cache-Control
   Cache-Control: public, max-age=300, must-revalidate
 
