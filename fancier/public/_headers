@@ -58,6 +58,8 @@
   Link: </pricing/index.md>; rel="alternate"; type="text/markdown"
 /compare/
   Link: </compare/index.md>; rel="alternate"; type="text/markdown"
+/self-hosting/
+  Link: </self-hosting/index.md>; rel="alternate"; type="text/markdown"
 /documentation/
   Link: </documentation/index.md>; rel="alternate"; type="text/markdown"
 /api-reference/

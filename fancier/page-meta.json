@@ -38,6 +38,10 @@
       "title": "Compare IoT Platforms by Real Fleet Cost | PidgeIoT",
       "description": "Every IoT platform price we could verify, normalized to one device per month at three fleet sizes, each with its source and the date we checked it."
     },
+    "/self-hosting/": {
+      "title": "What Self-Hosting an IoT Stack Costs | PidgeIoT",
+      "description": "ThingsBoard Community Edition is free software on a cheap server. We price the rest: the licence, the box, and the hours you spend patching and on call."
+    },
     "/documentation/": {
       "title": "Documentation — Connect Your First Device | PidgeIoT",
       "description": "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, tokens, shadows, telemetry, alerts, and over-the-air firmware updates."

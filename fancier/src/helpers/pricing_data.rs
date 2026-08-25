@@ -373,18 +373,23 @@ pub fn today() -> Date {
 /// leaves the baked copy on screen, which is a real table with real dates,
 /// so there is no error state worth showing a reader over it.
 pub async fn fetch_published() -> Option<Comparison> {
+  fetch_asset(ASSET_PATH).await
+}
+
+/// Read one of our own published data files. Shared by every page that
+/// renders from one, so the same-origin path, the failure handling and the
+/// deliberate avoidance of `api::helpers` are written once rather than
+/// copied per file.
+pub async fn fetch_asset<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
   let window = web_sys::window()?;
-  let response = JsFuture::from(window.fetch_with_str(ASSET_PATH))
+  let response = JsFuture::from(window.fetch_with_str(path))
     .await
     .ok()?
     .dyn_into::<web_sys::Response>()
     .ok()?;
 
   if !response.ok() {
-    error!(
-      "{ASSET_PATH} fetch failed with status: {}",
-      response.status()
-    );
+    error!("{path} fetch failed with status: {}", response.status());
     return None;
   }
 
@@ -396,7 +401,7 @@ pub async fn fetch_published() -> Option<Comparison> {
   match serde_json::from_str(&body) {
     Ok(comparison) => Some(comparison),
     Err(e) => {
-      error!("{ASSET_PATH} did not parse as a comparison: {e}");
+      error!("{path} did not parse: {e}");
       None
     }
   }

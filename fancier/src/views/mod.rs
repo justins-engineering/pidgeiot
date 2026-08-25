@@ -72,6 +72,9 @@ pub use documentation::DocumentationPage;
 mod getting_started;
 pub use getting_started::GettingStartedPage;
 
+mod self_hosting;
+pub use self_hosting::SelfHostingPage;
+
 mod compare;
 pub use compare::ComparePage;
 

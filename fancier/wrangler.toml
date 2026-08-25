@@ -49,6 +49,8 @@ run_worker_first = [
   "/pricing/",
   "/compare",
   "/compare/",
+  "/self-hosting",
+  "/self-hosting/",
   "/documentation",
   "/documentation/",
   "/api-reference",

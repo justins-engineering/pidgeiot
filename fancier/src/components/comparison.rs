@@ -49,7 +49,7 @@ fn FigureSource(row: Row, stale: bool) -> Element {
 /// list below the table, because a reader comparing prices will not scroll
 /// to find out what a price buys.
 #[component]
-fn ComparisonRow(
+pub fn ComparisonRow(
   row: Row,
   columns: Vec<Column>,
   view: View,
