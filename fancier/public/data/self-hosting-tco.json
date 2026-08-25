@@ -9,7 +9,15 @@
     "least flattering to us, and a comparison that picks the flattering end is not worth writing.",
     "Hours are deliberately NOT a figure here: they are the reader's, not ours. The page states",
     "the loaded hourly band and lets them do their own arithmetic.",
-    "Source: pricing-analysis-2026-08.md section 4.4."
+    "Where the figures come from. Ours is the Scale tier as src/views/pricing.rs prints it, which",
+    "is also the pidgeiot row's monthly total in pricing-comparison.json; all three must agree.",
+    "ThingsBoard's are the self-managed licence tab of thingsboard.io/pricing/, each row's source.",
+    "The analysis behind the page is outside this repo, in the pidgeiot-business directory beside",
+    "it: ../pidgeiot-business/pricing-analysis-2026-08.md section 4.4, 'Customers self-hosting",
+    "instead of paying', for the three options and the $20 to $40 server band, and section 1.3",
+    "(ThingsBoard, the primary competitor) for the $499 self-managed licence at 1,000 devices.",
+    "The $75 to $125 loaded hourly band is ../pidgeiot-business/payments-decision-2026-08.md",
+    "section 3a.5, 'Revised cost, with the engineering priced in'."
   ],
   "schema": 1,
   "stale_after_days": 90,
