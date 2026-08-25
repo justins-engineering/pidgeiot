@@ -68,3 +68,5 @@ mod visibility;
 pub use visibility::is_page_hidden;
 
 pub mod pricing_data;
+
+pub mod tco_data;

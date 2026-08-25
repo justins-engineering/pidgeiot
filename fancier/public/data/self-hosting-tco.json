@@ -1,0 +1,123 @@
+{
+  "_how_to_update": [
+    "The self-hosting cost comparison on /self-hosting/. Same rules as pricing-comparison.json:",
+    "edit a figure, set its row's last_verified to the date you checked its source, set status,",
+    "and redeploy the assets. The page re-reads this file on load, so no Rust rebuild is needed.",
+    "Figures older than stale_after_days render with a visible recheck cue.",
+    "Every figure is a MONTHLY cost for a 1,000-device fleet, so the three options are comparable.",
+    "The server line uses the CHEAPEST tier of its published range on purpose. It is the number",
+    "least flattering to us, and a comparison that picks the flattering end is not worth writing.",
+    "Hours are deliberately NOT a figure here: they are the reader's, not ours. The page states",
+    "the loaded hourly band and lets them do their own arithmetic.",
+    "Source: pricing-analysis-2026-08.md section 4.4."
+  ],
+  "schema": 1,
+  "stale_after_days": 90,
+  "heading": "What a thousand devices cost a month, before your time",
+  "subhead": "Software licence, the server it runs on, and what that comes to before anyone is paid to look after it.",
+  "columns": [
+    {
+      "key": "software",
+      "label": "Software",
+      "unit": "USD/month at 1,000 devices"
+    },
+    {
+      "key": "server",
+      "label": "Server",
+      "unit": "USD/month at 1,000 devices"
+    },
+    {
+      "key": "subtotal",
+      "label": "Before your time",
+      "unit": "USD/month at 1,000 devices"
+    }
+  ],
+  "rows": [
+    {
+      "id": "thingsboard-ce",
+      "platform": "ThingsBoard Community Edition",
+      "plan": "self-hosted",
+      "figures": {
+        "software": {
+          "value": "$0",
+          "unit": "USD/month at 1,000 devices",
+          "qualifier": "Apache 2.0, genuinely free"
+        },
+        "server": {
+          "value": "$20",
+          "unit": "USD/month at 1,000 devices",
+          "qualifier": "cheapest tier; $20 to $40 typical"
+        },
+        "subtotal": {
+          "value": "$20",
+          "unit": "USD/month at 1,000 devices"
+        }
+      },
+      "status": "verified",
+      "last_verified": "2026-08-23",
+      "source": "https://thingsboard.io/pricing/",
+      "note": "Free software, and it ships MQTT and dashboards we do not. Everything below this line is yours: upgrades, backups, TLS renewal, and the pager."
+    },
+    {
+      "id": "thingsboard-pe",
+      "platform": "ThingsBoard Professional Edition",
+      "plan": "self-managed licence",
+      "figures": {
+        "software": {
+          "value": "$499",
+          "unit": "USD/month at 1,000 devices",
+          "qualifier": "1,000-device licence"
+        },
+        "server": {
+          "value": "$20",
+          "unit": "USD/month at 1,000 devices",
+          "qualifier": "cheapest tier; $20 to $40 typical"
+        },
+        "subtotal": {
+          "value": "$519",
+          "unit": "USD/month at 1,000 devices"
+        }
+      },
+      "status": "verified",
+      "last_verified": "2026-08-23",
+      "source": "https://thingsboard.io/pricing/",
+      "note": "You pay for the licence and still run the machine, so the ops burden is identical to Community Edition."
+    },
+    {
+      "id": "pidgeiot-scale",
+      "platform": "PidgeIoT",
+      "plan": "Scale",
+      "figures": {
+        "software": {
+          "value": "$349",
+          "unit": "USD/month at 1,000 devices"
+        },
+        "server": {
+          "value": "$0",
+          "unit": "USD/month at 1,000 devices",
+          "qualifier": "there is no server"
+        },
+        "subtotal": {
+          "value": "$349",
+          "unit": "USD/month at 1,000 devices"
+        }
+      },
+      "status": "ours",
+      "last_verified": "2026-08-23",
+      "note": "33% under self-managed Professional Edition before a single hour is counted, and the hours below are ours rather than yours."
+    }
+  ],
+  "hours": {
+    "heading": "Then your hours, which nobody budgets",
+    "body": "Patching, upgrades, backups you have tested restoring, TLS renewal, and being the person who gets paged when ingestion stops. At $75 to $125 an hour, the loaded rate we use for our own build-versus-buy decisions, Community Edition costs what we charge at somewhere between two and a half and four and a half hours a month.",
+    "rate_low": "$75",
+    "rate_high": "$125",
+    "source": "https://pidgeiot.com/pricing/",
+    "last_verified": "2026-08-23"
+  },
+  "concession": "If MQTT, your own dashboards, or owning the box matter more than those hours, self-host. We would rather you did that than pay us and resent it. Simplicity alone wins us nothing against software that is free and good.",
+  "exit": {
+    "heading": "The question worth asking instead",
+    "body": "Self-hosting is usually bought as insurance against being trapped. Ask about leaving instead: the wire protocol and API are documented and open, telemetry forwards to any InfluxDB-compatible store you own, and every device's history is exportable through the documented API. You can leave, which is worth more than being able to self-host."
+  }
+}
