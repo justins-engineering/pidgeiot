@@ -23,7 +23,8 @@
     "TWO pages render this file. /pricing/ shows each profile's summary_rows at its summary_columns and never shows build_your_own; /compare/ shows every row at full_columns plus the build_your_own citations. One figure, edited once, corrects both.",
     "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/.",
     "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000.",
-    "A 10,000-device chatty figure is only published where the vendor's model is flat by the record (Golioth, Blues, AWS) or computable from our own published grid. Ours is Fleet's $1,499 plus overage on the messages past its 300M pool. Where a vendor's own arithmetic could not be reproduced at that size, the cell stays empty rather than estimated."
+    "A 10,000-device chatty figure is only published where the vendor's model is flat by the record (Golioth, Blues, AWS) or computable from our own published grid. Ours is Fleet's $1,499 plus overage on the messages past its 300M pool. Where a vendor's own arithmetic could not be reproduced at that size, the cell stays empty rather than estimated.",
+    "Figures are not all in dollars. Datacake publishes in euro and we keep it that way; the per-device columns are headed 'per device / month' rather than a currency for exactly that reason, and each figure carries its own symbol. Never convert silently."
   ],
   "schema": 2,
   "stale_after_days": 90,
@@ -36,17 +37,17 @@
         {
           "key": "one",
           "label": "1 device",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         },
         {
           "key": "thousand",
           "label": "1,000 devices",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         },
         {
           "key": "ten_thousand",
           "label": "10,000 devices",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         },
         {
           "key": "monthly_at_thousand",
@@ -61,16 +62,16 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "free tier"
             },
             "thousand": {
               "value": "$0.349",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.150",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "monthly_at_thousand": {
               "value": "$349",
@@ -88,15 +89,15 @@
           "figures": {
             "one": {
               "value": "$0.285",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$0.285",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.285",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "monthly_at_thousand": {
               "value": "$285",
@@ -115,16 +116,16 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "free to 5"
             },
             "thousand": {
               "value": "$0.749",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.200",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "monthly_at_thousand": {
               "value": "$749",
@@ -142,16 +143,16 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "free to 10"
             },
             "thousand": {
               "value": "$3.219",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$2.122",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -165,18 +166,18 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "free to 10, Nordic"
             },
             "thousand": {
               "value": "$3.495",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "verified",
-          "last_verified": "2026-08-24",
+          "last_verified": "2026-08-25",
           "source": "https://memfault.com/pricing/",
-          "note": "Crash and firmware observability, not a telemetry platform. Free tier is Nordic parts only."
+          "note": "Crash and firmware observability, not a telemetry platform, and its free tier is Nordic parts only. Growth starts at $3,495 and Scale at $6,695, both including a thousand devices with no overage rate published, which is why ten thousand has no figure."
         },
         {
           "id": "particle-steady",
@@ -184,16 +185,16 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "free tier"
             },
             "thousand": {
               "value": "$3.887",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$3.648",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "monthly_at_thousand": {
               "value": "$3,887",
@@ -212,15 +213,15 @@
           "figures": {
             "one": {
               "value": "$2.86",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$6.604",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$6.607",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "monthly_at_thousand": {
               "value": "$6,604",
@@ -238,22 +239,35 @@
           "figures": {
             "one": {
               "value": "$49.00",
-              "unit": "USD/device/month"
+              "unit": "per device / month",
+              "qualifier": "starting price"
             }
           },
           "status": "verified",
-          "last_verified": "2026-08-24",
+          "last_verified": "2026-08-25",
           "source": "https://tago.io/pricing",
-          "note": "No overage rate published above a million inputs, which this profile crosses near 114 devices."
+          "note": "Their plans do reach ten thousand devices, from $199 a month, but every tier is a starting price plus usage beyond it and no rate for that usage is published anywhere, so neither larger fleet reduces to a figure we could stand behind."
         },
         {
           "id": "datacake-steady",
           "platform": "Datacake",
-          "figures": {},
-          "status": "unpriced",
-          "last_verified": "2026-08-24",
+          "figures": {
+            "one": {
+              "value": "\u20ac25",
+              "unit": "per device / month",
+              "qualifier": "Hobby, up to 25 devices"
+            },
+            "thousand": {
+              "value": "\u20ac0.659",
+              "unit": "per device / month",
+              "qualifier": "Plus, a full tier"
+            }
+          },
+          "status": "verified",
+          "last_verified": "2026-08-25",
           "source": "https://datacake.co/pricing",
-          "note": "Their pricing page answered HTTP 429 on every attempt, twice, twelve days apart."
+          "note": "Priced in euro and left that way rather than converted at a rate that would be stale by the time you read it. Their tiers are device ceilings, so a thousand devices is the 659 euro Plus tier and only reaches 0.659 each if you fill it; above a thousand is quote-only. Read from the vendor's own page by hand, because automated fetches were refused twice.",
+          "plan": "device tiers"
         }
       ],
       "build_your_own": [
@@ -264,15 +278,15 @@
           "figures": {
             "one": {
               "value": "$0.045",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$0.045",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.045",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -287,15 +301,15 @@
           "figures": {
             "one": {
               "value": "$0.029",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$0.029",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.029",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -310,11 +324,11 @@
           "figures": {
             "thousand": {
               "value": "$0.010",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.005",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -329,11 +343,11 @@
           "figures": {
             "thousand": {
               "value": "$0.150",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.082",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -372,17 +386,17 @@
         {
           "key": "one",
           "label": "1 device",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         },
         {
           "key": "thousand",
           "label": "1,000 devices",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         },
         {
           "key": "ten_thousand",
           "label": "10,000 devices",
-          "unit": "USD/device/month"
+          "unit": "per device / month"
         }
       ],
       "rows": [
@@ -392,17 +406,17 @@
           "figures": {
             "one": {
               "value": "$0",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "inside the free pool"
             },
             "thousand": {
               "value": "$1.50",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "Fleet, pool covers it"
             },
             "ten_thousand": {
               "value": "$7.03",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "Fleet plus overage"
             }
           },
@@ -418,15 +432,15 @@
           "figures": {
             "one": {
               "value": "$0.665",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$0.665",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$0.665",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -440,11 +454,11 @@
           "figures": {
             "one": {
               "value": "$49.00",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$1.499",
-              "unit": "USD/device/month",
+              "unit": "per device / month",
               "qualifier": "$1,499/mo across the fleet"
             }
           },
@@ -459,11 +473,11 @@
           "figures": {
             "one": {
               "value": "$299.00",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$31.15",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -478,15 +492,15 @@
           "figures": {
             "one": {
               "value": "$190.65",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$194.40",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$194.40",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -504,15 +518,15 @@
           "figures": {
             "one": {
               "value": "$1.241",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "thousand": {
               "value": "$1.241",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             },
             "ten_thousand": {
               "value": "$1.241",
-              "unit": "USD/device/month"
+              "unit": "per device / month"
             }
           },
           "status": "single-fetch",
@@ -556,6 +570,17 @@
         "Ruled off the page 2026-08-24: without the fork, the residual difference is too thin to",
         "earn space on the page, and a differentiator a prospect can rebut in one reply costs more",
         "than it earns."
+      ]
+    },
+    "tagoio-region-toggle": {
+      "checked": "2026-08-25",
+      "sources": [
+        "https://tago.io/pricing"
+      ],
+      "finding": [
+        "tago.io/pricing carries a USA / Europe toggle; the figures we quote are the USA side, and both",
+        "Starter and Scale say 'Servers in the US'. Relevant to the EU-residency question, not to a price,",
+        "so it is recorded here rather than put on the page."
       ]
     }
   }

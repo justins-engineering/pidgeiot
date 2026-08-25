@@ -167,7 +167,7 @@ impl Figure {
   pub fn amount(&self) -> Option<f64> {
     self
       .value
-      .trim_start_matches('$')
+      .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '-')
       .replace(',', "")
       .parse()
       .ok()
@@ -527,8 +527,9 @@ mod the_data_file_says_what_it_claims {
     assert!(
       rows
         .iter()
-        .any(|(r, _)| r.provenance() == Provenance::Unpriced),
-      "no vendor is recorded as unpriceable"
+        .any(|(r, cols)| cols.iter().any(|c| r.figure(c).is_none())),
+      "every cell is filled, which either means every vendor publishes everything or that a gap \
+       was quietly estimated"
     );
   }
 
