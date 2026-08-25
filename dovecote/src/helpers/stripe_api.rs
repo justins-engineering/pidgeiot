@@ -115,6 +115,10 @@ pub async fn stripe_get<T: DeserializeOwned>(env: &Env, path: &str) -> Result<T,
   stripe_request(env, Method::Get, path, None, None).await
 }
 
+pub async fn stripe_delete<T: DeserializeOwned>(env: &Env, path: &str) -> Result<T, StripeError> {
+  stripe_request(env, Method::Delete, path, None, None).await
+}
+
 async fn stripe_request<T: DeserializeOwned>(
   env: &Env,
   method: Method,
@@ -364,11 +368,54 @@ struct StripeCheckoutSession {
   url: Option<String>,
 }
 
-/// Creates a subscription-mode Checkout session for a paid tier: licensed
-/// tier price plus both metered overage prices (metered items carry no
-/// quantity). `client_reference_id` and `subscription_data[metadata]` both
-/// name the org, so the webhook can bind the result even if the org row's
-/// customer id were somehow missing.
+/// The complete form body a paid-tier Checkout session is created with:
+/// licensed tier price plus both metered overage prices (metered items
+/// carry no quantity), the org named twice (`client_reference_id` and
+/// `subscription_data[metadata]`) so the webhook can bind the result even
+/// if the org row's customer id were somehow missing, and the tax set.
+///
+/// Built apart from the request so the exact set is pinned by a test.
+/// Stripe Tax is active on the account but computes nothing for a session
+/// that does not ask, and it can only compute against an address it has
+/// been given -- hence the address collection, and the `customer_update`
+/// entries that let Checkout write that address (and the legal business
+/// name) back onto the Customer it was handed, where every later
+/// subscription invoice reads them from.
+pub fn checkout_session_params<'a>(
+  customer_id: &'a str,
+  org_id: &'a str,
+  tier: capsules::BillingPlan,
+  prices: &'a CheckoutPrices,
+  success_url: &'a str,
+  cancel_url: &'a str,
+) -> Vec<(&'static str, &'a str)> {
+  vec![
+    ("mode", "subscription"),
+    ("customer", customer_id),
+    ("client_reference_id", org_id),
+    ("success_url", success_url),
+    ("cancel_url", cancel_url),
+    ("line_items[0][price]", &prices.tier_price_id),
+    ("line_items[0][quantity]", "1"),
+    ("line_items[1][price]", &prices.message_overage_price_id),
+    ("line_items[2][price]", &prices.device_overage_price_id),
+    ("subscription_data[metadata][plan]", tier.as_str()),
+    ("subscription_data[metadata][org_id]", org_id),
+    ("automatic_tax[enabled]", "true"),
+    ("billing_address_collection", "required"),
+    ("customer_update[address]", "auto"),
+    ("customer_update[name]", "auto"),
+    // Checkout shows this form only to a Customer with no tax ID yet, so
+    // an org whose registration was forwarded ahead of the session never
+    // sees it. `if_supported` is what keeps a sale abroad B2B: wherever
+    // Checkout can collect a tax ID, a buyer without one cannot pay.
+    ("tax_id_collection[enabled]", "true"),
+    ("tax_id_collection[required]", "if_supported"),
+  ]
+}
+
+/// Creates a subscription-mode Checkout session for a paid tier; the body
+/// is `checkout_session_params`.
 pub async fn create_checkout_session(
   env: &Env,
   customer_id: &str,
@@ -378,25 +425,9 @@ pub async fn create_checkout_session(
   success_url: &str,
   cancel_url: &str,
 ) -> Result<String, StripeError> {
-  let session: StripeCheckoutSession = stripe_post(
-    env,
-    "/v1/checkout/sessions",
-    &[
-      ("mode", "subscription"),
-      ("customer", customer_id),
-      ("client_reference_id", org_id),
-      ("success_url", success_url),
-      ("cancel_url", cancel_url),
-      ("line_items[0][price]", &prices.tier_price_id),
-      ("line_items[0][quantity]", "1"),
-      ("line_items[1][price]", &prices.message_overage_price_id),
-      ("line_items[2][price]", &prices.device_overage_price_id),
-      ("subscription_data[metadata][plan]", tier.as_str()),
-      ("subscription_data[metadata][org_id]", org_id),
-    ],
-    None,
-  )
-  .await?;
+  let params = checkout_session_params(customer_id, org_id, tier, prices, success_url, cancel_url);
+  let session: StripeCheckoutSession =
+    stripe_post(env, "/v1/checkout/sessions", &params, None).await?;
 
   session
     .url
@@ -414,10 +445,36 @@ pub async fn create_checkout_session(
 ///
 /// `create_prorations` in both directions: an upgrade charges the price
 /// difference for the rest of the period onto the next invoice, a
-/// downgrade credits it. No idempotency key on purpose -- a retry that
-/// sets the same prices again is a semantic no-op, while a deterministic
-/// key would make a later legitimate switch back to this tier replay the
-/// stale cached response instead of applying.
+/// downgrade credits it.
+///
+/// Turning Stripe Tax on at the account does not reach into subscriptions
+/// that already exist. This is the one write made to a live subscription,
+/// so it is where one created before tax was enabled converges.
+pub fn subscription_tier_params<'a>(
+  licensed_item_id: &'a str,
+  device_overage_item_id: Option<&'a str>,
+  prices: &'a CheckoutPrices,
+  tier: capsules::BillingPlan,
+) -> Vec<(&'static str, &'a str)> {
+  let mut params = vec![
+    ("items[0][id]", licensed_item_id),
+    ("items[0][price]", prices.tier_price_id.as_str()),
+    ("items[1][price]", prices.device_overage_price_id.as_str()),
+    ("proration_behavior", "create_prorations"),
+    ("metadata[plan]", tier.as_str()),
+    ("automatic_tax[enabled]", "true"),
+  ];
+  if let Some(device_item_id) = device_overage_item_id {
+    params.push(("items[1][id]", device_item_id));
+  }
+  params
+}
+
+/// Applies `subscription_tier_params` to a live subscription. No
+/// idempotency key on purpose -- a retry that sets the same prices again
+/// is a semantic no-op, while a deterministic key would make a later
+/// legitimate switch back to this tier replay the stale cached response
+/// instead of applying.
 pub async fn update_subscription_tier(
   env: &Env,
   subscription_id: &str,
@@ -426,16 +483,7 @@ pub async fn update_subscription_tier(
   prices: &CheckoutPrices,
   tier: capsules::BillingPlan,
 ) -> Result<capsules::StripeSubscriptionRow, StripeError> {
-  let mut params = vec![
-    ("items[0][id]", licensed_item_id),
-    ("items[0][price]", prices.tier_price_id.as_str()),
-    ("items[1][price]", prices.device_overage_price_id.as_str()),
-    ("proration_behavior", "create_prorations"),
-    ("metadata[plan]", tier.as_str()),
-  ];
-  if let Some(device_item_id) = device_overage_item_id {
-    params.push(("items[1][id]", device_item_id));
-  }
+  let params = subscription_tier_params(licensed_item_id, device_overage_item_id, prices, tier);
   stripe_post(
     env,
     &format!(
@@ -471,9 +519,11 @@ pub async fn create_portal_session(
   Ok(session.url)
 }
 
-/// The slice of a `checkout.session.completed` webhook object the handler
-/// needs: who paid (customer), what it bought (subscription), and which
-/// org started the session.
+/// The slice of a `checkout.session.*` webhook object the handler needs:
+/// who paid (customer), what it bought (subscription), which org started
+/// the session, and whether the money has actually arrived -- `unpaid` on
+/// a completed session means a delayed-notification method (ACH) is still
+/// processing.
 #[derive(Deserialize, Debug)]
 pub struct StripeCheckoutSessionRow {
   #[serde(default)]
@@ -482,6 +532,22 @@ pub struct StripeCheckoutSessionRow {
   pub subscription: Option<String>,
   #[serde(default)]
   pub client_reference_id: Option<String>,
+  #[serde(default)]
+  pub payment_status: Option<String>,
+}
+
+impl StripeCheckoutSessionRow {
+  /// One line naming the session's parties for a log: org, customer,
+  /// subscription, payment status. Stripe ids only.
+  pub fn summary(&self) -> String {
+    format!(
+      "org {} customer {} subscription {} payment_status {}",
+      self.client_reference_id.as_deref().unwrap_or("unknown"),
+      self.customer.as_deref().unwrap_or("unknown"),
+      self.subscription.as_deref().unwrap_or("none"),
+      self.payment_status.as_deref().unwrap_or("unknown"),
+    )
+  }
 }
 
 /// Fetches a subscription's current state -- used when a completed
@@ -529,7 +595,8 @@ pub async fn post_meter_event(
 
 #[cfg(test)]
 mod tests {
-  use super::form_encode;
+  use super::{CheckoutPrices, checkout_session_params, form_encode, subscription_tier_params};
+  use capsules::BillingPlan;
 
   #[test]
   fn form_encoding_escapes_values_and_bracketed_keys() {
@@ -538,5 +605,99 @@ mod tests {
       "email=a%2Bb%40example.com&items%5B0%5D%5Bprice%5D=price_1"
     );
     assert_eq!(form_encode(&[]), "");
+  }
+
+  fn prices() -> CheckoutPrices {
+    CheckoutPrices {
+      tier_price_id: "price_tier".into(),
+      message_overage_price_id: "price_msg".into(),
+      device_overage_price_id: "price_dev".into(),
+    }
+  }
+
+  /// The tax-related half of the session, in full. Every entry here is
+  /// something Stripe Tax needs before it computes anything; dropping any
+  /// one of them silently produces untaxed subscriptions again.
+  const TAX_PARAMS: &[(&str, &str)] = &[
+    ("automatic_tax[enabled]", "true"),
+    ("billing_address_collection", "required"),
+    ("customer_update[address]", "auto"),
+    ("customer_update[name]", "auto"),
+    ("tax_id_collection[enabled]", "true"),
+    ("tax_id_collection[required]", "if_supported"),
+  ];
+
+  #[test]
+  fn checkout_session_body_is_exactly_the_documented_set() {
+    let prices = prices();
+    let params = checkout_session_params(
+      "cus_1",
+      "org-1",
+      BillingPlan::Growth,
+      &prices,
+      "https://app/ok",
+      "https://app/no",
+    );
+    let mut expected: Vec<(&str, &str)> = vec![
+      ("mode", "subscription"),
+      ("customer", "cus_1"),
+      ("client_reference_id", "org-1"),
+      ("success_url", "https://app/ok"),
+      ("cancel_url", "https://app/no"),
+      ("line_items[0][price]", "price_tier"),
+      ("line_items[0][quantity]", "1"),
+      ("line_items[1][price]", "price_msg"),
+      ("line_items[2][price]", "price_dev"),
+      ("subscription_data[metadata][plan]", "growth"),
+      ("subscription_data[metadata][org_id]", "org-1"),
+    ];
+    expected.extend_from_slice(TAX_PARAMS);
+    assert_eq!(params, expected);
+  }
+
+  #[test]
+  fn every_tax_parameter_appears_once_for_every_tier() {
+    let prices = prices();
+    for tier in [
+      BillingPlan::Builder,
+      BillingPlan::Growth,
+      BillingPlan::Scale,
+      BillingPlan::Fleet,
+    ] {
+      let params = checkout_session_params("cus_1", "org-1", tier, &prices, "s", "c");
+      for (key, value) in TAX_PARAMS {
+        let found: Vec<&str> = params
+          .iter()
+          .filter(|(k, _)| k == key)
+          .map(|(_, v)| *v)
+          .collect();
+        assert_eq!(found, vec![*value], "{key} for {tier:?}");
+      }
+      // Exemption is Stripe Tax's decision from the address and tax ID,
+      // never asserted here by hand.
+      assert!(
+        params.iter().all(|(k, _)| !k.contains("tax_exempt")),
+        "{tier:?} set tax_exempt by hand"
+      );
+      // And the whole thing survives form encoding with its brackets.
+      let body = form_encode(&params);
+      assert!(body.contains("automatic_tax%5Benabled%5D=true"));
+      assert!(body.contains("tax_id_collection%5Brequired%5D=if_supported"));
+    }
+  }
+
+  #[test]
+  fn plan_change_asks_for_tax_and_addresses_the_device_item_only_when_it_exists() {
+    let prices = prices();
+    let with_item = subscription_tier_params("si_lic", Some("si_dev"), &prices, BillingPlan::Scale);
+    assert!(with_item.contains(&("automatic_tax[enabled]", "true")));
+    assert!(with_item.contains(&("items[1][id]", "si_dev")));
+    assert!(with_item.contains(&("items[1][price]", "price_dev")));
+    assert!(with_item.contains(&("metadata[plan]", "scale")));
+
+    let without_item = subscription_tier_params("si_lic", None, &prices, BillingPlan::Scale);
+    assert!(without_item.contains(&("automatic_tax[enabled]", "true")));
+    assert!(without_item.iter().all(|(k, _)| *k != "items[1][id]"));
+    assert!(without_item.contains(&("items[1][price]", "price_dev")));
   }
 }

@@ -37,7 +37,7 @@ pub mod tax_id;
 pub use tax_id::{
   EuVatId, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, PreparedTaxId, TaxIdDecision,
   TaxIdFormatError, TaxIdStatus, TaxIdType, ViesOutcome, decide_status, normalize_other_tax_id,
-  parse_eu_vat, prepare_tax_id, recheck_status, tax_id_log_label,
+  normalize_tax_id, parse_eu_vat, prepare_tax_id, recheck_status, tax_id_log_label,
 };
 
 // Client error-report envelope plus the normalizer/signature functions

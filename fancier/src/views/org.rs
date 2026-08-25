@@ -807,9 +807,9 @@ fn BusinessDetailsPanel(
                         tax_id_type.set(parsed);
                     }
                 },
-                option { value: "none", "None" }
-                option { value: "eu_vat", "EU VAT" }
-                option { value: "other", "Other" }
+                for kind in TaxIdType::ALL {
+                  option { value: "{kind.as_str()}", "{kind.label()}" }
+                }
               }
             }
             label { class: "form-control grow",
@@ -821,8 +821,8 @@ fn BusinessDetailsPanel(
                 disabled: tax_id_type() == TaxIdType::None,
                 placeholder: match tax_id_type() {
                     TaxIdType::EuVat => "IE6388047V",
-                    TaxIdType::Other => "Your registration number",
                     TaxIdType::None => "Choose a type first",
+                    _ => "Your registration number",
                 },
                 value: "{tax_id}",
                 oninput: move |e| tax_id.set(e.value()),

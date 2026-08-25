@@ -41,6 +41,130 @@ pub struct StripeWebhookEventData {
   pub object: serde_json::Value,
 }
 
+/// What the sink does with an event of a given type. Named in one place
+/// so the list of events the endpoint subscribes to in the Dashboard can
+/// be read against the list the code acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookAction {
+  /// Any `customer.subscription.*`: write the subscription's state onto
+  /// the org that owns it.
+  ApplySubscription,
+  /// `checkout.session.completed`: bind the customer to the org, then
+  /// apply the purchased subscription.
+  ApplyCheckoutCompletion,
+  /// `invoice.finalization_failed`: nothing to apply, but Stripe keeps the
+  /// subscription active while an invoice cannot be finalized, so it must
+  /// be seen -- logged and mailed.
+  ReportInvoiceFinalizationFailure,
+  /// `checkout.session.async_payment_succeeded`: a delayed-notification
+  /// payment (ACH Direct Debit) cleared after the session completed.
+  /// Entitlement is decided by the subscription's own status, so this is
+  /// only logged; it closes the loop the failure case opens.
+  ReportAsyncPaymentSucceeded,
+  /// `checkout.session.async_payment_failed`: the first debit bounced.
+  /// The subscription's own status change follows through Stripe's
+  /// dunning, later; this is the earliest signal that a new customer has
+  /// not actually paid, so it is logged and mailed.
+  ReportAsyncPaymentFailed,
+  /// Everything else is acknowledged without acting.
+  Acknowledge,
+}
+
+pub fn webhook_action(kind: &str) -> WebhookAction {
+  match kind {
+    "checkout.session.completed" => WebhookAction::ApplyCheckoutCompletion,
+    "checkout.session.async_payment_succeeded" => WebhookAction::ReportAsyncPaymentSucceeded,
+    "checkout.session.async_payment_failed" => WebhookAction::ReportAsyncPaymentFailed,
+    "invoice.finalization_failed" => WebhookAction::ReportInvoiceFinalizationFailure,
+    _ if kind.starts_with("customer.subscription.") => WebhookAction::ApplySubscription,
+    _ => WebhookAction::Acknowledge,
+  }
+}
+
+/// The slice of a failed invoice worth reporting. `customer` and
+/// `subscription` are kept as raw values because Stripe sends an id string
+/// on a webhook but an expanded object on some reads, and a report must
+/// not fail to parse over that.
+#[derive(Deserialize, Debug, Default)]
+pub struct StripeInvoiceFailureRow {
+  #[serde(default)]
+  pub id: Option<String>,
+  #[serde(default)]
+  customer: Option<serde_json::Value>,
+  #[serde(default)]
+  subscription: Option<serde_json::Value>,
+  #[serde(default)]
+  pub automatic_tax: Option<StripeInvoiceAutomaticTax>,
+  #[serde(default)]
+  pub last_finalization_error: Option<StripeInvoiceFinalizationError>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct StripeInvoiceAutomaticTax {
+  #[serde(default)]
+  pub enabled: bool,
+  /// `requires_location_inputs` is the one Stripe Tax produces when the
+  /// customer's address cannot be resolved for a calculation.
+  #[serde(default)]
+  pub status: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct StripeInvoiceFinalizationError {
+  #[serde(default)]
+  pub code: Option<String>,
+  #[serde(default, rename = "type")]
+  pub kind: Option<String>,
+  #[serde(default)]
+  pub message: Option<String>,
+}
+
+fn id_of(value: Option<&serde_json::Value>) -> Option<&str> {
+  let value = value?;
+  value
+    .as_str()
+    .or_else(|| value.get("id").and_then(|id| id.as_str()))
+}
+
+impl StripeInvoiceFailureRow {
+  pub fn customer_id(&self) -> Option<&str> {
+    id_of(self.customer.as_ref())
+  }
+
+  pub fn subscription_id(&self) -> Option<&str> {
+    id_of(self.subscription.as_ref())
+  }
+
+  /// One line naming the invoice, whose it is, and why it did not
+  /// finalize. Stripe object ids and Stripe's own error text only -- no
+  /// amounts, no address.
+  pub fn summary(&self) -> String {
+    let tax = match &self.automatic_tax {
+      Some(tax) if tax.enabled => format!(
+        "automatic_tax {}",
+        tax.status.as_deref().unwrap_or("status unknown")
+      ),
+      Some(_) => "automatic_tax off".to_string(),
+      None => "automatic_tax absent".to_string(),
+    };
+    let error = match &self.last_finalization_error {
+      Some(err) => format!(
+        "{} {}: {}",
+        err.kind.as_deref().unwrap_or("error"),
+        err.code.as_deref().unwrap_or("no code"),
+        err.message.as_deref().unwrap_or("no message")
+      ),
+      None => "no finalization error recorded".to_string(),
+    };
+    format!(
+      "invoice {} for customer {} (subscription {}): {tax}; {error}",
+      self.id.as_deref().unwrap_or("unknown"),
+      self.customer_id().unwrap_or("unknown"),
+      self.subscription_id().unwrap_or("none"),
+    )
+  }
+}
+
 /// The parsed `Stripe-Signature` header: one timestamp plus every `v1`
 /// signature it carries. There can legitimately be more than one during a
 /// signing-secret roll, when Stripe signs with both.
@@ -199,9 +323,110 @@ fn subtle_crypto() -> Result<SubtleCrypto, String> {
 #[cfg(test)]
 mod tests {
   use super::{
-    StripeSignatureHeader, parse_signature_header, signature_matches, signed_payload,
-    timestamp_within_tolerance,
+    StripeInvoiceFailureRow, StripeSignatureHeader, WebhookAction, parse_signature_header,
+    signature_matches, signed_payload, timestamp_within_tolerance, webhook_action,
   };
+
+  #[test]
+  fn every_subscribed_event_dispatches_and_nothing_else_acts() {
+    // The eight the endpoint has always carried, plus the finalization
+    // failure Stripe Tax makes possible. Anything not listed is acked and
+    // must stay that way, or an unsubscribed event could change state.
+    let cases: &[(&str, WebhookAction)] = &[
+      (
+        "customer.subscription.created",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.updated",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.deleted",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.paused",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.resumed",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.pending_update_applied",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "customer.subscription.pending_update_expired",
+        WebhookAction::ApplySubscription,
+      ),
+      (
+        "checkout.session.completed",
+        WebhookAction::ApplyCheckoutCompletion,
+      ),
+      (
+        "invoice.finalization_failed",
+        WebhookAction::ReportInvoiceFinalizationFailure,
+      ),
+      (
+        "checkout.session.async_payment_succeeded",
+        WebhookAction::ReportAsyncPaymentSucceeded,
+      ),
+      (
+        "checkout.session.async_payment_failed",
+        WebhookAction::ReportAsyncPaymentFailed,
+      ),
+      ("invoice.finalized", WebhookAction::Acknowledge),
+      ("invoice.paid", WebhookAction::Acknowledge),
+      ("customer.tax_id.updated", WebhookAction::Acknowledge),
+      ("checkout.session.expired", WebhookAction::Acknowledge),
+      ("customer.updated", WebhookAction::Acknowledge),
+      ("", WebhookAction::Acknowledge),
+    ];
+    for (kind, action) in cases {
+      assert_eq!(webhook_action(kind), *action, "{kind}");
+    }
+  }
+
+  #[test]
+  fn a_failed_invoice_is_summarised_from_either_id_shape() {
+    let on_webhook: StripeInvoiceFailureRow = serde_json::from_str(
+      r#"{"id":"in_1","customer":"cus_1","subscription":"sub_1",
+          "automatic_tax":{"enabled":true,"status":"requires_location_inputs"},
+          "last_finalization_error":{"type":"invalid_request_error",
+            "code":"customer_tax_location_invalid",
+            "message":"The customer's location could not be determined."}}"#,
+    )
+    .unwrap();
+    assert_eq!(on_webhook.customer_id(), Some("cus_1"));
+    assert_eq!(on_webhook.subscription_id(), Some("sub_1"));
+    let summary = on_webhook.summary();
+    assert!(summary.contains("invoice in_1 for customer cus_1 (subscription sub_1)"));
+    assert!(summary.contains("automatic_tax requires_location_inputs"));
+    assert!(summary.contains("invalid_request_error customer_tax_location_invalid"));
+
+    // Expanded objects on the same fields still parse and still name ids.
+    let expanded: StripeInvoiceFailureRow = serde_json::from_str(
+      r#"{"id":"in_2","customer":{"id":"cus_2","object":"customer"},"subscription":null}"#,
+    )
+    .unwrap();
+    assert_eq!(expanded.customer_id(), Some("cus_2"));
+    assert_eq!(expanded.subscription_id(), None);
+    assert!(
+      expanded
+        .summary()
+        .contains("(subscription none): automatic_tax absent; no finalization error recorded")
+    );
+
+    // A body with nothing recognisable still produces a report line.
+    let empty: StripeInvoiceFailureRow = serde_json::from_str("{}").unwrap();
+    assert!(
+      empty
+        .summary()
+        .starts_with("invoice unknown for customer unknown")
+    );
+  }
 
   // Fixed vector, computed outside this code so it checks the
   // implementation rather than agreeing with it:

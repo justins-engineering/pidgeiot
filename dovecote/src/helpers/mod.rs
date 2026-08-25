@@ -21,10 +21,16 @@ pub use stripe_api::resolve_checkout_prices;
 pub use stripe_api::stripe_configured;
 pub use stripe_api::update_subscription_tier;
 
+mod stripe_tax_identity;
+pub use stripe_tax_identity::sync_customer_tax_identity;
+
 mod stripe_webhook;
 pub use stripe_webhook::STRIPE_WEBHOOK_SECRET;
+pub use stripe_webhook::StripeInvoiceFailureRow;
 pub use stripe_webhook::StripeWebhookEvent;
+pub use stripe_webhook::WebhookAction;
 pub use stripe_webhook::verify_webhook_signature;
+pub use stripe_webhook::webhook_action;
 
 mod billing;
 pub use billing::WebhookClaim;
@@ -142,6 +148,7 @@ pub use firmware::upsert_flock_firmware;
 
 mod ops_probe;
 pub use ops_probe::probe_kratos_health;
+pub use ops_probe::send_ops_email;
 
 mod contact;
 pub use contact::notify_contact_submission;

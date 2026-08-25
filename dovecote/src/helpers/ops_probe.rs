@@ -25,6 +25,22 @@ pub(crate) fn ops_alert_email(env: &Env) -> Option<String> {
     .filter(|s| !s.trim().is_empty())
 }
 
+/// One best-effort email to `OPS_ALERT_EMAIL`. The same single knob as
+/// the probe: unset (staging, dev) means the subject is logged in place of
+/// a send; a transport failure is logged and swallowed, since nothing that
+/// calls this can do better by failing itself.
+pub async fn send_ops_email(env: &Env, subject: &str, text: &str) {
+  let Some(recipient) = ops_alert_email(env) else {
+    console_log!(
+      "ops email: OPS_ALERT_EMAIL not configured -- logging instead of sending ({subject})"
+    );
+    return;
+  };
+  if let Err(e) = send_via_usesend(env, &recipient, subject, text).await {
+    console_error!("ops email: send failed ({subject}): {e}");
+  }
+}
+
 /// One GET against Kratos's public readiness endpoint, reusing the
 /// `KRATOS_BROWSER_URL` var the Worker already holds for session
 /// validation -- the probe watches the exact origin real logins depend on,
