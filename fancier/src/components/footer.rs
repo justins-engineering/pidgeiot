@@ -133,6 +133,18 @@ pub fn Footer() -> Element {
                   li {
                     Link {
                       class: "hover:text-primary transition-colors duration-300 flex items-center group",
+                      to: Route::SelfHostingPage {},
+                      Icon {
+                        icon: LdChevronRight,
+                        class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
+                        title: "Chevron right",
+                      }
+                      "Self-hosting costs"
+                    }
+                  }
+                  li {
+                    Link {
+                      class: "hover:text-primary transition-colors duration-300 flex items-center group",
                       to: Route::DocumentationPage {},
                       Icon {
                         icon: LdChevronRight,

@@ -147,12 +147,14 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   }
 }
 
+/// `children` continue the answer's paragraph, for the one answer that
+/// ends in a link; plain text cannot carry a `Link`.
 #[component]
-fn Answer(question: String, body: String) -> Element {
+fn Answer(question: String, body: String, children: Element) -> Element {
   rsx! {
     div {
       h3 { class: "text-lg font-bold mb-2", "{question}" }
-      p { class: "text-base-content/75 leading-relaxed", "{body}" }
+      p { class: "text-base-content/75 leading-relaxed", "{body}" {children} }
     }
   }
 }
@@ -339,6 +341,14 @@ pub fn PricingPage() -> Element {
             "Full comparison: nine platforms, three fleet sizes, and what AWS and Azure cost \u{2192}"
           }
         }
+        // The row the table above cannot have. ThingsBoard's free edition
+        // on your own server is the alternative most readers of this
+        // table are actually weighing, and its price is mostly hours.
+        p { class: "mt-2 text-sm",
+          Link { class: "link link-hover font-medium", to: Route::SelfHostingPage {},
+            "Weighing your own server instead? What self-hosting actually costs \u{2192}"
+          }
+        }
       }
     }
 
@@ -365,6 +375,11 @@ pub fn PricingPage() -> Element {
           Answer {
             question: "Can I self-host it?",
             body: "Honestly: not usefully. The backend is built on Cloudflare Workers and Durable Objects, so \"self-hosting\" means running your own Cloudflare account. The source is public and always will be — but we're not going to sell you a self-host SKU we can't support well.",
+            " If what you're weighing is self-hosting a stack of your own instead, "
+            Link { class: "link link-hover font-medium", to: Route::SelfHostingPage {},
+              "here is what that actually costs"
+            }
+            "."
           }
           Answer {
             question: "Then what stops lock-in?",

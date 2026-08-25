@@ -32,7 +32,17 @@ pub fn ComparePage() -> Element {
       div { class: "max-w-5xl mx-auto",
         ComparisonTables { view: View::Full }
 
-        p { class: "mt-12 text-sm",
+        // The option this table cannot hold. Free software on a server of
+        // your own has no list price to normalize, and pricing it honestly
+        // takes a page, not a row.
+        p { class: "mt-12 text-base-content/70 leading-relaxed",
+          "One option has no row above because it has no price list: free software on a server of your own. "
+          Link { class: "link link-hover font-medium", to: Route::SelfHostingPage {},
+            "What self-hosting actually costs, on its own page →"
+          }
+        }
+
+        p { class: "mt-4 text-sm",
           Link { class: "link link-hover font-medium", to: Route::PricingPage {},
             "← Back to our own pricing"
           }
