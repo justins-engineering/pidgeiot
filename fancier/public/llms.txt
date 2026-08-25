@@ -34,6 +34,9 @@ with no hardware.
 - [Live Demo](https://pidgeiot.com/demo/): real device telemetry, no signup
 - [Features](https://pidgeiot.com/features/) and
   [Pricing](https://pidgeiot.com/pricing/): free during early access
+- [Self-hosting costs](https://pidgeiot.com/self-hosting/): what running
+  free software on your own server costs once the licence, the box, and
+  the hours on call are counted
 
 ## For agents
 
