@@ -75,4 +75,4 @@ mod feedback_modal;
 pub use feedback_modal::{FeedbackForm, FeedbackModal};
 
 mod comparison;
-pub use comparison::{ComparisonRow, ComparisonTables};
+pub use comparison::{ComparisonTable, ComparisonTables};

@@ -4,9 +4,42 @@
 // `pricing_data::View`. Keeping one implementation is the point: two
 // copies would be free to disagree about a figure, and the whole reason
 // these numbers live in a data file is that they must not.
-use crate::helpers::pricing_data::{self, Column, Profile, Provenance, Row, View};
+use crate::helpers::pricing_data::{self, Column, Figure, Profile, Provenance, Row, View};
 use dioxus::prelude::*;
 use time::Date;
+
+/// One column's worth of a row, as either layout prints it. Below `md`
+/// the row is a stack rather than a table row, with no header above it,
+/// so every line has to name its own column; drawing both layouts from
+/// this one list is what keeps the stack from dropping a column the table
+/// shows. A vendor with nothing published at a fleet size still gets that
+/// line, saying so, rather than the line quietly vanishing.
+struct Cell<'a> {
+  column: &'a Column,
+  figure: Option<&'a Figure>,
+}
+
+fn cells<'a>(row: &'a Row, columns: &'a [Column]) -> Vec<Cell<'a>> {
+  columns
+    .iter()
+    .map(|column| Cell {
+      column,
+      figure: row.figure(column),
+    })
+    .collect()
+}
+
+/// The one unit every column is measured in, if there is one. The stack
+/// says it once above the rows instead of after every label, which on a
+/// three-column page would print the same nine words nine times; where the
+/// columns disagree, each line keeps its own.
+fn shared_unit(columns: &[Column]) -> Option<&str> {
+  let first = columns.first()?.unit.as_str();
+  columns
+    .iter()
+    .all(|column| column.unit == first)
+    .then_some(first)
+}
 
 /// Where one figure came from and when we last looked. Deliberately quiet:
 /// a small line under the platform name, not a column of its own, because
@@ -48,6 +81,13 @@ fn FigureSource(row: Row, stale: bool) -> Element {
 /// decides it. The difference sits with the platform name rather than in a
 /// list below the table, because a reader comparing prices will not scroll
 /// to find out what a price buys.
+///
+/// Below `md` the row stacks: the platform on top, then one line per
+/// column with the column's own label beside the figure. A four-column
+/// table at phone width either scrolls sideways, which nothing on screen
+/// announces, or squeezes the notes to a few words a line; the stack shows
+/// every figure without either. The `max-md:` classes carry the whole
+/// treatment so that from `md` up the cells are styled exactly as before.
 #[component]
 pub fn ComparisonRow(
   row: Row,
@@ -57,10 +97,13 @@ pub fn ComparisonRow(
   stale_after: i64,
 ) -> Element {
   let stale = row.is_stale(today, stale_after);
+  let unit_per_line = shared_unit(&columns).is_none();
 
   rsx! {
-    tr { class: if row.provenance() == Provenance::Ours { "font-bold" },
-      td {
+    tr {
+      class: "max-md:block max-md:p-4",
+      class: if row.provenance() == Provenance::Ours { "font-bold" },
+      td { class: "max-md:block max-md:border-b-0 max-md:p-0",
         div {
           "{row.platform}"
           if let Some(plan) = row.plan.as_ref() {
@@ -72,16 +115,76 @@ pub fn ComparisonRow(
         }
         FigureSource { row: row.clone(), stale }
       }
-      for column in columns.iter() {
-        td { key: "{column.key}", class: "text-right whitespace-nowrap align-top",
-          if let Some(figure) = row.figure(column) {
-            div { "{figure.value}" }
-            if let Some(qualifier) = figure.qualifier.as_ref() {
-              div { class: "text-xs font-normal text-base-content/60", "{qualifier}" }
+      for cell in cells(&row, &columns) {
+        td {
+          key: "{cell.column.key}",
+          class: "text-right align-top md:whitespace-nowrap max-md:mt-3 max-md:flex max-md:items-baseline max-md:justify-between max-md:gap-4 max-md:border-b-0 max-md:p-0",
+          // The header is hidden at this width, so the line names its
+          // own column the way the header would have.
+          div { class: "md:hidden text-left font-semibold text-base-content/60",
+            div { "{cell.column.label}" }
+            if unit_per_line {
+              div { class: "text-xs font-normal", "{cell.column.unit}" }
             }
-          } else {
-            span { class: "font-normal italic text-base-content/50",
-              "{pricing_data::NOT_PUBLISHED}"
+          }
+          div {
+            if let Some(figure) = cell.figure {
+              div { "{figure.value}" }
+              if let Some(qualifier) = figure.qualifier.as_ref() {
+                div { class: "text-xs font-normal text-base-content/60", "{qualifier}" }
+              }
+            } else {
+              span { class: "font-normal italic text-base-content/50",
+                "{pricing_data::NOT_PUBLISHED}"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The table itself: one header naming the columns, one `ComparisonRow`
+/// per row. Shared by the pricing comparison and the self-hosting page so
+/// the phone treatment above is decided once. The first header is the
+/// caller's because the two pages disagree about what a row is: a platform
+/// on one, an option on the other.
+#[component]
+pub fn ComparisonTable(
+  first_heading: &'static str,
+  columns: Vec<Column>,
+  rows: Vec<Row>,
+  view: View,
+  today: Date,
+  stale_after: i64,
+) -> Element {
+  rsx! {
+    div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
+      if let Some(unit) = shared_unit(&columns) {
+        p { class: "md:hidden px-4 pt-3 text-xs text-base-content/60", "Figures are {unit}." }
+      }
+      table { class: "table max-md:block",
+        thead { class: "max-md:hidden",
+          tr {
+            th { "{first_heading}" }
+            for column in columns.iter() {
+              th { key: "{column.key}", class: "text-right",
+                div { "{column.label}" }
+                div { class: "font-normal text-base-content/60", "{column.unit}" }
+              }
+            }
+          }
+        }
+        tbody { class: "max-md:block max-md:divide-y max-md:divide-base-300",
+          for row in rows.iter() {
+            ComparisonRow {
+              key: "{row.id}",
+              row: row.clone(),
+              columns: columns.clone(),
+              view,
+              today,
+              stale_after,
             }
           }
         }
@@ -104,32 +207,13 @@ pub fn ProfileComparison(profile: Profile, view: View, today: Date, stale_after:
       }
       p { class: "mt-3 text-base-content/70 leading-relaxed", "{profile.subhead(view)}" }
 
-      div { class: "mt-6 overflow-x-auto rounded-2xl border border-base-300 bg-base-100",
-        table { class: "table",
-          thead {
-            tr {
-              th { "Platform" }
-              for column in columns.iter() {
-                th { key: "{column.key}", class: "text-right",
-                  div { "{column.label}" }
-                  div { class: "font-normal text-base-content/60", "{column.unit}" }
-                }
-              }
-            }
-          }
-          tbody {
-            for row in rows.iter() {
-              ComparisonRow {
-                key: "{row.id}",
-                row: row.clone(),
-                columns: columns.clone(),
-                view,
-                today,
-                stale_after,
-              }
-            }
-          }
-        }
+      ComparisonTable {
+        first_heading: "Platform",
+        columns,
+        rows,
+        view,
+        today,
+        stale_after,
       }
 
       if let Some(closing) = profile.closing.as_ref() {
@@ -239,5 +323,75 @@ pub fn ComparisonTables(view: View) -> Element {
         stale_after,
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod a_stacked_row_keeps_every_column {
+  use super::{cells, shared_unit};
+  use crate::helpers::pricing_data::{Column, Row};
+
+  fn column(key: &str) -> Column {
+    column_in(key, "u")
+  }
+
+  fn column_in(key: &str, unit: &str) -> Column {
+    serde_json::from_str(&format!(
+      r#"{{"key":"{key}","label":"{key}","unit":"{unit}"}}"#
+    ))
+    .unwrap()
+  }
+
+  fn row_with(figures: &str) -> Row {
+    serde_json::from_str(&format!(
+      r#"{{"id":"x","platform":"X","figures":{figures},"status":"verified","last_verified":"2026-08-23"}}"#
+    ))
+    .unwrap()
+  }
+
+  /// With no header above it, a stacked row is only readable if every
+  /// column is there in the header's order, and a cell nobody publishes
+  /// is a line that says so rather than a line that is missing.
+  #[test]
+  fn one_line_per_column_in_column_order_even_where_nothing_is_published() {
+    let columns = [column("one"), column("thousand"), column("ten_thousand")];
+    let row = row_with(r#"{"thousand":{"value":"$1","unit":"u"},"one":{"value":"$2","unit":"u"}}"#);
+
+    let cells = cells(&row, &columns);
+
+    assert_eq!(
+      cells
+        .iter()
+        .map(|c| c.column.key.as_str())
+        .collect::<Vec<_>>(),
+      ["one", "thousand", "ten_thousand"]
+    );
+    assert_eq!(
+      cells
+        .iter()
+        .map(|c| c.figure.map(|f| f.value.as_str()))
+        .collect::<Vec<_>>(),
+      [Some("$2"), Some("$1"), None]
+    );
+  }
+
+  /// A unit stated once above the stack is only honest if every line is
+  /// measured in it; one column in a different unit puts the unit back on
+  /// every line.
+  #[test]
+  fn the_unit_is_said_once_only_when_every_column_shares_it() {
+    let same = [
+      column_in("a", "per device / month"),
+      column_in("b", "per device / month"),
+    ];
+    assert_eq!(shared_unit(&same), Some("per device / month"));
+
+    let mixed = [
+      column_in("a", "per device / month"),
+      column_in("b", "USD/month"),
+    ];
+    assert_eq!(shared_unit(&mixed), None);
+
+    assert_eq!(shared_unit(&[]), None);
   }
 }

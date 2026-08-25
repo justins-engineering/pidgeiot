@@ -125,6 +125,16 @@ mod the_tco_file_says_what_it_claims {
     }
   }
 
+  /// On a phone the row stacks and reads top to bottom, so the line that
+  /// adds the others up has to be the last one.
+  #[test]
+  fn the_subtotal_is_the_last_column() {
+    assert_eq!(
+      BAKED_TCO.columns.last().map(|c| c.key.as_str()),
+      Some("subtotal")
+    );
+  }
+
   /// We are one of the three options, and a comparison of what other people
   /// charge that omits what we charge is not a comparison.
   #[test]
