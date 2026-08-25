@@ -333,8 +333,13 @@ pub async fn load_org_billing_overview(
 }
 
 /// Writes a subscription's state onto the org that owns it, matching on
-/// the subscription id, or on the customer id for the first subscription a
-/// customer has ever had.
+/// the subscription id, or on the customer id when the org has no live
+/// subscription to defend: none yet, or one that has ended. A customer who
+/// cancelled and later buys again gets a brand-new subscription id from
+/// Checkout, and the org still names the dead one; without the second
+/// clause that purchase would never bind and the org would stay on the
+/// free tier while Stripe charged for it. A live subscription's row is
+/// never re-pointed by a different subscription's event.
 ///
 /// Two guards, both because Stripe delivers events unordered:
 /// `billing_event_at` refuses an event older than the one already applied,
@@ -387,7 +392,9 @@ pub async fn apply_subscription(
            billing_event_at = $8,
            updated_at = now()
        WHERE (stripe_subscription_id = $2
-              OR (stripe_subscription_id IS NULL AND stripe_customer_id = $1))
+              OR (stripe_customer_id = $1
+                  AND (stripe_subscription_id IS NULL
+                       OR subscription_status IN ('canceled', 'incomplete_expired', 'unpaid'))))
          AND (billing_event_at IS NULL OR billing_event_at <= $8)
        RETURNING id;",
       &[
