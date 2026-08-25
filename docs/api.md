@@ -490,17 +490,18 @@ never carry one in full — only its kind, country prefix and length (`capsules:
 |---|---|---|
 | `none` | Nothing on file. Sending it with a non-empty `tax_id` is a `400`; it is how the field is cleared. | — |
 | `eu_vat` | An EU (or Northern Ireland, `XI`) VAT number. | Yes, against VIES |
-| `other` | Any other jurisdiction — GST, ABN, EIN. Format sanity only. | No |
+| `gb_vat`, `au_abn`, `ca_gst_hst`, `ca_bn`, `in_gst`, `us_ein`, `nz_gst`, `sg_gst`, `jp_trn`, `no_vat`, `za_vat` | A registration Stripe can place by jurisdiction; the values are Stripe's own tax-ID types, so the mapping is the name. Format sanity only here (Stripe validates ABN and UK VAT itself once forwarded). | No |
+| `other` | Any other jurisdiction. Format sanity only. Held for display; never forwarded, because Stripe's enum cannot name where it was issued. | No |
 
 **Statuses** (`capsules::TaxIdStatus`):
 
-| `tax_id_status` | Meaning |
-|---|---|
-| `none` | Nothing on file. |
-| `pending` | An EU VAT number we hold but could not get a verdict for. Retried by the scheduled sweep. |
-| `validated` | VIES confirmed a live registration. `tax_id_validated_at` is when. |
-| `invalid` | VIES said it is not a registration. **Only reachable via a re-check** — see below. |
-| `unverified` | Held but not checked, because `tax_id_type` is `other`. |
+| `tax_id_status` | Meaning | Forwarded to Stripe at checkout? |
+|---|---|---|
+| `none` | Nothing on file. | — |
+| `pending` | An EU VAT number we hold but could not get a verdict for. Retried by the scheduled sweep. | No |
+| `validated` | VIES confirmed a live registration. `tax_id_validated_at` is when. | Yes |
+| `invalid` | VIES said it is not a registration. **Only reachable via a re-check** — see below. | No |
+| `unverified` | Held but not checked, because nobody validates that kind (`other` and every jurisdiction type). | Yes, for a jurisdiction type; never for `other` |
 
 #### VIES semantics — the rule that matters
 
@@ -557,10 +558,41 @@ unreachable since" stays readable. The update is guarded on the row still holdin
 number and still being `pending`, so an edit made mid-sweep is never overwritten by an answer
 about the previous number.
 
-**Not yet wired to Stripe.** These fields are collected and stored but not sent to Stripe at
-checkout; `tax_id_data` on the Checkout session is the seam, marked in
-`dovecote/src/lib.rs`'s checkout route. Until then, storing a validated EU VAT ID records the
-reverse-charge position without applying it.
+#### What reaches Stripe, and when
+
+The org's row is the source of truth for the Stripe Customer's tax identity, and it is
+applied at the one moment it matters: `POST /orgs/:org_id/billing/checkout` brings the Customer
+into line **before** the Checkout session is minted
+(`dovecote/src/helpers/stripe_tax_identity.rs`).
+
+- **Name.** A non-empty `business_name` becomes the Customer's `name` (and names a brand-new
+  Customer outright; the org's display name is only the fallback for an org that never filled
+  the form in). That is the legal entity printed on every invoice.
+- **Tax ID.** The registration is posted as a Stripe tax ID (`POST /v1/tax_ids`, `owner`
+  = the Customer) when it is one Stripe can place **and** there is no reason to doubt it: a
+  `validated` `eu_vat`, or an `unverified` jurisdiction type (declared by the customer, checked
+  by nobody). It is deliberately **not** forwarded while `pending` — Stripe would re-validate
+  it, but an unanswered lookup must not zero-rate an invoice on our say-so — nor when
+  `invalid`, nor for `other`. Checkout collects a tax ID itself in those cases (see
+  [Billing](#billing)).
+- **Idempotent, and a replacement.** The Customer's existing tax IDs are listed first; a
+  Customer already holding the same number (compared normalized, since Stripe keeps the
+  separators its own form was given) gets nothing created, and a Customer holding a different
+  number, or a second copy, has the strays deleted before the org's is created. A Customer
+  therefore carries exactly the org's registration, and a repeat checkout adds nothing. When
+  the org holds nothing forwardable, whatever Checkout collected is left where it is: that is
+  the only place the number was ever entered.
+- **Best-effort.** A Stripe refusal (a number Stripe's own format check rejects) or an outage
+  is logged with the status, kind and code only — never the number — and the session still
+  opens; Checkout then collects.
+- **Reverse charge is Stripe Tax's decision**, from the billing address and the tax ID on the
+  Customer. Nothing here sets `tax_exempt` by hand; a US customer with an exemption certificate
+  is a Dashboard action on the Customer, not a form field.
+
+Stripe validates EU VAT (VIES) and UK VAT (HMRC) again on its side, asynchronously. That
+result is not read back; the org row's status remains what **we** established, and the two
+checks are not redundant: ours refuses a definitively invalid number before a customer reaches
+Checkout, Stripe's decides the invoice.
 
 #### `GET /orgs/:org_id/business-details` — any member
 
@@ -594,6 +626,15 @@ Billing attaches to **organizations** (a personal, org-less account is always th
 Stripe hosts every payment surface — these routes mint redirect URLs and read state; card data
 never touches this API. The read side is member-visible; the session mints are manager-only
 (owner/admin), matching the rest of the org permission matrix.
+
+**What a dashboard user sees.** Upgrading opens Stripe's hosted Checkout, which asks for a
+card, a billing address (always) and, for a business outside the US, a business tax ID
+(required wherever Checkout supports one) unless the org's [business details](#business-details)
+already carry a registration we forwarded — then that field is simply absent and the invoice
+is made out to the registered business name. Tax, if any, shows as its own line computed from
+the address; a business with a forwarded or entered tax ID sees the reverse charge or zero
+rate its jurisdiction applies instead of tax added. After paying they land back on the org
+page, and the plan updates within moments via the webhook.
 
 #### Per-tier limits
 
@@ -695,8 +736,39 @@ Mints a Stripe Checkout session for a paid tier and returns
 `400` (the free tier is not purchasable). The session carries three prices, resolved at
 request time by `lookup_key` (never pinned ids): the licensed tier, the pooled
 `message-overage` meter price, and that tier's own `device-overage-<tier>` meter price.
-Creates (and remembers) the org's Stripe customer on first use. `502` when Stripe itself is
-unreachable or the catalog is missing a price.
+Creates (and remembers) the org's Stripe customer on first use — a returning org always
+checks out against the same Customer. `502` when Stripe itself is unreachable or the catalog
+is missing a price.
+
+**Tax is computed by Stripe Tax, and the session is built to let it.** Every session carries
+`automatic_tax[enabled]=true`, `billing_address_collection=required`,
+`customer_update[address]=auto` and `customer_update[name]=auto` (the session is always
+handed an existing Customer, and Checkout will not write the collected address or business
+name back onto one unless told it may — the address is what every later subscription invoice
+computes tax from), plus `tax_id_collection[enabled]=true` with `required=if_supported`. The
+exact parameter set is pinned by a test in `dovecote/src/helpers/stripe_api.rs`. Consequences:
+
+- **A billing address is always collected** at Checkout, and saved onto the Customer.
+- **Tax appears as its own line** when the address falls in a jurisdiction the account is
+  registered in (Stripe Dashboard: Tax > Registrations, per mode); elsewhere the calculation
+  returns zero with `not_collecting`. What is registered is an owner-side setting, not code.
+- **A business buyer abroad must give a tax ID.** In every country Checkout can collect one
+  for, `if_supported` makes the field mandatory, which is what keeps sales outside the US B2B.
+  Checkout shows that form only to a Customer with no tax ID yet; an org whose registration
+  was forwarded from its [business details](#business-details) never sees it. A collected ID
+  lands on the Customer and prints on the invoice like a forwarded one.
+- **A business tax ID earns the reverse charge or zero rate** Stripe Tax applies for that
+  jurisdiction (EU, UK, Australia, Canada, India and the rest of Stripe's list): the invoice
+  carries the ID in its header and a zero-rated tax line with the reason, and nothing here
+  sets `tax_exempt` by hand.
+- `customer_update` is a create-only parameter — the Checkout Session object has no such
+  attribute to read back; its effect is the Customer's `address` and `name` after completion.
+
+The Checkout parameters alone are not enough: tax computes correctly only when every price
+carries `tax_behavior=exclusive` and every product a tax code (`txcd_10103001`, SaaS for
+business use), and a price's `tax_behavior` can be set only while it is still `unspecified`.
+`scripts/stripe-catalog.py` builds a fresh environment's catalog with both in place and, as a
+dry run, checks an existing one; it never modifies an existing Stripe object.
 
 #### `POST /orgs/:org_id/billing/portal` — org: manage
 
@@ -726,6 +798,10 @@ upgrade charges the price difference for the rest of the period onto the next in
 downgrade credits it. Scheduling a downgrade for period end instead is future polish — today a
 downgrade applies (and credits) immediately.
 
+The same update passes `automatic_tax[enabled]=true`: enabling Stripe Tax at the account does
+not reach into subscriptions that already exist, and this is the one write made to a live
+one, so a subscription created before tax was on converges the next time its plan changes.
+
 **Metered usage across a mid-period change**: at the moment of the swap Stripe closes off any
 meter usage already reported and bills it at the *old* item's rate; usage reported after the
 swap bills at the new rate. Since our reporter posts the extra-devices figure near period
@@ -745,11 +821,19 @@ requested tier, or has no live (`trialing`/`active`/`past_due`) subscription to 
 
 The Stripe event sink (not a dashboard route; authenticated by `Stripe-Signature`
 HMAC verification against the endpoint signing secret, 5-minute replay window, `v1` scheme
-only). Handles `customer.subscription.*` (writes plan/status/period onto the owning org,
-idempotently, with out-of-order-event protection) and `checkout.session.completed` (binds the
-Stripe customer to the originating org and applies the purchased subscription's state).
-Deliveries are claimed in `stripe_webhook_events` before anything is applied, so replays and
-concurrent deliveries are acknowledged without being re-applied.
+only). Dispatch is `dovecote/src/helpers/stripe_webhook.rs::webhook_action`, pinned by a test;
+the endpoint in each Stripe environment (Dashboard: Developers > Webhooks, per mode) must
+subscribe to exactly these nine events:
+
+| Event | Action |
+|---|---|
+| `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed`, `.pending_update_applied`, `.pending_update_expired` | Writes plan/status/period onto the owning org, idempotently, with out-of-order-event protection. |
+| `checkout.session.completed` | Binds the Stripe customer to the originating org and applies the purchased subscription's state. |
+| `invoice.finalization_failed` | Reports and acks. With Stripe Tax computing, an invoice cannot finalize when the customer's address is unusable (`automatic_tax.status = requires_location_inputs`), and Stripe keeps the subscription **active** while it cannot be finalized — entitlement continues while nothing is collected. The sink logs the invoice, customer and subscription ids, the tax status and Stripe's `last_finalization_error`, and sends one `[OPS]` email to `OPS_ALERT_EMAIL` (production only, the same knob as the Kratos probe). A retry could change nothing, so it is acknowledged; the fix is the customer's address or tax settings in the Stripe Dashboard, then finalizing the invoice there. |
+
+Anything else is acknowledged without acting. Deliveries are claimed in `stripe_webhook_events`
+before anything is applied, so replays and concurrent deliveries are acknowledged without being
+re-applied.
 
 ### Pigeons
 
