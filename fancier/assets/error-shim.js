@@ -46,6 +46,58 @@
     }
   }
 
+  // Whose script threw, by the origin of the location or, without one,
+  // of the top stack frame. Mirrors capsules::error_source on the server:
+  // wasm frames and blobs this origin minted are ours, extension schemes
+  // are not, and no URL at all counts as ours so a failure in our own
+  // glue is never dropped for want of a filename. Dropping here saves the
+  // request; the server folds the same way for pages still running an
+  // older copy of this file.
+  var KNOWN_SCHEME =
+    /^(https?|blob|wasm|chrome-extension|moz-extension|safari-extension|safari-web-extension|ms-browser-extension|webkit-masked-url):/i;
+  var EXTENSION_SCHEME =
+    /^(chrome-extension|moz-extension|safari-extension|safari-web-extension|ms-browser-extension|webkit-masked-url):/i;
+
+  function firstUrl(text) {
+    var tokens = String(text).split(/[\s()<>,]+/);
+    for (var i = 0; i < tokens.length; i++) {
+      if (KNOWN_SCHEME.test(tokens[i])) return tokens[i];
+    }
+    return null;
+  }
+
+  // V8 prefixes frames with "at "; Gecko and WebKit write fn@url:line:col,
+  // so only the part after the last "@" is searched there, which also keeps
+  // a URL quoted in the message line from passing as a frame.
+  function topFrameUrl(stack) {
+    var lines = String(stack).split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].replace(/^\s+/, "");
+      var url = null;
+      if (line.indexOf("at ") === 0) url = firstUrl(line.slice(3));
+      else if (line.lastIndexOf("@") !== -1) url = firstUrl(line.slice(line.lastIndexOf("@") + 1));
+      if (url) return url;
+    }
+    return null;
+  }
+
+  function originOf(url) {
+    var m = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)/i.exec(url);
+    return m ? (m[1] + "://" + m[2]).toLowerCase() : null;
+  }
+
+  function isForeign(location, stack) {
+    var url = (location && firstUrl(location)) || (stack && topFrameUrl(stack));
+    if (!url) return false;
+    if (/^wasm:/i.test(url)) return false;
+    if (/^blob:/i.test(url)) url = url.slice(5);
+    if (EXTENSION_SCHEME.test(url)) return true;
+    var origin = originOf(url);
+    if (!origin || !/^https?:/.test(origin)) return false;
+    var own = (window.location.protocol + "//" + window.location.host).toLowerCase();
+    return origin !== own;
+  }
+
   function buildReport(kind, message, location, stack) {
     return {
       kind: kind,
@@ -69,6 +121,7 @@
     if (!message || message === "Script error.") return; // cross-origin scripts carry no detail
     var extension = /(chrome|moz|safari)-extension:/;
     if (extension.test(location || "") || extension.test(stack || "")) return;
+    if (isForeign(location, stack)) return;
     var key = kind + "|" + message + "|" + (location || "");
     if (seen[key]) return;
     seen[key] = true;
