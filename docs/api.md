@@ -322,8 +322,8 @@ updated `capsules::Flock` (now carrying `org_id`).
 
 Note the flock's pre-existing per-user ACL rows are untouched — the transferring owner keeps
 any direct pigeon access they already had. Org-granted access, by contrast, lives and dies
-with the membership row (remove a member and their org-derived access is gone on their next
-request).
+with the membership row: remove a member and their org-derived access goes with it, within the
+[propagation window](#organizations) that applies to every membership change.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/transfer \
@@ -365,6 +365,17 @@ The pigeon-side mapping, precisely: an org-shared pigeon carries a `pigeon_acl` 
 `{ entity_id: <org id>, role: "owner" }`. A caller's effective rights through that row are
 capped by their role in the org — `owner`/`admin` may exercise the row's full (owner-level)
 rights; `member` is capped at member-level. Per-user ACL rows are unaffected.
+
+**A membership change takes about 75 seconds to reach authorization, not one request.** Both
+role reads on the gateway are plain `SELECT`s issued through Hyperdrive: the per-request
+principal set (`load_org_roles`) and the single-org check every `/orgs/*` route makes
+(`org_role_of`). Hyperdrive answers an identical query from its own cache for roughly a
+minute, so adding a member, removing one, and changing a role all reach the authorization
+path within about 75 seconds of the row being written, and until then the caller keeps the
+access they had. The entitlement counts behind [Per-tier limits](#per-tier-limits) read
+through the same cache and can admit whatever fits in one window. Anchoring these reads on
+`now()` would keep them out of that cache at the price of a database round trip on every
+authorized organization call, which is why they are not.
 
 #### `POST /orgs`
 
@@ -417,10 +428,12 @@ Changes a member's role. Body: `capsules::OrganizationMemberRoleUpdateRequest`
 
 #### `DELETE /orgs/:org_id/members/:user_id` — owner/admin, or self
 
-Removes a membership row — **the revocation mechanism**: the removed user loses every
-org-granted flock/pigeon right on their next request (the principal set is loaded
-per-request; no ACL rows need rewriting). Admins can never remove owners; anyone may remove
-themselves (leave); `409` if it would leave the org ownerless.
+Removes a membership row, which is **the revocation mechanism**: the removed user loses every
+org-granted flock/pigeon right, with no ACL rows to rewrite, since the principal set is loaded
+per request. That load is cached, so revocation lands within about 75 seconds rather than on
+the removed user's next request; see [Organizations](#organizations) above for why. Admins can
+never remove owners; anyone may remove themselves (leave); `409` if it would leave the org
+ownerless.
 
 #### `POST /orgs/:org_id/invites` — owner/admin
 

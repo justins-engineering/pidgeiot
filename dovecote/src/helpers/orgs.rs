@@ -181,6 +181,14 @@ fn row_to_invite(row: &Row) -> OrganizationInvite {
 /// The caller's role in one org, if any -- THE org-management authorization
 /// primitive every `/orgs/*` route funnels through (each route then applies
 /// its own minimum-role rule, documented in `docs/api.md`'s matrix).
+///
+/// Carries no STABLE or VOLATILE function, so Hyperdrive caches it for
+/// about a minute: a membership added, removed or re-roled reaches this
+/// check within roughly 75 seconds rather than on the very next request.
+/// That is the deliberate trade. Anchoring the statement on `now()` would
+/// keep it out of the cache and buy exactness at the price of a database
+/// round trip on every authorized organization call, on a surface where
+/// the stale answer is the one the caller already had.
 pub async fn org_role_of(
   client: &Client,
   org_id: &Uuid,
@@ -206,7 +214,9 @@ pub async fn org_role_of(
 /// The caller's full org-membership set in ONE query -- the principal-set
 /// load `require_principal` (`lib.rs`) runs once per authenticated request
 /// so the DO's ACL check (`X-Org-Roles`) and the gateway's flock check can
-/// both consult it without further round trips.
+/// both consult it without further round trips. Cached by Hyperdrive on
+/// the same terms as [`org_role_of`], so a membership change reaches the
+/// principal set on the same ~75 s delay.
 pub async fn load_org_roles(client: &Client, user_id_str: &str) -> Result<Vec<OrgRoleEntry>> {
   let user_uuid = parse_uuid(user_id_str, "X-User-Id")?;
 
@@ -513,10 +523,11 @@ pub async fn change_member_role(
 }
 
 /// Removes a membership row -- THE revocation mechanism (a removed member
-/// instantly loses every org-granted flock/pigeon right on their next
-/// request, since the principal set is loaded per-request). Last-owner
-/// protection applies here too. Caller (the route) has already enforced
-/// WHO may remove (owner/admin, admins never removing owners -- see
+/// loses every org-granted flock/pigeon right without any ACL row being
+/// rewritten, since the principal set is loaded per request). It is not
+/// instant: see [`org_role_of`] for the window. Last-owner protection
+/// applies here too. Caller (the route) has already enforced WHO may
+/// remove (owner/admin, admins never removing owners -- see
 /// `docs/api.md`).
 pub async fn remove_member(
   mut client: Client,
