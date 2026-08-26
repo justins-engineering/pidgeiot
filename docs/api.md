@@ -11,7 +11,7 @@ shapes reference the shared types in `capsules/src/lib.rs` — that crate is the
 truth for wire formats; this document just explains how they're used over HTTP.
 
 - **Base URL (production):** `https://api.pidgeiot.com`
-- **Base URL (staging):** `https://dovecote-staging.justinsengineeringservices.workers.dev`
+- **Base URL (staging):** `https://api-staging.pidgeiot.com`
 - **Base URL (local dev):** `http://127.0.0.1:8787`
 
 All examples below use placeholder IDs and credentials — `<pigeon_id>`, `<flock_id>`,

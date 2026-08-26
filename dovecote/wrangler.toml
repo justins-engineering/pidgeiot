@@ -308,14 +308,18 @@ watch_dir = ["./src"]
 # generated for Workers that implement a Durable Object
 # (https://developers.cloudflare.com/workers/configuration/previews/), so the
 # preview-alias staging model used by fancier is impossible here.
-# `routes = []` overrides the inherited api.pidgeiot.com custom domain;
-# staging is reachable only at dovecote-staging.<subdomain>.workers.dev.
+# Served at api-staging.pidgeiot.com, which replaces the inherited
+# api.pidgeiot.com custom domain: a browser session exists only under
+# pidgeiot.com (Kratos scopes its cookie to that domain and admits only
+# the origins it is configured with). workers_dev stays on because the
+# Stripe sandbox webhook and every device endpoint minted before the
+# custom domain still name dovecote-staging.<subdomain>.workers.dev.
 # Fresh DO namespace (staging pigeons/tokens are disjoint from prod);
 # staging also has its own Hyperdrive binding/database (see below), so
 # prod and staging share no data plane.
 [env.staging]
 workers_dev = true
-routes = []
+routes = [{ pattern = "api-staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" }]
 
 # Same missing-heartbeat sweep as the production block above -- staging
 # gets its own cron since it's a wholly separate Worker script
@@ -326,8 +330,11 @@ crons = ["*/5 * * * *"]
 
 [env.staging.vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
-ROOT_URL = "https://staging-fancier.justinsengineeringservices.workers.dev"
-DEVICE_API_HOST = "dovecote-staging.justinsengineeringservices.workers.dev"
+ROOT_URL = "https://staging.pidgeiot.com"
+# Minted into new device endpoints only: a pigeon created before the
+# custom domain keeps the workers.dev authority it was given, which still
+# serves (see workers_dev above).
+DEVICE_API_HOST = "api-staging.pidgeiot.com"
 # No staging terminator yet -- empty falls back to DEVICE_API_HOST (see
 # the COAP_DEVICE_HOST note above the production [vars] block).
 COAP_DEVICE_HOST = ""
