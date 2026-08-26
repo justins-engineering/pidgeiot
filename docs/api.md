@@ -1801,6 +1801,10 @@ Two further fields exist only as abuse controls and are not part of the enquiry:
   `capsules::MIN_CONTACT_FILL_MS`, or absent entirely, is a `400` with a message inviting a
   retry (recoverable on purpose: the floor is one no human reaches, but silently discarding a
   real enquiry is the worse failure).
+- `turnstile_token` — the one-time token Cloudflare Turnstile's widget issued to the browser.
+  Verified against `https://challenges.cloudflare.com/turnstile/v0/siteverify` (with
+  `CF-Connecting-IP` as `remoteip`) whenever the `TURNSTILE_SECRET` Worker secret is set; spent
+  at verification, never stored. See "Turnstile" below for what each failure answers.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/contact \
@@ -1809,6 +1813,9 @@ curl -s -X POST https://api.pidgeiot.com/contact \
        "fleet_size":"250_to_1500","about":"fleet","elapsed_ms":9000,
        "message":"We have about 900 water meters and need OTA updates."}'
 ```
+
+(The example carries no `turnstile_token`, so against production — where the secret is set —
+it answers `403`; it works verbatim against a dovecote with no secret configured.)
 
 Returns `202` with an empty JSON object once the enquiry is **stored**. Unlike
 `POST /feedback`, this route persists before it notifies: the row in `contact_submissions`
@@ -1829,14 +1836,34 @@ Rejections:
   `capsules::MIN_CONTACT_MESSAGE_BYTES`, `about` is not a plain slug, any field exceeds its
   length cap, or `elapsed_ms` is missing or under the fill-time floor. The response body is the
   user-facing sentence the form renders verbatim (`ContactRejection::message`).
+- `403` if `TURNSTILE_SECRET` is set and the body carries no `turnstile_token`, or Cloudflare
+  does not vouch for the one it carries (already spent, expired, minted for another site key).
+  Never `401`. The form resets its widget and asks for one more click.
 - `413` if the raw body exceeds `capsules::MAX_CONTACT_BODY_BYTES` or `message` exceeds
   `capsules::MAX_CONTACT_MESSAGE_BYTES`.
 - `429` if the per-IP limiter (5 / 60s) is over its window. Deliberately never `401`, which the
   dashboard treats as a sign-out signal.
 - `500` if the enquiry could not be stored.
+- `503` if Cloudflare's siteverify could not be asked — unreachable, non-2xx, unparseable, or
+  slower than the route's 5s deadline — or if it rejected our own secret
+  (`missing-input-secret` / `invalid-input-secret`). Neither says anything about the sender,
+  so neither is a `403`.
 
-Cloudflare Turnstile is the intended next control and is not wired up (it needs a site key from
-the account owner). The seam is marked in `lib.rs` immediately after the rate-limiter check.
+**Turnstile.** The widget (`fancier/src/views/contact.rs`) is rendered explicitly, after
+hydration, into an empty container, so the prerendered page carries no third-party script and
+a visitor without a token cannot submit. Its site key is the compile-time `TURNSTILE_SITE_KEY`
+constant (`fancier/src/config.rs`, sourced from `.env.dev` / `.env.staging` / `.env.release`,
+one widget per hostname). The server half is `helpers/turnstile.rs`, keyed by the
+`TURNSTILE_SECRET` Worker secret on `dovecote` and on `dovecote --env staging`; local dev reads
+it from `dovecote/.dev.vars`, where Cloudflare's published always-pass test pair
+(`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`) is the intended value.
+**A missing secret fails open**: the route logs once per isolate and accepts submissions
+unverified, because a form that refuses every visitor over an unset secret loses real
+enquiries to a configuration nobody is watching, and the limiter, honeypot and fill-time floor
+still stand. Everything else fails closed: with a secret present, the only way past is a token
+Cloudflare vouches for. The check runs after `capsules::contact::validate`, not before: a
+token is single-use, so a field-error `400` must not spend it, and the honeypot's silent `202`
+stays silent rather than becoming a `403` that names the control that fired.
 
 ### Error reporting
 
