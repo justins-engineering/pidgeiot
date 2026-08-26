@@ -13,8 +13,9 @@
 use capsules::{Organization, OrganizationDetail, OrganizationInvite, OrganizationMember};
 use uuid::Uuid;
 
-/// `PUT /orgs/:id` answered with the renamed org.
-pub fn rename(detail: &mut OrganizationDetail, organization: Organization) {
+/// `PUT /orgs/:id` answered with the org as dovecote now holds it, after
+/// a rename or a timezone change.
+pub fn set_organization(detail: &mut OrganizationDetail, organization: Organization) {
   detail.organization = organization;
 }
 
@@ -111,11 +112,11 @@ mod tests {
   }
 
   #[test]
-  fn rename_replaces_the_org_row_only() {
+  fn an_update_replaces_the_org_row_only() {
     let mut d = detail();
     let mut renamed = org("After");
     renamed.updated_at = OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1);
-    rename(&mut d, renamed.clone());
+    set_organization(&mut d, renamed.clone());
     assert_eq!(d.organization, renamed);
     assert_eq!(d.members.len(), 3);
     assert_eq!(d.invites.len(), 2);

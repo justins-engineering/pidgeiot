@@ -54,6 +54,8 @@ pub mod dict_log;
 
 pub mod org_detail;
 
+pub mod timezone;
+
 pub mod gps_track;
 
 pub mod graph_store;
