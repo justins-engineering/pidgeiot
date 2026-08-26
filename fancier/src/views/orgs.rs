@@ -215,16 +215,22 @@ fn CreateOrgModal() -> Element {
                 }
               }
               div { class: "flex gap-2",
+                // Selection on the option rather than a `value` on the
+                // select, for the reason given on the same control in
+                // `views/org.rs`.
                 select {
                   class: "select select-bordered select-sm",
-                  value: "{tax_id_type().as_str()}",
                   onchange: move |e| {
                       if let Ok(parsed) = e.value().parse::<TaxIdType>() {
                           tax_id_type.set(parsed);
                       }
                   },
                   for kind in TaxIdType::ALL.iter().filter(|kind| **kind != TaxIdType::None) {
-                    option { value: "{kind.as_str()}", "{kind.label()}" }
+                    option {
+                      value: "{kind.as_str()}",
+                      selected: *kind == tax_id_type(),
+                      "{kind.label()}"
+                    }
                   }
                 }
                 label { class: "input grow focus:outline-0",

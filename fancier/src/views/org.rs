@@ -850,16 +850,23 @@ fn BusinessDetailsPanel(
           div { class: "flex flex-col sm:flex-row gap-3",
             label { class: "form-control",
               span { class: "label-text text-sm mb-1 block", "Tax ID type" }
+              // The selection is carried by the option, not a `value` on
+              // the select: a select's attributes are applied before its
+              // options exist, so a value set at mount matches nothing and
+              // the browser falls back to the first option.
               select {
                 class: "select select-bordered",
-                value: "{tax_id_type().as_str()}",
                 onchange: move |e| {
                     if let Ok(parsed) = e.value().parse::<TaxIdType>() {
                         tax_id_type.set(parsed);
                     }
                 },
                 for kind in TaxIdType::ALL {
-                  option { value: "{kind.as_str()}", "{kind.label()}" }
+                  option {
+                    value: "{kind.as_str()}",
+                    selected: *kind == tax_id_type(),
+                    "{kind.label()}"
+                  }
                 }
               }
             }
