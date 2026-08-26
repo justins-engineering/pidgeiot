@@ -22,10 +22,10 @@ use crate::helpers::{
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
-  remove_member, rename_organization, resolve_checkout_prices, revoke_invite, send_feedback_email,
-  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, stripe_configured,
-  sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db, update_shadow_pg_db,
-  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  remove_member, rename_organization, resolve_checkout_prices, revoke_invite, root_url,
+  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
+  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db,
+  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
   webhook_action, write_business_details,
 };
@@ -59,10 +59,7 @@ mod scheduled;
 /// shared by reference since each route is a separate `async move` closure
 /// and `Cors` isn't `Copy`.
 fn build_cors(env: &Env, req: &Request) -> worker::Cors {
-  let root_origin = env
-    .var("ROOT_URL")
-    .map(|v| v.to_string())
-    .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
+  let root_origin = root_url(env);
 
   let origin = req
     .headers()

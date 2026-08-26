@@ -1876,12 +1876,22 @@ Server-side handling (all client fields are treated as hostile):
   raw (byte-capped) message lives only on the 90-day `error_events` row.
 - The grouping signature is computed server-side only (truncated SHA-256 over
   kind + normalized message + location); there is no client signature field.
+- **Whose code threw decides the kind.** A report whose `location` (or, without one, top
+  stack frame) is on an origin other than `ROOT_URL` — the analytics beacon, a browser
+  extension — is folded into kind `third_party` with that origin as its location, so it makes
+  one group per origin rather than one per minified column. `wasm:` frames, blobs minted by
+  our origin, and reports carrying no URL at all count as ours, so a failure in our own JS
+  glue is never dropped for want of a filename (`capsules::error_source`).
+- `third_party` and `unsupported_browser` — the shim's kind for a browser that fails the
+  pre-boot wasm capability probe, with the missing features named in the message — are stored
+  and counted like any other kind but never mail (`ErrorKind::notifies`).
 - `build` must match the release artifact's `dxh` + unpadded-u64-hex shape or it is blanked.
 - `occurred_at` is clamped to ±24h of server time; retention keys on `received_at`.
 - `client_event_id` is a client-minted correlation id (shown on the crash screen) that joins
   a manual note to the automatic crash it describes — a hint, not a key.
-- A **new** signature sends one ops email (`[ERROR] New: …`) to `OPS_ALERT_EMAIL`, under a
-  global budget of 5/hour with the overflow folded into the next allowed email.
+- A **new** signature of a notifying kind sends one ops email (`[ERROR] New: …`) to
+  `OPS_ALERT_EMAIL`, under a global budget of 5/hour with the overflow folded into the next
+  allowed email.
 
 Rejections: `400` (unsupported `Content-Type`, invalid JSON, unknown fields on the text/plain
 envelope, empty `note`), `413` (body or `note` over cap), `429` (rate limit).

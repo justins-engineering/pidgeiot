@@ -12,13 +12,14 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use capsules::{ErrorReport, truncate_bytes};
+use capsules::{ErrorKind, ErrorReport, ErrorSource, truncate_bytes};
 use time::{Duration, OffsetDateTime};
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
 use super::alerts::send_via_usesend;
+use super::environment::root_url;
 use super::hyperdrive::get_db_client;
 use super::ops_probe::ops_alert_email;
 
@@ -103,6 +104,23 @@ fn strip_control(s: &str) -> String {
     .collect()
 }
 
+/// A report thrown by someone else's script becomes `third_party`, keyed
+/// on that script's origin: the analytics beacon's minified column moves
+/// with every one of its releases, and each move would otherwise mint a
+/// new signature and a new email. Everything else keeps its own kind and
+/// location, including reports with no URL to judge by.
+fn fold_foreign(
+  own_origin: &str,
+  kind: ErrorKind,
+  location: Option<String>,
+  stack: Option<&str>,
+) -> (ErrorKind, Option<String>) {
+  match capsules::error_source(&[own_origin], location.as_deref(), stack) {
+    ErrorSource::Foreign(origin) => (ErrorKind::ThirdParty, Some(origin)),
+    ErrorSource::Own => (kind, location),
+  }
+}
+
 /// Stores one report: group upsert + event insert, then the (budgeted)
 /// new-signature notification. `user_id`/`note` are `Some` only on the
 /// identified manual path -- the anonymous branch never resolves either.
@@ -124,7 +142,13 @@ pub async fn ingest_error_report(
     .location
     .as_deref()
     .map(|l| strip_control(truncate_bytes(l, capsules::MAX_ERROR_FIELD_BYTES)));
-  let signature = capsules::error_signature(report.kind, &normalized_message, location.as_deref());
+  let (kind, location) = fold_foreign(
+    &root_url(env),
+    report.kind,
+    location,
+    report.stack.as_deref(),
+  );
+  let signature = capsules::error_signature(kind, &normalized_message, location.as_deref());
   let route = capsules::normalize_route(&report.route);
   let build = report
     .build
@@ -169,7 +193,8 @@ pub async fn ingest_error_report(
     serde_json::to_string(&breadcrumbs).ok()
   };
 
-  let kind = report.kind.as_str();
+  let notifies = kind.notifies();
+  let kind = kind.as_str();
 
   // `xmax = 0` on the upserted row distinguishes insert from update in the
   // same round trip, which is all the new-signature alert needs.
@@ -222,7 +247,7 @@ pub async fn ingest_error_report(
       Error::RustError("Internal Server Error".into())
     })?;
 
-  if is_new {
+  if is_new && notifies {
     notify_new_signature(
       env,
       client,
@@ -234,6 +259,8 @@ pub async fn ingest_error_report(
       build.as_deref(),
     )
     .await;
+  } else if is_new {
+    console_log!("error report: new {kind} signature {signature} recorded, kind never mails");
   }
 
   Ok(())
@@ -434,4 +461,74 @@ pub async fn erase_user_error_reports(client: &Client, user_id: &Uuid) -> Result
       console_error!("Error-report erasure failed for user {user_id}: {e}");
       Error::RustError("Internal Server Error".into())
     })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const OWN: &str = "https://pidgeiot.com";
+
+  #[test]
+  fn a_beacon_exception_folds_to_third_party_keyed_on_its_origin() {
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::JsException,
+      Some("https://static.cloudflareinsights.com/beacon.min.js:1:14186".to_string()),
+      None,
+    );
+    assert_eq!(kind, ErrorKind::ThirdParty);
+    assert_eq!(
+      location.as_deref(),
+      Some("https://static.cloudflareinsights.com")
+    );
+    assert!(!kind.notifies());
+    // The next beacon build throws from another column and lands in the
+    // same group.
+    let (_, again) = fold_foreign(
+      OWN,
+      ErrorKind::JsException,
+      Some("https://static.cloudflareinsights.com/beacon.min.js:1:7806".to_string()),
+      None,
+    );
+    assert_eq!(again, location);
+  }
+
+  #[test]
+  fn a_rejection_without_a_location_is_judged_by_its_stack() {
+    let stack = "TypeError: t.entries.at is not a function\n    at https://static.cloudflareinsights.com/beacon.min.js:1:7806";
+    let (kind, location) = fold_foreign(OWN, ErrorKind::UnhandledRejection, None, Some(stack));
+    assert_eq!(kind, ErrorKind::ThirdParty);
+    assert_eq!(
+      location.as_deref(),
+      Some("https://static.cloudflareinsights.com")
+    );
+  }
+
+  #[test]
+  fn our_own_glue_and_panics_keep_their_kind_and_location() {
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::JsException,
+      Some("https://pidgeiot.com/assets/fancier-dxh1.js:12:5".to_string()),
+      None,
+    );
+    assert_eq!(kind, ErrorKind::JsException);
+    assert_eq!(
+      location.as_deref(),
+      Some("https://pidgeiot.com/assets/fancier-dxh1.js:12:5")
+    );
+    assert!(kind.notifies());
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::RustPanic,
+      Some("src/views/pigeon.rs:412:18".to_string()),
+      None,
+    );
+    assert_eq!(kind, ErrorKind::RustPanic);
+    assert_eq!(location.as_deref(), Some("src/views/pigeon.rs:412:18"));
+    let (kind, location) = fold_foreign(OWN, ErrorKind::WasmBoot, None, None);
+    assert_eq!(kind, ErrorKind::WasmBoot);
+    assert_eq!(location, None);
+  }
 }
