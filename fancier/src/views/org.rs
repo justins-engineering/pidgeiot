@@ -627,7 +627,7 @@ fn BillingPanel(
           if o.entitled {
             for plan in [BillingPlan::Builder, BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
               if plan == current_plan {
-                span { class: "badge badge-primary font-mono self-center", "{plan} — current" }
+                span { class: "badge badge-primary font-mono self-center", "{plan}, current" }
               } else {
                 button {
                   class: "btn btn-sm btn-outline",
@@ -1139,7 +1139,7 @@ fn InviteLinkReveal(created: OrganizationInviteCreated, on_close: EventHandler<(
         p { class: "py-2 text-sm text-base-content/70",
           "An email is on its way to "
           span { class: "font-semibold", "{created.invite.email}" }
-          ". You can also share this link directly — it won't be shown again:"
+          ". You can also share this link directly; it won't be shown again:"
         }
         div { class: "flex items-center gap-2 bg-base-200 rounded-box p-3 font-mono text-xs break-all",
           span { class: "grow", "{invite_url}" }

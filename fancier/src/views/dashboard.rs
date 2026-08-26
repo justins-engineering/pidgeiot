@@ -261,7 +261,7 @@ pub fn Dashboard() -> Element {
               h2 { class: "text-lg font-bold mb-4", "Fleet Health" }
               if total_pigeons == 0 {
                 p { class: "text-sm text-base-content/60",
-                  "No pigeons registered yet — fleet health will appear here once you register one."
+                  "No pigeons registered yet. Fleet health will appear here once you register one."
                 }
               } else {
                 div { class: "w-full h-3 rounded-full overflow-hidden flex bg-base-300",
@@ -423,7 +423,7 @@ pub fn Dashboard() -> Element {
                     span { class: "font-semibold", "{total_firing_flock_alerts}" }
                   }
                   p { class: "text-xs text-base-content/50",
-                    "Per-pigeon alerts aren't counted here — open a pigeon's own page to see those."
+                    "Per-pigeon alerts aren't counted here. Open a pigeon's own page to see those."
                   }
                   Link {
                     to: Route::Flocks {},

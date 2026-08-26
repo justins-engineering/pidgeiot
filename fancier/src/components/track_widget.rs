@@ -94,13 +94,13 @@ pub fn TrackWidget(
       Some(url) => rsx! {
         div { class: "text-sm text-base-content/60 py-16 text-center flex flex-col gap-1",
           p {
-            "No track to draw — this pigeon's telemetry is forwarded to "
+            "No track to draw. This pigeon's telemetry is forwarded to "
             span { class: "font-mono text-xs break-all", "{url}" }
             " instead of being stored here."
           }
           if has_position {
             p { class: "text-xs",
-              "The position above is still live — it comes from the latest report, not from history."
+              "The position above is still live: it comes from the latest report, not from history."
             }
           }
         }
@@ -151,9 +151,9 @@ pub fn TrackWidget(
             }
             p { class: "text-xs text-base-content/60 text-center px-4",
               if single {
-                "Single GPS fix in this range — "
+                "Single GPS fix in this range. "
               } else {
-                "Stationary in this range — no meaningful movement detected. "
+                "Stationary in this range, no meaningful movement detected. "
               }
               "{gps_track::format_coord(last.lat, last.lon)}"
             }

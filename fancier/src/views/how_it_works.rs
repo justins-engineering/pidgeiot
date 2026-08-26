@@ -28,7 +28,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdKeyRound, class: "size-8 stroke-primary", title: "Key icon" }
           },
           title: "Provision the device and get its key",
-          body: "Create a flock, then create a pigeon inside it. That call mints the device's identity: its own Ed25519 keypair, generated server-side inside the isolated Durable Object that will later verify it. The private key signs exactly one bearer token and is then discarded — only the public key is ever written to storage, and it never leaves the object that checks against it. The token itself is 69 bytes of binary (a version byte, a 4-byte expiry, and a 64-byte signature), not a JWT, and it carries no device id at all: the binding to a specific pigeon comes from which pigeon's stored public key verifies the signature. The response is the only time the token is ever returned, so save it then.",
+          body: "Create a flock, then create a pigeon inside it. That call mints the device's identity: its own Ed25519 keypair, generated server-side inside the isolated Durable Object that will later verify it. The private key signs exactly one bearer token and is then discarded; only the public key is ever written to storage, and it never leaves the object that checks against it. The token itself is 69 bytes of binary (a version byte, a 4-byte expiry, and a 64-byte signature), not a JWT, and it carries no device id at all: the binding to a specific pigeon comes from which pigeon's stored public key verifies the signature. The response is the only time the token is ever returned, so save it then.",
           code: Some("POST /flock/pigeons\n{\"flock_id\":\"…\",\"name\":\"Coop Sensor 1\",\n \"connector\":{\"Https\":{\"endpoint\":\"\",\"token\":\"\"}}}\n\n201 Created  →  connector.Https.token  (shown once)"),
         }
 
@@ -38,7 +38,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
           },
           title: "Pick a transport that suits the hardware",
-          body: "The same device API is reachable three ways. Plain HTTPS is the simplest and works anywhere. A device on mains power or WiFi can instead hold one long-lived WebSocket, so config reaches it the instant you push it rather than at the next poll — same credential, same routes, just a persistent channel. And for hardware too constrained to carry a full HTTPS stack, a pigeon can be given a CoAP connector instead: a dedicated terminator speaks both DTLS/UDP and RFC 8323 TLS/TCP, each authenticated by its own per-device pre-shared key, and proxies into the very same ingestion API. There is no unencrypted path on any of the three.",
+          body: "The same device API is reachable three ways. Plain HTTPS is the simplest and works anywhere. A device on mains power or WiFi can instead hold one long-lived WebSocket, so config reaches it the instant you push it rather than at the next poll: same credential, same routes, just a persistent channel. And for hardware too constrained to carry a full HTTPS stack, a pigeon can be given a CoAP connector instead: a dedicated terminator speaks both DTLS/UDP and RFC 8323 TLS/TCP, each authenticated by its own per-device pre-shared key, and proxies into the very same ingestion API. There is no unencrypted path on any of the three.",
           code: None,
         }
 
@@ -48,7 +48,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdSend, class: "size-8 stroke-primary", title: "Send icon" }
           },
           title: "The device reports telemetry",
-          body: "A report is a flat JSON object of string key/value pairs — no nesting, no schema for us to enforce, and no types to negotiate ahead of time. In production the gateway verifies the bearer token, queues the report and answers 202 immediately, so a device on a slow cellular link isn't holding a socket open waiting on a database write. Values come back out as strings, with a parsed numeric alongside them wherever the value happens to be a number, so numeric series can be plotted without a cast.",
+          body: "A report is a flat JSON object of string key/value pairs: no nesting, no schema for us to enforce, and no types to negotiate ahead of time. In production the gateway verifies the bearer token, queues the report and answers 202 immediately, so a device on a slow cellular link isn't holding a socket open waiting on a database write. Values come back out as strings, with a parsed numeric alongside them wherever the value happens to be a number, so numeric series can be plotted without a cast.",
           code: Some("POST /device/pigeons/<id>/telemetry\nAuthorization: Bearer <device_token>\n{\"temp_c\":\"21.5\",\"battery_v\":\"3.9\"}\n\n202 Accepted"),
         }
 
@@ -58,7 +58,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdRefreshCw, class: "size-8 stroke-primary", title: "Refresh icon" }
           },
           title: "Config converges through the shadow",
-          body: "Every pigeon holds a desired state and a reported state, versioned independently. You write a target_config from the dashboard; the device applies what it understands and writes back its own current_config with the version it actually reached. That difference is the whole point — you can see whether a fleet has genuinely converged, not merely whether you told it to. On a WebSocket-connected device the update is pushed the moment you save it rather than waiting for the next poll.",
+          body: "Every pigeon holds a desired state and a reported state, versioned independently. You write a target_config from the dashboard; the device applies what it understands and writes back its own current_config with the version it actually reached. That difference is the whole point: you can see whether a fleet has genuinely converged, not merely whether you told it to. On a WebSocket-connected device the update is pushed the moment you save it rather than waiting for the next poll.",
           code: None,
         }
 
@@ -68,7 +68,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdBellRing, class: "size-8 stroke-primary", title: "Bell icon" }
           },
           title: "The platform watches, so you don't have to",
-          body: "From there the ordinary operational surface takes over. Alerts email you when a value crosses a threshold, jumps further between reports than it plausibly should, or when a device simply stops reporting — that last one runs on a scheduled sweep, because silence can't be noticed at ingest time. Firmware is content-addressed by SHA-256 and assigned through the same shadow model as config, with a board tag on both image and device that must match before an assignment is allowed. Device logs land in a rolling per-device buffer, dictionary-compressed on the wire and decoded back in the dashboard.",
+          body: "From there the ordinary operational surface takes over. Alerts email you when a value crosses a threshold, jumps further between reports than it plausibly should, or when a device simply stops reporting; that last one runs on a scheduled sweep, because silence can't be noticed at ingest time. Firmware is content-addressed by SHA-256 and assigned through the same shadow model as config, with a board tag on both image and device that must match before an assignment is allowed. Device logs land in a rolling per-device buffer, dictionary-compressed on the wire and decoded back in the dashboard.",
           code: None,
         }
       }

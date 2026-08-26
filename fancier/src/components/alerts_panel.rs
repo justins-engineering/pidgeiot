@@ -480,8 +480,8 @@ fn AlertFormModal(
   let mut submit_error = use_signal(|| Option::<String>::None);
 
   let scope_label = match &scope {
-    AlertScope::Pigeon(id) => format!("This pigeon — {id}"),
-    AlertScope::Flock(id) => format!("This flock — {id}"),
+    AlertScope::Pigeon(id) => format!("This pigeon: {id}"),
+    AlertScope::Flock(id) => format!("This flock: {id}"),
   };
 
   let threshold_value_valid = value_input.read().trim().parse::<f64>().is_ok();

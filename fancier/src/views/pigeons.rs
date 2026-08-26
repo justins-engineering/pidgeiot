@@ -457,7 +457,7 @@ fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler
             if copied() {
               span { class: "text-success text-xs", "Copied!" }
             } else if copy_failed() {
-              span { class: "text-error text-xs", "Copy failed — select and copy manually" }
+              span { class: "text-error text-xs", "Copy failed, select and copy manually" }
             } else {
               Icon { icon: LdCopy }
             }
@@ -492,7 +492,7 @@ fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler
                 if psk_copied() {
                   span { class: "text-success text-xs", "Copied!" }
                 } else if psk_copy_failed() {
-                  span { class: "text-error text-xs", "Copy failed — select and copy manually" }
+                  span { class: "text-error text-xs", "Copy failed, select and copy manually" }
                 } else {
                   Icon { icon: LdCopy }
                 }
@@ -641,7 +641,7 @@ fn CreatePigeonModal(
                 autocomplete: "off",
               }
               p { class: "text-xs text-base-content/60 mt-1",
-                "Optional — the pigeon's Zephyr board target. Required later to assign firmware (task #20)."
+                "Optional. The pigeon's Zephyr board target; needed before firmware can be assigned to it."
               }
             }
           }

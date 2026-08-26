@@ -171,7 +171,7 @@ pub fn PricingPage() -> Element {
           "Free while we're in beta. Here's what we plan to charge after."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
-          "We're pre-revenue and won't pretend otherwise — nothing below is billing today. One ladder, no editions, no feature paywall: device count is the only number you'd have to forecast."
+          "We're pre-revenue and won't pretend otherwise: nothing below is billing today. One ladder, no editions, no feature paywall, and device count is the only number you'd have to forecast."
         }
       }
     }
@@ -275,7 +275,7 @@ pub fn PricingPage() -> Element {
               }
             }
             p { class: "text-base-content/75 leading-relaxed",
-              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page — MQTT and custom dashboards aren't here yet, and you should hear that from us before you sign."
+              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. MQTT and custom dashboards aren't here yet, and you should hear that from us before you sign."
             }
           }
           div { class: "lg:ml-auto lg:text-right shrink-0",
@@ -326,7 +326,7 @@ pub fn PricingPage() -> Element {
           label: "No limit",
           value: "Your own store",
           note: "",
-          body: "Retention applies to history we keep for you. Point a pigeon's telemetry endpoint at your own database and it goes straight there instead — for as long as you keep it, at whatever resolution you like.",
+          body: "Retention applies to history we keep for you. Point a pigeon's telemetry endpoint at your own database and it goes straight there instead, for as long as you keep it, at whatever resolution you like.",
         }
       }
     }
@@ -360,15 +360,15 @@ pub fn PricingPage() -> Element {
         div { class: "flex flex-col gap-8",
           Answer {
             question: "What counts as a message?",
-            body: "A report from a device to us. Shadow polls, firmware chunks, dashboard calls and WebSocket keep-alives don't count — they'd punish exactly the behaviour we want to encourage.",
+            body: "A report from a device to us. Shadow polls, firmware chunks, dashboard calls and WebSocket keep-alives don't count, because they'd punish exactly the behaviour we want to encourage.",
           }
           Answer {
             question: "What happens if I go over?",
-            body: "Nothing is billed in beta, and nothing is metered yet either. When paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts will pause ingestion instead, warned well before the cap — no surprise invoice, ever.",
+            body: "Nothing is billed in beta, and nothing is metered yet either. When paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts will pause ingestion instead, warned well before the cap. No surprise invoice, ever.",
           }
           Answer {
             question: "How long do you keep my data?",
-            body: "As long as your tier's retention says — 7 days on the free tier, up to 13 months on Scale. Thirteen rather than twelve on purpose: comparing this month to the same month last year needs both of them, and a twelve-month window is one month short of that. Those limits are on the history we store for you. Telemetry forwarded to your own store has no limit from us at all, because we never hold a copy of it.",
+            body: "As long as your tier's retention says: 7 days on the free tier, up to 13 months on Scale. Thirteen rather than twelve on purpose: comparing this month to the same month last year needs both of them, and a twelve-month window is one month short of that. Those limits are on the history we store for you. Telemetry forwarded to your own store has no limit from us at all, because we never hold a copy of it.",
           }
           Answer {
             question: "Is anything locked behind a tier?",
@@ -376,7 +376,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Can I self-host it?",
-            body: "Honestly: not usefully. The backend is built on Cloudflare Workers and Durable Objects, so \"self-hosting\" means running your own Cloudflare account. The source is public and always will be — but we're not going to sell you a self-host SKU we can't support well.",
+            body: "Honestly: not usefully. The backend is built on Cloudflare Workers and Durable Objects, so \"self-hosting\" means running your own Cloudflare account. The source is public and always will be, but we're not going to sell you a self-host SKU we can't support well.",
             " If what you're weighing is self-hosting a stack of your own instead, "
             Link { class: "link link-hover font-medium", to: Route::SelfHostingPage {},
               "here is what that actually costs"
@@ -389,7 +389,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Will these prices hold?",
-            body: "These are planned prices, published early so you can budget — deliberately introductory while MQTT and custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
+            body: "These are planned prices, published early so you can budget, and deliberately introductory while MQTT and custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
           }
         }
       }

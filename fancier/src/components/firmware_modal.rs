@@ -188,7 +188,7 @@ pub fn FirmwareModal(
                     },
                     None => rsx! {
                       span { class: "text-warning italic",
-                        "untagged — set via the pigeon's Edit button before assigning firmware"
+                        "untagged, set via the pigeon's Edit button before assigning firmware"
                       }
                     },
                   }
@@ -258,7 +258,7 @@ pub fn FirmwareModal(
           if let Some(name) = selected_name.read().as_ref() {
             div { class: "text-xs font-mono bg-base-200 rounded p-2 flex flex-col gap-1",
               div {
-                "{name} — {selected_bytes.read().as_ref().map(|b| b.len()).unwrap_or(0)} bytes"
+                "{name}, {selected_bytes.read().as_ref().map(|b| b.len()).unwrap_or(0)} bytes"
               }
               if is_hashing() {
                 div { class: "flex items-center gap-2",
@@ -294,7 +294,7 @@ pub fn FirmwareModal(
               oninput: move |e| board_input.set(e.value()),
             }
             p { class: "text-xs text-base-content/60 mt-1",
-              "The exact CONFIG_BOARD_TARGET this image was built for — dovecote rejects the upload without it, and won't assign this image to a pigeon whose own board doesn't match exactly."
+              "The exact CONFIG_BOARD_TARGET this image was built for. Dovecote rejects the upload without it, and won't assign this image to a pigeon whose own board doesn't match exactly."
             }
           }
 
@@ -309,9 +309,9 @@ pub fn FirmwareModal(
                   p {
                     class: if hash_matches { "text-success text-xs" } else { "text-warning text-xs" },
                     if hash_matches {
-                      "Uploaded — server sha256 matches the client-computed hash."
+                      "Uploaded. The server sha256 matches the client-computed hash."
                     } else {
-                      "Uploaded, but the server's sha256 didn't match the client-computed hash — re-check the file."
+                      "Uploaded, but the server's sha256 didn't match the client-computed hash. Re-check the file."
                     }
                   }
                 }

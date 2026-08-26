@@ -88,7 +88,7 @@ fn OrgsUnavailableState() -> Element {
       }
       h2 { class: "text-lg font-semibold", "Couldn't load your organizations" }
       p { class: "text-base-content/60 max-w-sm",
-        "This is a problem reaching the API, not an empty account — reload to try again."
+        "This is a problem reaching the API, not an empty account. Reload to try again."
       }
     }
   }

@@ -136,8 +136,8 @@ async fn fetch_history_buckets(path: &str) -> Option<Vec<TelemetryHistoryBucket>
   serde_wasm_bindgen::from_value(json).ok()
 }
 
-/// Bucketed shape (the default, no `raw=true`) — used by `graph_widget`'s
-/// line charts, the actual consumer task #78 exists for.
+/// Bucketed shape (the default, no `raw=true`), which is what
+/// `graph_widget`'s line charts read.
 pub async fn get_history_buckets(
   pigeon_id: &str,
   since: OffsetDateTime,

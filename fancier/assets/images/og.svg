@@ -12,5 +12,5 @@
   <text x="470" y="290" font-family="DejaVu Sans" font-weight="bold" font-size="110" fill="#a78bfa">Pidge<tspan fill="#2dd4bf">IoT</tspan></text>
   <text x="472" y="370" font-family="DejaVu Sans" font-size="42" fill="#e7e5e4">The No Compromise IoT Platform*</text>
   <text x="474" y="420" font-family="DejaVu Sans" font-size="24" fill="#a8a29e">* Life is full of compromises</text>
-  <text x="474" y="500" font-family="DejaVu Sans" font-size="28" fill="#78716c">Open-source device management — Rust, end to end</text>
+  <text x="474" y="500" font-family="DejaVu Sans" font-size="28" fill="#78716c">Open-source device management, Rust end to end</text>
 </svg>

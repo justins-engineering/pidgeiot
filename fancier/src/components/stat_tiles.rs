@@ -108,7 +108,7 @@ pub fn TelemetryStatTiles(latest: Vec<TelemetryLatest>) -> Element {
       div { class: "md:px-4",
         h2 { class: "text-3xl font-bold", "Latest readings" }
         p { class: "text-xs text-base-content/50 mt-1",
-          "The most recent value reported for each key. Each is timed on its own — a device does not have to report every key together."
+          "The most recent value reported for each key. Each is timed on its own: a device does not have to report every key together."
         }
       }
 
@@ -134,7 +134,7 @@ pub fn TelemetryStatTiles(latest: Vec<TelemetryLatest>) -> Element {
       if !other.is_empty() {
         div { class: "flex flex-col gap-2 md:px-4",
           p { class: "text-xs text-base-content/60",
-            "Non-numeric readings — these carry no value a chart can plot."
+            "Non-numeric readings. These carry no value a chart can plot."
           }
           div { class: "flex flex-wrap gap-2",
             for reading in other.iter() {

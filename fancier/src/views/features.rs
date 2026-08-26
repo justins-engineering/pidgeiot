@@ -11,7 +11,7 @@ pub fn FeaturesPage() -> Element {
           "Six things every fleet needs. All of them on day one."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-2xl text-base-content/80 text-pretty",
-          "Not a box of primitives to wire together — identity, config, firmware, telemetry, alerts and logs designed against each other in one codebase."
+          "Not a box of primitives to wire together: identity, config, firmware, telemetry, alerts and logs designed against each other in one codebase."
         }
       }
     }
@@ -24,9 +24,9 @@ pub fn FeaturesPage() -> Element {
         // generates it server-side in the pigeon's own Durable Object, signs
         // one token and drops the private key, so the copy says that instead.
         FeatureRow {
-          eyebrow: "01 — Identity",
+          eyebrow: "01. Identity",
           title: "A key per device, minted where its state lives",
-          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot — only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
+          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot; only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
           body_secondary: rsx! {
             "Refreshing a token overwrites the old public key, which means rotation "
             span { class: "italic", "is" }
@@ -56,9 +56,9 @@ pub fn FeaturesPage() -> Element {
         }
 
         FeatureRow {
-          eyebrow: "02 — Config",
+          eyebrow: "02. Config",
           title: "Set what you want. See what landed.",
-          body: "Every device carries a desired state and a reported state. You push the first; the device confirms the second with exactly what it applied — so \"configured\" is a fact, not an assumption.",
+          body: "Every device carries a desired state and a reported state. You push the first; the device confirms the second with exactly what it applied, so \"configured\" is a fact, not an assumption.",
           body_secondary: rsx! {
             "Over a live socket it lands in about a second. Devices that sleep pick it up on their next check-in and confirm then."
           },
@@ -93,7 +93,7 @@ pub fn FeaturesPage() -> Element {
         // a device's running firmware version back to us, so there is no
         // such number to render and the widget is left out.
         FeatureRow {
-          eyebrow: "03 — Firmware",
+          eyebrow: "03. Firmware",
           title: "OTA that refuses to brick the wrong board",
           body: "Upload an image once and roll it out per device or per flock. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
           body_secondary: rsx! {
@@ -114,7 +114,7 @@ pub fn FeaturesPage() -> Element {
                 }
                 p { class: "whitespace-nowrap",
                   "assign → pigeon-0902  "
-                  span { class: "text-error", "board mismatch — refused" }
+                  span { class: "text-error", "board mismatch, refused" }
                 }
               }
               p { class: "text-xs font-mono text-base-content/50",
@@ -127,7 +127,7 @@ pub fn FeaturesPage() -> Element {
         div { class: "grid grid-cols-1 md:grid-cols-3 gap-6",
 
           FeatureCard {
-            eyebrow: "04 — Telemetry",
+            eyebrow: "04. Telemetry",
             title: "Graphs and tracks, no setup",
             body: "Devices report flat key/value pairs. You get a latest-value snapshot, queryable history, a graph against any numeric key, and a GPS track when the keys are a fix.",
             visual: rsx! {
@@ -161,9 +161,9 @@ pub fn FeaturesPage() -> Element {
           }
 
           FeatureCard {
-            eyebrow: "05 — Alerts",
+            eyebrow: "05. Alerts",
             title: "Email when it matters",
-            body: "Thresholds, rate-of-change and heartbeats on your own keys, scoped to one device or a whole flock — mailed when they fire and again when they clear.",
+            body: "Thresholds, rate-of-change and heartbeats on your own keys, scoped to one device or a whole flock, mailed when they fire and again when they clear.",
             visual: rsx! {
               div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
                 p { class: "whitespace-nowrap",
@@ -183,9 +183,9 @@ pub fn FeaturesPage() -> Element {
           }
 
           FeatureCard {
-            eyebrow: "06 — Logs",
+            eyebrow: "06. Logs",
             title: "Remote logs that fit the link",
-            body: "Structured Zephyr logs ship as dictionary-compressed codes — a fraction of the bytes over cellular — into a rolling per-device buffer you pull on demand. When reading isn't enough, ask a connected device a question directly and get its answer back: the site visit you didn't have to make.",
+            body: "Structured Zephyr logs ship as dictionary-compressed codes, a fraction of the bytes over cellular, into a rolling per-device buffer you pull on demand. When reading isn't enough, ask a connected device a question directly and get its answer back: the site visit you didn't have to make.",
             visual: rsx! {
               div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
                 p { class: "whitespace-nowrap", "12:04:18 <inf> modem: attach ok, rsrp -91" }
@@ -203,7 +203,7 @@ pub fn FeaturesPage() -> Element {
         div { class: "lg:col-span-7 flex flex-col gap-3",
           h2 { class: "text-2xl md:text-3xl font-bold", "What isn't here yet" }
           p { class: "text-lg leading-relaxed text-base-content/80",
-            "Two things are designed and not built: a user-authored rule engine — your own logic running against incoming telemetry at the edge — and per-flock storage, which would give a fleet a database of its own instead of a shared one. We'd rather list them here than imply they ship today. Everything else on this page is running now."
+            "Two things are designed and not built: a user-authored rule engine (your own logic running against incoming telemetry at the edge) and per-flock storage, which would give a fleet a database of its own instead of a shared one. We'd rather list them here than imply they ship today. Everything else on this page is running now."
           }
         }
         div { class: "lg:col-span-5 flex flex-wrap gap-3",
@@ -222,7 +222,7 @@ pub fn FeaturesPage() -> Element {
           }
           // The public demo is one real allowlisted device, not a flock.
           p { class: "text-lg md:text-xl text-base-content/70",
-            "A real device is reporting into the demo page right now — live, no signup."
+            "A real device is reporting into the demo page right now: live, no signup."
           }
         }
         div { class: "md:ml-auto flex flex-col sm:flex-row gap-3 shrink-0",

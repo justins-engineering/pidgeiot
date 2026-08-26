@@ -11,7 +11,7 @@ pub fn UseCasesPage() -> Element {
           "If it reports numbers over a network, it fits."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-2xl text-base-content/80 text-pretty",
-          "Five shapes we designed for, written as example builds. We're in beta — when these become customer stories, we'll say whose."
+          "Five shapes we designed for, written as example builds. We're in beta; when these become customer stories, we'll say whose."
         }
       }
     }
@@ -22,7 +22,7 @@ pub fn UseCasesPage() -> Element {
         UseCase {
           number: "01",
           title: "Vehicle & asset tracking",
-          body: "A trailer, a generator, a tool crate. The device reports a fix as ordinary telemetry keys and its page draws the track — start marker, live position, hover readout — with no map-tile contract underneath.",
+          body: "A trailer, a generator, a tool crate. The device reports a fix as ordinary telemetry keys and its page draws the track (start marker, live position, hover readout) with no map-tile contract underneath.",
           body_secondary: "Heartbeat alerts cover the case that actually matters: the asset that stopped reporting.",
           keys: vec!["gps_lat", "gps_lon", "gps_speed_mps", "battery_v"],
           features_used: "GPS tracks · heartbeat alerts · OTA",
@@ -156,7 +156,7 @@ pub fn UseCasesPage() -> Element {
           // The design read "the readings never rest with us", which isn't
           // true: the latest value per key is always upserted before any
           // forwarding decision is made. Only history is bypassed.
-          body_secondary: "Regulated retention? Point telemetry at your own line-protocol endpoint and the history accumulates there instead of here — we hold only the latest value of each key, which is what the dashboard and alerts read.",
+          body_secondary: "Regulated retention? Point telemetry at your own line-protocol endpoint and the history accumulates there instead of here: we hold only the latest value of each key, which is what the dashboard and alerts read.",
           keys: vec!["litres_total", "flow_lpm", "tamper"],
           features_used: "Bring-your-own database · fleet OTA",
           divider: true,

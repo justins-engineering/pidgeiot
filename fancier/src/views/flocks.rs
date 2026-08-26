@@ -100,7 +100,7 @@ fn EmptyFlocksState() -> Element {
       }
       h2 { class: "text-lg font-semibold", "No flocks yet" }
       p { class: "text-base-content/60 max-w-sm",
-        "A flock groups pigeons under one owner — think of it as a project or a fleet. Create your first one to start provisioning devices."
+        "A flock groups pigeons under one owner: think of it as a project or a fleet. Create your first one to start provisioning devices."
       }
     }
   }
@@ -123,7 +123,7 @@ fn FlocksUnavailableState() -> Element {
       }
       h2 { class: "text-lg font-semibold", "Couldn't load your flocks" }
       p { class: "text-base-content/60 max-w-sm",
-        "This is a problem reaching the API, not an empty account — reload to try again."
+        "This is a problem reaching the API, not an empty account. Reload to try again."
       }
     }
   }
