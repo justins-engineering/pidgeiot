@@ -55,6 +55,15 @@ pub enum ErrorKind {
   JsException,
   UnhandledRejection,
   ApiFailure,
+  /// Thrown by a script served from an origin other than the page's own
+  /// -- an analytics beacon, a browser extension. Counted, never mailed:
+  /// nothing in this codebase can fix it, and a minified third-party
+  /// column moves with every one of their releases.
+  ThirdParty,
+  /// The browser failed the pre-boot capability probe, so the wasm bundle
+  /// was never going to instantiate. Counted so the size of that audience
+  /// is known; not a defect, so never mailed.
+  UnsupportedBrowser,
 }
 
 impl ErrorKind {
@@ -65,8 +74,148 @@ impl ErrorKind {
       ErrorKind::JsException => "js_exception",
       ErrorKind::UnhandledRejection => "unhandled_rejection",
       ErrorKind::ApiFailure => "api_failure",
+      ErrorKind::ThirdParty => "third_party",
+      ErrorKind::UnsupportedBrowser => "unsupported_browser",
     }
   }
+
+  /// Whether a first sighting of this kind is worth an ops email. The two
+  /// counting-only kinds describe the visitor's environment, not our code.
+  pub fn notifies(self) -> bool {
+    !matches!(self, ErrorKind::ThirdParty | ErrorKind::UnsupportedBrowser)
+  }
+}
+
+/// Whose code an error came from, judged by the origin of its location
+/// or, failing that, of the top stack frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorSource {
+  /// The page's own origin, a wasm frame, a blob the page minted -- or no
+  /// URL to judge by at all. Unknown counts as ours on purpose: a failure
+  /// in our own glue must never be dropped for want of a filename.
+  Own,
+  /// A script from another origin, named so a folded group keys on the
+  /// origin rather than on a minified column.
+  Foreign(String),
+}
+
+/// Closed scheme lists: a bare `main.js:1:2` location would otherwise
+/// read as scheme `main.js`.
+const WEB_SCHEMES: [&str; 2] = ["http", "https"];
+const EXTENSION_SCHEMES: [&str; 6] = [
+  "chrome-extension",
+  "moz-extension",
+  "safari-extension",
+  "safari-web-extension",
+  "ms-browser-extension",
+  "webkit-masked-url",
+];
+
+/// Classifies a report by where its code ran. `own_origins` are the page
+/// origins we serve (dovecote passes `ROOT_URL`); comparison is on
+/// `scheme://host[:port]`, case-insensitive, trailing slash ignored.
+pub fn error_source(
+  own_origins: &[&str],
+  location: Option<&str>,
+  stack: Option<&str>,
+) -> ErrorSource {
+  let url = location
+    .and_then(first_url)
+    .or_else(|| stack.and_then(top_frame_url));
+  match url {
+    Some(url) => classify_url(own_origins, &url),
+    None => ErrorSource::Own,
+  }
+}
+
+fn is_known_scheme(scheme: &str) -> bool {
+  WEB_SCHEMES.contains(&scheme)
+    || EXTENSION_SCHEMES.contains(&scheme)
+    || scheme == "blob"
+    || scheme == "wasm"
+}
+
+/// The first token carrying a known scheme. Tokens split on the
+/// punctuation V8 and Gecko wrap frame URLs in.
+fn first_url(text: &str) -> Option<String> {
+  text
+    .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | ','))
+    .find_map(|token| {
+      let (scheme, _) = token.split_once(':')?;
+      let scheme = scheme.to_ascii_lowercase();
+      is_known_scheme(&scheme).then(|| token.to_string())
+    })
+}
+
+/// The top frame's URL. V8 prefixes frames with `at `; Gecko and WebKit
+/// write `function@url:line:col`, so only the part after the last `@` is
+/// searched there -- which is also what keeps a URL or an address quoted
+/// in the message line from being mistaken for a frame.
+fn top_frame_url(stack: &str) -> Option<String> {
+  stack.lines().find_map(|line| {
+    let line = line.trim();
+    if let Some(frame) = line.strip_prefix("at ") {
+      first_url(frame)
+    } else if let Some((_, after)) = line.rsplit_once('@') {
+      first_url(after)
+    } else {
+      None
+    }
+  })
+}
+
+/// `scheme://authority` for a URL known to start with `scheme:`.
+fn origin_of(scheme: &str, rest: &str) -> Option<String> {
+  let authority = rest.strip_prefix("//")?;
+  let end = authority
+    .find(|c: char| matches!(c, '/' | '?' | '#'))
+    .unwrap_or(authority.len());
+  let authority = &authority[..end];
+  if authority.is_empty() {
+    return None;
+  }
+  Some(format!("{scheme}://{}", authority.to_ascii_lowercase()))
+}
+
+fn is_own_origin(own_origins: &[&str], origin: &str) -> bool {
+  own_origins.iter().any(|own| {
+    own
+      .trim()
+      .trim_end_matches('/')
+      .eq_ignore_ascii_case(origin)
+  })
+}
+
+fn classify_url(own_origins: &[&str], url: &str) -> ErrorSource {
+  let Some((scheme, rest)) = url.split_once(':') else {
+    return ErrorSource::Own;
+  };
+  let scheme = scheme.to_ascii_lowercase();
+  if scheme == "wasm" {
+    return ErrorSource::Own;
+  }
+  // A blob URL names the origin that minted it: `blob:https://host/id`.
+  let (scheme, rest) = if scheme == "blob" {
+    match rest.split_once(':') {
+      Some((inner, inner_rest)) => (inner.to_ascii_lowercase(), inner_rest),
+      None => return ErrorSource::Own,
+    }
+  } else {
+    (scheme, rest)
+  };
+  if WEB_SCHEMES.contains(&scheme.as_str()) {
+    return match origin_of(&scheme, rest) {
+      Some(origin) if is_own_origin(own_origins, &origin) => ErrorSource::Own,
+      Some(origin) => ErrorSource::Foreign(origin),
+      None => ErrorSource::Own,
+    };
+  }
+  if EXTENSION_SCHEMES.contains(&scheme.as_str()) {
+    return ErrorSource::Foreign(
+      origin_of(&scheme, rest).unwrap_or_else(|| format!("{scheme}://")),
+    );
+  }
+  ErrorSource::Own
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,6 +640,211 @@ mod tests {
     assert!(serde_json::from_str::<ErrorReport>(forged).is_err());
     let forged_user = r#"{"kind":"rust_panic","message":"boom","route":"/","session_kind":"signed_in","occurred_at_ms":1,"user_id":"abc"}"#;
     assert!(serde_json::from_str::<ErrorReport>(forged_user).is_err());
+  }
+
+  const OWN: &[&str] = &["https://pidgeiot.com"];
+
+  #[test]
+  fn own_origin_location_is_ours() {
+    assert_eq!(
+      error_source(
+        OWN,
+        Some("https://pidgeiot.com/assets/fancier-dxh1.js:12:5"),
+        None
+      ),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn analytics_beacon_location_is_foreign_and_keyed_on_its_origin() {
+    for col in ["14186", "7806"] {
+      assert_eq!(
+        error_source(
+          OWN,
+          Some(&format!(
+            "https://static.cloudflareinsights.com/beacon.min.js:1:{col}"
+          )),
+          None
+        ),
+        ErrorSource::Foreign("https://static.cloudflareinsights.com".to_string())
+      );
+    }
+  }
+
+  #[test]
+  fn rejection_with_no_location_is_judged_by_the_top_frame() {
+    let stack = "TypeError: t.entries.at is not a function\n    at t.entries.at (https://cdn.jsdelivr.net/npm/thing@1.2.3/dist/x.min.js:1:14186)\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4";
+    assert_eq!(
+      error_source(OWN, None, Some(stack)),
+      ErrorSource::Foreign("https://cdn.jsdelivr.net".to_string())
+    );
+    let ours_on_top = "Error: boom\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4\n    at https://cdn.jsdelivr.net/x.js:1:1";
+    assert_eq!(error_source(OWN, None, Some(ours_on_top)), ErrorSource::Own);
+  }
+
+  #[test]
+  fn gecko_and_webkit_frames_are_read_after_the_at_sign() {
+    assert_eq!(
+      error_source(
+        OWN,
+        None,
+        Some(
+          "t@https://static.cloudflareinsights.com/beacon.min.js:1:14186\nf@https://pidgeiot.com/a.js:1:1"
+        )
+      ),
+      ErrorSource::Foreign("https://static.cloudflareinsights.com".to_string())
+    );
+    assert_eq!(
+      error_source(OWN, None, Some("global code@https://pidgeiot.com/a.js:1:1")),
+      ErrorSource::Own
+    );
+    // WebKit's opaque frames carry no URL at all.
+    assert_eq!(
+      error_source(OWN, None, Some("wasm-stub@[wasm code]\n@[native code]")),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn wasm_frames_are_ours_in_every_browser_spelling() {
+    assert_eq!(
+      error_source(
+        OWN,
+        None,
+        Some("RuntimeError: unreachable\n    at wasm://wasm/0009e8ba:wasm-function[3812]:0x1a2b3c")
+      ),
+      ErrorSource::Own
+    );
+    assert_eq!(
+      error_source(
+        OWN,
+        None,
+        Some("f@https://pidgeiot.com/wasm/fancier_bg-dxh1.wasm:wasm-function[3812]:0x1a2b3c")
+      ),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn blob_urls_carry_the_minting_origin() {
+    assert_eq!(
+      error_source(
+        OWN,
+        Some("blob:https://pidgeiot.com/8f1e2c1a-1111-4222-8333-444455556666:1:2"),
+        None
+      ),
+      ErrorSource::Own
+    );
+    assert_eq!(
+      error_source(
+        OWN,
+        Some("blob:https://evil.example/8f1e2c1a-1111-4222-8333-444455556666:1:2"),
+        None
+      ),
+      ErrorSource::Foreign("https://evil.example".to_string())
+    );
+    assert_eq!(
+      error_source(OWN, Some("blob:null/abc:1:2"), None),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn browser_extensions_are_foreign() {
+    assert_eq!(
+      error_source(
+        OWN,
+        Some("chrome-extension://abcdefghijklmnopabcdefghijklmnop/content.js:5:9"),
+        None
+      ),
+      ErrorSource::Foreign("chrome-extension://abcdefghijklmnopabcdefghijklmnop".to_string())
+    );
+    assert_eq!(
+      error_source(OWN, None, Some("f@webkit-masked-url://hidden/:1:1")),
+      ErrorSource::Foreign("webkit-masked-url://hidden".to_string())
+    );
+  }
+
+  #[test]
+  fn a_report_with_nothing_to_judge_by_is_ours() {
+    assert_eq!(error_source(OWN, None, None), ErrorSource::Own);
+    assert_eq!(
+      error_source(OWN, Some("src/views/pigeon.rs:412:18"), None),
+      ErrorSource::Own
+    );
+    assert_eq!(
+      error_source(OWN, Some("main.js:12:3"), None),
+      ErrorSource::Own
+    );
+    assert_eq!(
+      error_source(OWN, None, Some("Error: something\n    at <anonymous>:1:1")),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn a_url_quoted_in_the_message_line_is_not_a_frame() {
+    let stack = "Error: could not load https://cdn.example.com/x.js for owner@example.com\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4";
+    assert_eq!(error_source(OWN, None, Some(stack)), ErrorSource::Own);
+  }
+
+  #[test]
+  fn origin_comparison_ignores_case_and_a_trailing_slash_but_not_the_port() {
+    assert_eq!(
+      error_source(
+        &["https://PidgeIoT.com/"],
+        Some("https://pidgeiot.com/a.js:1:1"),
+        None
+      ),
+      ErrorSource::Own
+    );
+    assert_eq!(
+      error_source(
+        &["http://localhost:4455"],
+        Some("http://localhost:8787/a.js:1:1"),
+        None
+      ),
+      ErrorSource::Foreign("http://localhost:8787".to_string())
+    );
+    assert_eq!(
+      error_source(
+        &["http://localhost:4455"],
+        Some("http://localhost:4455/assets/a.js:1:1"),
+        None
+      ),
+      ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn only_the_counting_kinds_stay_silent() {
+    assert!(!ErrorKind::ThirdParty.notifies());
+    assert!(!ErrorKind::UnsupportedBrowser.notifies());
+    for kind in [
+      ErrorKind::RustPanic,
+      ErrorKind::WasmBoot,
+      ErrorKind::JsException,
+      ErrorKind::UnhandledRejection,
+      ErrorKind::ApiFailure,
+    ] {
+      assert!(kind.notifies(), "{}", kind.as_str());
+    }
+  }
+
+  #[test]
+  fn counting_kinds_round_trip_on_the_wire() {
+    for (kind, wire) in [
+      (ErrorKind::ThirdParty, "third_party"),
+      (ErrorKind::UnsupportedBrowser, "unsupported_browser"),
+    ] {
+      assert_eq!(kind.as_str(), wire);
+      assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{wire}\""));
+      assert_eq!(
+        serde_json::from_str::<ErrorKind>(&format!("\"{wire}\"")).unwrap(),
+        kind
+      );
+    }
   }
 
   #[test]

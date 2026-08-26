@@ -106,6 +106,7 @@ pub use device_limits::device_surface_limit;
 
 mod environment;
 pub use environment::is_local_dev;
+pub use environment::root_url;
 
 mod telemetry;
 pub use telemetry::TelemetryHistoryPage;

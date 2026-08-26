@@ -264,6 +264,44 @@ PANEL = (
     'to the report.</p>'
     '</div></div>'
 )
+# The unsupported-browser notice: the first thing in <body>, in normal
+# flow so it pushes the prerendered content down instead of covering it
+# -- that content is the whole point, since it is all an old browser will
+# get. Revealed by error-shim.js when its capability probe fails. The
+# browsers it is for predate cascade layers and oklch(), so the app's
+# stylesheet does nothing there: plain colors come first, and the theme
+# tokens take over only where the engine can read them (Lockdown Mode,
+# a policy that disables wasm) -- each var() carries the same plain
+# fallback for a page whose CSS never arrived.
+NOTICE = (
+    '<div id="app-unsupported" hidden role="status"><div>'
+    '<p><strong>This browser can\'t run the live dashboard.</strong> '
+    'It needs a current version of Chrome, Firefox, Safari, or Edge. '
+    'The rest of this page is still readable below.</p>'
+    '<button id="app-unsupported-dismiss" type="button">Dismiss</button>'
+    '</div></div>'
+)
+NOTICE_STYLE = (
+    '<style>'
+    '#app-unsupported{background:#f3f4f6;color:#1f2937;border-bottom:1px solid #d1d5db;'
+    'border-left:4px solid #f59e0b;font:15px/1.5 system-ui,sans-serif;}'
+    '#app-unsupported[hidden]{display:none;}'
+    '#app-unsupported>div{max-width:64rem;margin:0 auto;padding:10px 16px;'
+    'display:flex;flex-wrap:wrap;align-items:center;}'
+    '#app-unsupported p{margin:4px 12px 4px 0;flex:1 1 20rem;}'
+    '#app-unsupported button{font:inherit;padding:6px 14px;margin:4px 0;border-radius:8px;'
+    'border:1px solid #9ca3af;background:#fff;color:#1f2937;cursor:pointer;}'
+    '#app-unsupported button:focus-visible{outline:2px solid #1f2937;outline-offset:2px;}'
+    '@supports (color:oklch(50% 0 0)){'
+    '#app-unsupported{background:var(--color-base-200,#f3f4f6);'
+    'color:var(--color-base-content,#1f2937);border-bottom-color:var(--color-base-300,#d1d5db);'
+    'border-left-color:var(--color-warning,#f59e0b);}'
+    '#app-unsupported button{background:var(--color-base-100,#fff);'
+    'color:var(--color-base-content,#1f2937);border-color:var(--color-base-content,#9ca3af);}'
+    '#app-unsupported button:focus-visible{outline-color:var(--color-base-content,#1f2937);}'
+    '}'
+    '</style>'
+)
 GLOBALS = ""
 if build_hash:
     GLOBALS += f'window.__pidgeiot_build="{build_hash}";'
@@ -317,10 +355,12 @@ for f in root.rglob("index.html"):
         f'<meta name="twitter:image" content="{BASE}/og.png">'
         + (f'<script type="application/ld+json">{JSONLD}</script>' if route == "/" else '')
         + GLOBALS
+        + NOTICE_STYLE
         + RUM
     )
     if "</body>" in html:
         html = html.replace("</body>", PANEL + "</body>", 1)
+    html = re.sub(r"<body[^>]*>", lambda m: m.group(0) + NOTICE, html, count=1)
     if "<head>" in html:
         f.write_text(html.replace("<head>", "<head>" + tags, 1))
 

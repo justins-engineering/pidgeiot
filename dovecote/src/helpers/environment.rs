@@ -10,6 +10,17 @@ use worker::Env;
 /// place to keep in sync with the same fact.
 const DEVICE_API_HOST_VAR: &str = "DEVICE_API_HOST";
 
+/// The dashboard's own origin: the one value every environment already
+/// names for CORS. Also the allowlist that decides whether an error report
+/// came from our code or from someone else's script. The production origin
+/// is the fallback so a missing var fails closed to the real site.
+pub fn root_url(env: &Env) -> String {
+  env
+    .var("ROOT_URL")
+    .map(|v| v.to_string())
+    .unwrap_or_else(|_| "https://pidgeiot.com".to_string())
+}
+
 /// Whether this Worker is running under a local `wrangler dev` rather
 /// than in a deployed environment.
 ///

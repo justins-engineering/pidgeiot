@@ -45,11 +45,11 @@ pub use tax_id::{
 // see that module's own header for why the pure logic lives here.
 pub mod errors;
 pub use errors::{
-  Breadcrumb, BreadcrumbKind, ErrorKind, ErrorNoteRequest, ErrorReport,
+  Breadcrumb, BreadcrumbKind, ErrorKind, ErrorNoteRequest, ErrorReport, ErrorSource,
   MAX_ERROR_BREADCRUMB_DETAIL_BYTES, MAX_ERROR_BREADCRUMBS, MAX_ERROR_FIELD_BYTES,
   MAX_ERROR_MESSAGE_BYTES, MAX_ERROR_REPORT_BYTES, MAX_ERROR_REPORTS_PER_PAGE,
-  MAX_ERROR_STACK_BYTES, SessionKind, error_signature, is_valid_build, normalize_message,
-  normalize_route, truncate_bytes,
+  MAX_ERROR_STACK_BYTES, SessionKind, error_signature, error_source, is_valid_build,
+  normalize_message, normalize_route, truncate_bytes,
 };
 
 #[macro_export]
