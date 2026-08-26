@@ -130,12 +130,15 @@ pub fn InviteAccept(token: Option<String>) -> Element {
                 p { class: "text-success font-semibold",
                   "You're in! Welcome to {membership.organization.name}."
                 }
-                Link {
-                  class: "btn btn-primary mx-auto",
-                  to: Route::OrgView {
-                      org_id: membership.organization.id,
-                  },
-                  "Open the organization"
+                div { class: "flex justify-center gap-3",
+                  Link {
+                    class: "btn btn-primary",
+                    to: Route::OrgView {
+                        org_id: membership.organization.id,
+                    },
+                    "Open the organization"
+                  }
+                  Link { class: "btn btn-outline", to: Route::Orgs {}, "My organizations" }
                 }
               },
               Some(Err(msg)) => rsx! {
