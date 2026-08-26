@@ -1,27 +1,35 @@
 //! Organizations list + create -- structure mirrors `views/flocks.rs`
-//! (header + card grid + native-`<dialog>` create modal), but data is
-//! view-local (`use_resource`) rather than `LocalSession`-cached; see
-//! `api/orgs.rs`'s module comment.
+//! (header + card grid + native-`<dialog>` create modal), reading the
+//! `LocalSession.orgs` cache that `api/orgs.rs` keeps current from each
+//! mutation's response.
 
 use crate::{Route, api};
 use capsules::{OrganizationCreateRequest, OrganizationMembership, TaxIdType};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::LdX;
+use dioxus_free_icons::icons::ld_icons::{LdTriangleAlert, LdX};
+
+/// The cache in the order `GET /orgs` lists it: oldest first, with the id
+/// as a tiebreak so two orgs created in the same instant keep a stable
+/// order between renders.
+fn sorted_memberships(
+  orgs: &std::collections::HashMap<uuid::Uuid, OrganizationMembership>,
+) -> Vec<OrganizationMembership> {
+  let mut memberships: Vec<OrganizationMembership> = orgs.values().cloned().collect();
+  memberships.sort_by(|a, b| {
+    a.organization
+      .created_at
+      .cmp(&b.organization.created_at)
+      .then_with(|| a.organization.id.cmp(&b.organization.id))
+  });
+  memberships
+}
 
 #[component]
 pub fn Orgs() -> Element {
-  // Bumped to refetch after a create -- use_resource reruns when a signal
-  // it reads changes.
-  let refresh = use_signal(|| 0u32);
-
-  let orgs_resource = use_resource(move || async move {
-    let _ = refresh();
-    api::orgs::list().await
-  });
-
-  let orgs: Vec<OrganizationMembership> =
-    orgs_resource.read().clone().flatten().unwrap_or_default();
+  let local_session = use_context::<crate::LocalSession>();
+  let load_failed = (local_session.orgs_load_failed)();
+  let orgs = sorted_memberships(&local_session.orgs.read());
 
   rsx! {
     section { id: "orgs",
@@ -37,7 +45,9 @@ pub fn Orgs() -> Element {
           }
         }
 
-        if orgs.is_empty() {
+        if orgs.is_empty() && load_failed {
+          OrgsUnavailableState {}
+        } else if orgs.is_empty() {
           div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-base-200 rounded-box p-12 mb-16 max-w-xl mx-auto",
             h2 { class: "text-lg font-semibold", "No organizations yet" }
             p { class: "text-base-content/60 max-w-sm",
@@ -57,7 +67,29 @@ pub fn Orgs() -> Element {
           }
         }
       }
-      CreateOrgModal { refresh }
+      CreateOrgModal {}
+    }
+  }
+}
+
+/// Shown instead of the empty state when the sign-in load of the list
+/// failed: an empty map on its own cannot tell "no organizations" from
+/// "the request never came back", and telling someone they have none when
+/// the API was simply unreachable invites them to create a duplicate.
+#[component]
+fn OrgsUnavailableState() -> Element {
+  rsx! {
+    div { class: "flex flex-col items-center text-center gap-3 bg-base-100 border border-base-200 rounded-box p-12 mb-16 max-w-xl mx-auto",
+      Icon {
+        width: 40,
+        height: 40,
+        icon: LdTriangleAlert,
+        class: "text-warning",
+      }
+      h2 { class: "text-lg font-semibold", "Couldn't load your organizations" }
+      p { class: "text-base-content/60 max-w-sm",
+        "This is a problem reaching the API, not an empty account — reload to try again."
+      }
     }
   }
 }
@@ -96,8 +128,11 @@ fn OrgCard(membership: OrganizationMembership) -> Element {
   }
 }
 
+/// On success the new org is already in `LocalSession.orgs` (put there by
+/// `api::orgs::create` from the response), so closing the dialog is all
+/// that is left to do -- the list behind it re-renders from the cache.
 #[component]
-fn CreateOrgModal(refresh: Signal<u32>) -> Element {
+fn CreateOrgModal() -> Element {
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
   // Only the select needs a signal -- the text inputs are read from the
@@ -141,7 +176,6 @@ fn CreateOrgModal(refresh: Signal<u32>) -> Element {
               match api::orgs::create(&request).await {
                   Ok(_) => {
                       is_saving.set(false);
-                      refresh += 1;
                       document::eval(r#"document.getElementById("create_org_modal").close();"#);
                   }
                   Err(msg) => {
@@ -181,16 +215,22 @@ fn CreateOrgModal(refresh: Signal<u32>) -> Element {
                 }
               }
               div { class: "flex gap-2",
+                // Selection on the option rather than a `value` on the
+                // select, for the reason given on the same control in
+                // `views/org.rs`.
                 select {
                   class: "select select-bordered select-sm",
-                  value: "{tax_id_type().as_str()}",
                   onchange: move |e| {
                       if let Ok(parsed) = e.value().parse::<TaxIdType>() {
                           tax_id_type.set(parsed);
                       }
                   },
                   for kind in TaxIdType::ALL.iter().filter(|kind| **kind != TaxIdType::None) {
-                    option { value: "{kind.as_str()}", "{kind.label()}" }
+                    option {
+                      value: "{kind.as_str()}",
+                      selected: *kind == tax_id_type(),
+                      "{kind.label()}"
+                    }
                   }
                 }
                 label { class: "input grow focus:outline-0",

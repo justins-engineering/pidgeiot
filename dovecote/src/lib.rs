@@ -1,22 +1,22 @@
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
-  INGEST_PAUSED_MESSAGE, IngestFuse, PigeonAccess, Principal, STRIPE_WEBHOOK_SECRET,
-  StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent, TelemetryHistoryPage,
-  WebhookAction, WebhookClaim, accept_invite, apply_subscription, attach_stripe_customer,
-  authenticate_browser, backfill_owner_email, build_invite_url, change_member_role,
-  check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
+  INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
+  STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
+  TelemetryHistoryPage, WebhookAction, WebhookClaim, accept_invite, apply_subscription,
+  attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
+  change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
   check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
   constant_time_eq, count_billable_messages, create_checkout_session, create_customer,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
   delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
   ensure_business_details_columns, erase_user_error_reports, fetch_subscription, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_org_stripe_customer, get_organization,
-  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
+  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_business_details, load_org_billing_overview, load_org_roles, load_org_subscription_state,
+  load_business_details, load_org_billing_overview, load_org_billing_state, load_org_roles,
   mark_webhook_event_processed, mint_invite_token, notify_contact_submission, org_role_of,
   plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
@@ -3872,7 +3872,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       match outcome {
-        Ok(member) => Response::from_json(&member)?.with_status(201).with_cors(&cors),
+        Ok(membership) => Response::from_json(&membership)?
+          .with_status(201)
+          .with_cors(&cors),
         Err(msg) if msg.starts_with("Not Found") => {
           Response::error(msg, 404).unwrap().with_cors(&cors)
         }
@@ -4107,14 +4109,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        if ensure_billing_tables(&client).await.is_err() {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        }
-
-        let existing_customer = match get_org_stripe_customer(&client, &org_id).await {
-          Ok(Some(existing)) => existing,
+        // One uncacheable read for the customer id and the tax identity
+        // (see load_org_billing_state): a registration saved a moment ago
+        // decides the name a brand-new Customer is created under and what
+        // is forwarded to Stripe before the session is minted.
+        let state = match load_org_billing_state(&client, &org_id).await {
+          Ok(Some(state)) => state,
           Ok(None) => {
             return Response::error("Not Found: no such organization", 404)
               .unwrap()
@@ -4126,38 +4126,20 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
               .with_cors(&cors);
           }
         };
+        let business_details = state.business_details;
 
-        // The org's tax identity decides two things below: the name a
-        // brand-new Customer is created under, and what is forwarded to
-        // Stripe before the session is minted.
-        if ensure_business_details_columns(&client).await.is_err() {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        }
-        let Ok(business_details) = load_business_details(&client, &org_id).await else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        };
-
-        let customer_id = match existing_customer {
+        let customer_id = match state.stripe_customer_id {
           Some(id) => id,
           None => {
-            let Ok(Some(org)) = get_organization(&client, &org_id).await else {
-              return Response::error("Internal Server Error", 500)
-                .unwrap()
-                .with_cors(&cors);
-            };
             // The registered legal name is what an invoice is made out to;
             // the org's display name is only a fallback for an org that
             // never filled the form in.
             let customer_name = business_details
-              .as_ref()
-              .and_then(|d| d.business_name.as_deref())
+              .business_name
+              .as_deref()
               .map(str::trim)
               .filter(|n| !n.is_empty())
-              .unwrap_or(&org.name);
+              .unwrap_or(&state.name);
             let created = match create_customer(
               &ctx.env,
               &org_id.to_string(),
@@ -4193,36 +4175,34 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // than add VAT. Best-effort on purpose -- if Stripe refuses the
         // number or is unreachable, the session still opens and Checkout
         // collects the ID itself.
-        if let Some(details) = business_details.as_ref() {
-          let label = details
-            .tax_id
-            .as_deref()
-            .map(|stored| tax_id_log_label(details.tax_id_type, stored));
-          match sync_customer_tax_identity(&ctx.env, &customer_id, details).await {
-            Ok(done) if done.changed() => console_log!(
-              "Stripe tax identity for org {org_id} ({}): renamed={} removed={} forwarded={}",
-              label.as_deref().unwrap_or("none"),
-              done.renamed,
-              done.deleted,
-              done.created
-            ),
-            Ok(done) => {
-              if let (Some(label), Some(reason)) = (label.as_deref(), done.left) {
-                console_log!(
-                  "Stripe tax identity for org {org_id} ({label}): not forwarded, {reason}"
-                );
-              }
+        let label = business_details
+          .tax_id
+          .as_deref()
+          .map(|stored| tax_id_log_label(business_details.tax_id_type, stored));
+        match sync_customer_tax_identity(&ctx.env, &customer_id, &business_details).await {
+          Ok(done) if done.changed() => console_log!(
+            "Stripe tax identity for org {org_id} ({}): renamed={} removed={} forwarded={}",
+            label.as_deref().unwrap_or("none"),
+            done.renamed,
+            done.deleted,
+            done.created
+          ),
+          Ok(done) => {
+            if let (Some(label), Some(reason)) = (label.as_deref(), done.left) {
+              console_log!(
+                "Stripe tax identity for org {org_id} ({label}): not forwarded, {reason}"
+              );
             }
-            // Status, kind and code only: Stripe's message for a refused
-            // tax ID echoes the number, and logs never carry one in full.
-            Err(e) => console_error!(
-              "Stripe tax identity sync failed for org {org_id} ({}): stripe {} {} {} -- Checkout will collect",
-              label.as_deref().unwrap_or("none"),
-              e.status.map(|s| s.to_string()).unwrap_or_default(),
-              e.kind,
-              e.code.as_deref().unwrap_or("")
-            ),
           }
+          // Status, kind and code only: Stripe's message for a refused
+          // tax ID echoes the number, and logs never carry one in full.
+          Err(e) => console_error!(
+            "Stripe tax identity sync failed for org {org_id} ({}): stripe {} {} {} -- Checkout will collect",
+            label.as_deref().unwrap_or("none"),
+            e.status.map(|s| s.to_string()).unwrap_or_default(),
+            e.kind,
+            e.code.as_deref().unwrap_or("")
+          ),
         }
 
         let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {
@@ -4298,11 +4278,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        let customer_id = match get_org_stripe_customer(&client, &org_id).await {
-          Ok(Some(Some(customer_id))) => customer_id,
+        // The uncacheable billing-state read, not a plain customer-id
+        // lookup: the customer was attached by the checkout that just
+        // returned, and a cached lookup answered "no billing account yet"
+        // for a minute after it.
+        let customer_id = match load_org_billing_state(&client, &org_id).await {
+          Ok(Some(OrgBillingState {
+            stripe_customer_id: Some(customer_id),
+            ..
+          })) => customer_id,
           // No Stripe customer yet: nothing for the portal to manage --
           // checkout is the flow that creates one.
-          Ok(Some(None)) => {
+          Ok(Some(_)) => {
             return Response::error(
               "Conflict: this organization has no billing account yet",
               409,
@@ -4395,17 +4382,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        // Both bootstraps: the state read wants the billing columns and
-        // the allowance-floor write wants the usage table.
-        if ensure_billing_tables(&client).await.is_err()
-          || ensure_billing_usage_tables(&client).await.is_err()
-        {
+        // The allowance-floor write below wants the usage table; the
+        // state read bootstraps its own columns.
+        if ensure_billing_usage_tables(&client).await.is_err() {
           return Response::error("Internal Server Error", 500)
             .unwrap()
             .with_cors(&cors);
         }
 
-        let state = match load_org_subscription_state(&client, &org_id).await {
+        let state = match load_org_billing_state(&client, &org_id).await {
           Ok(Some(state)) => state,
           Ok(None) => {
             return Response::error("Not Found: no such organization", 404)

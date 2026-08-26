@@ -649,12 +649,16 @@ pub async fn revoke_invite(client: &Client, org_id: &Uuid, invite_id: &Uuid) -> 
 /// controls are the short TTL, single-use consumption, and hash-only
 /// storage). Runs in one transaction with `FOR UPDATE` so a token can
 /// never be consumed twice concurrently.
+///
+/// Hands back the caller's new membership in the shape `GET /orgs` lists
+/// it, org row included, so a client can add it to its own list without
+/// re-reading one that Hyperdrive may still be serving from cache.
 pub async fn accept_invite(
   mut client: Client,
   token: &str,
   user_id_str: &str,
   email: Option<&str>,
-) -> Result<std::result::Result<OrganizationMember, &'static str>> {
+) -> Result<std::result::Result<OrganizationMembership, &'static str>> {
   ensure_org_tables(&client).await?;
   let user_uuid = parse_uuid(user_id_str, "X-User-Id")?;
   let token_hash = sha256_hex(token.as_bytes());
@@ -720,14 +724,13 @@ pub async fn accept_invite(
       Error::RustError("Internal Server Error".into())
     })?;
 
-  let Some(member_row) = inserted.into_iter().next() else {
+  if inserted.is_empty() {
     // Already a member: leave the invite unconsumed (it may have been
     // meant for someone else) and tell the caller.
     return Ok(Err(
       "Conflict: you are already a member of this organization",
     ));
-  };
-  let member = row_to_member(&member_row);
+  }
 
   tx.execute_typed(
     "UPDATE organization_invites SET accepted_at = now() WHERE id = $1;",
@@ -739,12 +742,24 @@ pub async fn accept_invite(
     Error::RustError("Internal Server Error".into())
   })?;
 
+  let org_row = tx
+    .query_typed_one(
+      "SELECT id, name, created_at, updated_at FROM organizations WHERE id = $1;",
+      &[(&org_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Invite org read error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+  let organization = row_to_organization(&org_row);
+
   tx.commit().await.map_err(|e| {
     console_error!("Invite accept commit error: {e}");
     Error::RustError("Internal Server Error".into())
   })?;
 
-  Ok(Ok(member))
+  Ok(Ok(OrganizationMembership { organization, role }))
 }
 
 /// Builds the fancier-side accept URL for an invite token -- `ROOT_URL`-based

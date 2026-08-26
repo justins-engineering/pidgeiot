@@ -52,6 +52,8 @@ pub mod connection_state;
 
 pub mod dict_log;
 
+pub mod org_detail;
+
 pub mod gps_track;
 
 pub mod graph_store;

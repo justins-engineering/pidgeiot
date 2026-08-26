@@ -33,14 +33,14 @@ pub use stripe_webhook::verify_webhook_signature;
 pub use stripe_webhook::webhook_action;
 
 mod billing;
+pub use billing::OrgBillingState;
 pub use billing::WebhookClaim;
 pub use billing::apply_subscription;
 pub use billing::attach_stripe_customer;
 pub use billing::claim_webhook_event;
 pub use billing::ensure_billing_tables;
-pub use billing::get_org_stripe_customer;
 pub use billing::load_org_billing_overview;
-pub use billing::load_org_subscription_state;
+pub use billing::load_org_billing_state;
 pub use billing::mark_webhook_event_processed;
 
 pub mod vies;

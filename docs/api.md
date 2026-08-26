@@ -458,8 +458,10 @@ Revokes a pending invite. Idempotent (`200` even if already gone).
 Consumes an invite token for the **calling session** (requires an authenticated Kratos
 session; the frontend's `/invite?token=` page routes unauthenticated visitors through
 login/registration first). Body: `capsules::OrganizationInviteAcceptRequest` (`{ token }`).
-Returns `201` with the new `capsules::OrganizationMember`; `404` for an invalid/expired/used
-token; `409` if the caller is already a member (the invite is left unconsumed in that case).
+Returns `201` with the caller's new `capsules::OrganizationMembership` (`{ organization, role }`,
+the same item `GET /orgs` lists, so a client can add it to its own list without re-reading one
+Hyperdrive may still be serving from cache); `404` for an invalid/expired/used token; `409` if
+the caller is already a member (the invite is left unconsumed in that case).
 
 **Token-alone acceptance — a documented tradeoff.** The token is a bearer credential:
 whichever authenticated account presents it first joins, *regardless of which email that

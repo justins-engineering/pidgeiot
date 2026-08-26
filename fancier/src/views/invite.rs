@@ -19,6 +19,7 @@
 use crate::helpers::url_query_param;
 use crate::models::AuthState;
 use crate::{Route, Session, api};
+use capsules::OrganizationMembership;
 use dioxus::prelude::*;
 
 #[component]
@@ -29,7 +30,7 @@ pub fn InviteAccept(token: Option<String>) -> Element {
   let session = use_context::<Session>();
 
   let mut is_accepting = use_signal(|| false);
-  let mut outcome = use_signal(|| Option::<Result<uuid::Uuid, String>>::None);
+  let mut outcome = use_signal(|| Option::<Result<OrganizationMembership, String>>::None);
 
   rsx! {
     section { id: "invite", class: "max-w-xl mx-auto w-full py-12",
@@ -76,7 +77,7 @@ pub fn InviteAccept(token: Option<String>) -> Element {
                       let tok = tok.clone();
                       async move {
                           is_accepting.set(true);
-                          let result = api::orgs::accept_invite(&tok).await.map(|m| m.org_id);
+                          let result = api::orgs::accept_invite(&tok).await;
                           outcome.set(Some(result));
                           is_accepting.set(false);
                       }
@@ -88,11 +89,15 @@ pub fn InviteAccept(token: Option<String>) -> Element {
                   }
                 }
               },
-              Some(Ok(org_id)) => rsx! {
-                p { class: "text-success font-semibold", "You're in! Welcome aboard." }
+              Some(Ok(membership)) => rsx! {
+                p { class: "text-success font-semibold",
+                  "You're in! Welcome to {membership.organization.name}."
+                }
                 Link {
                   class: "btn btn-primary mx-auto",
-                  to: Route::OrgView { org_id },
+                  to: Route::OrgView {
+                      org_id: membership.organization.id,
+                  },
                   "Open the organization"
                 }
               },

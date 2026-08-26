@@ -1,12 +1,18 @@
 //! Organizations API client -- see `docs/api.md`'s
 //! "Organizations" section for the wire surface and permission matrix.
 //!
-//! Unlike flocks/pigeons, orgs are NOT cached in `LocalSession` -- the org
-//! views are self-contained management pages that own their data via
-//! `use_resource`, so plain returns keep the shared cache honest. The one
-//! exception is `transfer_flock`, which writes the updated `Flock` back
-//! into `LocalSession.flocks` (that cache IS the flock views' source of
-//! truth).
+//! The org list lives in `LocalSession.orgs`, same convention as
+//! `api::flocks`: `list` fills it once at sign-in, and every mutation
+//! that changes which orgs the caller belongs to (`create`, `rename`,
+//! `delete`, `leave`) writes its own response straight back into it. A
+//! mutation's response is the only read that is guaranteed to reflect the
+//! write -- dovecote's reads go through Hyperdrive, whose query cache
+//! keeps answering an identical SELECT with the pre-write rows for up to a
+//! minute -- so nothing here refetches the list to confirm a change.
+//!
+//! The per-org detail (`detail`, `business_details`) is view-local: the
+//! org page fetches it on mount and patches its own copy from each
+//! mutation's response for the same reason.
 
 use crate::api::{fetch_json, fetch_json_any_status};
 use capsules::{
@@ -17,6 +23,7 @@ use capsules::{
   OrganizationRenameRequest,
 };
 use dioxus::prelude::*;
+use std::collections::HashMap;
 use uuid::Uuid;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -46,13 +53,37 @@ pub(crate) async fn error_text(response: &web_sys::Response) -> String {
   }
 }
 
-pub async fn list() -> Option<Vec<OrganizationMembership>> {
+/// Fills `LocalSession.orgs`. Called once at sign-in (see `App`); the
+/// mutations below keep the cache current from then on.
+pub async fn list() -> Option<()> {
   let response = fetch_json("GET", "/orgs", None).await?;
-  parse(response).await
+  let memberships: Vec<OrganizationMembership> = parse(response).await?;
+  let orgs_map: HashMap<Uuid, OrganizationMembership> = memberships
+    .into_iter()
+    .map(|membership| (membership.organization.id, membership))
+    .collect();
+
+  let mut orgs = consume_context::<crate::LocalSession>().orgs;
+  *orgs.write() = orgs_map;
+  Some(())
+}
+
+/// Records a membership the caller just gained in `LocalSession.orgs`.
+fn cache_membership(membership: OrganizationMembership) {
+  let mut orgs = consume_context::<crate::LocalSession>().orgs;
+  orgs.write().insert(membership.organization.id, membership);
+}
+
+/// Drops an org the caller no longer belongs to from `LocalSession.orgs`.
+fn uncache_org(org_id: Uuid) {
+  let mut orgs = consume_context::<crate::LocalSession>().orgs;
+  orgs.write().remove(&org_id);
 }
 
 /// Creates an org, optionally with the business details it will be
-/// invoiced under.
+/// invoiced under. The caller is always the founding owner (dovecote
+/// never creates an org without one), which is what lets the new
+/// membership be cached from the response alone.
 ///
 /// `Err` carries the server's own message rather than collapsing to
 /// `None`, unlike most of this module: a creation can now be refused for a
@@ -66,13 +97,17 @@ pub async fn create(request: &OrganizationCreateRequest) -> Result<Organization,
   let Some(response) = fetch_json_any_status("POST", "/orgs", Some(&body)).await else {
     return Err("Network error".to_string());
   };
-  if response.ok() {
-    parse(response)
-      .await
-      .ok_or_else(|| "Failed to parse response".to_string())
-  } else {
-    Err(error_text(&response).await)
+  if !response.ok() {
+    return Err(error_text(&response).await);
   }
+  let Some(organization) = parse::<Organization>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
+  cache_membership(OrganizationMembership {
+    organization: organization.clone(),
+    role: OrgRole::Owner,
+  });
+  Ok(organization)
 }
 
 pub async fn detail(org_id: Uuid) -> Option<OrganizationDetail> {
@@ -85,7 +120,12 @@ pub async fn rename(org_id: Uuid, name: &str) -> Option<Organization> {
     name: name.to_string(),
   })?;
   let response = fetch_json("PUT", &format!("/orgs/{org_id}"), Some(&body)).await?;
-  parse(response).await
+  let organization: Organization = parse(response).await?;
+  let mut orgs = consume_context::<crate::LocalSession>().orgs;
+  if let Some(membership) = orgs.write().get_mut(&org_id) {
+    membership.organization = organization.clone();
+  }
+  Some(organization)
 }
 
 /// The org's tax identity. Member-visible, like the billing overview: a
@@ -134,6 +174,7 @@ pub async fn delete(org_id: Uuid) -> Result<(), String> {
     return Err("Network error".to_string());
   };
   if response.ok() {
+    uncache_org(org_id);
     Ok(())
   } else {
     Err(error_text(&response).await)
@@ -181,6 +222,15 @@ pub async fn remove_member(org_id: Uuid, user_id: Uuid) -> Result<(), String> {
   }
 }
 
+/// The caller removing themselves -- the same route as `remove_member`,
+/// but the org also leaves `LocalSession.orgs`, since the caller no
+/// longer belongs to it.
+pub async fn leave(org_id: Uuid, user_id: Uuid) -> Result<(), String> {
+  remove_member(org_id, user_id).await?;
+  uncache_org(org_id);
+  Ok(())
+}
+
 pub async fn create_invite(
   org_id: Uuid,
   email: &str,
@@ -206,8 +256,10 @@ pub async fn revoke_invite(org_id: Uuid, invite_id: Uuid) -> Option<()> {
 
 /// Token-alone acceptance (`POST /invites/accept`) -- `Err` carries the
 /// server's own message (invalid/expired/used token, already a member) for
-/// the invite view to render verbatim.
-pub async fn accept_invite(token: &str) -> Result<OrganizationMember, String> {
+/// the invite view to render verbatim. The response is the caller's new
+/// membership in the shape `GET /orgs` lists it, which is what lets it go
+/// straight into `LocalSession.orgs`.
+pub async fn accept_invite(token: &str) -> Result<OrganizationMembership, String> {
   let Some(body) = to_body(&OrganizationInviteAcceptRequest {
     token: token.to_string(),
   }) else {
@@ -216,13 +268,14 @@ pub async fn accept_invite(token: &str) -> Result<OrganizationMember, String> {
   let Some(response) = fetch_json_any_status("POST", "/invites/accept", Some(&body)).await else {
     return Err("Network error".to_string());
   };
-  if response.ok() {
-    parse(response)
-      .await
-      .ok_or_else(|| "Failed to parse response".to_string())
-  } else {
-    Err(error_text(&response).await)
+  if !response.ok() {
+    return Err(error_text(&response).await);
   }
+  let Some(membership) = parse::<OrganizationMembership>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
+  cache_membership(membership.clone());
+  Ok(membership)
 }
 
 /// Transfers a personal flock into an org (see `docs/api.md`). On success

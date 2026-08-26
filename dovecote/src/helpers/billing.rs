@@ -1,9 +1,16 @@
-use capsules::{BillingPlan, OrganizationBilling, OrganizationBillingOverview, SubscriptionStatus};
+use capsules::{
+  BillingPlan, OrganizationBilling, OrganizationBillingOverview, OrganizationBusinessDetails,
+  SubscriptionStatus,
+};
 use time::OffsetDateTime;
 use tokio_postgres::Client;
 use tokio_postgres::types::Type;
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
+
+use crate::helpers::business_details::{
+  DETAILS_COLUMNS, ensure_business_details_columns, row_to_details,
+};
 
 /// Runtime schema bootstrap, same lazy-DDL convention as
 /// `ensure_org_tables` (`helpers/orgs.rs`): `infra/init-db.sql` and the
@@ -122,25 +129,6 @@ pub async fn mark_webhook_event_processed(client: &Client, event_id: &str) -> Re
     })
 }
 
-/// The org's stored Stripe customer id, if any -- `None` (outer) when the
-/// org doesn't exist at all.
-pub async fn get_org_stripe_customer(
-  client: &Client,
-  org_id: &Uuid,
-) -> Result<Option<Option<String>>> {
-  let rows = client
-    .query_typed(
-      "SELECT stripe_customer_id FROM organizations WHERE id = $1;",
-      &[(org_id, Type::UUID)],
-    )
-    .await
-    .map_err(|e| {
-      console_error!("Org Stripe customer lookup error: {e}");
-      Error::RustError("Internal Server Error".into())
-    })?;
-  Ok(rows.first().map(|row| row.get("stripe_customer_id")))
-}
-
 /// Binds a Stripe customer to an org, keeping any id already there --
 /// COALESCE so a lost race (or a replayed webhook) can never re-point an
 /// org at a second customer. Returns the id that actually won.
@@ -165,44 +153,65 @@ pub async fn attach_stripe_customer(
   Ok(rows.first().and_then(|row| row.get("stripe_customer_id")))
 }
 
-/// What the plan-change route needs before touching Stripe: the stored
-/// tier and status (the same-tier and no-live-subscription refusals), the
-/// subscription id the change addresses, and the usage-period bounds the
-/// message-allowance floor is keyed on -- anchored exactly the way the
-/// usage tally anchors, so the floor lands on the row the meter reporter
-/// actually reads.
-pub struct OrgSubscriptionState {
+/// Everything a billing mutation needs to know about the org before it
+/// touches Stripe: the customer it bills (checkout creates one when this
+/// is empty, the portal refuses without one), the stored tier and status
+/// (the same-tier and no-live-subscription refusals), the subscription id
+/// a plan change addresses, the usage-period bounds the message-allowance
+/// floor is keyed on -- anchored exactly the way the usage tally anchors,
+/// so the floor lands on the row the meter reporter actually reads -- and
+/// the tax identity checkout forwards.
+///
+/// One statement on purpose. It is anchored on `now()`, and Hyperdrive
+/// never caches a statement that carries a volatile or stable function
+/// (see CLAUDE.md's Hyperdrive note), so a customer id attached by the
+/// checkout that just returned, or a VAT number saved seconds ago, is
+/// what the next billing route reads. Separate plain lookups for the
+/// customer id and the tax identity used to sit behind the cache and
+/// answered "no billing account yet" for a minute after a first checkout.
+pub struct OrgBillingState {
+  pub name: String,
+  pub stripe_customer_id: Option<String>,
   pub plan: BillingPlan,
   pub status: SubscriptionStatus,
   pub stripe_subscription_id: Option<String>,
   pub usage_period_start: OffsetDateTime,
   pub usage_period_end: OffsetDateTime,
+  pub business_details: OrganizationBusinessDetails,
 }
 
-/// `None` if the org doesn't exist.
-pub async fn load_org_subscription_state(
+/// `None` if the org doesn't exist. Bootstraps the billing and
+/// business-detail columns it reads, so a caller needs no ensure of its
+/// own before this.
+pub async fn load_org_billing_state(
   client: &Client,
   org_id: &Uuid,
-) -> Result<Option<OrgSubscriptionState>> {
+) -> Result<Option<OrgBillingState>> {
+  ensure_billing_tables(client).await?;
+  ensure_business_details_columns(client).await?;
+
   let rows = client
     .query_typed(
-      "SELECT o.plan, o.subscription_status, o.stripe_subscription_id,
-         CASE WHEN use_org_period THEN o.current_period_start
-              ELSE date_trunc('month', now()) END AS usage_period_start,
-         CASE WHEN use_org_period THEN o.current_period_end
-              ELSE date_trunc('month', now()) + interval '1 month' END AS usage_period_end
-       FROM organizations o,
-         LATERAL (SELECT (o.subscription_status IN ('trialing', 'active', 'past_due')
-             AND o.current_period_start IS NOT NULL
-             AND o.current_period_end IS NOT NULL
-             AND now() >= o.current_period_start
-             AND now() < o.current_period_end) AS use_org_period) anchor
-       WHERE o.id = $1;",
+      &format!(
+        "SELECT o.name, o.stripe_customer_id, o.plan, o.subscription_status,
+           o.stripe_subscription_id, {DETAILS_COLUMNS},
+           CASE WHEN use_org_period THEN o.current_period_start
+                ELSE date_trunc('month', now()) END AS usage_period_start,
+           CASE WHEN use_org_period THEN o.current_period_end
+                ELSE date_trunc('month', now()) + interval '1 month' END AS usage_period_end
+         FROM organizations o,
+           LATERAL (SELECT (o.subscription_status IN ('trialing', 'active', 'past_due')
+               AND o.current_period_start IS NOT NULL
+               AND o.current_period_end IS NOT NULL
+               AND now() >= o.current_period_start
+               AND now() < o.current_period_end) AS use_org_period) anchor
+         WHERE o.id = $1;"
+      ),
       &[(org_id, Type::UUID)],
     )
     .await
     .map_err(|e| {
-      console_error!("Org subscription state lookup error: {e}");
+      console_error!("Org billing state lookup error: {e}");
       Error::RustError("Internal Server Error".into())
     })?;
 
@@ -213,7 +222,9 @@ pub async fn load_org_subscription_state(
   let plan_raw: String = row.get("plan");
   let status_raw: String = row.get("subscription_status");
 
-  Ok(Some(OrgSubscriptionState {
+  Ok(Some(OrgBillingState {
+    name: row.get("name"),
+    stripe_customer_id: row.get("stripe_customer_id"),
     plan: plan_raw.parse().unwrap_or_default(),
     // Same conservative fallback as the overview: unknown status reads as
     // unentitled-but-subscribed, never as "never subscribed".
@@ -221,6 +232,7 @@ pub async fn load_org_subscription_state(
     stripe_subscription_id: row.get("stripe_subscription_id"),
     usage_period_start: row.get("usage_period_start"),
     usage_period_end: row.get("usage_period_end"),
+    business_details: row_to_details(row),
   }))
 }
 

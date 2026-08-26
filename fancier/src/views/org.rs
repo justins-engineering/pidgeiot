@@ -4,7 +4,13 @@
 //! (no reset-sensitive state), while the one-time invite-link reveal is
 //! conditional-render (`if let Some(..)`) so it always remounts fresh --
 //! it carries a write-once secret, same reasoning as `TokenReveal`.
+//!
+//! The page fetches its detail once and then patches its own copy from
+//! each mutation's response (`helpers::org_detail`) rather than
+//! refetching: a refetch right after a save comes back from Hyperdrive's
+//! query cache with the rows from before it.
 
+use crate::helpers::org_detail;
 use crate::{Create, Route, api};
 use capsules::{
   BillingPlan, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole, OrganizationBillingOverview,
@@ -18,32 +24,45 @@ use ory_kratos_client_wasm::apis::configuration::Configuration;
 use ory_kratos_client_wasm::apis::frontend_api::to_session;
 use uuid::Uuid;
 
+/// The page's own copy of the org: `None` while loading, `Some(None)`
+/// when the fetch failed or the caller is not a member.
+type DetailState = Signal<Option<Option<OrganizationDetail>>>;
+
+/// Applies a mutation's response to the loaded detail; a no-op while the
+/// page has nothing loaded to patch.
+fn patch_detail(mut detail: DetailState, patch: impl FnOnce(&mut OrganizationDetail)) {
+  if let Some(Some(d)) = &mut *detail.write() {
+    patch(d);
+  }
+}
+
 #[component]
 pub fn OrgView(org_id: Uuid) -> Element {
-  let refresh = use_signal(|| 0u32);
+  let mut detail_state: DetailState = use_signal(|| None);
   let mut action_error = use_signal(|| Option::<String>::None);
   // One-time invite-link reveal -- conditional-render pattern (see module
   // comment).
   let mut invite_created = use_signal(|| Option::<OrganizationInviteCreated>::None);
   let nav = use_navigator();
 
-  let detail_resource = use_resource(move || async move {
-    let _ = refresh();
-    api::orgs::detail(org_id).await
+  use_future(move || async move {
+    detail_state.set(Some(api::orgs::detail(org_id).await));
   });
 
   // The caller's own Kratos identity id -- lets the member table mark
-  // "(you)" and offer Leave on the caller's own row.
+  // "(you)", offer Leave on the caller's own row, and follow a change to
+  // the caller's own role.
   let me_resource = use_resource(move || async move {
     let config = Configuration::create();
     to_session(&config, None, None, None)
       .await
       .ok()
       .and_then(|s| s.identity.map(|i| i.id))
+      .and_then(|id| Uuid::parse_str(&id).ok())
   });
-  let me_id: Option<String> = me_resource.read().clone().flatten();
+  let me: Option<Uuid> = me_resource.read().clone().flatten();
 
-  let detail = detail_resource.read().clone();
+  let detail = detail_state.read().clone();
 
   rsx! {
     section { id: "org", class: "max-w-5xl mx-auto w-full",
@@ -104,14 +123,14 @@ pub fn OrgView(org_id: Uuid) -> Element {
         Some(Some(d)) => rsx! {
           MembersSection {
             detail: d.clone(),
-            me_id,
-            refresh,
+            me,
+            detail_state,
             action_error,
           }
           if d.caller_role.is_manager() {
             InvitesSection {
               detail: d.clone(),
-              refresh,
+              detail_state,
               action_error,
               invite_created,
             }
@@ -125,7 +144,7 @@ pub fn OrgView(org_id: Uuid) -> Element {
             org_id,
             caller_role: d.caller_role,
           }
-          RenameOrgModal { org_id, refresh }
+          RenameOrgModal { org_id, detail_state }
         },
         Some(None) => rsx! {
           div { class: "flex flex-col items-center text-center gap-2 bg-base-100 border border-base-200 rounded-box p-12 max-w-xl mx-auto",
@@ -155,12 +174,18 @@ pub fn OrgView(org_id: Uuid) -> Element {
 #[component]
 fn MembersSection(
   detail: OrganizationDetail,
-  me_id: Option<String>,
-  refresh: Signal<u32>,
+  me: Option<Uuid>,
+  detail_state: DetailState,
   action_error: Signal<Option<String>>,
 ) -> Element {
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
+  let nav = use_navigator();
+  // Part of each row's key. A refused role change leaves the row's data
+  // exactly as it was, so nothing in the re-render would touch the
+  // select, and it would keep showing the choice the server just
+  // rejected; bumping this remounts the rows with the stored roles.
+  let mut rows_generation = use_signal(|| 0u32);
 
   rsx! {
     section { id: "org-members", class: "mb-10",
@@ -179,11 +204,11 @@ fn MembersSection(
           tbody {
             for member in detail.members.clone() {
               {
-                  let is_me = me_id.as_deref() == Some(member.user_id.to_string().as_str());
+                  let is_me = me == Some(member.user_id);
                   let member_user_id = member.user_id;
                   let member_role = member.role;
                   rsx! {
-                    tr { class: "hover",
+                    tr { key: "{member_user_id}-{rows_generation}", class: "hover",
                       td {
                         span { class: "font-semibold",
                           "{member.email.as_deref().unwrap_or(\"(no email on record)\")}"
@@ -203,10 +228,15 @@ fn MembersSection(
                                 let Ok(role) = evt.value().parse::<OrgRole>() else { return };
                                 action_error.set(None);
                                 match api::orgs::change_role(org_id, member_user_id, role).await {
-                                    Ok(_) => refresh += 1,
+                                    Ok(updated) => {
+                                        patch_detail(
+                                            detail_state,
+                                            |d| org_detail::set_member_role(d, updated, me),
+                                        );
+                                    }
                                     Err(msg) => {
                                         action_error.set(Some(msg));
-                                        refresh += 1;
+                                        rows_generation += 1;
                                     }
                                 }
                             },
@@ -247,8 +277,25 @@ fn MembersSection(
                             class: "btn btn-ghost btn-xs text-error",
                             onclick: move |_| async move {
                                 action_error.set(None);
+                                // Leaving ends the caller's access to this page,
+                                // so it goes back to the list instead of patching
+                                // a detail they may no longer read.
+                                if is_me {
+                                    match api::orgs::leave(org_id, member_user_id).await {
+                                        Ok(()) => {
+                                            nav.replace(Route::Orgs {});
+                                        }
+                                        Err(msg) => action_error.set(Some(msg)),
+                                    }
+                                    return;
+                                }
                                 match api::orgs::remove_member(org_id, member_user_id).await {
-                                    Ok(()) => refresh += 1,
+                                    Ok(()) => {
+                                        patch_detail(
+                                            detail_state,
+                                            |d| org_detail::remove_member(d, member_user_id),
+                                        );
+                                    }
                                     Err(msg) => action_error.set(Some(msg)),
                                 }
                             },
@@ -274,7 +321,7 @@ fn MembersSection(
 #[component]
 fn InvitesSection(
   detail: OrganizationDetail,
-  refresh: Signal<u32>,
+  detail_state: DetailState,
   action_error: Signal<Option<String>>,
   invite_created: Signal<Option<OrganizationInviteCreated>>,
 ) -> Element {
@@ -304,8 +351,11 @@ fn InvitesSection(
             action_error.set(None);
             match api::orgs::create_invite(org_id, &email, role).await {
                 Some(created) => {
+                    patch_detail(
+                        detail_state,
+                        |d| org_detail::add_invite(d, created.invite.clone()),
+                    );
                     invite_created.set(Some(created));
-                    refresh += 1;
                 }
                 None => {
                     action_error
@@ -387,7 +437,10 @@ fn InvitesSection(
                             onclick: move |_| async move {
                                 action_error.set(None);
                                 if api::orgs::revoke_invite(org_id, invite_id).await.is_some() {
-                                    refresh += 1;
+                                    patch_detail(
+                                        detail_state,
+                                        |d| org_detail::remove_invite(d, invite_id),
+                                    );
                                 } else {
                                     action_error.set(Some("Failed to revoke invite.".to_string()));
                                 }
@@ -674,17 +727,19 @@ fn BillingPanel(
 /// typo should be able to say so); only managers can change it.
 #[component]
 fn BusinessDetailsSection(org_id: Uuid, caller_role: OrgRole) -> Element {
-  let mut refresh = use_signal(|| 0u32);
-  let details_resource = use_resource(move || async move {
-    let _ = refresh();
-    api::orgs::business_details(org_id).await
+  // Fetched once; a save replaces it with the PUT response, which is the
+  // one read guaranteed to show the saved registration (see the module
+  // comment).
+  let mut details = use_signal(|| Option::<Option<OrganizationBusinessDetails>>::None);
+  use_future(move || async move {
+    details.set(Some(api::orgs::business_details(org_id).await));
   });
-  let details = details_resource.read().clone();
+  let details_now = details.read().clone();
 
   rsx! {
     section { id: "org-business-details", class: "mb-10",
       h2 { class: "text-lg font-semibold mb-3", "Business details" }
-      match details {
+      match details_now {
         None => rsx! {
           div { class: "flex justify-center p-6",
             span { class: "loading loading-spinner loading-md" }
@@ -700,7 +755,7 @@ fn BusinessDetailsSection(org_id: Uuid, caller_role: OrgRole) -> Element {
             org_id,
             caller_role,
             details: d,
-            on_saved: move |_| refresh += 1,
+            on_saved: move |saved| details.set(Some(Some(saved))),
           }
         },
       }
@@ -750,12 +805,16 @@ fn tax_status_detail(details: &OrganizationBusinessDetails) -> Option<String> {
   }
 }
 
+/// `on_saved` hands the parent the PUT response, the stored registration
+/// as dovecote now holds it; the form fields follow it too, so a number
+/// dovecote normalized (`ie 6388047v` to `IE6388047V`) reads back the way
+/// it was stored.
 #[component]
 fn BusinessDetailsPanel(
   org_id: Uuid,
   caller_role: OrgRole,
   details: OrganizationBusinessDetails,
-  on_saved: EventHandler<()>,
+  on_saved: EventHandler<OrganizationBusinessDetails>,
 ) -> Element {
   let mut business_name = use_signal(|| details.business_name.clone().unwrap_or_default());
   let mut tax_id = use_signal(|| details.tax_id.clone().unwrap_or_default());
@@ -799,16 +858,23 @@ fn BusinessDetailsPanel(
           div { class: "flex flex-col sm:flex-row gap-3",
             label { class: "form-control",
               span { class: "label-text text-sm mb-1 block", "Tax ID type" }
+              // The selection is carried by the option, not a `value` on
+              // the select: a select's attributes are applied before its
+              // options exist, so a value set at mount matches nothing and
+              // the browser falls back to the first option.
               select {
                 class: "select select-bordered",
-                value: "{tax_id_type().as_str()}",
                 onchange: move |e| {
                     if let Ok(parsed) = e.value().parse::<TaxIdType>() {
                         tax_id_type.set(parsed);
                     }
                 },
                 for kind in TaxIdType::ALL {
-                  option { value: "{kind.as_str()}", "{kind.label()}" }
+                  option {
+                    value: "{kind.as_str()}",
+                    selected: *kind == tax_id_type(),
+                    "{kind.label()}"
+                  }
                 }
               }
             }
@@ -870,7 +936,10 @@ fn BusinessDetailsPanel(
                                       },
                                   ),
                               );
-                          on_saved.call(());
+                          business_name.set(saved.business_name.clone().unwrap_or_default());
+                          tax_id.set(saved.tax_id.clone().unwrap_or_default());
+                          tax_id_type.set(saved.tax_id_type);
+                          on_saved.call(saved);
                       }
                       Err(msg) => error.set(Some(msg)),
                   }
@@ -943,7 +1012,7 @@ fn InviteLinkReveal(created: OrganizationInviteCreated, on_close: EventHandler<(
 }
 
 #[component]
-fn RenameOrgModal(org_id: Uuid, refresh: Signal<u32>) -> Element {
+fn RenameOrgModal(org_id: Uuid, detail_state: DetailState) -> Element {
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
 
@@ -967,13 +1036,16 @@ fn RenameOrgModal(org_id: Uuid, refresh: Signal<u32>) -> Element {
               }
               is_saving.set(true);
               submit_error.set(None);
-              if api::orgs::rename(org_id, &name).await.is_some() {
-                  is_saving.set(false);
-                  refresh += 1;
-                  document::eval(r#"document.getElementById("rename_org_modal").close();"#);
-              } else {
-                  is_saving.set(false);
-                  submit_error.set(Some("Failed to rename organization.".to_string()));
+              match api::orgs::rename(org_id, &name).await {
+                  Some(renamed) => {
+                      is_saving.set(false);
+                      patch_detail(detail_state, |d| org_detail::rename(d, renamed));
+                      document::eval(r#"document.getElementById("rename_org_modal").close();"#);
+                  }
+                  None => {
+                      is_saving.set(false);
+                      submit_error.set(Some("Failed to rename organization.".to_string()));
+                  }
               }
           },
           fieldset { class: "fieldset mt-5",
