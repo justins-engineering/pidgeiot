@@ -25,3 +25,14 @@ pub const DEMO_PIGEON_ID: &str = match option_env!("DEMO_PIGEON_ID") {
   Some(id) => id,
   None => "",
 };
+
+// Cloudflare Turnstile site key for the contact form's widget
+// (views/contact.rs). Public by design, and per-environment because a
+// widget is bound to the hostname it renders on. The fallback is
+// Cloudflare's published always-pass test key, which pairs with the test
+// secret dovecote's dev config accepts, so a build with no .env file still
+// gets a working form.
+pub const TURNSTILE_SITE_KEY: &str = match option_env!("TURNSTILE_SITE_KEY") {
+  Some(key) => key,
+  None => "1x00000000000000000000AA",
+};

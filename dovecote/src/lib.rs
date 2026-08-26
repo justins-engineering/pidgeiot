@@ -2,10 +2,10 @@ use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
   INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
   STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
-  TelemetryHistoryPage, WebhookAction, WebhookClaim, accept_invite, apply_subscription,
-  attach_stripe_customer, authenticate_browser, backfill_owner_email, build_invite_url,
-  change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
-  check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
+  TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite,
+  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
+  build_invite_url, change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse,
+  check_org_cap, check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
   constant_time_eq, count_billable_messages, create_checkout_session, create_customer,
   create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
@@ -26,8 +26,8 @@ use crate::helpers::{
   send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
   stripe_configured, sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db,
   update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_webhook_signature,
-  webhook_action, write_business_details,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
+  verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -2947,8 +2947,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // unauthenticated by definition -- the people it exists for do not
     // have accounts yet -- so it carries real abuse controls rather than
     // the size caps alone that `POST /feedback` gets away with: a per-IP
-    // limiter, a honeypot field, and a minimum fill time
-    // (`capsules::contact::validate`). A session is resolved if one
+    // limiter, a honeypot field, a minimum fill time
+    // (`capsules::contact::validate`) and a Turnstile token
+    // (`helpers/turnstile.rs`). A session is resolved if one
     // happens to be present, purely so an enquiry from an existing user
     // is recognisable, and never trusted from the body.
     //
@@ -2957,6 +2958,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // outage drops business the sender believes reached us.
     .post_async("/contact", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
+
+      // The connecting address serves two checks below -- the limiter's
+      // key and Turnstile's `remoteip` -- and is never stored.
+      let client_ip = req.headers().get("CF-Connecting-IP").ok().flatten();
 
       // Cloudflare's rate-limiter binding, keyed on the connecting
       // address; the key is checked and discarded, never stored. Over the
@@ -2967,37 +2972,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // more than one window of junk that the honeypot and fill-time
       // floor still have to get past.
       match ctx.env.rate_limiter("CONTACT_LIMITER") {
-        Ok(limiter) => {
-          let key = req
-            .headers()
-            .get("CF-Connecting-IP")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-          match limiter.limit(key).await {
-            Ok(outcome) if !outcome.success => {
-              return Response::error("Too Many Requests", 429)
-                .unwrap()
-                .with_cors(&cors);
-            }
-            Ok(_) => {}
-            Err(e) => console_error!("contact: rate limiter check failed (failing open): {e}"),
+        Ok(limiter) => match limiter.limit(client_ip.clone().unwrap_or_default()).await {
+          Ok(outcome) if !outcome.success => {
+            return Response::error("Too Many Requests", 429)
+              .unwrap()
+              .with_cors(&cors);
           }
-        }
+          Ok(_) => {}
+          Err(e) => console_error!("contact: rate limiter check failed (failing open): {e}"),
+        },
         Err(e) => console_error!("contact: rate limiter binding unavailable (failing open): {e}"),
       }
-
-      // TURNSTILE SEAM. Cloudflare Turnstile is the right long-term
-      // control here and needs a site key that only the account owner can
-      // mint, so it is deliberately not wired up. Slotting it in is three
-      // edits and belongs exactly here, after the limiter and before the
-      // body is read: add `turnstile_token: Option<String>` to
-      // `capsules::ContactRequest`, render the widget in fancier's
-      // `views/contact.rs` and put its token in that field, then POST the
-      // token plus `CF-Connecting-IP` to
-      // https://challenges.cloudflare.com/turnstile/v0/siteverify with a
-      // `TURNSTILE_SECRET` Worker secret and return 403 unless the
-      // response's `success` is true. Nothing below needs to change.
 
       let is_json = req
         .headers()
@@ -3049,6 +3034,41 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         return Response::error(rejection.message(), status)
           .unwrap()
           .with_cors(&cors);
+      }
+
+      // Turnstile comes after the local checks, not before them: a token
+      // is single-use, so spending it on a submission a field error is
+      // about to bounce would make the corrected resend fail as well, and
+      // the honeypot's silent 202 stays silent instead of becoming a 403
+      // that names the control that fired. No secret configured means the
+      // check passes (see `verify_turnstile`); with one, anything short of
+      // Cloudflare vouching for the token is a 403 -- never 401, the
+      // dashboard's sign-out signal -- and Cloudflare being unreachable is
+      // a 503, since that says nothing about the sender.
+      match verify_turnstile(
+        &ctx.env,
+        payload.turnstile_token.as_deref(),
+        client_ip.as_deref(),
+      )
+      .await
+      {
+        TurnstileVerdict::Passed => {}
+        TurnstileVerdict::Refused => {
+          return Response::error(
+            "Forbidden: could not confirm that this message came from a person",
+            403,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+        TurnstileVerdict::Unavailable => {
+          return Response::error(
+            "Service Unavailable: verification is temporarily unavailable",
+            503,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
       }
 
       // Optional session, same as /feedback: a signed-out visitor's

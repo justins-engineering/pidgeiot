@@ -155,6 +155,10 @@ mod contact;
 pub use contact::notify_contact_submission;
 pub use contact::store_contact_submission;
 
+mod turnstile;
+pub use turnstile::TurnstileVerdict;
+pub use turnstile::verify_turnstile;
+
 mod feedback;
 pub use feedback::send_feedback_email;
 

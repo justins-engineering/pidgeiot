@@ -12,6 +12,8 @@
 // than `Link`s; the destination is prerendered, so the full-page load
 // paints immediately.
 use crate::Route;
+use crate::api::contact::ContactSendError;
+use crate::config::TURNSTILE_SITE_KEY;
 use crate::helpers::url_query_param;
 use capsules::{
   ContactFleetSize, ContactRequest, MAX_CONTACT_COMPANY_BYTES, MAX_CONTACT_EMAIL_BYTES,
@@ -22,6 +24,83 @@ use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
   LdBookOpen, LdCircleCheck, LdGithub, LdMail, LdMessageSquare,
 };
+use serde::Deserialize;
+
+/// Loads Turnstile's script once and renders the widget into the form's
+/// container, reporting back through `dioxus.send`. Explicit rendering
+/// (`?render=explicit`) rather than the script's default DOM scan: the
+/// container only exists once the form is on screen, and nothing here may
+/// touch the prerendered markup before hydration has adopted it.
+const TURNSTILE_MOUNT_JS: &str = r#"
+(async () => {
+  const container = document.getElementById("contact_turnstile");
+  if (!container) { return; }
+  const loaded = new Promise((resolve, reject) => {
+    if (window.turnstile) { resolve(); return; }
+    let script = document.getElementById("cf-turnstile-api");
+    if (!script) {
+      script = document.createElement("script");
+      script.id = "cf-turnstile-api";
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      document.head.appendChild(script);
+    }
+    script.addEventListener("load", () => resolve());
+    script.addEventListener("error", () => reject(new Error("turnstile script failed to load")));
+  });
+  try { await loaded; } catch (e) { dioxus.send({ kind: "error" }); return; }
+  if (!window.turnstile) { dioxus.send({ kind: "error" }); return; }
+  const theme = document.documentElement.getAttribute("data-theme");
+  try {
+    window.__pidgeiotTurnstile = turnstile.render(container, {
+      sitekey: __SITE_KEY__,
+      theme: theme === "dark" || theme === "light" ? theme : "auto",
+      callback: (token) => dioxus.send({ kind: "token", token: token }),
+      "expired-callback": () => dioxus.send({ kind: "expired" }),
+      "error-callback": () => { dioxus.send({ kind: "error" }); return true; },
+    });
+  } catch (e) {
+    dioxus.send({ kind: "error" });
+  }
+})();
+"#;
+
+/// Asks the widget for a fresh token. A token is single-use, so this
+/// follows any send that may have spent the one in hand.
+const TURNSTILE_RESET_JS: &str = r#"
+if (window.turnstile && window.__pidgeiotTurnstile != null) {
+  try { turnstile.reset(window.__pidgeiotTurnstile); } catch (e) {}
+}
+"#;
+
+/// Tears the widget down with the page, so a client-side return to the
+/// form renders a new one instead of leaking the old iframe.
+const TURNSTILE_REMOVE_JS: &str = r#"
+if (window.turnstile && window.__pidgeiotTurnstile != null) {
+  try { turnstile.remove(window.__pidgeiotTurnstile); } catch (e) {}
+  window.__pidgeiotTurnstile = null;
+}
+"#;
+
+/// What the widget reported: `token` carries one, `expired` and `error`
+/// withdraw whatever was in hand.
+#[derive(Deserialize)]
+struct TurnstileEvent {
+  kind: String,
+  #[serde(default)]
+  token: Option<String>,
+}
+
+/// Whether a failed send may have spent the Turnstile token it carried.
+///
+/// The route checks the body (400/413) and the limiter (429) before it
+/// asks Cloudflare, so those leave the token unspent and the visitor can
+/// fix the field and resend without another challenge. Anything else -- a
+/// 403, a 5xx from after verification, or no response at all -- may have
+/// consumed it, and resending a spent token can only fail again.
+fn challenge_spent(status: Option<u16>) -> bool {
+  !matches!(status, Some(400 | 413 | 429))
+}
 
 /// Wall-clock milliseconds, or zero where there is no clock to read.
 ///
@@ -96,10 +175,43 @@ pub fn ContactPage() -> Element {
   let mut sent = use_signal(|| false);
   let mut error_msg = use_signal(|| None::<String>);
 
+  // The widget's one-time token. `None` until Turnstile's callback fires
+  // (which keeps the send button disabled) and again whenever the token
+  // in hand may have been spent or has expired.
+  let mut turnstile_token = use_signal(|| None::<String>);
+  let mut turnstile_notice = use_signal(|| None::<&'static str>);
+
+  // Mounted from a future, never from the first render: the prerendered
+  // page must carry no third-party script, and hydration adopts the served
+  // markup, so the container ships empty and is filled here.
+  use_future(move || async move {
+    let site_key = serde_json::to_string(TURNSTILE_SITE_KEY).unwrap_or_else(|_| "\"\"".to_string());
+    let mut widget = document::eval(&TURNSTILE_MOUNT_JS.replace("__SITE_KEY__", &site_key));
+    while let Ok(event) = widget.recv::<TurnstileEvent>().await {
+      match event.kind.as_str() {
+        "token" => {
+          turnstile_notice.set(None);
+          turnstile_token.set(event.token);
+        }
+        "expired" => turnstile_token.set(None),
+        _ => {
+          turnstile_token.set(None);
+          turnstile_notice.set(Some(
+            "The verification widget didn't load. Reload the page, or email us at code@jes.contact.",
+          ));
+        }
+      }
+    }
+  });
+  use_drop(|| {
+    document::eval(TURNSTILE_REMOVE_JS);
+  });
+
   let can_submit = !is_sending()
     && !name.read().trim().is_empty()
     && !email.read().trim().is_empty()
-    && !message.read().trim().is_empty();
+    && !message.read().trim().is_empty()
+    && turnstile_token.read().is_some();
 
   let submit = move |_| {
     if !can_submit {
@@ -118,6 +230,7 @@ pub fn ContactPage() -> Element {
       about: about(),
       website: Some(website.read().clone()),
       elapsed_ms: Some(elapsed),
+      turnstile_token: turnstile_token(),
     };
 
     spawn(async move {
@@ -127,12 +240,21 @@ pub fn ContactPage() -> Element {
       // function, so a field error is a rendered sentence instead of a
       // round trip. The server's copy is what the user reads either way.
       let outcome = match capsules::contact::validate(&request) {
-        Err(rejection) if rejection.status() >= 400 => Err(rejection.message().to_string()),
+        Err(rejection) if rejection.status() >= 400 => Err(ContactSendError {
+          status: Some(rejection.status()),
+          message: rejection.message().to_string(),
+        }),
         _ => crate::api::contact::send(&request).await,
       };
       match outcome {
         Ok(()) => sent.set(true),
-        Err(msg) => error_msg.set(Some(msg)),
+        Err(err) => {
+          if challenge_spent(err.status) {
+            turnstile_token.set(None);
+            document::eval(TURNSTILE_RESET_JS);
+          }
+          error_msg.set(Some(err.message));
+        }
       }
       is_sending.set(false);
     });
@@ -299,6 +421,14 @@ pub fn ContactPage() -> Element {
                 }
               }
 
+              // Turnstile renders into this once the form is on screen; the
+              // prerendered page ships it empty. Reserved at the Managed
+              // widget's height so its arrival does not shift the button.
+              div { id: "contact_turnstile", class: "mt-4 min-h-[65px]" }
+              if let Some(notice) = turnstile_notice() {
+                div { class: "alert alert-warning mt-4 text-sm", role: "alert", "{notice}" }
+              }
+
               if let Some(err) = error_msg.read().as_ref() {
                 div { class: "alert alert-error mt-4 text-sm", role: "alert", "{err}" }
               }
@@ -420,5 +550,30 @@ mod tests {
       ContactFleetSize::from_wire(preselected.wire()),
       Some(preselected)
     );
+  }
+
+  /// The three statuses the route answers before it asks Cloudflare leave
+  /// the token unspent; everything else, including no answer at all, is
+  /// treated as spent so a resend never carries a token that can only
+  /// fail again.
+  #[test]
+  fn only_pre_verification_rejections_keep_the_token() {
+    for status in [400, 413, 429] {
+      assert!(!challenge_spent(Some(status)));
+    }
+    for status in [403, 500, 502, 503] {
+      assert!(challenge_spent(Some(status)));
+    }
+    assert!(challenge_spent(None));
+  }
+
+  /// The site key lands inside a JS object literal, so it has to arrive
+  /// as a quoted string and never as bare text.
+  #[test]
+  fn the_mount_script_quotes_the_site_key() {
+    let site_key = serde_json::to_string(TURNSTILE_SITE_KEY).unwrap();
+    let script = TURNSTILE_MOUNT_JS.replace("__SITE_KEY__", &site_key);
+    assert!(script.contains(&format!("sitekey: \"{TURNSTILE_SITE_KEY}\",")));
+    assert!(!script.contains("__SITE_KEY__"));
   }
 }

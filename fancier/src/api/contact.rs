@@ -8,23 +8,48 @@ use capsules::ContactRequest;
 use dioxus::logger::tracing::error;
 use wasm_bindgen_futures::JsFuture;
 
-/// `POST /contact`. `Err` carries the message the form renders verbatim.
+/// A send that did not end in a 2xx. `status` is `None` when no HTTP
+/// response arrived at all; the form reads it to decide whether the
+/// Turnstile token it sent may have been spent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactSendError {
+  pub status: Option<u16>,
+  /// Rendered by the form verbatim.
+  pub message: String,
+}
+
+impl ContactSendError {
+  fn without_response(message: &str) -> Self {
+    ContactSendError {
+      status: None,
+      message: message.to_string(),
+    }
+  }
+}
+
+/// `POST /contact`.
 ///
 /// For a `400`/`413` the message is dovecote's own response text, which is
 /// `capsules::ContactRejection::message` -- the same sentence this client
 /// would have produced from a local `validate()`, so a rule enforced only
 /// server-side still reads as a normal field error rather than a generic
 /// failure.
-pub async fn send(req: &ContactRequest) -> Result<(), String> {
+pub async fn send(req: &ContactRequest) -> Result<(), ContactSendError> {
   let Ok(body) = serde_json::to_string(req) else {
-    return Err("Could not encode your message. Please try again.".to_string());
+    return Err(ContactSendError::without_response(
+      "Could not encode your message. Please try again.",
+    ));
   };
   let Ok(body) = serde_wasm_bindgen::to_value(&body) else {
-    return Err("Could not encode your message. Please try again.".to_string());
+    return Err(ContactSendError::without_response(
+      "Could not encode your message. Please try again.",
+    ));
   };
 
   match fetch_json_any_status("POST", "/contact", Some(&body)).await {
-    None => Err("Could not reach the server. Check your connection and try again.".to_string()),
+    None => Err(ContactSendError::without_response(
+      "Could not reach the server. Check your connection and try again.",
+    )),
     Some(resp) if resp.ok() => Ok(()),
     Some(resp) => {
       let status = resp.status();
@@ -38,9 +63,19 @@ pub async fn send(req: &ContactRequest) -> Result<(), String> {
           .filter(|t| !t.is_empty()),
         None => None,
       };
-      Err(match (status, detail) {
+      let message = match (status, detail) {
         (429, _) => {
           "That is a few messages in quick succession. Please wait a minute and try again."
+            .to_string()
+        }
+        // Turnstile did not vouch for the token: spent, expired, or never
+        // issued. The form has already asked the widget for a fresh one.
+        (403, _) => {
+          "We couldn't confirm that this came from a person. Please click send once more."
+            .to_string()
+        }
+        (503, _) => {
+          "Our verification service didn't answer. Please try again in a moment, or email us directly."
             .to_string()
         }
         (400 | 413, Some(detail)) => detail,
@@ -50,6 +85,10 @@ pub async fn send(req: &ContactRequest) -> Result<(), String> {
         _ => format!(
           "Something went wrong on our end (HTTP {status}). Please email us directly and we will pick it up."
         ),
+      };
+      Err(ContactSendError {
+        status: Some(status),
+        message,
       })
     }
   }
