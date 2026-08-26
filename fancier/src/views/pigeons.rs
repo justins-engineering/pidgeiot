@@ -34,6 +34,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // DeletePigeonModal (it loads the caller's org list on mount and holds
   // reset-sensitive submit state).
   let mut show_transfer = use_signal(|| false);
+  // Same gate for the create form, so closing it is what empties the
+  // fields: a native <dialog> gives no reliable "it closed" hook to reset
+  // on, and one left open with the previous pigeon's name in it invites
+  // registering the same device twice.
+  let mut show_create = use_signal(|| false);
   let nav = use_navigator();
   let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
     use_signal(HashMap::new);
@@ -164,9 +169,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
           button {
             class: "btn btn-outline btn-primary sm:px-6",
-            onclick: move |_| {
-                document::eval(r#"document.getElementById("create_pigeon_modal").showModal();"#);
-            },
+            onclick: move |_| show_create.set(true),
             "Register Pigeon"
           }
         }
@@ -264,11 +267,15 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
         }
 
-        CreatePigeonModal {
-          flock_id,
-          on_created: move |(pigeon_id, connector)| {
-              new_credentials.set(Some((pigeon_id, connector)))
-          },
+        if show_create() {
+          CreatePigeonModal {
+            flock_id,
+            on_close: move |_| show_create.set(false),
+            on_created: move |(pigeon_id, connector)| {
+                show_create.set(false);
+                new_credentials.set(Some((pigeon_id, connector)));
+            },
+          }
         }
 
         if show_transfer() {
@@ -317,7 +324,12 @@ fn TransferFlockModal(flock_id: uuid::Uuid, on_close: EventHandler<()>) -> Eleme
           select {
             class: "select select-bordered w-full",
             onchange: move |evt| selected.set(evt.value()),
-            option { value: "", selected: true, disabled: true, "Choose an organization" }
+            option {
+              value: "",
+              selected: selected.read().is_empty(),
+              disabled: true,
+              "Choose an organization"
+            }
             for m in manager_orgs {
               option { value: "{m.organization.id}", "{m.organization.name}" }
             }
@@ -517,6 +529,7 @@ fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler
 #[component]
 fn CreatePigeonModal(
   flock_id: uuid::Uuid,
+  on_close: EventHandler<()>,
   on_created: EventHandler<(String, Connector)>,
 ) -> Element {
   let mut selected_connector = use_signal(|| "Https".to_string());
@@ -525,14 +538,28 @@ fn CreatePigeonModal(
   let mut submit_error = use_signal(|| Option::<String>::None);
 
   rsx! {
-    dialog { class: "modal", id: "create_pigeon_modal",
-      div { class: "modal-box relative max-w-xs md:max-w-sm",
-        form { class: "absolute inset-e-2 top-2", method: "dialog",
-          button { class: "btn btn-sm btn-circle btn-ghost",
-            Icon { icon: LdX, title: "close" }
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "create_pigeon_title",
+      tabindex: "-1",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape {
+              on_close.call(());
           }
+      },
+      div { class: "modal-box relative max-w-xs md:max-w-sm",
+        button {
+          class: "btn btn-sm btn-circle btn-ghost absolute inset-e-2 top-2",
+          onclick: move |_| on_close.call(()),
+          Icon { icon: LdX, title: "close" }
         }
-        div { class: "text-center text-xl font-medium mb-4", "Register New Pigeon" }
+        div {
+          class: "text-center text-xl font-medium mb-4",
+          id: "create_pigeon_title",
+          "Register New Pigeon"
+        }
 
         form {
           onsubmit: move |evt: FormEvent| {
@@ -573,9 +600,6 @@ fn CreatePigeonModal(
                           flock.pigeon_ids.push(pigeon_id.clone());
                       }
                       on_created.call((pigeon_id, connector));
-                      document::eval(
-                          r#"document.getElementById("create_pigeon_modal").close();"#,
-                      );
                   } else {
                       is_saving.set(false);
                       submit_error.set(
@@ -613,19 +637,31 @@ fn CreatePigeonModal(
               label { class: "fieldset-legend text-xs font-semibold mb-1",
                 "Protocol"
               }
+              // Each option's selectedness is bound to the signal the
+              // submit reads. `selected` is a volatile attribute, so
+              // Dioxus rewrites it on every rerender of this modal --
+              // hardcoding it on one option snapped the visible choice
+              // back to that option the moment anything else here
+              // changed, while the request still carried the real one.
               select {
                 class: "select select-bordered w-full text-sm",
                 name: "connector",
-                onchange: move |evt: Event<FormData>| {
-                    for (key, val) in evt.data().values() {
-                        if key == "connector" && let FormValue::Text(val) = val {
-                            selected_connector.set(val.clone());
-                        }
-                    }
-                },
-                option { value: "Https", selected: true, "HTTPS (REST API)" }
-                option { value: "Coap", "CoAP (DTLS/TLS)" }
-                option { value: "Mqtt", "MQTT (TLS)" }
+                onchange: move |evt| selected_connector.set(evt.value()),
+                option {
+                  value: "Https",
+                  selected: selected_connector() == "Https",
+                  "HTTPS (REST API)"
+                }
+                option {
+                  value: "Coap",
+                  selected: selected_connector() == "Coap",
+                  "CoAP (DTLS/TLS)"
+                }
+                option {
+                  value: "Mqtt",
+                  selected: selected_connector() == "Mqtt",
+                  "MQTT (TLS)"
+                }
               }
             }
             div {
@@ -662,8 +698,9 @@ fn CreatePigeonModal(
           }
         }
       }
-      form { class: "modal-backdrop", method: "dialog",
-        button { "close" }
+      div {
+        class: "modal-backdrop",
+        onclick: move |_| on_close.call(()),
       }
       BoardDatalist {}
     }
