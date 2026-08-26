@@ -1,5 +1,7 @@
 use crate::components::{Alert, FormBuilder};
-use crate::helpers::{DisplayError, continue_anchor_href, extract_ui_messages, url_query_param};
+use crate::helpers::{
+  DisplayError, continue_anchor_href, extract_ui_messages, kratos_return_to, url_query_param,
+};
 use crate::{Configuration, Create};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{
@@ -62,7 +64,8 @@ pub fn VerificationFlow(flow: Option<String>) -> Element {
         }
       }
 
-      match create_browser_verification_flow(&config, None).await {
+      let return_to = kratos_return_to(true);
+      match create_browser_verification_flow(&config, return_to.as_deref()).await {
         Ok(res) => Ok(res),
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
           Err(res.view_response_content())

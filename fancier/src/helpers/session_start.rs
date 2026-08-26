@@ -1,6 +1,6 @@
 use crate::helpers::{url_query_param, write_session_hint_cookie};
 use crate::models::AuthState;
-use crate::{Configuration, Create, Session};
+use crate::{Configuration, Create, Route, Session};
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::to_session;
@@ -43,6 +43,30 @@ pub async fn adopt_kratos_session(mut session: Session) -> bool {
   }
 }
 
+/// Where Kratos should send the browser once the flow it is running ends:
+/// this page's own origin, at the route that adopts (`state = true`) or
+/// tears down (`state = false`) the session.
+///
+/// One Kratos instance serves every deployment of the dashboard, and the
+/// after-flow URLs in its config name a single host. Left to that default,
+/// a sign-in started on any other host is handed back to the configured
+/// one and never adopts its session where it began. Kratos checks the value
+/// against its own allowlist, so an origin it does not know is refused when
+/// the flow is created rather than silently followed.
+///
+/// `None` where there is no browser to ask, which leaves Kratos to its
+/// configured default.
+pub fn kratos_return_to(state: bool) -> Option<String> {
+  let origin = web_sys::window()?.location().origin().ok()?;
+  Some(session_handoff_url(&origin, state))
+}
+
+/// Pure half of `kratos_return_to`. The route is spelled by the router so
+/// the hand-back can never drift from what `SetSessionCookie` parses.
+fn session_handoff_url(origin: &str, state: bool) -> String {
+  format!("{origin}{}", Route::SetSessionCookie { state })
+}
+
 /// Whether the address bar shows Kratos handing this browser off to the
 /// settings UI mid-flow.
 ///
@@ -78,7 +102,19 @@ fn is_settings_handoff(path: &str, flow: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::is_settings_handoff;
+  use super::{is_settings_handoff, session_handoff_url};
+
+  #[test]
+  fn the_hand_back_names_the_origin_it_started_from() {
+    assert_eq!(
+      session_handoff_url("https://staging.pidgeiot.com", true),
+      "https://staging.pidgeiot.com/session/local?state=true"
+    );
+    assert_eq!(
+      session_handoff_url("http://localhost:4455", false),
+      "http://localhost:4455/session/local?state=false"
+    );
+  }
 
   #[test]
   fn settings_with_a_flow_id_is_a_handoff() {

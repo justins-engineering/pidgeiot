@@ -32,7 +32,7 @@ mod session_end;
 pub use session_end::{session_lost, watch_session_expiry};
 
 mod session_start;
-pub use session_start::{adopt_kratos_session, kratos_settings_handoff};
+pub use session_start::{adopt_kratos_session, kratos_return_to, kratos_settings_handoff};
 
 mod return_to;
 pub use return_to::{clear_return_to, stash_return_to, take_return_to};

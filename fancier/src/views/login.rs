@@ -1,5 +1,5 @@
 use crate::components::{Alert, FormBuilder};
-use crate::helpers::{DisplayError, extract_ui_messages, url_query_param};
+use crate::helpers::{DisplayError, extract_ui_messages, kratos_return_to, url_query_param};
 use crate::models::AlertVariant;
 use crate::{Configuration, Create, Route, Session};
 use dioxus::prelude::*;
@@ -49,7 +49,19 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
         }
       }
 
-      match create_browser_login_flow(&config, None, None, None, None, None, None, None, None).await
+      let return_to = kratos_return_to(true);
+      match create_browser_login_flow(
+        &config,
+        None,
+        None,
+        return_to.as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+      )
+      .await
       {
         Ok(res) => Ok(res),
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {

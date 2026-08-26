@@ -1,3 +1,4 @@
+use crate::helpers::kratos_return_to;
 use crate::{Configuration, Create};
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
@@ -8,7 +9,8 @@ use ory_kratos_client_wasm::apis::frontend_api::create_browser_logout_flow;
 #[component]
 pub fn OryLogOut() -> Element {
   let create_flow = use_resource(move || async move {
-    create_browser_logout_flow(&Configuration::create(), None, None).await
+    let return_to = kratos_return_to(false);
+    create_browser_logout_flow(&Configuration::create(), None, return_to.as_deref()).await
   });
 
   return match &*create_flow.read() {

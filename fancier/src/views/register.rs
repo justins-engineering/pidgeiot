@@ -1,5 +1,5 @@
 use crate::components::{Alert, FormBuilder};
-use crate::helpers::{DisplayError, extract_ui_messages, url_query_param};
+use crate::helpers::{DisplayError, extract_ui_messages, kratos_return_to, url_query_param};
 use crate::{Configuration, Create, Route};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{
@@ -46,7 +46,19 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
         }
       }
 
-      match create_browser_registration_flow(&config, None, None, None, None, None).await {
+      // The same hand-back for the verification step Kratos runs after
+      // registration, so that step ends on this host too.
+      let return_to = kratos_return_to(true);
+      match create_browser_registration_flow(
+        &config,
+        return_to.as_deref(),
+        None,
+        return_to.as_deref(),
+        None,
+        None,
+      )
+      .await
+      {
         Ok(res) => Ok(res),
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
           Err(res.view_response_content())
