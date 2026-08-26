@@ -350,17 +350,14 @@ fn InvitesSection(
             is_sending.set(true);
             action_error.set(None);
             match api::orgs::create_invite(org_id, &email, role).await {
-                Some(created) => {
+                Ok(created) => {
                     patch_detail(
                         detail_state,
                         |d| org_detail::add_invite(d, created.invite.clone()),
                     );
                     invite_created.set(Some(created));
                 }
-                None => {
-                    action_error
-                        .set(Some("Failed to create invite. Please try again.".to_string()));
-                }
+                Err(msg) => action_error.set(Some(msg)),
             }
             is_sending.set(false);
         },

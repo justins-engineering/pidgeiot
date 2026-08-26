@@ -231,17 +231,33 @@ pub async fn leave(org_id: Uuid, user_id: Uuid) -> Result<(), String> {
   Ok(())
 }
 
+/// `Err` carries the server message. The one worth reading is the seat
+/// cap's `403`, which names the tier, the seats it includes and the count
+/// already spent -- a generic failure would leave the inviter with no way
+/// to tell a full organization from a broken request.
 pub async fn create_invite(
   org_id: Uuid,
   email: &str,
   role: OrgRole,
-) -> Option<OrganizationInviteCreated> {
-  let body = to_body(&OrganizationInviteCreateRequest {
+) -> Result<OrganizationInviteCreated, String> {
+  let Some(body) = to_body(&OrganizationInviteCreateRequest {
     email: email.to_string(),
     role,
-  })?;
-  let response = fetch_json("POST", &format!("/orgs/{org_id}/invites"), Some(&body)).await?;
-  parse(response).await
+  }) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) =
+    fetch_json_any_status("POST", &format!("/orgs/{org_id}/invites"), Some(&body)).await
+  else {
+    return Err("Network error".to_string());
+  };
+  if response.ok() {
+    parse(response)
+      .await
+      .ok_or_else(|| "Failed to parse response".to_string())
+  } else {
+    Err(error_text(&response).await)
+  }
 }
 
 pub async fn revoke_invite(org_id: Uuid, invite_id: Uuid) -> Option<()> {
