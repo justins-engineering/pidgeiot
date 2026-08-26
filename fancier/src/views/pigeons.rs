@@ -602,12 +602,18 @@ fn CreatePigeonModal(
               label { class: "fieldset-legend text-xs font-semibold mb-1",
                 "Name"
               }
+              // Focus lands inside the modal on open, which is also what
+              // puts Escape within reach of the handler above: a plain div
+              // gets none of the keyboard behaviour a native dialog has.
               input {
                 class: "input input-bordered w-full text-sm",
                 name: "name",
                 placeholder: "e.g., Sensor Node Alpha",
                 r#type: "text",
                 required: true,
+                onmounted: move |e| async move {
+                    let _ = e.set_focus(true).await;
+                },
               }
             }
             div {
