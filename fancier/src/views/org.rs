@@ -181,6 +181,11 @@ fn MembersSection(
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
   let nav = use_navigator();
+  // Part of each row's key. A refused role change leaves the row's data
+  // exactly as it was, so nothing in the re-render would touch the
+  // select, and it would keep showing the choice the server just
+  // rejected; bumping this remounts the rows with the stored roles.
+  let mut rows_generation = use_signal(|| 0u32);
 
   rsx! {
     section { id: "org-members", class: "mb-10",
@@ -203,7 +208,7 @@ fn MembersSection(
                   let member_user_id = member.user_id;
                   let member_role = member.role;
                   rsx! {
-                    tr { class: "hover",
+                    tr { key: "{member_user_id}-{rows_generation}", class: "hover",
                       td {
                         span { class: "font-semibold",
                           "{member.email.as_deref().unwrap_or(\"(no email on record)\")}"
@@ -229,7 +234,10 @@ fn MembersSection(
                                             |d| org_detail::set_member_role(d, updated, me),
                                         );
                                     }
-                                    Err(msg) => action_error.set(Some(msg)),
+                                    Err(msg) => {
+                                        action_error.set(Some(msg));
+                                        rows_generation += 1;
+                                    }
                                 }
                             },
                             option { value: "owner", selected: member_role == OrgRole::Owner, "owner" }
