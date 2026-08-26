@@ -21,6 +21,18 @@ set -euo pipefail
 #      transient merge artifact) -- so any doubt resolves toward keeping the
 #      worktree, never removing it.
 #
+#   3. Patch-id equivalence is only trusted for throwaway
+#      worktree-agent-*/worktree-leader-* branches, whose commits reach main
+#      by cherry-pick and nothing else. A named branch is someone's feature
+#      work: it may carry a rebase or squash whose content differs from what
+#      landed, so it is prunable only once main actually contains its tip
+#      (`merge-base --is-ancestor`), and only with a tree that has no
+#      modified or untracked files. Build output is gitignored and never
+#      counts as untracked; anything that does show up is a file a person
+#      wrote. A named branch sitting exactly at main's tip has no commits of
+#      its own, which looks the same whether it was just cut or just
+#      fast-forwarded, so it stays too.
+#
 # Usage:
 #   .claude/prune-worktrees.sh                    # dry run, changes nothing
 #   .claude/prune-worktrees.sh --apply             # actually remove + delete branches
@@ -171,11 +183,12 @@ done < <(git worktree list --porcelain)
 flush_wt
 
 DU_BEFORE="$(du -sh "$WORKTREES_DIR" 2>/dev/null | cut -f1)"
+MAIN_TIP="$(git rev-parse --verify "$MAIN_BRANCH")"
 
 # Evaluate every worktree except the primary checkout (REPO_ROOT itself,
 # which `git worktree remove` can't touch anyway). Reasons are checked in
 # priority order and short-circuit on the first hard keep found.
-ROW_PATH=() ROW_BRANCH=() ROW_STATUS=() ROW_REASON=() ROW_NOTE=()
+ROW_PATH=() ROW_BRANCH=() ROW_STATUS=() ROW_REASON=() ROW_NOTE=() ROW_KB=()
 CUTOFF_REF="$(mktemp)"
 touch -d "@$(( $(date +%s) - IDLE_MINUTES * 60 ))" "$CUTOFF_REF"
 
@@ -186,6 +199,8 @@ for i in "${!WT_PATH[@]}"; do
   status="PRUNE"
   reason=""
   note=""
+  throwaway=0
+  if [[ "$branch" =~ $THROWAWAY_RE ]]; then throwaway=1; fi
 
   if [ "${WT_LOCKED[$i]}" = "1" ]; then
     status="KEEP"
@@ -199,9 +214,9 @@ for i in "${!WT_PATH[@]}"; do
     status="KEEP"
     reason="${DOCKER_HIT[$path]}"
 
-  elif [ "$branch" = "(detached)" ] || ! [[ "$branch" =~ $THROWAWAY_RE ]]; then
+  elif [ "$branch" = "(detached)" ]; then
     status="KEEP"
-    reason="'$branch' is not a worktree-agent-*/worktree-leader-* throwaway branch"
+    reason="detached HEAD -- no branch to judge against $MAIN_BRANCH"
 
   else
     dirty="$(git -C "$path" status --porcelain=v1 2>/dev/null | grep -v '^??' || true)"
@@ -209,6 +224,9 @@ for i in "${!WT_PATH[@]}"; do
     if [ -n "$dirty" ]; then
       status="KEEP"
       reason="modified tracked files: $(summarize_lines "$dirty")"
+    elif [ -n "$untracked" ] && [ "$throwaway" = "0" ]; then
+      status="KEEP"
+      reason="untracked files not covered by .gitignore: $(summarize_lines "$untracked")"
     elif [ -n "$untracked" ]; then
       note="untracked (non-blocking): $(summarize_lines "$untracked")"
     fi
@@ -221,11 +239,27 @@ for i in "${!WT_PATH[@]}"; do
       fi
     fi
 
-    if [ "$status" = "PRUNE" ]; then
+    if [ "$status" = "PRUNE" ] && [ "$throwaway" = "1" ]; then
       if ! proof="$(commits_provably_on_main "$branch")"; then
         status="KEEP"
         reason="commits not provably on $MAIN_BRANCH (patch-id mismatch, see below)"
         note="${note:+$note; }$proof"
+      fi
+
+    elif [ "$status" = "PRUNE" ]; then
+      if [ "$(git rev-parse --verify "$branch")" = "$MAIN_TIP" ]; then
+        status="KEEP"
+        reason="sits at $MAIN_BRANCH's tip with no commits of its own -- just cut or just fast-forwarded, can't tell which"
+      elif ! git merge-base --is-ancestor "$branch" "$MAIN_BRANCH" 2>/dev/null; then
+        status="KEEP"
+        reason="$(git rev-list --count "$MAIN_BRANCH..$branch") commit(s) not in $MAIN_BRANCH -- a named branch needs a real ancestor, not a patch-id match"
+        if proof="$(commits_provably_on_main "$branch")"; then
+          note="${note:+$note; }every commit's content is already on $MAIN_BRANCH by patch-id; delete the branch by hand if it's done"
+        else
+          note="${note:+$note; }$proof"
+        fi
+      else
+        reason="merged into $MAIN_BRANCH (ancestor), tree clean"
       fi
     fi
   fi
@@ -235,15 +269,30 @@ for i in "${!WT_PATH[@]}"; do
   ROW_STATUS+=("$status")
   ROW_REASON+=("${reason:-fully merged into $MAIN_BRANCH, clean, idle > ${IDLE_MINUTES}m}")
   ROW_NOTE+=("$note")
+  ROW_KB+=("$(du -sk "$path" 2>/dev/null | cut -f1)")
 done
 rm -f "$CUTOFF_REF"
 
 echo "==== worktree survey ===="
-printf '%-7s  %-38s  %-45s  %s\n' "STATUS" "BRANCH" "PATH" "REASON"
+printf '%-7s  %7s  %-32s  %-42s  %s\n' "STATUS" "SIZE" "BRANCH" "PATH" "REASON"
+PRUNE_KB=0
+PRUNE_N=0
 for i in "${!ROW_PATH[@]}"; do
-  printf '%-7s  %-38s  %-45s  %s\n' "${ROW_STATUS[$i]}" "${ROW_BRANCH[$i]}" "${ROW_PATH[$i]}" "${ROW_REASON[$i]}"
-  [ -z "${ROW_NOTE[$i]}" ] || echo "${ROW_NOTE[$i]}" | sed 's/^/           /'
+  kb="${ROW_KB[$i]:-0}"
+  printf '%-7s  %7s  %-32s  %-42s  %s\n' "${ROW_STATUS[$i]}" "$(numfmt --from-unit=1024 --to=iec "$kb")" \
+    "${ROW_BRANCH[$i]}" "${ROW_PATH[$i]#"$REPO_ROOT"/}" "${ROW_REASON[$i]}"
+  if [ -n "${ROW_NOTE[$i]}" ]; then
+    while IFS= read -r note_line; do
+      printf '           %s\n' "$note_line"
+    done <<< "${ROW_NOTE[$i]}"
+  fi
+  if [ "${ROW_STATUS[$i]}" = "PRUNE" ]; then
+    PRUNE_KB=$((PRUNE_KB + kb))
+    PRUNE_N=$((PRUNE_N + 1))
+  fi
 done
+echo
+echo "PRUNE rows: $PRUNE_N worktree(s), $(numfmt --from-unit=1024 --to=iec "$PRUNE_KB") on disk"
 echo
 
 if [ "$APPLY" = "0" ]; then
@@ -260,7 +309,7 @@ else
       echo "  clean removal failed (likely stray untracked files, already confirmed no tracked changes) -- forcing"
       git worktree remove --force "$path"
     fi
-    echo "deleting throwaway branch $branch"
+    echo "deleting branch $branch"
     git branch -D "$branch"
   done
   git worktree prune -v
