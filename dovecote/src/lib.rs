@@ -4,12 +4,13 @@ use crate::helpers::{
   STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
   TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite,
   apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
-  build_invite_url, change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse,
-  check_org_cap, check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
-  constant_time_eq, count_billable_messages, create_checkout_session, create_customer,
-  create_flock_alert, create_invite, create_organization, create_pigeon_alert,
-  create_portal_session, create_user_flock, delete_alert_definition, delete_organization_if_empty,
-  delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
+  build_invite_url, canonical_timezone, change_member_role, check_device_cap,
+  check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
+  check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
+  count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
+  create_invite, create_organization, create_pigeon_alert, create_portal_session,
+  create_user_flock, delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
+  device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
   ensure_business_details_columns, erase_user_error_reports, fetch_subscription, get_db_client,
   get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
   grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
@@ -22,9 +23,9 @@ use crate::helpers::{
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
-  remove_member, rename_organization, resolve_checkout_prices, revoke_invite, root_url,
-  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
-  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_pigeon_pg_db,
+  remove_member, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
+  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, stripe_configured,
+  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
   update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
   verify_webhook_signature, webhook_action, write_business_details,
@@ -36,7 +37,7 @@ use capsules::{
   FlockCreateRequest, MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationBusinessDetailsRequest,
   OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
   OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
-  OrganizationRenameRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
+  OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
   TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
   TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label,
 };
@@ -3457,14 +3458,38 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       };
 
-      let Ok(payload) = req.json::<OrganizationRenameRequest>().await else {
+      let Ok(payload) = req.json::<OrganizationUpdateRequest>().await else {
         return Response::error("Bad Request: Invalid JSON payload", 400)
           .unwrap()
           .with_cors(&cors);
       };
 
-      if payload.name.trim().is_empty() {
+      let name = payload.name.as_deref().map(str::trim);
+      if name.is_some_and(str::is_empty) {
         return Response::error("Bad Request: organization name cannot be empty", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      // Stored canonical, so what comes back out matches the zone list
+      // the dashboard offers and the emails can look it up again.
+      let timezone = match payload.timezone.as_deref() {
+        Some(raw) => match canonical_timezone(raw) {
+          Some(canonical) => Some(canonical),
+          None => {
+            return Response::error(
+              "Bad Request: unknown timezone, expected an IANA zone name such as America/New_York",
+              400,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+        },
+        None => None,
+      };
+
+      if name.is_none() && timezone.is_none() {
+        return Response::error("Bad Request: no organization fields to update", 400)
           .unwrap()
           .with_cors(&cors);
       }
@@ -3477,12 +3502,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       };
       if !caller_role.is_some_and(|r| r.is_manager()) {
-        return Response::error("Forbidden: only owners/admins can rename an organization", 403)
-          .unwrap()
-          .with_cors(&cors);
+        return Response::error(
+          "Forbidden: only owners/admins can change an organization's settings",
+          403,
+        )
+        .unwrap()
+        .with_cors(&cors);
       }
 
-      let Ok(org) = rename_organization(&client, &org_id, payload.name.trim()).await else {
+      let Ok(org) = update_organization(&client, &org_id, name, timezone.as_deref()).await else {
         return Response::error("Internal Server Error", 500)
           .unwrap()
           .with_cors(&cors);
@@ -3775,8 +3803,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         send_invite_email(
           &ctx.env,
           &email,
-          &org_id,
-          &organization.name,
+          &organization,
           auth.name.as_deref(),
           auth.email.as_deref(),
           payload.role,

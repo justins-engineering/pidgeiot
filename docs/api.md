@@ -344,7 +344,7 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Capability | owner | admin | member |
 |---|---|---|---|
 | List/read org, members (`GET /orgs`, `GET /orgs/:id`) | yes | yes | yes |
-| Rename org (`PUT /orgs/:id`) | yes | yes | no |
+| Rename org, set its timezone (`PUT /orgs/:id`) | yes | yes | no |
 | Delete org (`DELETE /orgs/:id`, only when it owns no flocks) | yes | no | no |
 | Invite members (`POST /orgs/:id/invites`), view/revoke invites | yes | yes (but cannot invite an `owner`) | no |
 | Change member roles (`PUT /orgs/:id/members/:user_id`) | yes | no | no |
@@ -412,8 +412,44 @@ for owner/admin callers; plain members get an empty list).
 
 #### `PUT /orgs/:org_id` — owner/admin
 
-Rename. Body: `capsules::OrganizationRenameRequest` (`{ name }`). Returns the updated
-`capsules::Organization`.
+Renames the org, sets its timezone, or both. Body:
+`capsules::OrganizationUpdateRequest` (`{ name?, timezone? }`). An absent field is left
+unchanged, so the two controls that write here save independently; `400` when neither is
+present, and when `name` is present but blank.
+
+`timezone` is an IANA zone name (`America/New_York`), validated against the timezone
+database dovecote carries: a name it knows is stored as written (aliases such as
+`US/Eastern` included), and one that differs only in case is repaired
+(`america/new_york` is stored as `America/New_York`). Anything the database does not know
+is refused with `400`. The zone defaults to `UTC` and is **what the emails about this
+organization are stamped in** (see [Email timestamps](#email-timestamps)); the dashboard
+itself keeps rendering times in the reader's own browser zone.
+
+Returns the updated `capsules::Organization`.
+
+#### Email timestamps
+
+Every time the invitation and alert-notification emails print is stamped in the
+organization's own `timezone`, with UTC beside it:
+`26 Aug 2026, 15:10:09 EDT (19:10:09 UTC)`. The parentheses carry the date as well whenever
+the two zones disagree about which day it is. That covers the alert's observed-at, the "last
+report" a silence observation names, and the invitation's expiry (stated twice, in the fact
+row and in the note about the link).
+
+Which zone applies:
+
+- **Invitation**: the organization being invited into. The invitee has no account yet, so
+  there is no other clock to use.
+- **Alert notification**: the organization owning the flock the pigeon belongs to. A
+  **personal** flock belongs to no organization, so its notifications stay in UTC.
+
+An organization on `UTC` (the default) gets exactly what these emails said before zones
+existed: one UTC time, not the same time twice. A stored zone the timezone database cannot
+resolve (realistically only a zone the database dropped after the write) logs and falls back
+to UTC rather than failing the send.
+
+The dashboard is unaffected: it renders times in the reader's own browser zone, as it always
+has.
 
 #### `DELETE /orgs/:org_id` — owner
 
@@ -1620,7 +1656,8 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 `capsules::AlertChannel` is `{"Email":{"to":null}}` (deliver to the owning flock's stored
 `owner_email`) or `{"Email":{"to":"you@example.com"}}` — an explicit override, which must match
 one of the caller's own **verified** Kratos email addresses (`400` otherwise, so open signup
-can't turn this into an arbitrary spam relay).
+can't turn this into an arbitrary spam relay). Times in the notification follow the owning
+organization's zone, described under [Email timestamps](#email-timestamps).
 
 #### `POST /pigeons/:pigeon_id/alerts` — member
 

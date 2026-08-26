@@ -22,8 +22,8 @@ pub use feedback::{
 // text. Pure string logic, so it is testable here on a host target.
 pub mod email;
 pub use email::{
-  AlertEmail, AlertObservation, EmailMessage, InviteEmail, format_alert_email, format_invite_email,
-  html_escape,
+  AlertEmail, AlertObservation, Clock, EmailMessage, InviteEmail, LocalTime, LocalZone,
+  format_alert_email, format_invite_email, html_escape,
 };
 
 // Contact-form request/validation/email types shared with fancier's
@@ -1629,12 +1629,29 @@ impl std::fmt::Display for OrgRole {
   }
 }
 
+/// The zone an org is read in until somebody sets one, and the fallback
+/// wherever a timestamp has no org behind it at all.
+pub const DEFAULT_TIMEZONE: &str = "UTC";
+
+fn default_timezone() -> String {
+  DEFAULT_TIMEZONE.to_string()
+}
+
 /// One org. Postgres hands back native `OffsetDateTime`s directly (same as
 /// `Flock`/`FirmwareImage`), so no `*Row` variant is needed.
+///
+/// `timezone` is an IANA zone name (`America/New_York`), validated against
+/// a real timezone database before it is stored. It is what the emails
+/// this org's members receive are stamped in; nothing else reads it, and
+/// the dashboard keeps rendering times in the reader's own browser zone.
+/// It carries a default so a response from a dovecote that predates the
+/// column still parses rather than collapsing the whole org list.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Organization {
   pub id: Uuid,
   pub name: String,
+  #[serde(default = "default_timezone")]
+  pub timezone: String,
   #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -1719,10 +1736,20 @@ pub struct OrganizationCreateRequest {
   pub tax_id_type: TaxIdType,
 }
 
-/// Body for `PUT /orgs/:org_id` (rename -- the only mutable org field).
+/// Body for `PUT /orgs/:org_id`. Both fields are optional and an absent
+/// one means unchanged: the name and the timezone are edited from
+/// different controls, so a caller changing one has nothing sensible to
+/// say about the other. (The wholesale replacement
+/// `OrganizationBusinessDetailsRequest` does is right for a form somebody
+/// sees in full; this is not that.)
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct OrganizationRenameRequest {
-  pub name: String,
+pub struct OrganizationUpdateRequest {
+  #[serde(default)]
+  pub name: Option<String>,
+  /// An IANA zone name; dovecote validates it against a real timezone
+  /// database and answers 400 for anything the database does not know.
+  #[serde(default)]
+  pub timezone: Option<String>,
 }
 
 /// An org's tax identity: who the invoice is made out to and under which

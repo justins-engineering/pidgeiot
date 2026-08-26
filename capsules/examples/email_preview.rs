@@ -9,12 +9,27 @@
 
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertEmail, AlertObservation, AlertScope,
-  AlertSeverity, Comparator, ConnectionStateKind, EmailMessage, InviteEmail, OrgRole,
-  format_alert_email, format_invite_email,
+  AlertSeverity, Clock, Comparator, ConnectionStateKind, EmailMessage, InviteEmail, LocalTime,
+  LocalZone, OrgRole, format_alert_email, format_invite_email,
 };
 use std::path::Path;
 use time::macros::datetime;
+use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
+
+/// A stand-in for an organization's zone, so the preview shows what a
+/// stamp looks like away from UTC. dovecote resolves the real thing
+/// against a timezone database; this crate carries none by design.
+struct SampleZone;
+
+impl LocalZone for SampleZone {
+  fn local_time(&self, _at: OffsetDateTime) -> Option<LocalTime> {
+    Some(LocalTime {
+      offset: UtcOffset::from_hms(-4, 0, 0).ok()?,
+      abbreviation: "EDT".to_string(),
+    })
+  }
+}
 
 fn main() {
   let out = std::env::args()
@@ -24,6 +39,8 @@ fn main() {
   std::fs::create_dir_all(out).expect("output dir");
 
   let sent_at = datetime!(2026-08-26 14:05:09 UTC);
+  let zone = SampleZone;
+  let clock = Clock::zoned(&zone);
 
   let invite = InviteEmail {
     inviter_name: Some("Ana Ruiz"),
@@ -34,7 +51,7 @@ fn main() {
     expires_at: sent_at + time::Duration::days(7),
     sent_at,
   };
-  write(out, "invite", &format_invite_email(&invite));
+  write(out, "invite", &format_invite_email(&invite, clock));
 
   let flock_id = "8dc58300-70e6-4484-99f3-18ff7487b6fd";
   let pigeon_id = "59d0c929f9124b0e";
@@ -62,7 +79,7 @@ fn main() {
     pigeon_url: &pigeon_url,
     manage_url: &manage_url,
   };
-  write(out, "alert_firing", &format_alert_email(&firing));
+  write(out, "alert_firing", &format_alert_email(&firing, clock));
 
   let recovered = AlertObservation::Value { observed: 27.9 };
   let resolved = AlertEmail {
@@ -71,7 +88,7 @@ fn main() {
     at: sent_at + time::Duration::minutes(42),
     ..firing.clone()
   };
-  write(out, "alert_resolved", &format_alert_email(&resolved));
+  write(out, "alert_resolved", &format_alert_email(&resolved, clock));
 
   let gone_quiet = definition(
     "Pump controller silent",
@@ -95,7 +112,7 @@ fn main() {
     pigeon_url: "https://pidgeiot.com/flocks/8dc58300-70e6-4484-99f3-18ff7487b6fd/pigeons/b41e0c7d2a9f8813",
     manage_url: "https://pidgeiot.com/flocks/8dc58300-70e6-4484-99f3-18ff7487b6fd/pigeons#flockAlerts",
   };
-  write(out, "alert_offline", &format_alert_email(&offline));
+  write(out, "alert_offline", &format_alert_email(&offline, clock));
 }
 
 fn definition(name: &str, condition: AlertCondition, severity: AlertSeverity) -> AlertDefinition {

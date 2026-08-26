@@ -12,6 +12,7 @@
 //! [`authorize_flock`], the single gateway-side authz helper (its DO-side
 //! counterpart is `objects/pigeons.rs::authorize_dashboard`).
 
+use super::timezone::{clock_for, org_timezone};
 use capsules::{
   Flock, InviteEmail, OrgRole, OrgRoleEntry, Organization, OrganizationInvite, OrganizationMember,
   OrganizationMembership, format_invite_email,
@@ -99,6 +100,7 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
       "CREATE TABLE IF NOT EXISTS organizations (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name TEXT NOT NULL,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -122,6 +124,7 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         accepted_at TIMESTAMPTZ
       );
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC';
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE SET NULL;
       CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_organization_members_user_id ON organization_members(user_id);
@@ -133,6 +136,11 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
       Error::RustError("Internal Server Error".into())
     })
 }
+
+/// The `organizations` columns every read of an org selects. One name so
+/// the four statements that build an `Organization` cannot drift apart
+/// from each other or from the struct.
+const ORG_COLUMNS: &str = "id, name, timezone, created_at, updated_at";
 
 fn parse_uuid(value: &str, what: &str) -> Result<Uuid> {
   Uuid::parse_str(value).map_err(|e| Error::RustError(format!("Invalid {what} format: {e}")))
@@ -150,6 +158,7 @@ fn row_to_organization(row: &Row) -> Organization {
   Organization {
     id: row.get("id"),
     name: row.get("name"),
+    timezone: row.get("timezone"),
     created_at: row.get("created_at"),
     updated_at: row.get("updated_at"),
   }
@@ -263,8 +272,7 @@ pub async fn create_organization(
 
   let row = tx
     .query_typed_one(
-      "INSERT INTO organizations (name) VALUES ($1)
-       RETURNING id, name, created_at, updated_at;",
+      &format!("INSERT INTO organizations (name) VALUES ($1) RETURNING {ORG_COLUMNS};"),
       &[(&name, Type::TEXT)],
     )
     .await
@@ -307,11 +315,13 @@ pub async fn list_user_organizations(
 
   let rows = client
     .query_typed(
-      "SELECT o.id, o.name, o.created_at, o.updated_at, m.role
-       FROM organizations o
-       JOIN organization_members m ON m.org_id = o.id
-       WHERE m.user_id = $1
-       ORDER BY o.created_at ASC;",
+      &format!(
+        "SELECT o.id, o.name, o.timezone, o.created_at, o.updated_at, m.role
+         FROM organizations o
+         JOIN organization_members m ON m.org_id = o.id
+         WHERE m.user_id = $1
+         ORDER BY o.created_at ASC;"
+      ),
       &[(&user_uuid, Type::UUID)],
     )
     .await
@@ -334,7 +344,7 @@ pub async fn list_user_organizations(
 pub async fn get_organization(client: &Client, org_id: &Uuid) -> Result<Option<Organization>> {
   let rows = client
     .query_typed(
-      "SELECT id, name, created_at, updated_at FROM organizations WHERE id = $1;",
+      &format!("SELECT {ORG_COLUMNS} FROM organizations WHERE id = $1;"),
       &[(org_id, Type::UUID)],
     )
     .await
@@ -379,20 +389,36 @@ pub async fn list_org_invites(client: &Client, org_id: &Uuid) -> Result<Vec<Orga
   Ok(rows.iter().map(row_to_invite).collect())
 }
 
-pub async fn rename_organization(
+/// Applies whichever of an org's editable fields the caller supplied. A
+/// `None` leaves the stored value alone, which is what lets the two
+/// controls that write here save independently of each other; `timezone`
+/// must already be a canonical IANA name (`helpers/timezone.rs` decides
+/// that, before the write).
+pub async fn update_organization(
   client: &Client,
   org_id: &Uuid,
-  name: &str,
+  name: Option<&str>,
+  timezone: Option<&str>,
 ) -> Result<Organization> {
   let row = client
     .query_typed_one(
-      "UPDATE organizations SET name = $2, updated_at = now() WHERE id = $1
-       RETURNING id, name, created_at, updated_at;",
-      &[(org_id, Type::UUID), (&name, Type::TEXT)],
+      &format!(
+        "UPDATE organizations
+         SET name = COALESCE($2, name),
+             timezone = COALESCE($3, timezone),
+             updated_at = now()
+         WHERE id = $1
+         RETURNING {ORG_COLUMNS};"
+      ),
+      &[
+        (org_id, Type::UUID),
+        (&name, Type::TEXT),
+        (&timezone, Type::TEXT),
+      ],
     )
     .await
     .map_err(|e| {
-      console_error!("Org rename error: {e}");
+      console_error!("Org update error: {e}");
       Error::RustError("Internal Server Error".into())
     })?;
   Ok(row_to_organization(&row))
@@ -755,7 +781,7 @@ pub async fn accept_invite(
 
   let org_row = tx
     .query_typed_one(
-      "SELECT id, name, created_at, updated_at FROM organizations WHERE id = $1;",
+      &format!("SELECT {ORG_COLUMNS} FROM organizations WHERE id = $1;"),
       &[(&org_id, Type::UUID)],
     )
     .await
@@ -800,18 +826,18 @@ fn suffix_hint(s: &str, n: usize) -> String {
 /// logging only -- the email body addresses the org by name and the
 /// inviter by the name and email address on their session, whichever of
 /// the two the identity carries.
-#[allow(clippy::too_many_arguments)]
 pub async fn send_invite_email(
   env: &Env,
   to: &str,
-  org_id: &Uuid,
-  org_name: &str,
+  organization: &Organization,
   inviter_name: Option<&str>,
   inviter_email: Option<&str>,
   role: OrgRole,
   invite_url: &str,
   expires_at: OffsetDateTime,
 ) {
+  let org_id = organization.id;
+  let org_name = &organization.name;
   if !crate::helpers::alerts::usesend_configured(env) {
     // Never log `to` or the full `invite_url` -- the URL's query string IS
     // the live, single-use invite token (see `build_invite_url`), a
@@ -823,15 +849,27 @@ pub async fn send_invite_email(
     return;
   }
 
-  let message = format_invite_email(&InviteEmail {
-    inviter_name,
-    inviter_email,
-    org_name,
-    role,
-    invite_url,
-    expires_at,
-    sent_at: OffsetDateTime::now_utc(),
-  });
+  // The invitee has no account yet, so the organization they are being
+  // invited into is the only clock this message can be written in.
+  let zone = org_timezone(&organization.timezone);
+  if zone.is_none() && organization.timezone != capsules::DEFAULT_TIMEZONE {
+    console_error!(
+      "Org {org_id} has a timezone the database does not know; invite stamped in UTC instead"
+    );
+  }
+
+  let message = format_invite_email(
+    &InviteEmail {
+      inviter_name,
+      inviter_email,
+      org_name,
+      role,
+      invite_url,
+      expires_at,
+      sent_at: OffsetDateTime::now_utc(),
+    },
+    clock_for(zone.as_ref()),
+  );
 
   if let Err(e) = crate::helpers::alerts::send_email_message(env, to, &message).await {
     console_error!("Org invite email send failed for org {org_id}: {e}");

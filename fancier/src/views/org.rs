@@ -11,17 +11,19 @@
 //! query cache with the rows from before it.
 
 use crate::helpers::org_detail;
+use crate::helpers::timezone::{suggested_zone, zone_options};
 use crate::{Create, Route, api};
 use capsules::{
   BillingPlan, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole, OrganizationBillingOverview,
   OrganizationBusinessDetails, OrganizationBusinessDetailsRequest, OrganizationDetail,
-  OrganizationInviteCreated, TaxIdStatus, TaxIdType,
+  OrganizationInviteCreated, OrganizationUpdateRequest, TaxIdStatus, TaxIdType,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdX};
 use ory_kratos_client_wasm::apis::configuration::Configuration;
 use ory_kratos_client_wasm::apis::frontend_api::to_session;
+use serde::Deserialize;
 use uuid::Uuid;
 
 /// The page's own copy of the org: `None` while loading, `Some(None)`
@@ -139,6 +141,12 @@ pub fn OrgView(org_id: Uuid) -> Element {
             org_id,
             caller_role: d.caller_role,
             action_error,
+          }
+          TimeZoneSection {
+            org_id,
+            caller_role: d.caller_role,
+            stored: d.organization.timezone.clone(),
+            detail_state,
           }
           BusinessDetailsSection {
             org_id,
@@ -722,6 +730,155 @@ fn BillingPanel(
 /// two orgs with two different registrations. Members can read it (a VAT
 /// number is on every invoice its owner issues, and a member who spots a
 /// typo should be able to say so); only managers can change it.
+/// Asks the browser what zones it knows and which one it is in. Kept to
+/// one round trip because both answers come from the same `Intl` and are
+/// wanted at the same moment.
+const ZONES_JS: &str = r#"
+(() => {
+  try {
+    const zones = typeof Intl.supportedValuesOf === "function"
+      ? Intl.supportedValuesOf("timeZone")
+      : [];
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    dioxus.send({ zones, here });
+  } catch (e) {
+    dioxus.send({ zones: [], here: "" });
+  }
+})();
+"#;
+
+/// What the browser answered: the zones it can name, and the one it is in.
+#[derive(Deserialize)]
+struct BrowserZones {
+  zones: Vec<String>,
+  here: String,
+}
+
+/// The zone the organization's emails are stamped in. The list is the
+/// browser's own (see `helpers::timezone`), read from a future rather
+/// than during a render: a prerendered page has no `Intl` to ask, and
+/// hydration adopts whatever markup was served.
+#[component]
+fn TimeZoneSection(
+  org_id: Uuid,
+  caller_role: OrgRole,
+  stored: String,
+  detail_state: DetailState,
+) -> Element {
+  let mut zones = use_signal(Vec::<String>::new);
+  let mut here = use_signal(|| Option::<String>::None);
+  let mut chosen = use_signal(|| Option::<String>::None);
+  let mut busy = use_signal(|| false);
+  let mut error = use_signal(|| Option::<String>::None);
+  let mut notice = use_signal(|| Option::<String>::None);
+
+  use_future(move || async move {
+    let mut query = document::eval(ZONES_JS);
+    if let Ok(answer) = query.recv::<BrowserZones>().await {
+      zones.set(answer.zones);
+      here.set(Some(answer.here));
+    }
+  });
+
+  let editable = caller_role.is_manager();
+  let selected = chosen().unwrap_or_else(|| stored.clone());
+  let options = zone_options(&zones(), &stored);
+  let suggestion = suggested_zone(&stored, here().as_deref());
+  let unsaved = selected != stored;
+
+  rsx! {
+    section { id: "org-timezone", class: "mb-10",
+      h2 { class: "text-lg font-semibold mb-3", "Time zone" }
+      div { class: "bg-base-100 border border-base-content/10 rounded-box p-4 flex flex-col gap-4",
+        p { class: "text-xs text-base-content/60",
+          "Alert and invitation emails about this organization show times in this zone, with \
+           UTC beside them. Times on this page follow your own browser."
+        }
+
+        if editable {
+          div { class: "flex flex-col sm:flex-row sm:items-end gap-3",
+            label { class: "form-control grow",
+              span { class: "label-text text-sm mb-1 block", "Zone" }
+              // The selection is carried by the option, not a `value` on
+              // the select: a select's attributes are applied before its
+              // options exist, so a value set at mount matches nothing.
+              select {
+                class: "select select-bordered w-full",
+                onchange: move |e| {
+                    notice.set(None);
+                    chosen.set(Some(e.value()));
+                },
+                for zone in options.iter() {
+                  option { value: "{zone}", selected: *zone == selected, "{zone}" }
+                }
+              }
+            }
+            button {
+              class: "btn btn-primary btn-sm",
+              disabled: busy() || !unsaved,
+              onclick: move |_| {
+                  let zone = selected.clone();
+                  async move {
+                      busy.set(true);
+                      error.set(None);
+                      notice.set(None);
+                      let request = OrganizationUpdateRequest {
+                          name: None,
+                          timezone: Some(zone),
+                      };
+                      match api::orgs::update(org_id, &request).await {
+                          Some(updated) => {
+                              notice.set(Some(format!("Emails now show {} time.", updated.timezone)));
+                              chosen.set(None);
+                              patch_detail(
+                                  detail_state,
+                                  |d| org_detail::set_organization(d, updated),
+                              );
+                          }
+                          None => error.set(Some("Failed to save the time zone.".to_string())),
+                      }
+                      busy.set(false);
+                  }
+              },
+              if busy() {
+                span { class: "loading loading-spinner loading-sm" }
+              } else {
+                "Save"
+              }
+            }
+          }
+
+          if let Some(zone) = suggestion {
+            div { class: "text-xs text-base-content/60 flex items-center gap-2 flex-wrap",
+              span { "This browser is in {zone}." }
+              button {
+                class: "btn btn-ghost btn-xs",
+                onclick: move |_| {
+                    notice.set(None);
+                    chosen.set(Some(zone.clone()));
+                },
+                "Use it"
+              }
+            }
+          }
+        } else {
+          div { class: "text-sm text-base-content/70",
+            "Zone: "
+            span { class: "font-semibold", "{stored}" }
+          }
+        }
+
+        if let Some(err) = error.read().as_ref() {
+          div { class: "alert alert-error text-sm", "{err}" }
+        }
+        if let Some(msg) = notice.read().as_ref() {
+          div { class: "alert alert-success text-sm", "{msg}" }
+        }
+      }
+    }
+  }
+}
+
 #[component]
 fn BusinessDetailsSection(org_id: Uuid, caller_role: OrgRole) -> Element {
   // Fetched once; a save replaces it with the PUT response, which is the
@@ -1036,7 +1193,7 @@ fn RenameOrgModal(org_id: Uuid, detail_state: DetailState) -> Element {
               match api::orgs::rename(org_id, &name).await {
                   Some(renamed) => {
                       is_saving.set(false);
-                      patch_detail(detail_state, |d| org_detail::rename(d, renamed));
+                      patch_detail(detail_state, |d| org_detail::set_organization(d, renamed));
                       document::eval(r#"document.getElementById("rename_org_modal").close();"#);
                   }
                   None => {
