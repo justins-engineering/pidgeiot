@@ -1,8 +1,9 @@
-use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client};
+use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client, root_url};
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
-  AlertScope, AlertState, AlertStatus, ConnectionStateKind, DemoAlert, JsonString,
+  AlertEmail, AlertObservation, AlertScope, AlertState, AlertStatus, ConnectionStateKind,
+  DemoAlert, EmailMessage, JsonString, format_alert_email,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
@@ -598,16 +599,19 @@ pub async fn check_telemetry_alerts_batch(
     // a reading missing the key, or carrying a non-numeric value for it,
     // says nothing about the condition either way and must not be read as
     // a recovery.
-    let evaluated: Vec<(i64, bool)> = readings
+    let evaluated: Vec<(i64, bool, AlertObservation)> = readings
       .iter()
       .filter_map(|reading| {
-        evaluate_ingest_condition(&def.condition, reading).map(|is_true| (reading.at_secs, is_true))
+        evaluate_ingest_condition(&def.condition, reading)
+          .map(|(is_true, observation)| (reading.at_secs, is_true, observation))
       })
       .collect();
 
-    for (at_secs, is_true) in transitions_to_apply(&evaluated) {
+    for (at_secs, is_true, observation) in transitions_to_apply(&evaluated) {
       let at = OffsetDateTime::from_unix_timestamp(at_secs).unwrap_or(OffsetDateTime::now_utc());
-      if let Err(e) = apply_alert_transition(&client, env, &def, pigeon_id, is_true, at).await {
+      if let Err(e) =
+        apply_alert_transition(&client, env, &def, pigeon_id, is_true, &observation, at).await
+      {
         console_error!(
           "Alert transition failed for definition {} / pigeon {pigeon_id}: {e}",
           def.id
@@ -628,33 +632,35 @@ pub async fn check_telemetry_alerts_batch(
 /// against the debounce window and fires. Everything between the two would
 /// re-read and rewrite the same row to reach the same conclusion, which
 /// for a device buffering sixty-four readings is sixty-two round trips
-/// spent to change nothing.
-fn transitions_to_apply(evaluated: &[(i64, bool)]) -> Vec<(i64, bool)> {
+/// spent to change nothing. Whatever rides along with each verdict (the
+/// observation the notification will quote) is carried through untouched.
+fn transitions_to_apply<T: Clone>(evaluated: &[(i64, bool, T)]) -> Vec<(i64, bool, T)> {
   let mut applied: Option<bool> = None;
   let mut out = Vec::new();
 
-  for (index, (at_secs, is_true)) in evaluated.iter().enumerate() {
+  for (index, (at_secs, is_true, seen)) in evaluated.iter().enumerate() {
     let is_last = index + 1 == evaluated.len();
     if applied == Some(*is_true) && !is_last {
       continue;
     }
     applied = Some(*is_true);
-    out.push((*at_secs, *is_true));
+    out.push((*at_secs, *is_true, seen.clone()));
   }
 
   out
 }
 
-/// One reading against one condition: `Some(true)`/`Some(false)` when the
-/// reading decides it, `None` when it says nothing -- the key is absent,
-/// its value is not a number, or the condition is one of the
+/// One reading against one condition: the verdict plus what was observed
+/// when the reading decides it, `None` when it says nothing -- the key is
+/// absent, its value is not a number, or the condition is one of the
 /// absence-of-signal kinds that only the scheduled sweep can decide (see
 /// `AlertCondition`'s doc comment in `capsules`, and
-/// `evaluate_scheduled_alerts` below).
+/// `evaluate_scheduled_alerts` below). The observation is what lets the
+/// notification quote the value next to the threshold it crossed.
 fn evaluate_ingest_condition(
   condition: &AlertCondition,
   reading: &ResolvedReading,
-) -> Option<bool> {
+) -> Option<(bool, AlertObservation)> {
   match condition {
     AlertCondition::Threshold {
       key,
@@ -662,7 +668,10 @@ fn evaluate_ingest_condition(
       value,
     } => {
       let observed = reading.metrics.get(key)?.parse::<f64>().ok()?;
-      Some(comparator.evaluate(observed, *value))
+      Some((
+        comparator.evaluate(observed, *value),
+        AlertObservation::Value { observed },
+      ))
     }
     AlertCondition::RateOfChange {
       key,
@@ -690,7 +699,13 @@ fn evaluate_ingest_condition(
         }
       }
 
-      Some((observed - prev_value).abs() > *max_delta)
+      Some((
+        (observed - prev_value).abs() > *max_delta,
+        AlertObservation::Change {
+          previous: prev_value,
+          observed,
+        },
+      ))
     }
     // DeviceState/MissingReport (and any future absence-of-signal
     // variant) aren't ingest-evaluable here.
@@ -820,7 +835,12 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
         AlertCondition::Threshold { .. } | AlertCondition::RateOfChange { .. } => continue,
       };
 
-      if let Err(e) = apply_alert_transition(&client, env, &def, &pigeon_id, is_true, now).await {
+      let observation = AlertObservation::Silence {
+        last_seen: seen.last_seen,
+      };
+      if let Err(e) =
+        apply_alert_transition(&client, env, &def, &pigeon_id, is_true, &observation, now).await
+      {
         console_error!(
           "Scheduled alert eval: transition failed for definition {} / pigeon {pigeon_id}: {e}",
           def.id
@@ -946,6 +966,7 @@ async fn apply_alert_transition(
   def: &AlertDefinition,
   pigeon_id: &str,
   is_true: bool,
+  observation: &AlertObservation,
   now: OffsetDateTime,
 ) -> Result<()> {
   let row = client
@@ -1004,7 +1025,7 @@ async fn apply_alert_transition(
             console_error!("Alert state fire transition failed: {e}");
             Error::RustError("Internal Server Error".into())
           })?;
-        send_alert_email(env, client, def, pigeon_id, true).await;
+        send_alert_email(env, client, def, pigeon_id, true, observation, now).await;
       }
     }
     (AlertStatus::Ok, false) => {
@@ -1039,7 +1060,7 @@ async fn apply_alert_transition(
           console_error!("Alert state clear transition failed: {e}");
           Error::RustError("Internal Server Error".into())
         })?;
-      send_alert_email(env, client, def, pigeon_id, false).await;
+      send_alert_email(env, client, def, pigeon_id, false, observation, now).await;
     }
     (AlertStatus::Firing, true) => {
       // Already firing -- no periodic re-notify implemented (would be an
@@ -1048,6 +1069,16 @@ async fn apply_alert_transition(
   }
 
   Ok(())
+}
+
+/// What one notification needs from Postgres, fetched in a single round
+/// trip: who it goes to, and the names it should call the pigeon and its
+/// flock by.
+struct AlertMailContext {
+  recipient: Option<String>,
+  pigeon_name: Option<String>,
+  flock_id: Option<Uuid>,
+  flock_name: Option<String>,
 }
 
 /// Resolves who an alert's notification email should go to: the channel's
@@ -1060,29 +1091,47 @@ async fn apply_alert_transition(
 /// the session's own `identity.traits.email` -- a flock whose owner has
 /// never authenticated since can still resolve to `None` here, and
 /// `send_alert_email` logs that clearly rather than silently dropping the
-/// notification.
-async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Option<String> {
+/// notification. The same row carries the pigeon and flock names.
+async fn resolve_alert_context(
+  client: &Client,
+  def: &AlertDefinition,
+  pigeon_id: &str,
+) -> AlertMailContext {
   let AlertChannel::Email { to } = &def.channel;
 
-  let result =
-    match &def.scope {
-      AlertScope::Flock(flock_id) => {
-        client
-          .query_typed_one(
-            "SELECT owner_email FROM flocks WHERE id = $1;",
-            &[(flock_id, Type::UUID)],
-          )
-          .await
-      }
-      AlertScope::Pigeon(pigeon_id) => client
-        .query_typed_one(
-          "SELECT f.owner_email FROM flocks f JOIN pigeons p ON p.flock_id = f.id WHERE p.id = $1;",
-          &[(pigeon_id, Type::TEXT)],
+  let result = match &def.scope {
+    AlertScope::Flock(flock_id) => {
+      client
+        .query_typed_opt(
+          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name
+           FROM flocks f
+           LEFT JOIN pigeons p ON p.id = $2 AND p.flock_id = f.id
+           WHERE f.id = $1;",
+          &[(flock_id, Type::UUID), (&pigeon_id, Type::TEXT)],
         )
-        .await,
-    };
+        .await
+    }
+    AlertScope::Pigeon(_) => {
+      client
+        .query_typed_opt(
+          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name
+           FROM flocks f
+           JOIN pigeons p ON p.flock_id = f.id
+           WHERE p.id = $1;",
+          &[(&pigeon_id, Type::TEXT)],
+        )
+        .await
+    }
+  };
 
-  let owner_email: Option<String> = result.ok().and_then(|row| row.get("owner_email"));
+  let row = result.ok().flatten();
+  let owner_email: Option<String> = row.as_ref().and_then(|row| row.get("owner_email"));
+  let mut context = AlertMailContext {
+    recipient: owner_email.clone(),
+    pigeon_name: row.as_ref().and_then(|row| row.get("pigeon_name")),
+    flock_id: row.as_ref().and_then(|row| row.get("flock_id")),
+    flock_name: row.as_ref().and_then(|row| row.get("flock_name")),
+  };
 
   // Defense-in-depth: the create/update routes already reject an override
   // that isn't the caller's own verified address, but definitions that
@@ -1094,7 +1143,7 @@ async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Opti
   if let Some(explicit) = to {
     match &owner_email {
       Some(owner) if owner.eq_ignore_ascii_case(explicit.trim()) => {
-        return Some(explicit.clone());
+        context.recipient = Some(explicit.clone());
       }
       _ => {
         console_error!(
@@ -1106,7 +1155,7 @@ async fn resolve_alert_recipient(client: &Client, def: &AlertDefinition) -> Opti
     }
   }
 
-  owner_email
+  context
 }
 
 async fn send_alert_email(
@@ -1115,8 +1164,11 @@ async fn send_alert_email(
   def: &AlertDefinition,
   pigeon_id: &str,
   fired: bool,
+  observation: &AlertObservation,
+  at: OffsetDateTime,
 ) {
-  let Some(recipient) = resolve_alert_recipient(client, def).await else {
+  let context = resolve_alert_context(client, def, pigeon_id).await;
+  let Some(recipient) = context.recipient else {
     console_error!(
       "Alert '{}' ({}): no recipient resolved (owner_email unset and no channel override) -- cannot send {} notification",
       def.name,
@@ -1126,21 +1178,35 @@ async fn send_alert_email(
     return;
   };
 
-  let action = if fired { "FIRED" } else { "CLEARED" };
-  let subject = format!(
-    "[{}] {action}: {}",
-    def.severity.as_str().to_uppercase(),
-    def.name
-  );
-  let text = format!(
-    "Alert '{}' has {} for pigeon {pigeon_id}.\n\nCondition: {:?}\nSeverity: {}\n",
-    def.name,
-    if fired { "fired" } else { "cleared" },
-    def.condition,
-    def.severity.as_str(),
-  );
+  // A pigeon-scoped alert is edited from the pigeon's own page, a
+  // flock-scoped one from the flock's pigeon list; both sections carry a
+  // stable id the dashboard can be deep-linked to.
+  let root = root_url(env);
+  let (pigeon_url, manage_url) = match context.flock_id {
+    Some(flock_id) => {
+      let pigeon_url = format!("{root}/flocks/{flock_id}/pigeons/{pigeon_id}");
+      let manage_url = match &def.scope {
+        AlertScope::Flock(_) => format!("{root}/flocks/{flock_id}/pigeons#flockAlerts"),
+        AlertScope::Pigeon(_) => format!("{pigeon_url}#pigeonAlerts"),
+      };
+      (pigeon_url, manage_url)
+    }
+    None => (format!("{root}/flocks"), format!("{root}/flocks")),
+  };
 
-  if let Err(e) = send_via_usesend(env, &recipient, &subject, &text).await {
+  let message = format_alert_email(&AlertEmail {
+    definition: def,
+    fired,
+    pigeon_id,
+    pigeon_name: context.pigeon_name.as_deref(),
+    flock_name: context.flock_name.as_deref(),
+    observation: Some(observation),
+    at,
+    pigeon_url: &pigeon_url,
+    manage_url: &manage_url,
+  });
+
+  if let Err(e) = send_email_message(env, &recipient, &message).await {
     console_error!("Alert email send failed for definition {}: {e}", def.id);
   }
 }
@@ -1171,6 +1237,8 @@ struct UsesendEmailRequest<'a> {
   to: [&'a str; 1],
   subject: &'a str,
   text: &'a str,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  html: Option<&'a str>,
 }
 
 /// Domain-only form of an email address, for log lines that need to stay
@@ -1189,6 +1257,25 @@ fn redact_email(email: &str) -> String {
   }
 }
 
+/// Plain-text only: what the ops-facing senders (feedback, contact, error
+/// digests, allowance warnings) need.
+pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+  send_email(env, to, subject, text, None).await
+}
+
+/// Both parts of a formatted customer-facing message, so a client that
+/// renders HTML gets the layout and one that does not gets the same words.
+pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessage) -> Result<()> {
+  send_email(
+    env,
+    to,
+    &message.subject,
+    &message.text,
+    Some(&message.html),
+  )
+  .await
+}
+
 /// POSTs one transactional email via useSend's Resend-compatible HTTP API
 /// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
@@ -1196,7 +1283,13 @@ fn redact_email(email: &str) -> String {
 /// `wrangler secret put`) is treated the same way `greptime_auth_token`
 /// being absent is treated elsewhere -- logged, never a hard failure,
 /// since alert delivery is always best-effort.
-pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+async fn send_email(
+  env: &Env,
+  to: &str,
+  subject: &str,
+  text: &str,
+  html: Option<&str>,
+) -> Result<()> {
   let Some(api_key) = usesend_api_key(env) else {
     console_error!(
       "RESEND_API_KEY not configured -- cannot send alert email to {} (subject: {subject})",
@@ -1210,6 +1303,7 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
     to: [to],
     subject,
     text,
+    html,
   };
   let body_json = serde_json::to_string(&body).map_err(|e| {
     console_error!("Failed to serialize Resend request: {e}");
@@ -1253,8 +1347,12 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
 mod tests {
   use super::{ResolvedReading, evaluate_ingest_condition, redact_email, transitions_to_apply};
   use crate::objects::pigeons::PreviousTelemetryValue;
-  use capsules::{AlertCondition, Comparator};
+  use capsules::{AlertCondition, AlertObservation, Comparator};
   use std::collections::HashMap;
+
+  fn decide(condition: &AlertCondition, reading: &ResolvedReading) -> Option<bool> {
+    evaluate_ingest_condition(condition, reading).map(|(is_true, _)| is_true)
+  }
 
   fn reading(at_secs: i64, key: &str, value: &str) -> ResolvedReading {
     ResolvedReading::new(
@@ -1292,32 +1390,20 @@ mod tests {
   #[test]
   fn a_reading_without_the_key_decides_nothing() {
     let condition = threshold_over("temp", 30.0);
-    assert_eq!(
-      evaluate_ingest_condition(&condition, &reading(100, "humidity", "40")),
-      None
-    );
+    assert_eq!(decide(&condition, &reading(100, "humidity", "40")), None);
   }
 
   #[test]
   fn a_non_numeric_value_decides_nothing_rather_than_recovering() {
     let condition = threshold_over("temp", 30.0);
-    assert_eq!(
-      evaluate_ingest_condition(&condition, &reading(100, "temp", "warm")),
-      None
-    );
+    assert_eq!(decide(&condition, &reading(100, "temp", "warm")), None);
   }
 
   #[test]
   fn a_threshold_is_decided_per_reading() {
     let condition = threshold_over("temp", 30.0);
-    assert_eq!(
-      evaluate_ingest_condition(&condition, &reading(100, "temp", "35")),
-      Some(true)
-    );
-    assert_eq!(
-      evaluate_ingest_condition(&condition, &reading(100, "temp", "25")),
-      Some(false)
-    );
+    assert_eq!(decide(&condition, &reading(100, "temp", "35")), Some(true));
+    assert_eq!(decide(&condition, &reading(100, "temp", "25")), Some(false));
   }
 
   #[test]
@@ -1331,11 +1417,11 @@ mod tests {
     // Five degrees in ten seconds -- inside the batch this is one step of
     // a climb, not the whole climb.
     let gradual = with_previous(reading(110, "temp", "25"), "temp", "20", 100);
-    assert_eq!(evaluate_ingest_condition(&condition, &gradual), Some(false));
+    assert_eq!(decide(&condition, &gradual), Some(false));
 
     // The same key jumping fifteen degrees in one step does fire.
     let jump = with_previous(reading(110, "temp", "35"), "temp", "20", 100);
-    assert_eq!(evaluate_ingest_condition(&condition, &jump), Some(true));
+    assert_eq!(decide(&condition, &jump), Some(true));
   }
 
   #[test]
@@ -1346,13 +1432,36 @@ mod tests {
       window_secs: Some(60),
     };
 
-    assert_eq!(
-      evaluate_ingest_condition(&condition, &reading(110, "temp", "35")),
-      None
-    );
+    assert_eq!(decide(&condition, &reading(110, "temp", "35")), None);
 
     let stale = with_previous(reading(1_000, "temp", "35"), "temp", "20", 100);
-    assert_eq!(evaluate_ingest_condition(&condition, &stale), None);
+    assert_eq!(decide(&condition, &stale), None);
+  }
+
+  #[test]
+  fn a_decided_reading_carries_what_it_saw() {
+    let condition = threshold_over("temp", 30.0);
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &reading(100, "temp", "35")),
+      Some((true, AlertObservation::Value { observed: 35.0 }))
+    );
+
+    let condition = AlertCondition::RateOfChange {
+      key: "temp".to_string(),
+      max_delta: 10.0,
+      window_secs: None,
+    };
+    let jump = with_previous(reading(110, "temp", "35"), "temp", "20", 100);
+    assert_eq!(
+      evaluate_ingest_condition(&condition, &jump),
+      Some((
+        true,
+        AlertObservation::Change {
+          previous: 20.0,
+          observed: 35.0
+        }
+      ))
+    );
   }
 
   #[test]
@@ -1360,32 +1469,40 @@ mod tests {
     // Sixty-four true readings would be sixty-four round trips evaluated
     // naively; the run only needs its open and its close, and here those
     // are the same two calls that open the debounce window and fire it.
-    let evaluated: Vec<(i64, bool)> = (0..64).map(|i| (1_000 + i * 10, true)).collect();
+    let evaluated: Vec<(i64, bool, ())> = (0..64).map(|i| (1_000 + i * 10, true, ())).collect();
     assert_eq!(
       transitions_to_apply(&evaluated),
-      vec![(1_000, true), (1_630, true)]
+      vec![(1_000, true, ()), (1_630, true, ())]
     );
   }
 
   #[test]
   fn a_spike_that_rose_and_fell_inside_the_batch_is_still_applied() {
     let evaluated = vec![
-      (100, false),
-      (110, true),
-      (120, true),
-      (130, false),
-      (140, false),
+      (100, false, "a"),
+      (110, true, "b"),
+      (120, true, "c"),
+      (130, false, "d"),
+      (140, false, "e"),
     ];
     assert_eq!(
       transitions_to_apply(&evaluated),
-      vec![(100, false), (110, true), (130, false), (140, false)]
+      vec![
+        (100, false, "a"),
+        (110, true, "b"),
+        (130, false, "d"),
+        (140, false, "e")
+      ]
     );
   }
 
   #[test]
   fn a_single_reading_applies_exactly_once() {
-    assert_eq!(transitions_to_apply(&[(100, true)]), vec![(100, true)]);
-    assert!(transitions_to_apply(&[]).is_empty());
+    assert_eq!(
+      transitions_to_apply(&[(100, true, ())]),
+      vec![(100, true, ())]
+    );
+    assert!(transitions_to_apply::<()>(&[]).is_empty());
   }
 
   #[test]

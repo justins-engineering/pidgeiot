@@ -13,8 +13,8 @@
 //! counterpart is `objects/pigeons.rs::authorize_dashboard`).
 
 use capsules::{
-  Flock, OrgRole, OrgRoleEntry, Organization, OrganizationInvite, OrganizationMember,
-  OrganizationMembership,
+  Flock, InviteEmail, OrgRole, OrgRoleEntry, Organization, OrganizationInvite, OrganizationMember,
+  OrganizationMembership, format_invite_email,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
@@ -765,11 +765,7 @@ pub async fn accept_invite(
 /// Builds the fancier-side accept URL for an invite token -- `ROOT_URL`-based
 /// (the frontend's own origin per environment).
 pub fn build_invite_url(env: &Env, token: &str) -> String {
-  let root = env
-    .var("ROOT_URL")
-    .map(|v| v.to_string())
-    .unwrap_or_else(|_| "https://pidgeiot.com".to_string());
-  format!("{root}/invite?token={token}")
+  format!("{}/invite?token={token}", crate::helpers::root_url(env))
 }
 
 /// Last `n` characters of `s` (or the whole string if it's shorter),
@@ -785,18 +781,25 @@ fn suffix_hint(s: &str, n: usize) -> String {
 }
 
 /// Sends the invite email through the EXISTING Resend transport
-/// (`helpers/alerts.rs::send_via_usesend` -- no new provider/secret). In an
-/// environment with no `RESEND_API_KEY` configured (dev), this logs a
+/// (`helpers/alerts.rs::send_email_message` -- no new provider/secret). In
+/// an environment with no `RESEND_API_KEY` configured (dev), this logs a
 /// (redacted) stand-in for the invite link instead, keeping the flow
 /// locally testable end-to-end: `wrangler dev`'s own admin/DB access can
 /// recover the real token, so nothing testable is lost. `org_id` is for
-/// logging only -- the email body still addresses the org by name.
+/// logging only -- the email body addresses the org by name and the
+/// inviter by the name and email address on their session, whichever of
+/// the two the identity carries.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_invite_email(
   env: &Env,
   to: &str,
   org_id: &Uuid,
   org_name: &str,
+  inviter_name: Option<&str>,
+  inviter_email: Option<&str>,
+  role: OrgRole,
   invite_url: &str,
+  expires_at: OffsetDateTime,
 ) {
   if !crate::helpers::alerts::usesend_configured(env) {
     // Never log `to` or the full `invite_url` -- the URL's query string IS
@@ -809,15 +812,17 @@ pub async fn send_invite_email(
     return;
   }
 
-  let subject = format!("You've been invited to join {org_name} on PidgeIoT");
-  let text = format!(
-    "You've been invited to join the organization \"{org_name}\" on PidgeIoT.\n\n\
-     Accept the invitation (sign in, or create an account first):\n{invite_url}\n\n\
-     This link is single-use and expires in 7 days. If you weren't expecting\n\
-     this invitation, you can ignore this email.\n"
-  );
+  let message = format_invite_email(&InviteEmail {
+    inviter_name,
+    inviter_email,
+    org_name,
+    role,
+    invite_url,
+    expires_at,
+    sent_at: OffsetDateTime::now_utc(),
+  });
 
-  if let Err(e) = crate::helpers::alerts::send_via_usesend(env, to, &subject, &text).await {
+  if let Err(e) = crate::helpers::alerts::send_email_message(env, to, &message).await {
     console_error!("Org invite email send failed for org {org_id}: {e}");
   }
 }

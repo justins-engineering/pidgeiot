@@ -428,7 +428,11 @@ Invites an email address at a given role. Body: `capsules::OrganizationInviteCre
 (`{ email, role }`); inviting at role `owner` is itself owner-only. Mints a random 128-bit+
 token, stores **only its sha256 hash** (`organization_invites.token_hash`), and emails the
 invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's existing Resend
-transport. In an environment with no `RESEND_API_KEY` configured (dev), the link is logged to
+transport. The message (`capsules::format_invite_email`, HTML plus a plain-text part that says
+the same thing; subject `[PidgeIoT] Invitation to join <org>`) names the inviter by the name and
+email address on their session (`Ana Ruiz (ana@example.com)`, or whichever the identity
+carries), the organization, the role and what it allows, the expiry, and what
+to do if the invitation was unexpected. In an environment with no `RESEND_API_KEY` configured (dev), the link is logged to
 the Worker console instead — grab it from `wrangler dev` output. Returns `201` with
 `capsules::OrganizationInviteCreated` (`{ invite, token, invite_url }`) — **the only place
 the cleartext token ever appears** (write-once, same convention as device connector tokens);
@@ -1573,7 +1577,14 @@ dictionary.
 
 User-defined threshold/state alerts, evaluated both at telemetry-ingest time and by a five-minute
 Cron Trigger sweep (for the absence-of-signal conditions below), with an at-most-one email per
-fired/cleared transition. An alert is scoped to exactly one **pigeon** or one **flock** — never
+fired/cleared transition. That email (`capsules::format_alert_email`, HTML plus a plain-text
+part that says the same thing; subject `[PidgeIoT] Alert firing: <metric> on <pigeon>`,
+`Critical alert firing: ...` for a critical-severity definition, or `Alert resolved: ...`
+regardless of severity, where `<metric>` is the telemetry key or `device offline`/`device
+stale`/`missing reports`) names the pigeon and flock, the condition and its threshold, the
+value the evaluator observed, the transition time in UTC, the current state, a link to the
+pigeon's dashboard page and a link to the alerts section the definition is edited from. An
+alert is scoped to exactly one **pigeon** or one **flock** — never
 both — chosen by which of the two create/list route pairs below you call; scope is never read
 from the request body. A flock-scoped alert evaluates independently per pigeon currently in that
 flock, not once for the flock as a whole.

@@ -176,6 +176,10 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
 pub struct AuthSession {
   pub user_id: String,
   pub email: Option<String>,
+  /// `name.first` and `name.last` from the identity traits joined with a
+  /// space, `None` when both are absent or blank. Optional in the schema,
+  /// so most accounts carry only an email.
+  pub name: Option<String>,
   /// Identity's VERIFIED addresses (lowercased), from
   /// `identity.verifiable_addresses` -- the only addresses an alert's
   /// per-alert email override may name (open signup means an unrestricted
@@ -209,6 +213,21 @@ pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<Au
     .and_then(|v| v.as_str())
     .map(|s| s.to_string());
 
+  let name = identity
+    .traits
+    .as_ref()
+    .and_then(|traits| traits.get("name"))
+    .map(|name| {
+      ["first", "last"]
+        .iter()
+        .filter_map(|part| name.get(part).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+    })
+    .filter(|name| !name.is_empty());
+
   let verified_emails = identity
     .verifiable_addresses
     .unwrap_or_default()
@@ -220,6 +239,7 @@ pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<Au
   Ok(AuthSession {
     user_id: identity.id,
     email,
+    name,
     verified_emails,
   })
 }
@@ -3752,7 +3772,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // dev (no RESEND_API_KEY) this logs the link instead. Either way
         // the response below carries the token/URL once -- write-once,
         // same convention as device connector tokens.
-        send_invite_email(&ctx.env, &email, &org_id, &organization.name, &invite_url).await;
+        send_invite_email(
+          &ctx.env,
+          &email,
+          &org_id,
+          &organization.name,
+          auth.name.as_deref(),
+          auth.email.as_deref(),
+          payload.role,
+          &invite_url,
+          invite.expires_at,
+        )
+        .await;
 
         Response::from_json(&OrganizationInviteCreated {
           invite,
