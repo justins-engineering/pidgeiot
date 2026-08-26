@@ -344,7 +344,7 @@ model is rolled onto the existing per-pigeon ACL + flock tables.
 | Capability | owner | admin | member |
 |---|---|---|---|
 | List/read org, members (`GET /orgs`, `GET /orgs/:id`) | yes | yes | yes |
-| Rename org (`PUT /orgs/:id`) | yes | yes | no |
+| Rename org, set its timezone (`PUT /orgs/:id`) | yes | yes | no |
 | Delete org (`DELETE /orgs/:id`, only when it owns no flocks) | yes | no | no |
 | Invite members (`POST /orgs/:id/invites`), view/revoke invites | yes | yes (but cannot invite an `owner`) | no |
 | Change member roles (`PUT /orgs/:id/members/:user_id`) | yes | no | no |
@@ -412,8 +412,20 @@ for owner/admin callers; plain members get an empty list).
 
 #### `PUT /orgs/:org_id` — owner/admin
 
-Rename. Body: `capsules::OrganizationRenameRequest` (`{ name }`). Returns the updated
-`capsules::Organization`.
+Renames the org, sets its timezone, or both. Body:
+`capsules::OrganizationUpdateRequest` (`{ name?, timezone? }`) — an absent field is left
+unchanged, so the two controls that write here save independently; `400` when neither is
+present, and when `name` is present but blank.
+
+`timezone` is an IANA zone name (`America/New_York`), validated against the timezone
+database dovecote carries: a name it knows is stored as written (aliases such as
+`US/Eastern` included), and one that differs only in case is repaired
+(`america/new_york` is stored as `America/New_York`). Anything the database does not know
+is refused with `400`. The zone defaults to `UTC` and is **what the emails about this
+organization are stamped in**; the dashboard itself keeps rendering times in the reader's
+own browser zone.
+
+Returns the updated `capsules::Organization`.
 
 #### `DELETE /orgs/:org_id` — owner
 

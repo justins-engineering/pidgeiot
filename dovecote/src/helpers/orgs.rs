@@ -388,22 +388,36 @@ pub async fn list_org_invites(client: &Client, org_id: &Uuid) -> Result<Vec<Orga
   Ok(rows.iter().map(row_to_invite).collect())
 }
 
-pub async fn rename_organization(
+/// Applies whichever of an org's editable fields the caller supplied. A
+/// `None` leaves the stored value alone, which is what lets the two
+/// controls that write here save independently of each other; `timezone`
+/// must already be a canonical IANA name (`helpers/timezone.rs` decides
+/// that, before the write).
+pub async fn update_organization(
   client: &Client,
   org_id: &Uuid,
-  name: &str,
+  name: Option<&str>,
+  timezone: Option<&str>,
 ) -> Result<Organization> {
   let row = client
     .query_typed_one(
       &format!(
-        "UPDATE organizations SET name = $2, updated_at = now() WHERE id = $1
+        "UPDATE organizations
+         SET name = COALESCE($2, name),
+             timezone = COALESCE($3, timezone),
+             updated_at = now()
+         WHERE id = $1
          RETURNING {ORG_COLUMNS};"
       ),
-      &[(org_id, Type::UUID), (&name, Type::TEXT)],
+      &[
+        (org_id, Type::UUID),
+        (&name, Type::TEXT),
+        (&timezone, Type::TEXT),
+      ],
     )
     .await
     .map_err(|e| {
-      console_error!("Org rename error: {e}");
+      console_error!("Org update error: {e}");
       Error::RustError("Internal Server Error".into())
     })?;
   Ok(row_to_organization(&row))

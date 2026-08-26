@@ -1736,10 +1736,20 @@ pub struct OrganizationCreateRequest {
   pub tax_id_type: TaxIdType,
 }
 
-/// Body for `PUT /orgs/:org_id` (rename -- the only mutable org field).
+/// Body for `PUT /orgs/:org_id`. Both fields are optional and an absent
+/// one means unchanged: the name and the timezone are edited from
+/// different controls, so a caller changing one has nothing sensible to
+/// say about the other. (The wholesale replacement
+/// `OrganizationBusinessDetailsRequest` does is right for a form somebody
+/// sees in full; this is not that.)
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct OrganizationRenameRequest {
-  pub name: String,
+pub struct OrganizationUpdateRequest {
+  #[serde(default)]
+  pub name: Option<String>,
+  /// An IANA zone name; dovecote validates it against a real timezone
+  /// database and answers 400 for anything the database does not know.
+  #[serde(default)]
+  pub timezone: Option<String>,
 }
 
 /// An org's tax identity: who the invoice is made out to and under which

@@ -1,9 +1,9 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-dovecote-MIT) — 122 package(s)
+- [MIT License (MIT)](#license-dovecote-MIT) — 136 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-dovecote-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-dovecote-Apache-2.0) — 5 package(s)
-- [BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)](#license-dovecote-BSD-3-Clause) — 4 package(s)
+- [BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)](#license-dovecote-BSD-3-Clause) — 5 package(s)
 
 
 ### Apache License 2.0 (Apache-2.0)
@@ -416,6 +416,39 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ````text
+Copyright (c) 2022, Yuri6037
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+    * Neither the name of time-tz nor the names of its contributors
+      may be used to endorse or promote products derived from this software
+      without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+````
+
+**Used by:** [time-tz 2.0.0](https://github.com/Yuri6037/time-tz)
+
+
+````text
 Copyright (c) <year> <owner>. 
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
@@ -600,7 +633,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [log 0.4.34](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits)
+**Used by:** [log 0.4.34](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
 
 
 ````text
@@ -1834,7 +1867,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [rand 0.10.2](https://github.com/rust-random/rand)
+**Used by:** [rand 0.10.2](https://github.com/rust-random/rand), [rand 0.8.8](https://github.com/rust-random/rand), [rand_core 0.6.4](https://github.com/rust-random/rand)
 
 
 ````text
@@ -1900,6 +1933,34 @@ DEALINGS IN THE SOFTWARE.
 ````
 
 **Used by:** [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+
+
+````text
+MIT License
+
+Copyright (c) 2017 Ingvar Stepanyan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+````
+
+**Used by:** [serde-xml-rs 0.5.1](https://github.com/RReverser/serde-xml-rs)
 
 
 ````text
@@ -2008,7 +2069,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [chrono 0.4.45](https://github.com/chronotope/chrono), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [whoami 2.1.3](https://github.com/ardaku/whoami)
+**Used by:** [chrono 0.4.45](https://github.com/chronotope/chrono), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [parse-zoneinfo 0.3.1](https://github.com/chronotope/chrono-tz), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [whoami 2.1.3](https://github.com/ardaku/whoami)
 
 
 ````text
@@ -2094,7 +2155,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.18](https://github.com/dtolnay/itoa), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.6.0](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
+**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.18](https://github.com/dtolnay/itoa), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.6.0](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
 
 
 ````text
@@ -2140,6 +2201,34 @@ SOFTWARE.
 ````text
 The MIT License (MIT)
 
+Copyright (c) 2014 Vladimir Matveev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+````
+
+**Used by:** [xml-rs 0.8.29](https://github.com/kornelski/xml-rs)
+
+
+````text
+The MIT License (MIT)
+
 Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
@@ -2161,7 +2250,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [phf 0.13.1](https://github.com/rust-phf/rust-phf), [phf_shared 0.13.1](https://github.com/rust-phf/rust-phf)
+**Used by:** [phf 0.11.3](https://github.com/rust-phf/rust-phf), [phf 0.13.1](https://github.com/rust-phf/rust-phf), [phf_codegen 0.11.3](https://github.com/rust-phf/rust-phf), [phf_generator 0.11.3](https://github.com/rust-phf/rust-phf), [phf_shared 0.11.3](https://github.com/rust-phf/rust-phf), [phf_shared 0.13.1](https://github.com/rust-phf/rust-phf)
 
 
 ````text

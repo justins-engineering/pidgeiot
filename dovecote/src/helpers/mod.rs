@@ -187,10 +187,13 @@ pub use orgs::load_org_roles;
 pub use orgs::mint_invite_token;
 pub use orgs::org_role_of;
 pub use orgs::remove_member;
-pub use orgs::rename_organization;
 pub use orgs::revoke_invite;
 pub use orgs::send_invite_email;
 pub use orgs::set_flock_org;
+pub use orgs::update_organization;
+
+mod timezone;
+pub use timezone::canonical_timezone;
 
 mod alerts;
 pub use alerts::check_telemetry_alerts_batch;

@@ -20,7 +20,7 @@ use capsules::{
   OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMember, OrganizationMemberRoleUpdateRequest, OrganizationMembership,
-  OrganizationRenameRequest,
+  OrganizationUpdateRequest,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -116,9 +116,22 @@ pub async fn detail(org_id: Uuid) -> Option<OrganizationDetail> {
 }
 
 pub async fn rename(org_id: Uuid, name: &str) -> Option<Organization> {
-  let body = to_body(&OrganizationRenameRequest {
-    name: name.to_string(),
-  })?;
+  update(
+    org_id,
+    &OrganizationUpdateRequest {
+      name: Some(name.to_string()),
+      timezone: None,
+    },
+  )
+  .await
+}
+
+/// Applies whichever org fields the request carries and caches the org as
+/// dovecote now holds it. Absent fields are left alone server-side, so the
+/// name control and the timezone control save without overwriting each
+/// other.
+pub async fn update(org_id: Uuid, request: &OrganizationUpdateRequest) -> Option<Organization> {
+  let body = to_body(request)?;
   let response = fetch_json("PUT", &format!("/orgs/{org_id}"), Some(&body)).await?;
   let organization: Organization = parse(response).await?;
   let mut orgs = consume_context::<crate::LocalSession>().orgs;
