@@ -1,12 +1,11 @@
 name = "fancier"
 compatibility_date = "2026-08-24"
 send_metrics = false
-# Keep version-preview URLs enabled on prod deploys — staging for this
-# script IS a version preview (`versions upload -c wrangler.staging.toml
-# --preview-alias staging`, see that file). Without this, a plain
-# `wrangler deploy` resets the script's previews_enabled to false and the
-# staging alias breaks (error 1042). workers_dev stays off: pidgeiot.com
-# only.
+# Keep version-preview URLs enabled on prod deploys: `versions upload -c
+# wrangler.staging.toml --preview-alias <name>` attaches a quick preview of
+# one build to this script (see that file), and a plain `wrangler deploy`
+# would otherwise reset previews_enabled and break the alias (error 1042).
+# workers_dev stays off: pidgeiot.com only.
 preview_urls = true
 workers_dev = false
 # Markdown content negotiation (Cloudflare Agent Readiness: Markdown):
@@ -75,4 +74,29 @@ run_worker_first = [
 
 [build]
 command = "./scripts/build-release.sh"
+watch_dir = ["./src", "./worker"]
+
+# Staging: a SEPARATE script, `fancier-staging` (wrangler's default
+# `<name>-<env>` naming -- no `name` override, so this block can never be
+# deployed over the production `fancier` script), on its own hostname.
+# `wrangler deploy --env staging` is the staging deploy. A workers.dev or
+# version-preview origin cannot hold a browser session: Kratos scopes its
+# cookie to pidgeiot.com and admits exactly the origins it is configured
+# with, and dovecote's CORS admits exactly its ROOT_URL. `main`, [assets]
+# (run_worker_first included) and workers_dev = false are inherited; only
+# the hostname and the build differ.
+#
+# The Access gate in worker/access-gate.mjs arms only when CF_ACCESS_AUD
+# and CF_ACCESS_CERTS_URL are present, and they are never committed: pass
+# them on every staging deploy (`--var CF_ACCESS_AUD:<aud> --var
+# CF_ACCESS_CERTS_URL:<url>`), since a deploy without --keep-vars drops
+# whatever vars the previous one set.
+[env.staging]
+routes = [{ pattern = "staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" }]
+
+# FANCIER_ENV selects .env.staging (build.rs). Without this override the
+# inherited command would bake production's API host into the bundle that
+# is then uploaded as staging.
+[env.staging.build]
+command = "FANCIER_ENV=staging ./scripts/build-release.sh"
 watch_dir = ["./src", "./worker"]
