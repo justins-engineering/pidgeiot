@@ -119,12 +119,13 @@ DEMO_PIGEON_IDS = "44e81fc18f5beddf8cabf57c3decd16ad1b7d24dd629213c2c4ac9038e50b
 # telemetry.pidgeiot.com tunnel route are retired with the rest of the
 # home-lab box; re-point this at a real origin to bring GreptimeDB back.
 GREPTIMEDB_ENDPOINT = ""
-# loft's egress on the VPS -- the same box coap.pidgeiot.com's A record
-# points at, which has no IPv6 egress, so this single v4 address is the
-# only one Cloudflare can ever see the terminator arrive from. Must move
-# with the VPS (the loft repo's docs/infra/coap-terminator.md, "Internal
-# PSK route allowlist").
-COAP_SERVICE_ALLOWED_IPS = "15.204.254.3"
+# loft's egress on the VPS -- the same box coap.pidgeiot.com's A and AAAA
+# records point at. Both families are listed because Cloudflare's edge
+# reports whichever address the host used for that connection, and a
+# dual-stack host may prefer v6 for api.pidgeiot.com (which has AAAA
+# records). Must move with the VPS (the loft repo's
+# docs/infra/coap-terminator.md, "Internal PSK route allowlist").
+COAP_SERVICE_ALLOWED_IPS = "15.204.254.3,2604:2dc0:121::5be"
 
 [[hyperdrive]]
 binding = "YugabyteDB"
