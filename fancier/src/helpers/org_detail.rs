@@ -68,6 +68,7 @@ mod tests {
     Organization {
       id: Uuid::from_u128(1),
       name: name.to_string(),
+      timezone: capsules::DEFAULT_TIMEZONE.to_string(),
       created_at: OffsetDateTime::UNIX_EPOCH,
       updated_at: OffsetDateTime::UNIX_EPOCH,
     }

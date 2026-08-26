@@ -99,6 +99,7 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
       "CREATE TABLE IF NOT EXISTS organizations (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name TEXT NOT NULL,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -122,6 +123,7 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         accepted_at TIMESTAMPTZ
       );
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC';
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE SET NULL;
       CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_organization_members_user_id ON organization_members(user_id);
@@ -133,6 +135,11 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
       Error::RustError("Internal Server Error".into())
     })
 }
+
+/// The `organizations` columns every read of an org selects. One name so
+/// the four statements that build an `Organization` cannot drift apart
+/// from each other or from the struct.
+const ORG_COLUMNS: &str = "id, name, timezone, created_at, updated_at";
 
 fn parse_uuid(value: &str, what: &str) -> Result<Uuid> {
   Uuid::parse_str(value).map_err(|e| Error::RustError(format!("Invalid {what} format: {e}")))
@@ -150,6 +157,7 @@ fn row_to_organization(row: &Row) -> Organization {
   Organization {
     id: row.get("id"),
     name: row.get("name"),
+    timezone: row.get("timezone"),
     created_at: row.get("created_at"),
     updated_at: row.get("updated_at"),
   }
@@ -263,8 +271,7 @@ pub async fn create_organization(
 
   let row = tx
     .query_typed_one(
-      "INSERT INTO organizations (name) VALUES ($1)
-       RETURNING id, name, created_at, updated_at;",
+      &format!("INSERT INTO organizations (name) VALUES ($1) RETURNING {ORG_COLUMNS};"),
       &[(&name, Type::TEXT)],
     )
     .await
@@ -307,11 +314,13 @@ pub async fn list_user_organizations(
 
   let rows = client
     .query_typed(
-      "SELECT o.id, o.name, o.created_at, o.updated_at, m.role
-       FROM organizations o
-       JOIN organization_members m ON m.org_id = o.id
-       WHERE m.user_id = $1
-       ORDER BY o.created_at ASC;",
+      &format!(
+        "SELECT o.id, o.name, o.timezone, o.created_at, o.updated_at, m.role
+         FROM organizations o
+         JOIN organization_members m ON m.org_id = o.id
+         WHERE m.user_id = $1
+         ORDER BY o.created_at ASC;"
+      ),
       &[(&user_uuid, Type::UUID)],
     )
     .await
@@ -334,7 +343,7 @@ pub async fn list_user_organizations(
 pub async fn get_organization(client: &Client, org_id: &Uuid) -> Result<Option<Organization>> {
   let rows = client
     .query_typed(
-      "SELECT id, name, created_at, updated_at FROM organizations WHERE id = $1;",
+      &format!("SELECT {ORG_COLUMNS} FROM organizations WHERE id = $1;"),
       &[(org_id, Type::UUID)],
     )
     .await
@@ -386,8 +395,10 @@ pub async fn rename_organization(
 ) -> Result<Organization> {
   let row = client
     .query_typed_one(
-      "UPDATE organizations SET name = $2, updated_at = now() WHERE id = $1
-       RETURNING id, name, created_at, updated_at;",
+      &format!(
+        "UPDATE organizations SET name = $2, updated_at = now() WHERE id = $1
+         RETURNING {ORG_COLUMNS};"
+      ),
       &[(org_id, Type::UUID), (&name, Type::TEXT)],
     )
     .await
@@ -755,7 +766,7 @@ pub async fn accept_invite(
 
   let org_row = tx
     .query_typed_one(
-      "SELECT id, name, created_at, updated_at FROM organizations WHERE id = $1;",
+      &format!("SELECT {ORG_COLUMNS} FROM organizations WHERE id = $1;"),
       &[(&org_id, Type::UUID)],
     )
     .await

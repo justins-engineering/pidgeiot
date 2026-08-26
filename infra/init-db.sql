@@ -223,6 +223,11 @@ CREATE TABLE IF NOT EXISTS alert_state (
 CREATE TABLE IF NOT EXISTS organizations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
+  -- IANA zone name the org's emails are stamped in (capsules/src/email.rs).
+  -- No CHECK constraint: the valid set is the tz database, which is
+  -- revised several times a year -- dovecote validates writes against the
+  -- real database instead.
+  timezone TEXT NOT NULL DEFAULT 'UTC',
   stripe_customer_id TEXT,
   stripe_subscription_id TEXT,
   plan TEXT NOT NULL DEFAULT 'perch',
@@ -266,6 +271,7 @@ CREATE TABLE IF NOT EXISTS organizations (
 
 -- Idempotent for pre-existing databases that created `organizations`
 -- before billing existed.
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC';
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'perch';

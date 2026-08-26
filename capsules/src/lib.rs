@@ -1629,12 +1629,29 @@ impl std::fmt::Display for OrgRole {
   }
 }
 
+/// The zone an org is read in until somebody sets one, and the fallback
+/// wherever a timestamp has no org behind it at all.
+pub const DEFAULT_TIMEZONE: &str = "UTC";
+
+fn default_timezone() -> String {
+  DEFAULT_TIMEZONE.to_string()
+}
+
 /// One org. Postgres hands back native `OffsetDateTime`s directly (same as
 /// `Flock`/`FirmwareImage`), so no `*Row` variant is needed.
+///
+/// `timezone` is an IANA zone name (`America/New_York`), validated against
+/// a real timezone database before it is stored. It is what the emails
+/// this org's members receive are stamped in; nothing else reads it, and
+/// the dashboard keeps rendering times in the reader's own browser zone.
+/// It carries a default so a response from a dovecote that predates the
+/// column still parses rather than collapsing the whole org list.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Organization {
   pub id: Uuid,
   pub name: String,
+  #[serde(default = "default_timezone")]
+  pub timezone: String,
   #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
