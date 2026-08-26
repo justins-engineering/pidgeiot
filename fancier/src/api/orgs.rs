@@ -256,8 +256,10 @@ pub async fn revoke_invite(org_id: Uuid, invite_id: Uuid) -> Option<()> {
 
 /// Token-alone acceptance (`POST /invites/accept`) -- `Err` carries the
 /// server's own message (invalid/expired/used token, already a member) for
-/// the invite view to render verbatim.
-pub async fn accept_invite(token: &str) -> Result<OrganizationMember, String> {
+/// the invite view to render verbatim. The response is the caller's new
+/// membership in the shape `GET /orgs` lists it, which is what lets it go
+/// straight into `LocalSession.orgs`.
+pub async fn accept_invite(token: &str) -> Result<OrganizationMembership, String> {
   let Some(body) = to_body(&OrganizationInviteAcceptRequest {
     token: token.to_string(),
   }) else {
@@ -266,13 +268,14 @@ pub async fn accept_invite(token: &str) -> Result<OrganizationMember, String> {
   let Some(response) = fetch_json_any_status("POST", "/invites/accept", Some(&body)).await else {
     return Err("Network error".to_string());
   };
-  if response.ok() {
-    parse(response)
-      .await
-      .ok_or_else(|| "Failed to parse response".to_string())
-  } else {
-    Err(error_text(&response).await)
+  if !response.ok() {
+    return Err(error_text(&response).await);
   }
+  let Some(membership) = parse::<OrganizationMembership>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
+  cache_membership(membership.clone());
+  Ok(membership)
 }
 
 /// Transfers a personal flock into an org (see `docs/api.md`). On success

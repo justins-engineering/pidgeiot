@@ -3872,7 +3872,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       match outcome {
-        Ok(member) => Response::from_json(&member)?.with_status(201).with_cors(&cors),
+        Ok(membership) => Response::from_json(&membership)?
+          .with_status(201)
+          .with_cors(&cors),
         Err(msg) if msg.starts_with("Not Found") => {
           Response::error(msg, 404).unwrap().with_cors(&cors)
         }
