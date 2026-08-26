@@ -17,6 +17,15 @@ pub use feedback::{
   MAX_FEEDBACK_PAGE_CONTEXT_BYTES, format_feedback_email,
 };
 
+// The customer-facing transactional emails (organization invitations and
+// alert notifications): one shared layout rendered as HTML and as plain
+// text. Pure string logic, so it is testable here on a host target.
+pub mod email;
+pub use email::{
+  AlertEmail, AlertObservation, EmailMessage, InviteEmail, format_alert_email, format_invite_email,
+  html_escape,
+};
+
 // Contact-form request/validation/email types shared with fancier's
 // `/contact/` page. Validation lives in the shared crate on purpose: the
 // form and dovecote's route must agree on what a valid enquiry is, and
