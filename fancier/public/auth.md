@@ -5,9 +5,9 @@ discover how authentication works on PidgeIoT and use the supported paths safely
 
 PidgeIoT is an open-source IoT device management platform. Three hosts matter here:
 
-- `https://pidgeiot.com` — the dashboard (this site)
-- `https://api.pidgeiot.com` — the HTTP API
-- `https://auth.pidgeiot.com` — identity (self-hosted Ory Kratos)
+- `https://pidgeiot.com`: the dashboard (this site)
+- `https://api.pidgeiot.com`: the HTTP API
+- `https://auth.pidgeiot.com`: identity (self-hosted Ory Kratos)
 
 ## auth.md Registration
 
@@ -18,8 +18,8 @@ this file links to production discovery metadata.
 
 ## Current Authentication Paths
 
-There are exactly two credential models — one for humans (and agents acting for a
-human), one for devices:
+There are exactly two credential models, one for humans (and agents acting for a
+human) and one for devices:
 
 - **Dashboard: Ory Kratos session cookie.** Accounts are created and signed in through
   Ory Kratos self-service browser flows, rendered at
@@ -31,7 +31,7 @@ human), one for devices:
   A missing/invalid session gets `401`; a valid session without access to the target
   resource gets `403`.
 - **Devices: per-pigeon Ed25519 bearer token.** Each provisioned device ("pigeon") gets
-  its own Ed25519 keypair; devices send `Authorization: Bearer <token>` — a compact
+  its own Ed25519 keypair; devices send `Authorization: Bearer <token>`, a compact
   binary token (not a JWT), returned exactly once, in the response that mints it
   (pigeon create or token refresh). Refreshing a token cryptographically revokes the
   previous one. There is no way to read a token back later: if it's lost, refresh it.
@@ -57,5 +57,5 @@ Free during early access; no payment method is required to create an account.
 ## Contact
 
 - Feedback endpoint (no auth required, plain JSON): `POST https://api.pidgeiot.com/feedback`
-  — see the API reference for the request shape.
+  See the API reference for the request shape.
 - About / operator: https://pidgeiot.com/about/

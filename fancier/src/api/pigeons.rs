@@ -338,7 +338,7 @@ impl std::fmt::Display for ShellError {
       ShellError::EmptyCommand => write!(f, "Command cannot be empty."),
       ShellError::NotConnected => write!(
         f,
-        "This pigeon has no open device connection right now — a command can only be relayed while the device is connected."
+        "This pigeon has no open device connection right now. A command can only be relayed while the device is connected."
       ),
       ShellError::AlreadyInFlight => write!(
         f,
@@ -347,10 +347,10 @@ impl std::fmt::Display for ShellError {
       ShellError::Timeout => write!(f, "The device did not reply before the timeout elapsed."),
       ShellError::DeviceDisconnected => write!(
         f,
-        "The device disconnected while the command was in flight — no output was returned."
+        "The device disconnected while the command was in flight, so no output was returned."
       ),
       ShellError::Unknown { status: 0, .. } => {
-        write!(f, "Request failed — check your connection and try again.")
+        write!(f, "Request failed. Check your connection and try again.")
       }
       ShellError::Unknown { status, body } if body.is_empty() => {
         write!(f, "Request failed (status {status}).")

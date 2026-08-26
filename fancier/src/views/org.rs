@@ -336,6 +336,10 @@ fn InvitesSection(
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
   let mut is_sending = use_signal(|| false);
+  // `selected` is volatile, so Dioxus rewrites it on every rerender of
+  // this section: pinned to one option it would drag the visible role
+  // back there the moment the send button changed state.
+  let mut role = use_signal(|| OrgRole::Member);
 
   rsx! {
     section { id: "org-invite", class: "mb-10",
@@ -345,19 +349,16 @@ fn InvitesSection(
         onsubmit: move |evt: FormEvent| async move {
             evt.prevent_default();
             let mut email = String::new();
-            let mut role = OrgRole::Member;
             for (key, val) in evt.values() {
-                if let FormValue::Text(val) = val {
-                    match key.as_str() {
-                        "email" => email = val,
-                        "role" => role = val.parse().unwrap_or(OrgRole::Member),
-                        _ => {}
-                    }
+                if let FormValue::Text(val) = val
+                    && key == "email"
+                {
+                    email = val;
                 }
             }
             is_sending.set(true);
             action_error.set(None);
-            match api::orgs::create_invite(org_id, &email, role).await {
+            match api::orgs::create_invite(org_id, &email, role()).await {
                 Ok(created) => {
                     patch_detail(
                         detail_state,
@@ -381,12 +382,27 @@ fn InvitesSection(
         }
         fieldset { class: "fieldset",
           legend { class: "fieldset-legend", "Role" }
-          select { class: "select select-bordered", name: "role",
-            option { value: "member", selected: true, "member" }
-            option { value: "admin", "admin" }
+          select {
+            class: "select select-bordered",
+            name: "role",
+            onchange: move |evt| role.set(evt.value().parse().unwrap_or(OrgRole::Member)),
+            option {
+              value: "member",
+              selected: role() == OrgRole::Member,
+              "member"
+            }
+            option {
+              value: "admin",
+              selected: role() == OrgRole::Admin,
+              "admin"
+            }
             // Inviting at owner level is itself owner-only (docs/api.md).
             if caller_role == OrgRole::Owner {
-              option { value: "owner", "owner" }
+              option {
+                value: "owner",
+                selected: role() == OrgRole::Owner,
+                "owner"
+              }
             }
           }
         }
@@ -627,7 +643,7 @@ fn BillingPanel(
           if o.entitled {
             for plan in [BillingPlan::Builder, BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
               if plan == current_plan {
-                span { class: "badge badge-primary font-mono self-center", "{plan} — current" }
+                span { class: "badge badge-primary font-mono self-center", "{plan}, current" }
               } else {
                 button {
                   class: "btn btn-sm btn-outline",
@@ -1139,7 +1155,7 @@ fn InviteLinkReveal(created: OrganizationInviteCreated, on_close: EventHandler<(
         p { class: "py-2 text-sm text-base-content/70",
           "An email is on its way to "
           span { class: "font-semibold", "{created.invite.email}" }
-          ". You can also share this link directly — it won't be shown again:"
+          ". You can also share this link directly; it won't be shown again:"
         }
         div { class: "flex items-center gap-2 bg-base-200 rounded-box p-3 font-mono text-xs break-all",
           span { class: "grow", "{invite_url}" }

@@ -157,7 +157,7 @@ fn DictionaryUpload(pigeon_id: String, dict_state: Signal<DictState>) -> Element
                           upload_error
                               .set(
                                   Some(
-                                      "Upload failed — check your connection and try again."
+                                      "Upload failed. Check your connection and try again."
                                           .to_string(),
                                   ),
                               );
@@ -426,7 +426,7 @@ pub fn LogViewer(
                 code { class: "text-xs", "log_dictionary.json" }
                 " (from the build directory, e.g. "
                 code { class: "text-xs", "build/zephyr/log_dictionary.json" }
-                ") to decode them right here — it must come from the exact build the device is running. "
+                ") to decode them right here. It must come from the exact build the device is running. "
                 "Alternatively, download raw chunks and decode offline with Zephyr's "
                 code { class: "text-xs", "log_parser.py" }
                 " (see the pigeon-examples README's dictionary logging section)."

@@ -19,7 +19,7 @@ pub fn TermsPage() -> Element {
             "PidgeIoT is in early access. The service is provided \"as is\" and \"as available\", without warranties of any kind, express or implied. Features may change, break, or be removed as the platform develops, and we do not guarantee uninterrupted availability or that stored data will never be lost. Keep your own copies of anything you cannot afford to lose."
           }
           p {
-            "We work hard to keep it up and to keep your data intact — but during beta you should treat this as a developing platform, not a finished product."
+            "We work hard to keep it up and to keep your data intact, but during beta you should treat this as a developing platform, not a finished product."
           }
         }
 
@@ -59,7 +59,7 @@ pub fn TermsPage() -> Element {
 
         LegalSection { title: "Limitation of liability",
           p {
-            "To the maximum extent permitted by law, Justin's Engineering Services LLC will not be liable for any indirect, incidental, special, consequential, or exemplary damages — including lost profits, lost data, or business interruption — arising from your use of, or inability to use, the service. In particular, do not rely on a beta service as the sole safety mechanism for anything where failure could cause harm."
+            "To the maximum extent permitted by law, Justin's Engineering Services LLC will not be liable for any indirect, incidental, special, consequential, or exemplary damages (including lost profits, lost data, or business interruption) arising from your use of, or inability to use, the service. In particular, do not rely on a beta service as the sole safety mechanism for anything where failure could cause harm."
           }
         }
 

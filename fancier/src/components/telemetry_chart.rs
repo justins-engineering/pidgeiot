@@ -102,7 +102,7 @@ impl ChartKind {
         "Draws straight between samples, which reads as the value having moved smoothly between reports."
       }
       ChartKind::Step => {
-        "Holds each value until the next report. Honest for anything sampled or discrete — it never claims a reading nobody took."
+        "Holds each value until the next report. Honest for anything sampled or discrete: it never claims a reading nobody took."
       }
       ChartKind::Area => {
         "A line with the space down to zero filled, so the axis always includes zero."
@@ -442,7 +442,7 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
           slots: None,
           dropped,
           note: Some(format!(
-            "Every {stride}th sample is drawn — the full range is too dense to plot one mark each. The table view is unstrided."
+            "Every {stride}th sample is drawn, because the full range is too dense to plot one mark each. The table view is unstrided."
           )),
         }
       } else {
@@ -946,9 +946,9 @@ pub fn TelemetryChart(
       if dropped > 0 {
         div { class: "text-[11px] text-base-content/50",
           if kind == ChartKind::Scatter {
-            "+{dropped} more key(s) not shown — scatter puts every series on one plane, so it carries at most {MAX_SCATTER_SERIES} distinguishable ones. Line or step will show them all."
+            "+{dropped} more key(s) not shown. Scatter puts every series on one plane, so it carries at most {MAX_SCATTER_SERIES} distinguishable ones. Line or step will show them all."
           } else {
-            "+{dropped} more key(s) not shown — pick fewer to compare them."
+            "+{dropped} more key(s) not shown. Pick fewer to compare them."
           }
         }
       }

@@ -86,9 +86,9 @@ pub fn OccupancyGrid(
                 None => "rounded h-[26px] border border-dashed border-base-content/30",
             },
             title: match cell.occupied {
-                Some(true) => format!("{} — {occupied_label}", cell.label),
-                Some(false) => format!("{} — {free_label}", cell.label),
-                None => format!("{} — no report", cell.label),
+                Some(true) => format!("{}: {occupied_label}", cell.label),
+                Some(false) => format!("{}: {free_label}", cell.label),
+                None => format!("{}: no report", cell.label),
             },
           }
         }

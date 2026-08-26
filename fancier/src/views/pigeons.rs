@@ -1,7 +1,7 @@
 use crate::components::{
   BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FlockAlerts, FlockGraphs,
 };
-use crate::helpers::connection_state;
+use crate::helpers::{connection_state, device_credentials};
 use crate::{Route, api};
 use capsules::{CoapConfig, Connector, HttpsConfig, MqttConfig, Pigeon, PigeonCreateRequest};
 use dioxus::prelude::*;
@@ -34,6 +34,11 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // DeletePigeonModal (it loads the caller's org list on mount and holds
   // reset-sensitive submit state).
   let mut show_transfer = use_signal(|| false);
+  // Same gate for the create form, so closing it is what empties the
+  // fields: a native <dialog> gives no reliable "it closed" hook to reset
+  // on, and one left open with the previous pigeon's name in it invites
+  // registering the same device twice.
+  let mut show_create = use_signal(|| false);
   let nav = use_navigator();
   let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
     use_signal(HashMap::new);
@@ -164,9 +169,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
           button {
             class: "btn btn-outline btn-primary sm:px-6",
-            onclick: move |_| {
-                document::eval(r#"document.getElementById("create_pigeon_modal").showModal();"#);
-            },
+            onclick: move |_| show_create.set(true),
             "Register Pigeon"
           }
         }
@@ -252,8 +255,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         // or unmount this modal while the token is still showing.
         if let Some((pigeon_id, connector)) = new_credentials() {
           TokenReveal {
-            token: connector.token().to_string(),
-            psk_secret: connector.psk().map(|(_, secret)| secret.to_string()),
+            connector,
             on_close: move |_| {
               new_credentials.set(None);
               nav.replace(Route::PigeonView {
@@ -264,11 +266,15 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
         }
 
-        CreatePigeonModal {
-          flock_id,
-          on_created: move |(pigeon_id, connector)| {
-              new_credentials.set(Some((pigeon_id, connector)))
-          },
+        if show_create() {
+          CreatePigeonModal {
+            flock_id,
+            on_close: move |_| show_create.set(false),
+            on_created: move |(pigeon_id, connector)| {
+                show_create.set(false);
+                new_credentials.set(Some((pigeon_id, connector)));
+            },
+          }
         }
 
         if show_transfer() {
@@ -317,7 +323,12 @@ fn TransferFlockModal(flock_id: uuid::Uuid, on_close: EventHandler<()>) -> Eleme
           select {
             class: "select select-bordered w-full",
             onchange: move |evt| selected.set(evt.value()),
-            option { value: "", selected: true, disabled: true, "Choose an organization" }
+            option {
+              value: "",
+              selected: selected.read().is_empty(),
+              disabled: true,
+              "Choose an organization"
+            }
             for m in manager_orgs {
               option { value: "{m.organization.id}", "{m.organization.name}" }
             }
@@ -394,12 +405,13 @@ fn ErrorPigeonsState() -> Element {
   }
 }
 
+/// The one and only sighting of a pigeon's write-once credentials. Every
+/// value is labelled with the build-time symbol it belongs in, because the
+/// three strings a device needs are indistinguishable by shape.
 #[component]
-fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler<()>) -> Element {
-  let copied = use_signal(|| false);
-  let copy_failed = use_signal(|| false);
-  let psk_copied = use_signal(|| false);
-  let psk_copy_failed = use_signal(|| false);
+fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
+  let fields = device_credentials::device_credentials(&connector);
+  let secret_shown = device_credentials::has_psk(&connector);
 
   rsx! {
     div {
@@ -420,87 +432,24 @@ fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler
         h3 {
           class: "text-lg font-bold text-warning flex items-center gap-2",
           id: "token_reveal_title",
-          if psk_secret.is_some() {
-            "🔑 Device Credentials"
-          } else {
-            "🔑 Device Token"
-          }
+          "🔑 Device Credentials"
         }
         p { class: "py-4 text-sm text-base-content/80",
-          if psk_secret.is_some() {
-            "These credentials are shown "
+          if secret_shown {
+            "The token and the PSK secret below are shown "
           } else {
-            "This token is shown "
+            "The token below is shown "
           }
           strong { "only once" }
-          ". Copy them now and store them securely on your device. They cannot be retrieved later."
+          ". Copy them into your device build now; they cannot be retrieved later. Refreshing this pigeon's token mints replacements and retires these."
         }
-        div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
-          code { class: "font-mono text-xs break-all grow select-all", "{token}" }
-          button {
-            class: "btn btn-square btn-ghost btn-sm shrink-0",
-            onclick: move |_| {
-                #[cfg(feature = "web")]
-                let token = token.clone();
-                async move {
-                    #[cfg(feature = "web")]
-                    if let Some(window) = web_sys::window() {
-                        let mut copied = copied;
-                        let mut copy_failed = copy_failed;
-                        let result = JsFuture::from(window.navigator().clipboard().write_text(&token))
-                            .await;
-                        copied.set(result.is_ok());
-                        copy_failed.set(result.is_err());
-                    }
-                }
-            },
-            if copied() {
-              span { class: "text-success text-xs", "Copied!" }
-            } else if copy_failed() {
-              span { class: "text-error text-xs", "Copy failed — select and copy manually" }
-            } else {
-              Icon { icon: LdCopy }
-            }
-          }
-        }
-        if let Some(secret) = psk_secret {
-          div { class: "mt-4",
-            div { class: "text-xs uppercase tracking-wide text-base-content/60 mb-1",
-              "TLS PSK secret"
-            }
-            div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
-              code { class: "font-mono text-xs break-all grow select-all", "{secret}" }
-              button {
-                class: "btn btn-square btn-ghost btn-sm shrink-0",
-                onclick: move |_| {
-                    #[cfg(feature = "web")]
-                    let secret = secret.clone();
-                    async move {
-                        #[cfg(feature = "web")]
-                        if let Some(window) = web_sys::window() {
-                            let mut psk_copied = psk_copied;
-                            let mut psk_copy_failed = psk_copy_failed;
-                            let result = JsFuture::from(
-                                    window.navigator().clipboard().write_text(&secret),
-                                )
-                                .await;
-                            psk_copied.set(result.is_ok());
-                            psk_copy_failed.set(result.is_err());
-                        }
-                    }
-                },
-                if psk_copied() {
-                  span { class: "text-success text-xs", "Copied!" }
-                } else if psk_copy_failed() {
-                  span { class: "text-error text-xs", "Copy failed — select and copy manually" }
-                } else {
-                  Icon { icon: LdCopy }
-                }
-              }
-            }
-            p { class: "text-xs text-base-content/60 mt-1",
-              "The PSK identity is the pigeon's own id."
-            }
+        for field in fields {
+          CredentialRow {
+            key: "{field.label}",
+            label: field.label.to_string(),
+            value: field.value,
+            target: field.target.map(str::to_string),
+            note: field.note.to_string(),
           }
         }
         div { class: "modal-action",
@@ -514,9 +463,61 @@ fn TokenReveal(token: String, psk_secret: Option<String>, on_close: EventHandler
     }
   }
 }
+
+/// One labelled, copyable credential. Its own copy state, so a row that
+/// failed to reach the clipboard says so without implicating the others.
+#[component]
+fn CredentialRow(label: String, value: String, target: Option<String>, note: String) -> Element {
+  let copied = use_signal(|| false);
+  let copy_failed = use_signal(|| false);
+  let shown = value.clone();
+
+  rsx! {
+    div { class: "mt-4",
+      div { class: "flex flex-wrap items-baseline justify-between gap-x-3 mb-1",
+        span { class: "text-xs uppercase tracking-wide text-base-content/60", "{label}" }
+        if let Some(target) = target {
+          code { class: "font-mono text-xs text-base-content/50 break-all", "{target}" }
+        }
+      }
+      div { class: "bg-base-200 p-4 rounded-lg flex items-center gap-3 border border-warning/30",
+        code { class: "font-mono text-xs break-all grow select-all", "{shown}" }
+        button {
+          class: "btn btn-square btn-ghost btn-sm shrink-0",
+          "aria-label": "Copy {label}",
+          onclick: move |_| {
+              #[cfg(feature = "web")]
+              let value = value.clone();
+              async move {
+                  #[cfg(feature = "web")]
+                  if let Some(window) = web_sys::window() {
+                      let mut copied = copied;
+                      let mut copy_failed = copy_failed;
+                      let result = JsFuture::from(window.navigator().clipboard().write_text(&value))
+                          .await;
+                      copied.set(result.is_ok());
+                      copy_failed.set(result.is_err());
+                  }
+              }
+          },
+          if copied() {
+            span { class: "text-success text-xs", "Copied!" }
+          } else if copy_failed() {
+            span { class: "text-error text-xs", "Copy failed, select and copy manually" }
+          } else {
+            Icon { icon: LdCopy }
+          }
+        }
+      }
+      p { class: "text-xs text-base-content/60 mt-1", "{note}" }
+    }
+  }
+}
+
 #[component]
 fn CreatePigeonModal(
   flock_id: uuid::Uuid,
+  on_close: EventHandler<()>,
   on_created: EventHandler<(String, Connector)>,
 ) -> Element {
   let mut selected_connector = use_signal(|| "Https".to_string());
@@ -525,14 +526,28 @@ fn CreatePigeonModal(
   let mut submit_error = use_signal(|| Option::<String>::None);
 
   rsx! {
-    dialog { class: "modal", id: "create_pigeon_modal",
-      div { class: "modal-box relative max-w-xs md:max-w-sm",
-        form { class: "absolute inset-e-2 top-2", method: "dialog",
-          button { class: "btn btn-sm btn-circle btn-ghost",
-            Icon { icon: LdX, title: "close" }
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "create_pigeon_title",
+      tabindex: "-1",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape {
+              on_close.call(());
           }
+      },
+      div { class: "modal-box relative max-w-xs md:max-w-sm",
+        button {
+          class: "btn btn-sm btn-circle btn-ghost absolute inset-e-2 top-2",
+          onclick: move |_| on_close.call(()),
+          Icon { icon: LdX, title: "close" }
         }
-        div { class: "text-center text-xl font-medium mb-4", "Register New Pigeon" }
+        div {
+          class: "text-center text-xl font-medium mb-4",
+          id: "create_pigeon_title",
+          "Register New Pigeon"
+        }
 
         form {
           onsubmit: move |evt: FormEvent| {
@@ -573,9 +588,6 @@ fn CreatePigeonModal(
                           flock.pigeon_ids.push(pigeon_id.clone());
                       }
                       on_created.call((pigeon_id, connector));
-                      document::eval(
-                          r#"document.getElementById("create_pigeon_modal").close();"#,
-                      );
                   } else {
                       is_saving.set(false);
                       submit_error.set(
@@ -590,12 +602,18 @@ fn CreatePigeonModal(
               label { class: "fieldset-legend text-xs font-semibold mb-1",
                 "Name"
               }
+              // Focus lands inside the modal on open, which is also what
+              // puts Escape within reach of the handler above: a plain div
+              // gets none of the keyboard behaviour a native dialog has.
               input {
                 class: "input input-bordered w-full text-sm",
                 name: "name",
                 placeholder: "e.g., Sensor Node Alpha",
                 r#type: "text",
                 required: true,
+                onmounted: move |e| async move {
+                    let _ = e.set_focus(true).await;
+                },
               }
             }
             div {
@@ -613,19 +631,31 @@ fn CreatePigeonModal(
               label { class: "fieldset-legend text-xs font-semibold mb-1",
                 "Protocol"
               }
+              // Each option's selectedness is bound to the signal the
+              // submit reads. `selected` is a volatile attribute, so
+              // Dioxus rewrites it on every rerender of this modal --
+              // hardcoding it on one option snapped the visible choice
+              // back to that option the moment anything else here
+              // changed, while the request still carried the real one.
               select {
                 class: "select select-bordered w-full text-sm",
                 name: "connector",
-                onchange: move |evt: Event<FormData>| {
-                    for (key, val) in evt.data().values() {
-                        if key == "connector" && let FormValue::Text(val) = val {
-                            selected_connector.set(val.clone());
-                        }
-                    }
-                },
-                option { value: "Https", selected: true, "HTTPS (REST API)" }
-                option { value: "Coap", "CoAP (DTLS/TLS)" }
-                option { value: "Mqtt", "MQTT (TLS)" }
+                onchange: move |evt| selected_connector.set(evt.value()),
+                option {
+                  value: "Https",
+                  selected: selected_connector() == "Https",
+                  "HTTPS (REST API)"
+                }
+                option {
+                  value: "Coap",
+                  selected: selected_connector() == "Coap",
+                  "CoAP (DTLS/TLS)"
+                }
+                option {
+                  value: "Mqtt",
+                  selected: selected_connector() == "Mqtt",
+                  "MQTT (TLS)"
+                }
               }
             }
             div {
@@ -641,7 +671,7 @@ fn CreatePigeonModal(
                 autocomplete: "off",
               }
               p { class: "text-xs text-base-content/60 mt-1",
-                "Optional — the pigeon's Zephyr board target. Required later to assign firmware (task #20)."
+                "Optional. The pigeon's Zephyr board target; needed before firmware can be assigned to it."
               }
             }
           }
@@ -662,8 +692,9 @@ fn CreatePigeonModal(
           }
         }
       }
-      form { class: "modal-backdrop", method: "dialog",
-        button { "close" }
+      div {
+        class: "modal-backdrop",
+        onclick: move |_| on_close.call(()),
       }
       BoardDatalist {}
     }

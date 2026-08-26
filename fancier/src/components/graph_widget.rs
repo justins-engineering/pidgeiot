@@ -482,7 +482,7 @@ pub fn PigeonGraphs(
 
       if is_mock_keys() {
         p { class: "text-xs text-warning/80 md:px-4",
-          "No live telemetry reported for this pigeon yet — key picker is showing example keys."
+          "No live telemetry reported for this pigeon yet. The key picker is showing example keys."
         }
       }
 
@@ -592,7 +592,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
 
       if is_mock_keys() {
         p { class: "text-xs text-warning/80 md:px-4",
-          "No live telemetry reported for this flock yet — key picker is showing example keys."
+          "No live telemetry reported for this flock yet. The key picker is showing example keys."
         }
       }
 
@@ -833,7 +833,7 @@ fn GraphCard(
         match outcome.read().as_ref() {
           Some(SeriesOutcome::Preview(series)) => rsx! {
             p { class: "text-[11px] text-warning/80",
-              "Preview data — showing example values until live telemetry history is available here."
+              "Preview data, showing example values until live telemetry history is available here."
             }
             TelemetryChart { series: series.clone(), kind: def.kind }
           },
@@ -848,7 +848,7 @@ fn GraphCard(
             Some(url) => rsx! {
               div { class: "text-sm text-base-content/60 py-8 text-center flex flex-col gap-1",
                 p {
-                  "No history to chart — this pigeon's telemetry is forwarded to "
+                  "No history to chart. This pigeon's telemetry is forwarded to "
                   span { class: "font-mono text-xs break-all", "{url}" }
                   " instead of being stored here."
                 }

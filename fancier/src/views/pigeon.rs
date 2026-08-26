@@ -355,7 +355,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
                 if let Some(board) = pigeon.board.as_deref() {
                   div { class: "font-mono bg-base-200 rounded px-2 w-fit text-xs", "{board}" }
                 } else {
-                  span { class: "text-base-content/50 italic text-sm", "untagged — set via Edit" }
+                  span { class: "text-base-content/50 italic text-sm", "untagged, set via Edit" }
                 }
               }
               td {}
@@ -657,7 +657,7 @@ fn ConnectorInfo(
                 if let Some(token) = refreshed_token() {
                   div { class: "flex flex-col gap-2",
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
-                      "Copy this token now — it will not be shown again"
+                      "Copy this token now; it will not be shown again"
                     }
                     div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
                       "{token}"
@@ -725,7 +725,7 @@ fn ConnectorInfo(
                 td {
                   div { class: "flex flex-col gap-2",
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
-                      "Copy this secret now — it will not be shown again"
+                      "Copy this secret now; it will not be shown again"
                     }
                     div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
                       "{secret}"
@@ -828,7 +828,7 @@ fn TelemetryEndpointInfo(
         },
         None => rsx! {
           p { class: "text-base-content/50 italic text-sm",
-            "Not configured — telemetry uses the default history store."
+            "Not configured. Telemetry uses the default history store."
           }
         },
       }
@@ -888,7 +888,7 @@ fn DiagnosticShell(pigeon_id: String) -> Element {
         h2 { class: "text-3xl font-bold", "Diagnostic Shell" }
       }
       p { class: "text-xs text-base-content/60 md:px-4",
-        "Runs a single command directly on the device over its existing connection. This is remote code execution on physical hardware by design — use it for emergency debugging, not routine operation."
+        "Runs a single command directly on the device over its existing connection. This is remote code execution on physical hardware by design, so use it for emergency debugging, not routine operation."
       }
       form {
         class: "flex flex-col md:flex-row gap-2 items-stretch md:items-end md:px-4",
@@ -961,7 +961,7 @@ fn DiagnosticShell(pigeon_id: String) -> Element {
               }
               if res.truncated {
                 span { class: "badge badge-sm badge-warning",
-                  "output truncated — device buffer overflowed"
+                  "output truncated, device buffer overflowed"
                 }
               }
             }
@@ -1220,7 +1220,7 @@ pub fn EditShadowModal(
               }
               if let Some(name) = loaded_file_name.read().as_ref() {
                 p { class: "text-xs text-success mt-1",
-                  "Loaded \"{name}\" into the editor below — review (or tweak) before saving."
+                  "Loaded \"{name}\" into the editor below. Review (or tweak) before saving."
                 }
               }
               if let Some(err) = file_error.read().as_ref() {
@@ -1561,7 +1561,7 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                 value: pigeon.board.as_deref().unwrap_or(""),
               }
               p { class: "text-xs text-base-content/60 mt-1",
-                "Required to assign firmware — must match the image's own board exactly (task #20). Clearing this field won't unset an already-tagged board."
+                "Required to assign firmware; it must match the image's own board exactly. Clearing this field won't unset an already-tagged board."
               }
             }
           }

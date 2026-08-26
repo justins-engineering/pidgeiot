@@ -338,7 +338,7 @@ fn DashboardMock() -> Element {
                       span { class: "font-semibold", "1" }
                     }
                     p { class: "text-xs text-base-content/50",
-                      "Per-pigeon alerts aren't counted here — open a pigeon's own page to see those."
+                      "Per-pigeon alerts aren't counted here. Open a pigeon's own page to see those."
                     }
                     span { class: "text-xs text-base-content/60 mt-2",
                       "Manage alerts in a flock →"
@@ -382,7 +382,7 @@ const CARDS: [Card; 5] = [
   Card {
     eyebrow: "Fleet",
     title: "Vehicle & asset tracking",
-    body: "Tracks drawn from plain GPS telemetry. Alerts when an asset moves — or stops reporting.",
+    body: "Tracks drawn from plain GPS telemetry. Alerts when an asset moves, or stops reporting.",
   },
   Card {
     eyebrow: "Farm",
@@ -406,7 +406,7 @@ const CARDS: [Card; 5] = [
   Card {
     eyebrow: "City",
     title: "Smart parking",
-    body: "Bay occupancy served from the edge nearest each sensor — one object per device, however many there are.",
+    body: "Bay occupancy served from the edge nearest each sensor: one object per device, however many there are.",
   },
 ];
 
@@ -464,12 +464,12 @@ pub fn Index() -> Element {
           Stop {
             number: "1",
             title: "Your device",
-            body: "Flash the Zephyr library. Registering the device mints its keypair and hands back a 69-byte token — the private half signs that token and is discarded, so only the public key is ever stored. From there it speaks CoAP over DTLS or plain HTTPS, whatever the modem can afford.",
+            body: "Flash the Zephyr library. Registering the device mints its keypair and hands back a 69-byte token; the private half signs that token and is discarded, so only the public key is ever stored. From there it speaks CoAP over DTLS or plain HTTPS, whatever the modem can afford.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/70 overflow-x-auto",
                 p { class: "whitespace-nowrap", "dashboard → Register Pigeon" }
                 p { class: "whitespace-nowrap text-success", "✓ keypair minted, public key stored" }
-                p { class: "whitespace-nowrap text-success", "✓ token issued (69 B) — shown once" }
+                p { class: "whitespace-nowrap text-success", "✓ token issued (69 B), shown once" }
               }
             },
           }
@@ -477,7 +477,7 @@ pub fn Index() -> Element {
           Stop {
             number: "2",
             title: "The edge",
-            body: "Each device owns a small object on Cloudflare's network — its shadow, its permissions, its credentials. Nothing to provision, nothing to patch, close to wherever it wakes up.",
+            body: "Each device owns a small object on Cloudflare's network: its shadow, its permissions, its credentials. Nothing to provision, nothing to patch, close to wherever it wakes up.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 flex flex-col gap-2",
                 div { class: "flex items-center justify-between text-sm gap-3",
@@ -499,7 +499,7 @@ pub fn Index() -> Element {
           Stop {
             number: "3",
             title: "You",
-            body: "The dashboard above: graphs, GPS tracks, firmware rollouts, remote logs and alerts by email. Or bypass it — the API the dashboard uses is the API you get.",
+            body: "The dashboard above: graphs, GPS tracks, firmware rollouts, remote logs and alerts by email. Or bypass it: the API the dashboard uses is the API you get.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/70 overflow-x-auto",
                 p { class: "whitespace-nowrap", "GET /pigeons/0417/telemetry" }
@@ -521,7 +521,7 @@ pub fn Index() -> Element {
           "Where it earns its keep"
         }
         p { class: "text-lg text-base-content/70 mt-2 mb-9",
-          "Examples, not case studies — we're in beta and we're not going to pretend otherwise."
+          "Examples, not case studies. We're in beta and we're not going to pretend otherwise."
         }
         div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4",
           for c in CARDS.iter() {
@@ -576,7 +576,7 @@ pub fn Index() -> Element {
         div { class: "flex flex-col gap-3 min-w-0",
           h3 { class: "text-xl md:text-2xl font-bold", "Private by default" }
           p { class: "leading-relaxed text-base-content/80",
-            "Send telemetry to your own endpoint and the history accumulates there, not here — we keep only the latest value per key. Dashboard identity is self-hosted, so your credentials don't visit a third party."
+            "Send telemetry to your own endpoint and the history accumulates there, not here: we keep only the latest value per key. Dashboard identity is self-hosted, so your credentials don't visit a third party."
           }
           Link { class: "link link-primary font-semibold text-sm", to: Route::HowItWorksPage {},
             "How data flows →"
@@ -592,7 +592,7 @@ pub fn Index() -> Element {
         }
         h2 { class: "text-3xl md:text-4xl font-bold mb-6 text-center", "Why This Platform" }
         p { class: "text-lg leading-relaxed mb-12 text-center text-pretty",
-          "Open-source IoT today makes builders choose: assemble a pile of primitives yourself, or pay enterprise prices for the pre-assembled version. PidgeIoT's bet is that one coherent, AGPL-licensed product — identity, config, firmware, telemetry, and alerts designed together in a single codebase — wins the individual developers that the incumbents price out or wear down. Those developers become the small fleets, and the small fleets become the large ones."
+          "Open-source IoT today makes builders choose: assemble a pile of primitives yourself, or pay enterprise prices for the pre-assembled version. PidgeIoT's bet is that one coherent, AGPL-licensed product (identity, config, firmware, telemetry, and alerts designed together in a single codebase) wins the individual developers that the incumbents price out or wear down. Those developers become the small fleets, and the small fleets become the large ones."
         }
         div { class: "space-y-8",
           div { class: "flex items-start gap-5 border-t border-base-content/10 pt-8",
@@ -606,7 +606,7 @@ pub fn Index() -> Element {
             div {
               h3 { class: "text-xl font-bold mb-2", "Serverless economics, edge-native by default" }
               p { class: "leading-relaxed text-base-content/80",
-                "The backend runs on Cloudflare Workers and Durable Objects — each device owns its own SQLite-backed object at the edge. No idle servers to pay for, no capacity planning: a fleet of five costs almost nothing to serve, and the same architecture serves a fleet of thousands without a re-platform."
+                "The backend runs on Cloudflare Workers and Durable Objects, and each device owns its own SQLite-backed object at the edge. No idle servers to pay for, no capacity planning: a fleet of five costs almost nothing to serve, and the same architecture serves a fleet of thousands without a re-platform."
               }
             }
           }
@@ -621,7 +621,7 @@ pub fn Index() -> Element {
             div {
               h3 { class: "text-xl font-bold mb-2", "Cryptographic identity per device" }
               p { class: "leading-relaxed text-base-content/80",
-                "Every device authenticates with its own Ed25519 keypair and a 69-byte binary token — no shared secrets, no JWT overhead, and refreshing a token is revocation, because it overwrites the only key the old one could verify against. Dashboard identity is self-hosted Ory Kratos: user credentials never leave infrastructure we control."
+                "Every device authenticates with its own Ed25519 keypair and a 69-byte binary token: no shared secrets, no JWT overhead, and refreshing a token is revocation, because it overwrites the only key the old one could verify against. Dashboard identity is self-hosted Ory Kratos: user credentials never leave infrastructure we control."
               }
             }
           }
@@ -636,7 +636,7 @@ pub fn Index() -> Element {
             div {
               h3 { class: "text-xl font-bold mb-2", "Rust and WebAssembly, end to end" }
               p { class: "leading-relaxed text-base-content/80",
-                "The edge router, this dashboard, and the wire types between them are one Rust workspace — the backend compiles to a Worker, the frontend to WebAssembly, and shared structs mean the two cannot drift apart. The protocol itself is the product surface: everything the dashboard does rides the same documented API a device or a script can use."
+                "The edge router, this dashboard, and the wire types between them are one Rust workspace: the backend compiles to a Worker, the frontend to WebAssembly, and shared structs mean the two cannot drift apart. The protocol itself is the product surface: everything the dashboard does rides the same documented API a device or a script can use."
               }
             }
           }
@@ -654,14 +654,14 @@ pub fn Index() -> Element {
                 MaturityBadge { maturity: Maturity::Planned }
               }
               p { class: "leading-relaxed text-base-content/80",
-                "Designed, not yet built: user-written logic running against incoming telemetry at the edge, on Cloudflare Workers for Platforms — the step from device management to a programmable platform."
+                "Designed, not yet built: user-written logic running against incoming telemetry at the edge, on Cloudflare Workers for Platforms, the step from device management to a programmable platform."
               }
             }
           }
         }
         div { class: "mt-12 text-center",
           p { class: "leading-relaxed text-base-content/70 max-w-2xl mx-auto mb-6",
-            "PidgeIoT is in beta and pre-revenue, and this page says so. There are no customer logos here because we haven't earned them yet — the public repos, the commit history, and the running product are the evidence. If you're evaluating us, read the code."
+            "PidgeIoT is in beta and pre-revenue, and this page says so. There are no customer logos here because we haven't earned them yet; the public repos, the commit history, and the running product are the evidence. If you're evaluating us, read the code."
           }
           div { class: "flex flex-col sm:flex-row justify-center gap-4",
             Link {

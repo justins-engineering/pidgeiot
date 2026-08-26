@@ -45,22 +45,22 @@ pub fn DocumentationPage() -> Element {
           DocStep {
             number: "2",
             title: "Create a flock",
-            body: "A flock groups pigeons under one owner — think of it as a project or a fleet.",
+            body: "A flock groups pigeons under one owner: think of it as a project or a fleet.",
           }
           DocStep {
             number: "3",
             title: "Create a pigeon",
-            body: "Creating a pigeon mints its Ed25519 keypair and returns a one-time device token — this is the only time the token is ever shown. Copy it before dismissing the dialog.",
+            body: "Creating a pigeon mints its Ed25519 keypair and returns a one-time device token. This is the only time the token is ever shown, so copy it before dismissing the dialog.",
           }
           DocStep {
             number: "4",
             title: "Provision the device",
-            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). HTTPS, WebSocket, and CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) are all live — pick whichever transport fits the hardware.",
+            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). HTTPS, WebSocket, and CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) are all live, so pick whichever transport fits the hardware.",
           }
           DocStep {
             number: "5",
             title: "Connect and confirm",
-            body: "Once the device reports in, its shadow, telemetry, and logs (if wired up) start showing on the pigeon's detail page in the dashboard — and any alerts you define start evaluating against it.",
+            body: "Once the device reports in, its shadow, telemetry, and logs (if wired up) start showing on the pigeon's detail page in the dashboard, and any alerts you define start evaluating against it.",
           }
         }
         div { class: "mt-10 flex flex-col sm:flex-row gap-4",
@@ -90,7 +90,7 @@ pub fn DocumentationPage() -> Element {
               Icon { icon: LdFileText, class: "size-7 stroke-primary", title: "File" }
             },
             title: "API Reference",
-            body: "Every dashboard and device route, request/response shapes, and auth models — generated straight from the maintained doc in the repo.",
+            body: "Every dashboard and device route, request/response shapes, and auth models, generated straight from the maintained doc in the repo.",
             href: None,
             route: Some(Route::ApiReferencePage {}),
           }
@@ -99,7 +99,7 @@ pub fn DocumentationPage() -> Element {
               Icon { icon: FaGithub, class: "size-7 stroke-primary", title: "GitHub" }
             },
             title: "pidgeiot",
-            body: "The platform itself — dovecote (edge router), fancier (this dashboard), and capsules (shared wire types).",
+            body: "The platform itself: dovecote (edge router), fancier (this dashboard), and capsules (shared wire types).",
             href: Some("https://github.com/justins-engineering/pidgeiot"),
             route: None,
           }
@@ -117,7 +117,7 @@ pub fn DocumentationPage() -> Element {
               Icon { icon: LdCode, class: "size-7 stroke-primary", title: "Code" }
             },
             title: "pigeon-examples",
-            body: "Board-level sample applications built on the pigeon library — bring-up references for real hardware targets.",
+            body: "Board-level sample applications built on the pigeon library: bring-up references for real hardware targets.",
             href: Some("https://github.com/justins-engineering/pigeon-examples"),
             route: None,
           }

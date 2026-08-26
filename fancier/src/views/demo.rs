@@ -61,7 +61,7 @@ const DEMO_READINGS: [(&str, &str, &str, ChartKind, &str); 5] = [
     "Humidity",
     "%",
     ChartKind::Area,
-    "Area fills to zero, which only means something when zero does. Relative humidity is a proportion of a maximum, so the filled height reads as \"how much of the way up\" — and forcing the axis to include zero is correct rather than wasteful.",
+    "Area fills to zero, which only means something when zero does. Relative humidity is a proportion of a maximum, so the filled height reads as \"how much of the way up\", and forcing the axis to include zero is correct rather than wasteful.",
   ),
   (
     "soil_moisture_pct",

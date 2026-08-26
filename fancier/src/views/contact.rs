@@ -275,9 +275,9 @@ pub fn ContactPage() -> Element {
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-2xl text-base-content/80 text-pretty",
           if about_is_fleet {
-            "Fleet pricing is a conversation, not a checkout button. Tell us roughly how many devices, what they report, and what has to be true before you could ship — you'll get a straight answer about whether we fit."
+            "Fleet pricing is a conversation, not a checkout button. Tell us roughly how many devices, what they report, and what has to be true before you could ship. You'll get a straight answer about whether we fit."
           } else {
-            "Questions about the platform, a fleet too big for the pricing page, or something that should work and doesn't — it all reaches the same small team."
+            "Questions about the platform, a fleet too big for the pricing page, or something that should work and doesn't: it all reaches the same small team."
           }
         }
       }
@@ -446,7 +446,7 @@ pub fn ContactPage() -> Element {
                   }
                 }
                 p { class: "text-xs text-base-content/60 leading-relaxed",
-                  "We use your address to reply and nothing else. No list, no sequence, no third party — see the "
+                  "We use your address to reply and nothing else. No list, no sequence, no third party. See the "
                   Link { class: "link link-secondary", to: Route::PrivacyPage {}, "privacy policy" }
                   "."
                 }
