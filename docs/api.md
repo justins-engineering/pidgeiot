@@ -847,7 +847,7 @@ The Stripe event sink (not a dashboard route; authenticated by `Stripe-Signature
 HMAC verification against the endpoint signing secret, 5-minute replay window, `v1` scheme
 only). Dispatch is `dovecote/src/helpers/stripe_webhook.rs::webhook_action`, pinned by a test;
 the endpoint in each Stripe environment (Dashboard: Developers > Webhooks, per mode) must
-subscribe to exactly these nine events:
+subscribe to exactly these eleven events:
 
 | Event | Action |
 |---|---|
