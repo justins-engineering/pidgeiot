@@ -67,7 +67,7 @@ pub async fn ensure_business_details_columns(client: &Client) -> Result<()> {
 /// stored identifier exists; an unreadable status reads as `Pending`
 /// ("we owe an answer"), which the sweep then resolves on its own, rather
 /// than as `Validated`, which we could not support.
-fn row_to_details(row: &Row) -> OrganizationBusinessDetails {
+pub(crate) fn row_to_details(row: &Row) -> OrganizationBusinessDetails {
   let tax_id_type: TaxIdType = row
     .get::<_, String>("tax_id_type")
     .parse()
@@ -88,7 +88,10 @@ fn row_to_details(row: &Row) -> OrganizationBusinessDetails {
   }
 }
 
-const DETAILS_COLUMNS: &str = "id, business_name, tax_id, tax_id_type, tax_id_status,
+/// The tax-identity columns as `row_to_details` reads them. Shared with
+/// the billing-state read in `helpers/billing.rs`, which folds the same
+/// columns into its one uncacheable statement.
+pub(crate) const DETAILS_COLUMNS: &str = "id, business_name, tax_id, tax_id_type, tax_id_status,
    tax_id_validated_at, tax_id_checked_at";
 
 pub async fn load_business_details(
