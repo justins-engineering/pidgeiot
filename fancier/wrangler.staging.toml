@@ -1,13 +1,17 @@
-# Config for uploading a Workers *version preview* of the "fancier" script
-# (see worker/access-gate.mjs's header for why "staging" is a preview of the
-# same script rather than a separate one). Since the markdown-negotiation
-# change, production's wrangler.toml runs the same worker entrypoint — but
-# with run_worker_first scoped to only the negotiable page routes, so
-# static assets keep zero-worker serving there. This staging config instead
-# needs `run_worker_first = true` (below): the Access gate must cover every
-# path, asset requests included. This file exists purely so `wrangler
-# versions upload -c wrangler.staging.toml` can attach a gated version to
-# the same script.
+# Config for uploading a Workers *version preview* of the "fancier" script:
+# a quick look at one build at a preview URL, without touching either live
+# script. Staging proper is the `fancier-staging` script at
+# staging.pidgeiot.com (`[env.staging]` in wrangler.toml, deployed with
+# `wrangler deploy --env staging`). A preview URL is a workers.dev origin,
+# which no browser session can reach: Kratos admits only the origins it is
+# configured with and dovecote only its ROOT_URL, so a preview shows the
+# public pages and nothing behind sign-in.
+#
+# Production's wrangler.toml runs the same worker entrypoint, but with
+# run_worker_first scoped to only the negotiable page routes, so static
+# assets keep zero-worker serving there. This config instead needs
+# `run_worker_first = true` (below): the Access gate must cover every path,
+# asset requests included.
 #
 # `name` intentionally matches production's — script identity in Cloudflare
 # is the name+account, not which config file defined it, so this uploads a

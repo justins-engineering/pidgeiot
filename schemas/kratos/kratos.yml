@@ -45,6 +45,10 @@ selfservice:
   allowed_return_urls:
     - http://localhost
     - http://127.0.0.1
+    # The dashboard's own dev origins: fancier names its origin as the
+    # return_to of every flow it starts, and Kratos matches host and port.
+    - http://localhost:4455
+    - http://127.0.0.1:4455
     - http://localhost:19006/Callback
     - exp://localhost:8081/--/Callback
 

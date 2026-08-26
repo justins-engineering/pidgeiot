@@ -4,17 +4,17 @@
 // (wrangler.toml), scoped by `run_worker_first` to just the negotiable
 // page routes.
 //
-// Staging here means a Workers *version preview* of the same "fancier"
-// script that serves production (see wrangler.staging.toml), not a separate
-// script or environment — so this file is written to be safe to wire in
+// Staging is the `fancier-staging` script (wrangler.toml's [env.staging])
+// or a version preview of the production script (wrangler.staging.toml);
+// both run this same entrypoint, so it is written to be safe to wire in
 // permanently: it only enforces anything when CF_ACCESS_AUD and
 // CF_ACCESS_CERTS_URL are both present as vars. Production's committed vars
-// never set them, and they're deliberately never committed anywhere either
-// (supplied per-upload via `wrangler versions upload --var`) — so a plain
-// `wrangler deploy`, or even an accidental future promotion of a preview
-// version to production, can't brick production traffic: without those vars
-// this handler is just the markdown-negotiating asset server. Mirrors the
-// same var-gated pattern as dovecote/src/helpers/access.rs.
+// never set them, and they're deliberately never committed anywhere
+// (supplied per deploy via `--var`) — so a plain `wrangler deploy`, or even
+// an accidental promotion of a preview version to production, can't brick
+// production traffic: without those vars this handler is just the
+// markdown-negotiating asset server. Mirrors the same var-gated pattern as
+// dovecote/src/helpers/access.rs.
 //
 // It validates the `Cf-Access-Jwt-Assertion` header that Cloudflare Access
 // attaches to authenticated requests, then either hands off to the ASSETS
