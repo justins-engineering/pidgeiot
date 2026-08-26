@@ -3803,8 +3803,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         send_invite_email(
           &ctx.env,
           &email,
-          &org_id,
-          &organization.name,
+          &organization,
           auth.name.as_deref(),
           auth.email.as_deref(),
           payload.role,

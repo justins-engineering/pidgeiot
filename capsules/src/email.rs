@@ -31,6 +31,98 @@ pub struct EmailMessage {
   pub html: String,
 }
 
+/// One instant as an organization sees it: how far its zone stood from UTC
+/// at that moment, and what that period is called there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTime {
+  pub offset: UtcOffset,
+  /// The zone's own abbreviation for that period ("EDT"). Empty is
+  /// allowed and renders as the offset instead.
+  pub abbreviation: String,
+}
+
+/// Resolves an instant into one organization's local wall clock.
+///
+/// A trait rather than a zone name because the timezone database that
+/// answers it is a server dependency: this crate is compiled into the
+/// dashboard's wasm bundle too, and a second copy of the database would be
+/// downloaded by every visitor to spell a handful of email timestamps.
+pub trait LocalZone {
+  /// `None` when the zone cannot answer for this instant, which reads the
+  /// same as having no zone at all: the stamp falls back to UTC rather
+  /// than the message failing to send.
+  fn local_time(&self, at: OffsetDateTime) -> Option<LocalTime>;
+}
+
+/// The clock a message is written against: an organization's own zone when
+/// one is known, UTC otherwise.
+#[derive(Clone, Copy)]
+pub struct Clock<'a> {
+  zone: Option<&'a dyn LocalZone>,
+}
+
+impl<'a> Clock<'a> {
+  /// For a message with no organization behind it, and for one whose
+  /// stored zone could not be resolved.
+  pub fn utc() -> Self {
+    Clock { zone: None }
+  }
+
+  pub fn zoned(zone: &'a dyn LocalZone) -> Self {
+    Clock { zone: Some(zone) }
+  }
+
+  /// One instant in local time with UTC beside it, so a reader who works
+  /// in the zone and one who reads the logs in UTC both get their own
+  /// answer without doing arithmetic: "26 Aug 2026, 15:10 EDT (19:10
+  /// UTC)". The date is repeated inside the parentheses only when the two
+  /// zones disagree about which day it is.
+  fn stamp(&self, t: OffsetDateTime, precision: Precision) -> String {
+    let utc = t.to_offset(UtcOffset::UTC);
+    let local = self.zone.and_then(|zone| zone.local_time(t));
+    let Some(local) = local else {
+      return format!("{} UTC", wall_clock(utc, precision));
+    };
+    let label = zone_label(&local);
+    // An organization on UTC would otherwise be told the same time twice.
+    if local.offset == UtcOffset::UTC && label == "UTC" {
+      return format!("{} UTC", wall_clock(utc, precision));
+    }
+    let there = t.to_offset(local.offset);
+    let beside = if there.date() == utc.date() {
+      clock_time(utc, precision)
+    } else {
+      wall_clock(utc, precision)
+    };
+    format!("{} {label} ({beside} UTC)", wall_clock(there, precision))
+  }
+
+  fn minutes(&self, t: OffsetDateTime) -> String {
+    self.stamp(t, Precision::Minutes)
+  }
+
+  fn seconds(&self, t: OffsetDateTime) -> String {
+    self.stamp(t, Precision::Seconds)
+  }
+
+  /// The year a moment falls in locally, for the copyright line.
+  fn year(&self, t: OffsetDateTime) -> i32 {
+    match self.zone.and_then(|zone| zone.local_time(t)) {
+      Some(local) => t.to_offset(local.offset).year(),
+      None => t.to_offset(UtcOffset::UTC).year(),
+    }
+  }
+}
+
+impl std::fmt::Debug for Clock<'_> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self.zone {
+      Some(_) => f.write_str("Clock(zoned)"),
+      None => f.write_str("Clock(UTC)"),
+    }
+  }
+}
+
 /// What the evaluator saw when an alert changed state, so the message can
 /// name the observed value next to the configured one. Which variant
 /// applies follows from the condition kind; `Silence` is what the
@@ -77,7 +169,7 @@ pub struct AlertEmail<'a> {
 const SITE_URL: &str = "https://pidgeiot.com";
 const SENDER: &str = "Justin's Engineering Services, LLC";
 
-pub fn format_invite_email(invite: &InviteEmail<'_>) -> EmailMessage {
+pub fn format_invite_email(invite: &InviteEmail<'_>, clock: Clock<'_>) -> EmailMessage {
   let org = inline(invite.org_name);
   let inviter_name = invite.inviter_name.map(inline).filter(|s| !s.is_empty());
   let inviter_email = invite.inviter_email.map(inline).filter(|s| !s.is_empty());
@@ -88,7 +180,7 @@ pub fn format_invite_email(invite: &InviteEmail<'_>) -> EmailMessage {
     (None, None) => None,
   };
   let role = invite.role.as_str();
-  let expires = fmt_utc(invite.expires_at);
+  let expires = clock.minutes(invite.expires_at);
 
   let who = match &inviter {
     Some(inviter) => inviter.clone(),
@@ -132,8 +224,10 @@ pub fn format_invite_email(invite: &InviteEmail<'_>) -> EmailMessage {
       Fact::new("Your role", capitalize(role)),
       Fact::new(
         "Link expires",
+        // Not a parenthetical: a local stamp already carries one, and two
+        // in a row read as a stutter.
         format!(
-          "{expires} ({})",
+          "{expires}, {} from now",
           humanize_secs((invite.expires_at - invite.sent_at).whole_seconds())
         ),
       ),
@@ -156,12 +250,13 @@ pub fn format_invite_email(invite: &InviteEmail<'_>) -> EmailMessage {
     ],
     reason: format!("this address was invited to join {org} on PidgeIoT"),
     sent_at: invite.sent_at,
+    clock,
   };
 
   doc.render()
 }
 
-pub fn format_alert_email(alert: &AlertEmail<'_>) -> EmailMessage {
+pub fn format_alert_email(alert: &AlertEmail<'_>, clock: Clock<'_>) -> EmailMessage {
   let def = alert.definition;
   let name = inline(&def.name);
   let pigeon = alert
@@ -174,7 +269,7 @@ pub fn format_alert_email(alert: &AlertEmail<'_>) -> EmailMessage {
     Some(flock) => format!("{pigeon} in flock {flock}"),
     None => pigeon.clone(),
   };
-  let when = fmt_utc_seconds(alert.at);
+  let when = clock.seconds(alert.at);
   let state = if alert.fired { "firing" } else { "resolved" };
 
   let chip = match (alert.fired, &def.severity) {
@@ -211,9 +306,15 @@ pub fn format_alert_email(alert: &AlertEmail<'_>) -> EmailMessage {
   facts.extend(condition_facts(&def.condition));
   facts.push(Fact::new(
     "Observed",
-    observation_text(&def.condition, alert.observation, alert.at, alert.fired),
+    observation_text(
+      &def.condition,
+      alert.observation,
+      alert.at,
+      alert.fired,
+      clock,
+    ),
   ));
-  facts.push(Fact::new("When (UTC)", when.clone()));
+  facts.push(Fact::new("When", when.clone()));
 
   let lead = if alert.fired {
     format!("{location} has met the condition of the alert {name}.")
@@ -250,6 +351,7 @@ pub fn format_alert_email(alert: &AlertEmail<'_>) -> EmailMessage {
     )],
     reason: "an alert configured on PidgeIoT names this address as its recipient".to_string(),
     sent_at: alert.at,
+    clock,
   };
 
   doc.render()
@@ -357,6 +459,7 @@ fn observation_text(
   observation: Option<&AlertObservation>,
   at: OffsetDateTime,
   fired: bool,
+  clock: Clock<'_>,
 ) -> String {
   match (condition, observation) {
     (AlertCondition::Threshold { .. }, Some(AlertObservation::Value { observed })) => {
@@ -383,9 +486,9 @@ fn observation_text(
       Some(seen) => {
         let age = humanize_secs((at - *seen).whole_seconds().max(0));
         if fired {
-          format!("silent for {age}, last report {}", fmt_utc_seconds(*seen))
+          format!("silent for {age}, last report {}", clock.seconds(*seen))
         } else {
-          format!("reporting again, last report {}", fmt_utc_seconds(*seen))
+          format!("reporting again, last report {}", clock.seconds(*seen))
         }
       }
     },
@@ -448,28 +551,51 @@ fn month_abbr(month: time::Month) -> &'static str {
   }
 }
 
-fn fmt_utc(t: OffsetDateTime) -> String {
-  let t = t.to_offset(UtcOffset::UTC);
+/// How much of the wall clock a stamp shows. An alert names the second it
+/// was observed; an expiry a week out does not pretend to that precision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Precision {
+  Minutes,
+  Seconds,
+}
+
+/// "26 Aug 2026, 15:10:09".
+fn wall_clock(t: OffsetDateTime, precision: Precision) -> String {
   format!(
-    "{} {} {}, {:02}:{:02} UTC",
+    "{} {} {}, {}",
     t.day(),
     month_abbr(t.month()),
     t.year(),
-    t.hour(),
-    t.minute()
+    clock_time(t, precision)
   )
 }
 
-fn fmt_utc_seconds(t: OffsetDateTime) -> String {
-  let t = t.to_offset(UtcOffset::UTC);
+/// "15:10:09".
+fn clock_time(t: OffsetDateTime, precision: Precision) -> String {
+  match precision {
+    Precision::Minutes => format!("{:02}:{:02}", t.hour(), t.minute()),
+    Precision::Seconds => format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second()),
+  }
+}
+
+/// What to call the zone next to a local time: its own abbreviation when
+/// it has one, and the offset when it does not (a handful of zones carry
+/// no name in the database, only a numeric designation).
+fn zone_label(local: &LocalTime) -> String {
+  let abbreviation = local.abbreviation.trim();
+  if !abbreviation.is_empty() {
+    return abbreviation.to_string();
+  }
+  let (hours, minutes, _) = local.offset.as_hms();
+  let sign = if local.offset.whole_seconds() < 0 {
+    '-'
+  } else {
+    '+'
+  };
   format!(
-    "{} {} {}, {:02}:{:02}:{:02} UTC",
-    t.day(),
-    month_abbr(t.month()),
-    t.year(),
-    t.hour(),
-    t.minute(),
-    t.second()
+    "UTC{sign}{:02}:{:02}",
+    hours.unsigned_abs(),
+    minutes.unsigned_abs()
   )
 }
 
@@ -565,8 +691,8 @@ struct Action {
 
 /// The one shape both messages share. Rendering it twice is what keeps the
 /// HTML and text parts in agreement.
-#[derive(Debug, Clone, PartialEq)]
-struct Document {
+#[derive(Debug, Clone)]
+struct Document<'a> {
   subject: String,
   preheader: String,
   chip: Option<Chip>,
@@ -577,6 +703,7 @@ struct Document {
   notes: Vec<String>,
   reason: String,
   sent_at: OffsetDateTime,
+  clock: Clock<'a>,
 }
 
 const FONT: &str = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
@@ -653,7 +780,7 @@ impl Palette {
   }
 }
 
-impl Document {
+impl Document<'_> {
   fn render(&self) -> EmailMessage {
     EmailMessage {
       subject: self.subject.clone(),
@@ -703,7 +830,7 @@ impl Document {
     ));
     out.push_str(&format!(
       "{SITE_URL}\n(c) {} {SENDER}\n",
-      self.sent_at.to_offset(UtcOffset::UTC).year()
+      self.clock.year(self.sent_at)
     ));
     out
   }
@@ -785,7 +912,7 @@ impl Document {
       body.push_str(&paragraph_html(paragraph));
     }
 
-    let year = self.sent_at.to_offset(UtcOffset::UTC).year();
+    let year = self.clock.year(self.sent_at);
     let footer = format!(
       "Sent by PidgeIoT, a product of {}. You received this email because {}.<br>\
        <a class=\"link\" href=\"{SITE_URL}\" style=\"color:{link};text-decoration:none;\">\
@@ -965,29 +1092,27 @@ mod tests {
     };
     let never = AlertObservation::Silence { last_seen: None };
     vec![
-      format_invite_email(&invite(
-        Some("Ana Ruiz"),
-        Some("ana@example.com"),
-        "Acme Sensors",
-      )),
-      format_invite_email(&invite(None, None, "Acme Sensors")),
-      format_alert_email(&alert(&high, true, Some(&value))),
-      format_alert_email(&alert(&high, false, Some(&value))),
-      format_alert_email(&alert(&high, true, None)),
-      format_alert_email(&alert(&jump, true, Some(&change))),
-      format_alert_email(&alert(&offline, true, Some(&silence))),
-      format_alert_email(&alert(&offline, false, Some(&silence))),
-      format_alert_email(&alert(&missing, true, Some(&never))),
+      format_invite_email(
+        &invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors"),
+        Clock::utc(),
+      ),
+      format_invite_email(&invite(None, None, "Acme Sensors"), Clock::utc()),
+      format_alert_email(&alert(&high, true, Some(&value)), Clock::utc()),
+      format_alert_email(&alert(&high, false, Some(&value)), Clock::utc()),
+      format_alert_email(&alert(&high, true, None), Clock::utc()),
+      format_alert_email(&alert(&jump, true, Some(&change)), Clock::utc()),
+      format_alert_email(&alert(&offline, true, Some(&silence)), Clock::utc()),
+      format_alert_email(&alert(&offline, false, Some(&silence)), Clock::utc()),
+      format_alert_email(&alert(&missing, true, Some(&never)), Clock::utc()),
     ]
   }
 
   #[test]
   fn invite_subject_names_the_organization() {
-    let message = format_invite_email(&invite(
-      Some("Ana Ruiz"),
-      Some("ana@example.com"),
-      "Acme Sensors",
-    ));
+    let message = format_invite_email(
+      &invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors"),
+      Clock::utc(),
+    );
     assert_eq!(
       message.subject,
       "[PidgeIoT] Invitation to join Acme Sensors"
@@ -996,11 +1121,10 @@ mod tests {
 
   #[test]
   fn invite_says_who_which_org_what_role_and_when_it_expires() {
-    let message = format_invite_email(&invite(
-      Some("Ana Ruiz"),
-      Some("ana@example.com"),
-      "Acme Sensors",
-    ));
+    let message = format_invite_email(
+      &invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors"),
+      Clock::utc(),
+    );
     for part in [&message.text, &message.html] {
       assert!(
         part.contains(
@@ -1010,7 +1134,7 @@ mod tests {
       );
       assert!(part.contains("Invited by"));
       assert!(part.contains("Admin"));
-      assert!(part.contains("2 Sep 2026, 14:05 UTC (7 days)"));
+      assert!(part.contains("2 Sep 2026, 14:05 UTC, 7 days from now"));
       assert!(part.contains("https://pidgeiot.com/invite?token=Q3VyaW91cyBiaXJk-x_Y"));
       assert!(part.contains("If you weren"));
       assert!(part.contains("ask Ana Ruiz (ana@example.com) to send a new one"));
@@ -1019,16 +1143,27 @@ mod tests {
 
   #[test]
   fn inviter_is_named_by_whatever_the_identity_carries() {
-    let text = format_invite_email(&invite(None, Some("ana@example.com"), "Acme Sensors")).text;
+    let text = format_invite_email(
+      &invite(None, Some("ana@example.com"), "Acme Sensors"),
+      Clock::utc(),
+    )
+    .text;
     assert!(text.contains("ana@example.com has invited you"));
     assert!(text.contains("Invited by: ana@example.com\n"));
 
-    let text = format_invite_email(&invite(Some("Ana Ruiz"), None, "Acme Sensors")).text;
+    let text = format_invite_email(
+      &invite(Some("Ana Ruiz"), None, "Acme Sensors"),
+      Clock::utc(),
+    )
+    .text;
     assert!(text.contains("Ana Ruiz has invited you"));
     assert!(text.contains("Invited by: Ana Ruiz\n"));
 
-    let text =
-      format_invite_email(&invite(Some("  "), Some("ana@example.com"), "Acme Sensors")).text;
+    let text = format_invite_email(
+      &invite(Some("  "), Some("ana@example.com"), "Acme Sensors"),
+      Clock::utc(),
+    )
+    .text;
     assert!(text.contains("Invited by: ana@example.com\n"));
   }
 
@@ -1041,7 +1176,7 @@ mod tests {
       AlertSeverity::Warning,
     );
     assert_eq!(
-      format_alert_email(&alert(&warning, true, Some(&value))).subject,
+      format_alert_email(&alert(&warning, true, Some(&value)), Clock::utc()).subject,
       "[PidgeIoT] Alert firing: temp on Greenhouse north"
     );
     let critical = definition(
@@ -1050,7 +1185,7 @@ mod tests {
       AlertSeverity::Critical,
     );
     assert_eq!(
-      format_alert_email(&alert(&critical, false, Some(&value))).subject,
+      format_alert_email(&alert(&critical, false, Some(&value)), Clock::utc()).subject,
       "[PidgeIoT] Alert resolved: temp on Greenhouse north"
     );
   }
@@ -1115,7 +1250,7 @@ mod tests {
 
   #[test]
   fn invite_without_a_known_inviter_still_reads_naturally() {
-    let message = format_invite_email(&invite(None, None, "Acme Sensors"));
+    let message = format_invite_email(&invite(None, None, "Acme Sensors"), Clock::utc());
     assert!(
       message
         .text
@@ -1133,7 +1268,7 @@ mod tests {
   fn invite_role_gets_the_right_article_and_powers() {
     let mut owner = invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors");
     owner.role = OrgRole::Owner;
-    let message = format_invite_email(&owner);
+    let message = format_invite_email(&owner, Clock::utc());
     assert!(message.text.contains("as an owner."));
     assert!(
       message
@@ -1143,7 +1278,7 @@ mod tests {
 
     let mut member = invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors");
     member.role = OrgRole::Member;
-    let message = format_invite_email(&member);
+    let message = format_invite_email(&member, Clock::utc());
     assert!(message.text.contains("as a member."));
     assert!(message.text.contains("As a member you can view"));
   }
@@ -1157,11 +1292,11 @@ mod tests {
     );
     let value = AlertObservation::Value { observed: 34.2 };
     assert_eq!(
-      format_alert_email(&alert(&high, true, Some(&value))).subject,
+      format_alert_email(&alert(&high, true, Some(&value)), Clock::utc()).subject,
       "[PidgeIoT] Critical alert firing: temp on Greenhouse north"
     );
     assert_eq!(
-      format_alert_email(&alert(&high, false, Some(&value))).subject,
+      format_alert_email(&alert(&high, false, Some(&value)), Clock::utc()).subject,
       "[PidgeIoT] Alert resolved: temp on Greenhouse north"
     );
 
@@ -1176,7 +1311,7 @@ mod tests {
     let mut unnamed = alert(&offline, true, None);
     unnamed.pigeon_name = None;
     assert_eq!(
-      format_alert_email(&unnamed).subject,
+      format_alert_email(&unnamed, Clock::utc()).subject,
       "[PidgeIoT] Alert firing: device offline on 59d0c929f912"
     );
   }
@@ -1189,7 +1324,7 @@ mod tests {
       AlertSeverity::Critical,
     );
     let value = AlertObservation::Value { observed: 34.2 };
-    let message = format_alert_email(&alert(&high, true, Some(&value)));
+    let message = format_alert_email(&alert(&high, true, Some(&value)), Clock::utc());
     for part in [&message.text, &message.html] {
       assert!(part.contains("Greenhouse north (59d0c929f912)"), "{part}");
       assert!(part.contains("Springfield growers"));
@@ -1205,13 +1340,9 @@ mod tests {
     }
     assert!(message.text.contains("CRITICAL ALERT FIRING"));
     assert!(message.text.contains("Observed: 34.2"));
-    assert!(
-      message
-        .text
-        .contains("When (UTC): 26 Aug 2026, 14:05:09 UTC")
-    );
+    assert!(message.text.contains("When: 26 Aug 2026, 14:05:09 UTC"));
 
-    let message = format_alert_email(&alert(&high, false, Some(&value)));
+    let message = format_alert_email(&alert(&high, false, Some(&value)), Clock::utc());
     assert!(message.text.contains("RESOLVED"));
     assert!(message.text.contains("State: Resolved"));
     assert!(message.text.contains("no longer meets the condition"));
@@ -1232,7 +1363,7 @@ mod tests {
       previous: 1013.2,
       observed: 1001.5,
     };
-    let text = format_alert_email(&alert(&jump, true, Some(&change))).text;
+    let text = format_alert_email(&alert(&jump, true, Some(&change)), Clock::utc()).text;
     assert!(text.contains("Threshold: changes by more than 5 within 5 minutes"));
     assert!(text.contains("Observed: 1013.2 to 1001.5 (-11.7"), "{text}");
 
@@ -1247,12 +1378,12 @@ mod tests {
     let silence = AlertObservation::Silence {
       last_seen: Some(datetime!(2026-08-26 13:41:02 UTC)),
     };
-    let text = format_alert_email(&alert(&offline, true, Some(&silence))).text;
+    let text = format_alert_email(&alert(&offline, true, Some(&silence)), Clock::utc()).text;
     assert!(text.contains("Condition: device offline for at least 10 minutes"));
     assert!(text.contains(
       "Observed: silent for 24 minutes 7 seconds, last report 26 Aug 2026, 13:41:02 UTC"
     ));
-    let text = format_alert_email(&alert(&offline, false, Some(&silence))).text;
+    let text = format_alert_email(&alert(&offline, false, Some(&silence)), Clock::utc()).text;
     assert!(text.contains("Observed: reporting again, last report 26 Aug 2026, 13:41:02 UTC"));
 
     let missing = definition(
@@ -1263,7 +1394,7 @@ mod tests {
       AlertSeverity::Warning,
     );
     let never = AlertObservation::Silence { last_seen: None };
-    let text = format_alert_email(&alert(&missing, true, Some(&never))).text;
+    let text = format_alert_email(&alert(&missing, true, Some(&never)), Clock::utc()).text;
     assert!(text.contains("Condition: no report for 15 minutes"));
     assert!(text.contains("Observed: never reported"));
 
@@ -1272,7 +1403,7 @@ mod tests {
       threshold("temp", 30.0),
       AlertSeverity::Warning,
     );
-    let text = format_alert_email(&alert(&high, true, None)).text;
+    let text = format_alert_email(&alert(&high, true, None), Clock::utc()).text;
     assert!(text.contains("Observed: not captured"));
     assert!(text.contains("ALERT FIRING\n"));
   }
@@ -1280,7 +1411,7 @@ mod tests {
   #[test]
   fn every_dynamic_value_is_html_escaped() {
     let hostile = "<script>alert(\"x\")</script> & Co's";
-    let message = format_invite_email(&invite(Some(hostile), Some(hostile), hostile));
+    let message = format_invite_email(&invite(Some(hostile), Some(hostile), hostile), Clock::utc());
     assert!(!message.html.contains("<script>"));
     assert!(
       message
@@ -1294,7 +1425,7 @@ mod tests {
     email.pigeon_name = Some(hostile);
     email.flock_name = Some(hostile);
     email.pigeon_url = "https://pidgeiot.com/flocks/x/pigeons/y?a=1&b=2";
-    let message = format_alert_email(&email);
+    let message = format_alert_email(&email, Clock::utc());
     assert!(!message.html.contains("<script>"));
     assert!(
       message
@@ -1310,11 +1441,14 @@ mod tests {
 
   #[test]
   fn names_are_kept_to_one_line() {
-    let message = format_invite_email(&invite(
-      Some("Ana Ruiz"),
-      Some("ana@example.com"),
-      "Acme\r\n  Sensors\tGmbH",
-    ));
+    let message = format_invite_email(
+      &invite(
+        Some("Ana Ruiz"),
+        Some("ana@example.com"),
+        "Acme\r\n  Sensors\tGmbH",
+      ),
+      Clock::utc(),
+    );
     assert_eq!(
       message.subject,
       "[PidgeIoT] Invitation to join Acme Sensors GmbH"
@@ -1417,11 +1551,10 @@ mod tests {
 
   #[test]
   fn footer_says_who_sent_it_and_why() {
-    let message = format_invite_email(&invite(
-      Some("Ana Ruiz"),
-      Some("ana@example.com"),
-      "Acme Sensors",
-    ));
+    let message = format_invite_email(
+      &invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors"),
+      Clock::utc(),
+    );
     assert!(
       message
         .text
@@ -1467,5 +1600,191 @@ mod tests {
   fn escape_covers_the_five_html_metacharacters() {
     assert_eq!(html_escape("a<b>&\"c'"), "a&lt;b&gt;&amp;&quot;c&#39;");
     assert_eq!(html_escape("plain"), "plain");
+  }
+  // --- The organization's own clock ---
+
+  /// US Eastern's rule, which is all a formatting test needs from a zone:
+  /// the real database lives in dovecote (see its `helpers/timezone.rs`).
+  struct Eastern;
+
+  impl LocalZone for Eastern {
+    fn local_time(&self, at: OffsetDateTime) -> Option<LocalTime> {
+      let month = at.to_offset(UtcOffset::UTC).month() as u8;
+      let (hours, abbreviation) = if (4..=10).contains(&month) {
+        (-4, "EDT")
+      } else {
+        (-5, "EST")
+      };
+      Some(LocalTime {
+        offset: UtcOffset::from_hms(hours, 0, 0).ok()?,
+        abbreviation: abbreviation.to_string(),
+      })
+    }
+  }
+
+  /// An organization that chose UTC itself, as opposed to one with no zone.
+  struct Utc;
+
+  impl LocalZone for Utc {
+    fn local_time(&self, _at: OffsetDateTime) -> Option<LocalTime> {
+      Some(LocalTime {
+        offset: UtcOffset::UTC,
+        abbreviation: "UTC".to_string(),
+      })
+    }
+  }
+
+  /// A zone the database could not answer for.
+  struct Unresolvable;
+
+  impl LocalZone for Unresolvable {
+    fn local_time(&self, _at: OffsetDateTime) -> Option<LocalTime> {
+      None
+    }
+  }
+
+  /// A zone with no abbreviation of its own, which the database gives as
+  /// an offset rather than a name.
+  struct Unnamed;
+
+  impl LocalZone for Unnamed {
+    fn local_time(&self, _at: OffsetDateTime) -> Option<LocalTime> {
+      Some(LocalTime {
+        offset: UtcOffset::from_hms(5, 45, 0).ok()?,
+        abbreviation: String::new(),
+      })
+    }
+  }
+
+  fn alert_at(at: OffsetDateTime, clock: Clock<'_>) -> EmailMessage {
+    let high = threshold("temp_c", 30.0);
+    let definition = definition("Greenhouse too hot", high, AlertSeverity::Warning);
+    let observation = AlertObservation::Value { observed: 34.2 };
+    let mut email = alert(&definition, true, Some(&observation));
+    email.at = at;
+    format_alert_email(&email, clock)
+  }
+
+  #[test]
+  fn a_summer_stamp_reads_local_first_and_utc_beside_it() {
+    let zone = Eastern;
+    let message = alert_at(datetime!(2026-08-26 19:10:09 UTC), Clock::zoned(&zone));
+    for part in [&message.text, &message.html] {
+      assert!(
+        part.contains("26 Aug 2026, 15:10:09 EDT (19:10:09 UTC)"),
+        "missing local stamp in {part}"
+      );
+    }
+    assert!(message.text.contains("When: 26 Aug 2026, 15:10:09 EDT"));
+  }
+
+  #[test]
+  fn the_same_zone_in_winter_names_its_winter_offset() {
+    let zone = Eastern;
+    let message = alert_at(datetime!(2026-01-15 19:10:09 UTC), Clock::zoned(&zone));
+    assert!(
+      message
+        .text
+        .contains("15 Jan 2026, 14:10:09 EST (19:10:09 UTC)"),
+      "winter stamp missing"
+    );
+  }
+
+  #[test]
+  fn a_local_date_the_utc_date_disagrees_with_is_spelled_out() {
+    let zone = Eastern;
+    let message = alert_at(datetime!(2026-08-27 01:10:09 UTC), Clock::zoned(&zone));
+    assert!(
+      message
+        .text
+        .contains("26 Aug 2026, 21:10:09 EDT (27 Aug 2026, 01:10:09 UTC)"),
+      "the parentheses must carry the date when the two zones disagree"
+    );
+  }
+
+  #[test]
+  fn an_organization_on_utc_is_not_told_the_time_twice() {
+    let zone = Utc;
+    let message = alert_at(datetime!(2026-08-26 19:10:09 UTC), Clock::zoned(&zone));
+    assert!(message.text.contains("When: 26 Aug 2026, 19:10:09 UTC\n"));
+    assert!(!message.text.contains("(19:10:09 UTC)"));
+  }
+
+  #[test]
+  fn a_zone_that_cannot_answer_falls_back_to_utc() {
+    let zone = Unresolvable;
+    let zoned = alert_at(datetime!(2026-08-26 19:10:09 UTC), Clock::zoned(&zone));
+    let plain = alert_at(datetime!(2026-08-26 19:10:09 UTC), Clock::utc());
+    assert_eq!(zoned, plain);
+    assert!(plain.text.contains("When: 26 Aug 2026, 19:10:09 UTC"));
+  }
+
+  #[test]
+  fn a_zone_with_no_name_of_its_own_is_labelled_by_its_offset() {
+    let zone = Unnamed;
+    let message = alert_at(datetime!(2026-08-26 19:10:09 UTC), Clock::zoned(&zone));
+    assert!(
+      message
+        .text
+        .contains("27 Aug 2026, 00:55:09 UTC+05:45 (26 Aug 2026, 19:10:09 UTC)"),
+      "offset label missing"
+    );
+  }
+
+  #[test]
+  fn every_time_the_invitation_names_is_local() {
+    let zone = Eastern;
+    let message = format_invite_email(
+      &invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors"),
+      Clock::zoned(&zone),
+    );
+    // The fixture expires a week after it was sent, and both the fact row
+    // and the note about the link say when.
+    assert_eq!(
+      message
+        .text
+        .matches("2 Sep 2026, 10:05 EDT (14:05 UTC)")
+        .count(),
+      2,
+      "the expiry is stated twice and both must be local"
+    );
+    assert!(!message.text.contains("2 Sep 2026, 14:05 UTC ("));
+  }
+
+  #[test]
+  fn a_silence_observation_reports_its_last_report_locally() {
+    let zone = Eastern;
+    let offline = definition(
+      "Gone quiet",
+      AlertCondition::DeviceState {
+        state: ConnectionStateKind::Offline,
+        min_duration_secs: Some(600),
+      },
+      AlertSeverity::Warning,
+    );
+    let silence = AlertObservation::Silence {
+      last_seen: Some(datetime!(2026-08-26 13:41:02 UTC)),
+    };
+    let message = format_alert_email(&alert(&offline, true, Some(&silence)), Clock::zoned(&zone));
+    assert!(
+      message
+        .text
+        .contains("last report 26 Aug 2026, 09:41:02 EDT (13:41:02 UTC)"),
+      "the last report must be stamped like every other time"
+    );
+  }
+
+  #[test]
+  fn the_copyright_year_follows_the_organization_not_utc() {
+    let zone = Eastern;
+    let mut email = invite(Some("Ana Ruiz"), Some("ana@example.com"), "Acme Sensors");
+    let sent_at = datetime!(2026-01-01 02:00:00 UTC);
+    email.sent_at = sent_at;
+    email.expires_at = sent_at + time::Duration::days(7);
+    let message = format_invite_email(&email, Clock::zoned(&zone));
+    assert!(
+      message.text.contains("(c) 2025 "),
+      "31 December locally is still 2025"
+    );
   }
 }

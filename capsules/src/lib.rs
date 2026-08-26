@@ -22,8 +22,8 @@ pub use feedback::{
 // text. Pure string logic, so it is testable here on a host target.
 pub mod email;
 pub use email::{
-  AlertEmail, AlertObservation, EmailMessage, InviteEmail, format_alert_email, format_invite_email,
-  html_escape,
+  AlertEmail, AlertObservation, Clock, EmailMessage, InviteEmail, LocalTime, LocalZone,
+  format_alert_email, format_invite_email, html_escape,
 };
 
 // Contact-form request/validation/email types shared with fancier's

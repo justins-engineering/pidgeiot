@@ -12,6 +12,7 @@
 //! [`authorize_flock`], the single gateway-side authz helper (its DO-side
 //! counterpart is `objects/pigeons.rs::authorize_dashboard`).
 
+use super::timezone::{clock_for, org_timezone};
 use capsules::{
   Flock, InviteEmail, OrgRole, OrgRoleEntry, Organization, OrganizationInvite, OrganizationMember,
   OrganizationMembership, format_invite_email,
@@ -825,18 +826,18 @@ fn suffix_hint(s: &str, n: usize) -> String {
 /// logging only -- the email body addresses the org by name and the
 /// inviter by the name and email address on their session, whichever of
 /// the two the identity carries.
-#[allow(clippy::too_many_arguments)]
 pub async fn send_invite_email(
   env: &Env,
   to: &str,
-  org_id: &Uuid,
-  org_name: &str,
+  organization: &Organization,
   inviter_name: Option<&str>,
   inviter_email: Option<&str>,
   role: OrgRole,
   invite_url: &str,
   expires_at: OffsetDateTime,
 ) {
+  let org_id = organization.id;
+  let org_name = &organization.name;
   if !crate::helpers::alerts::usesend_configured(env) {
     // Never log `to` or the full `invite_url` -- the URL's query string IS
     // the live, single-use invite token (see `build_invite_url`), a
@@ -848,15 +849,27 @@ pub async fn send_invite_email(
     return;
   }
 
-  let message = format_invite_email(&InviteEmail {
-    inviter_name,
-    inviter_email,
-    org_name,
-    role,
-    invite_url,
-    expires_at,
-    sent_at: OffsetDateTime::now_utc(),
-  });
+  // The invitee has no account yet, so the organization they are being
+  // invited into is the only clock this message can be written in.
+  let zone = org_timezone(&organization.timezone);
+  if zone.is_none() && organization.timezone != capsules::DEFAULT_TIMEZONE {
+    console_error!(
+      "Org {org_id} has a timezone the database does not know; invite stamped in UTC instead"
+    );
+  }
+
+  let message = format_invite_email(
+    &InviteEmail {
+      inviter_name,
+      inviter_email,
+      org_name,
+      role,
+      invite_url,
+      expires_at,
+      sent_at: OffsetDateTime::now_utc(),
+    },
+    clock_for(zone.as_ref()),
+  );
 
   if let Err(e) = crate::helpers::alerts::send_email_message(env, to, &message).await {
     console_error!("Org invite email send failed for org {org_id}: {e}");

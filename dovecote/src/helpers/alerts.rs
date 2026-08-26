@@ -1,3 +1,4 @@
+use super::timezone::{clock_for, org_timezone};
 use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client, root_url};
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
@@ -1079,6 +1080,10 @@ struct AlertMailContext {
   pigeon_name: Option<String>,
   flock_id: Option<Uuid>,
   flock_name: Option<String>,
+  /// The owning organization's zone, when the flock belongs to one. A
+  /// personal flock has no organization and therefore no zone, so its
+  /// notifications stay in UTC.
+  timezone: Option<String>,
 }
 
 /// Resolves who an alert's notification email should go to: the channel's
@@ -1103,9 +1108,11 @@ async fn resolve_alert_context(
     AlertScope::Flock(flock_id) => {
       client
         .query_typed_opt(
-          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name
+          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name,
+                  o.timezone AS org_timezone
            FROM flocks f
            LEFT JOIN pigeons p ON p.id = $2 AND p.flock_id = f.id
+           LEFT JOIN organizations o ON o.id = f.org_id
            WHERE f.id = $1;",
           &[(flock_id, Type::UUID), (&pigeon_id, Type::TEXT)],
         )
@@ -1114,9 +1121,11 @@ async fn resolve_alert_context(
     AlertScope::Pigeon(_) => {
       client
         .query_typed_opt(
-          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name
+          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name,
+                  o.timezone AS org_timezone
            FROM flocks f
            JOIN pigeons p ON p.flock_id = f.id
+           LEFT JOIN organizations o ON o.id = f.org_id
            WHERE p.id = $1;",
           &[(&pigeon_id, Type::TEXT)],
         )
@@ -1131,6 +1140,7 @@ async fn resolve_alert_context(
     pigeon_name: row.as_ref().and_then(|row| row.get("pigeon_name")),
     flock_id: row.as_ref().and_then(|row| row.get("flock_id")),
     flock_name: row.as_ref().and_then(|row| row.get("flock_name")),
+    timezone: row.as_ref().and_then(|row| row.get("org_timezone")),
   };
 
   // Defense-in-depth: the create/update routes already reject an override
@@ -1194,17 +1204,36 @@ async fn send_alert_email(
     None => (format!("{root}/flocks"), format!("{root}/flocks")),
   };
 
-  let message = format_alert_email(&AlertEmail {
-    definition: def,
-    fired,
-    pigeon_id,
-    pigeon_name: context.pigeon_name.as_deref(),
-    flock_name: context.flock_name.as_deref(),
-    observation: Some(observation),
-    at,
-    pigeon_url: &pigeon_url,
-    manage_url: &manage_url,
-  });
+  // An org-owned flock is read by a team that shares one wall clock; a
+  // personal flock has no organization to ask, so it stays in UTC.
+  let zone = context.timezone.as_deref().and_then(org_timezone);
+  if zone.is_none()
+    && context
+      .timezone
+      .as_deref()
+      .is_some_and(|name| name != capsules::DEFAULT_TIMEZONE)
+  {
+    console_error!(
+      "Alert '{}' ({}): the organization's timezone is not one the database knows; stamping in UTC instead",
+      def.name,
+      def.id
+    );
+  }
+
+  let message = format_alert_email(
+    &AlertEmail {
+      definition: def,
+      fired,
+      pigeon_id,
+      pigeon_name: context.pigeon_name.as_deref(),
+      flock_name: context.flock_name.as_deref(),
+      observation: Some(observation),
+      at,
+      pigeon_url: &pigeon_url,
+      manage_url: &manage_url,
+    },
+    clock_for(zone.as_ref()),
+  );
 
   if let Err(e) = send_email_message(env, &recipient, &message).await {
     console_error!("Alert email send failed for definition {}: {e}", def.id);
