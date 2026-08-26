@@ -477,6 +477,19 @@ impl Connector {
     };
     Some((identity.as_deref()?, secret.as_deref()?))
   }
+
+  /// The address the device dials, whichever transport carries it. Unlike
+  /// the token and the PSK this is not a secret and survives every read
+  /// route, but it still belongs beside them wherever a device is being
+  /// provisioned: it is the other half of what has to be baked into a
+  /// build.
+  pub fn endpoint(&self) -> &str {
+    match self {
+      Connector::Https(c) => &c.endpoint,
+      Connector::Coap(c) => &c.endpoint,
+      Connector::Mqtt(c) => &c.endpoint,
+    }
+  }
 }
 
 // --- MQTT wire contract ---
@@ -632,6 +645,53 @@ pub struct TelemetryBatch {
 pub enum TelemetryReportBody {
   Batch(TelemetryBatch),
   Flat(std::collections::HashMap<String, String>),
+}
+
+#[cfg(test)]
+mod connector_tests {
+  use super::*;
+
+  fn coap(identity: Option<&str>, secret: Option<&str>) -> Connector {
+    Connector::Coap(CoapConfig {
+      endpoint: "coaps://coap.pidgeiot.com:5684/device/pigeons/abc".to_string(),
+      token: "tok".to_string(),
+      tls_psk_identity: identity.map(str::to_string),
+      tls_psk_secret: secret.map(str::to_string),
+    })
+  }
+
+  #[test]
+  fn every_variant_reports_its_endpoint() {
+    assert_eq!(
+      Connector::Https(HttpsConfig {
+        endpoint: "https://api.pidgeiot.com/device/pigeons/abc".to_string(),
+        token: "tok".to_string(),
+      })
+      .endpoint(),
+      "https://api.pidgeiot.com/device/pigeons/abc"
+    );
+    assert_eq!(
+      coap(None, None).endpoint(),
+      "coaps://coap.pidgeiot.com:5684/device/pigeons/abc"
+    );
+    assert_eq!(
+      Connector::Mqtt(MqttConfig {
+        endpoint: "mqtts://mqtt.pidgeiot.com:8883".to_string(),
+        token: "tok".to_string(),
+        tls_psk_identity: None,
+        tls_psk_secret: None,
+      })
+      .endpoint(),
+      "mqtts://mqtt.pidgeiot.com:8883"
+    );
+  }
+
+  #[test]
+  fn a_psk_pair_needs_both_halves() {
+    assert_eq!(coap(Some("abc"), Some("hex")).psk(), Some(("abc", "hex")));
+    // What a read route hands back: the identity survives, the secret does not.
+    assert_eq!(coap(Some("abc"), None).psk(), None);
+  }
 }
 
 #[cfg(test)]
