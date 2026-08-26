@@ -288,19 +288,19 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 /// offering choices that would 403.
 #[component]
 fn TransferFlockModal(flock_id: uuid::Uuid, on_close: EventHandler<()>) -> Element {
-  let orgs_resource = use_resource(move || async move { api::orgs::list().await });
+  let local_session = use_context::<crate::LocalSession>();
   let mut selected = use_signal(String::new);
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
 
-  let manager_orgs: Vec<capsules::OrganizationMembership> = orgs_resource
+  let mut manager_orgs: Vec<capsules::OrganizationMembership> = local_session
+    .orgs
     .read()
-    .clone()
-    .flatten()
-    .unwrap_or_default()
-    .into_iter()
+    .values()
     .filter(|m| m.role.is_manager())
+    .cloned()
     .collect();
+  manager_orgs.sort_by(|a, b| a.organization.name.cmp(&b.organization.name));
 
   rsx! {
     div { class: "modal modal-open",

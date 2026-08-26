@@ -91,6 +91,7 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
 #[component]
 fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let session = use_context::<Session>();
+  let local_session = use_context::<crate::LocalSession>();
   let nav = use_navigator();
   let mut busy = use_signal(|| false);
   let mut cta_error = use_signal(|| Option::<String>::None);
@@ -108,11 +109,12 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
       onclick: move |_| async move {
           busy.set(true);
           cta_error.set(None);
-          let managed: Vec<_> = api::orgs::list()
-              .await
-              .unwrap_or_default()
-              .into_iter()
+          let managed: Vec<_> = local_session
+              .orgs
+              .read()
+              .values()
               .filter(|m| m.role.is_manager())
+              .cloned()
               .collect();
           match managed.as_slice() {
               [only] => {

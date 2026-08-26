@@ -2,7 +2,7 @@ use crate::components::SetSessionCookie;
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use crate::helpers::session_cookie_valid;
 use crate::models::AuthState;
-use capsules::{AlertDefinition, Flock, Pigeon};
+use capsules::{AlertDefinition, Flock, OrganizationMembership, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
 use ory_kratos_client_wasm::apis::configuration::Configuration;
@@ -208,6 +208,15 @@ struct LocalSession {
   // not come back", and the two need to say different things -- the same
   // distinction views::Pigeons already draws for a flock's pigeon list.
   flocks_load_failed: Signal<bool>,
+  // Keyed by org id, with the caller's own role. Loaded once at sign-in
+  // like `flocks` and then kept current by the org mutations themselves
+  // (`api::orgs`), never by refetching `GET /orgs`: Hyperdrive serves an
+  // identical SELECT from its cache for up to a minute after a write, so a
+  // list fetched right after a create or delete would still show the old
+  // membership. The mutation response is the truth this cache is built
+  // from.
+  orgs: Signal<HashMap<Uuid, OrganizationMembership>>,
+  orgs_load_failed: Signal<bool>,
 }
 
 #[component]
@@ -263,12 +272,21 @@ pub fn App() -> Element {
     pigeons: Signal::new(HashMap::new()),
     alerts: Signal::new(HashMap::new()),
     flocks_load_failed: Signal::new(false),
+    orgs: Signal::new(HashMap::new()),
+    orgs_load_failed: Signal::new(false),
   });
 
   use_resource(move || async move {
     if (session.state)() == AuthState::Authenticated {
       let loaded = api::flocks::list().await.is_some();
       local_session.flocks_load_failed.set(!loaded);
+    }
+  });
+
+  use_resource(move || async move {
+    if (session.state)() == AuthState::Authenticated {
+      let loaded = api::orgs::list().await.is_some();
+      local_session.orgs_load_failed.set(!loaded);
     }
   });
 
