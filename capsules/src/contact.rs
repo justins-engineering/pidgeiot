@@ -131,6 +131,12 @@ pub struct ContactRequest {
   /// Milliseconds between the form mounting and the submit click.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub elapsed_ms: Option<u32>,
+  /// The one-time token Cloudflare Turnstile issued to the browser for
+  /// this submission. Optional on the wire because the route only demands
+  /// it once its verification secret is configured; it is spent at
+  /// verification, never stored, and not part of the enquiry.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub turnstile_token: Option<String>,
 }
 
 /// Why a submission was refused. Carries its own HTTP status and
@@ -376,6 +382,7 @@ mod tests {
       about: Some("fleet".to_string()),
       website: None,
       elapsed_ms: Some(9_000),
+      turnstile_token: None,
     }
   }
 
@@ -598,5 +605,23 @@ mod tests {
     // The header lines of the body are equally injectable if left raw.
     assert!(body.contains("Name:         Dana  Bcc: victim@example.com"));
     assert!(body.contains("Company:      Meter works"));
+  }
+
+  /// The token rides only when the widget issued one. A form without it
+  /// must not send a `null` field, because the route reads absence and
+  /// null identically and the wire shape should say what it means.
+  #[test]
+  fn the_turnstile_token_is_omitted_when_absent_and_round_trips_when_present() {
+    let without = serde_json::to_string(&valid_request()).unwrap();
+    assert!(!without.contains("turnstile_token"));
+
+    let with = ContactRequest {
+      turnstile_token: Some("0.token".to_string()),
+      ..valid_request()
+    };
+    let back: ContactRequest =
+      serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+    assert_eq!(back.turnstile_token.as_deref(), Some("0.token"));
+    assert_eq!(validate(&back), Ok(()));
   }
 }

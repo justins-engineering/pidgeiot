@@ -118,6 +118,7 @@ pub fn ContactPage() -> Element {
       about: about(),
       website: Some(website.read().clone()),
       elapsed_ms: Some(elapsed),
+      turnstile_token: None,
     };
 
     spawn(async move {
