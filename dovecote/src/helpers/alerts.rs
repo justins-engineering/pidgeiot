@@ -2,7 +2,7 @@ use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client};
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
-  AlertScope, AlertState, AlertStatus, ConnectionStateKind, DemoAlert, JsonString,
+  AlertScope, AlertState, AlertStatus, ConnectionStateKind, DemoAlert, EmailMessage, JsonString,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
@@ -1171,6 +1171,8 @@ struct UsesendEmailRequest<'a> {
   to: [&'a str; 1],
   subject: &'a str,
   text: &'a str,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  html: Option<&'a str>,
 }
 
 /// Domain-only form of an email address, for log lines that need to stay
@@ -1189,6 +1191,25 @@ fn redact_email(email: &str) -> String {
   }
 }
 
+/// Plain-text only: what the ops-facing senders (feedback, contact, error
+/// digests, allowance warnings) need.
+pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+  send_email(env, to, subject, text, None).await
+}
+
+/// Both parts of a formatted customer-facing message, so a client that
+/// renders HTML gets the layout and one that does not gets the same words.
+pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessage) -> Result<()> {
+  send_email(
+    env,
+    to,
+    &message.subject,
+    &message.text,
+    Some(&message.html),
+  )
+  .await
+}
+
 /// POSTs one transactional email via useSend's Resend-compatible HTTP API
 /// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
@@ -1196,7 +1217,13 @@ fn redact_email(email: &str) -> String {
 /// `wrangler secret put`) is treated the same way `greptime_auth_token`
 /// being absent is treated elsewhere -- logged, never a hard failure,
 /// since alert delivery is always best-effort.
-pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+async fn send_email(
+  env: &Env,
+  to: &str,
+  subject: &str,
+  text: &str,
+  html: Option<&str>,
+) -> Result<()> {
   let Some(api_key) = usesend_api_key(env) else {
     console_error!(
       "RESEND_API_KEY not configured -- cannot send alert email to {} (subject: {subject})",
@@ -1210,6 +1237,7 @@ pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &
     to: [to],
     subject,
     text,
+    html,
   };
   let body_json = serde_json::to_string(&body).map_err(|e| {
     console_error!("Failed to serialize Resend request: {e}");
