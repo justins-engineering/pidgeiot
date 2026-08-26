@@ -1577,7 +1577,14 @@ dictionary.
 
 User-defined threshold/state alerts, evaluated both at telemetry-ingest time and by a five-minute
 Cron Trigger sweep (for the absence-of-signal conditions below), with an at-most-one email per
-fired/cleared transition. An alert is scoped to exactly one **pigeon** or one **flock** — never
+fired/cleared transition. That email (`capsules::format_alert_email`, HTML plus a plain-text
+part that says the same thing; subject `[PidgeIoT] Alert firing: <metric> on <pigeon>`,
+`Critical alert firing: ...` for a critical-severity definition, or `Alert resolved: ...`
+regardless of severity, where `<metric>` is the telemetry key or `device offline`/`device
+stale`/`missing reports`) names the pigeon and flock, the condition and its threshold, the
+value the evaluator observed, the transition time in UTC, the current state, a link to the
+pigeon's dashboard page and a link to the alerts section the definition is edited from. An
+alert is scoped to exactly one **pigeon** or one **flock** — never
 both — chosen by which of the two create/list route pairs below you call; scope is never read
 from the request body. A flock-scoped alert evaluates independently per pigeon currently in that
 flock, not once for the flock as a whole.
