@@ -475,8 +475,8 @@ CREATE TABLE IF NOT EXISTS consent_events (
   seq BIGSERIAL PRIMARY KEY,
   -- Kratos identity id. No FK: Kratos owns its own tables.
   identity_id UUID NOT NULL,
-  -- capsules::MARKETING_EMAIL_PURPOSE today; a second purpose is a new
-  -- value here rather than a new table.
+  -- capsules::MARKETING_EMAIL_PURPOSE ('marketing_emails') today; a
+  -- second purpose is a new value here rather than a new table.
   purpose TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('granted', 'withdrawn')),
   source TEXT NOT NULL CHECK (source IN ('registration', 'settings', 'import')),
@@ -484,6 +484,16 @@ CREATE TABLE IF NOT EXISTS consent_events (
   -- (capsules::PRIVACY_NOTICE_VERSION), stamped server-side.
   notice_version TEXT NOT NULL,
   flow_id UUID,
+  -- The request context, both nullable and both unpopulated today. The
+  -- privacy notice discloses addresses and user agents only as transient
+  -- web logs kept for debugging and abuse prevention; keeping one against
+  -- an identity as consent evidence is a different purpose with a
+  -- different retention, so it needs its own line in the notice before
+  -- the hook starts sending them. The columns exist so that switching
+  -- them on is a config change rather than a migration --
+  -- docs/consent.md has the two jsonnet lines it takes.
+  ip TEXT,
+  user_agent TEXT,
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

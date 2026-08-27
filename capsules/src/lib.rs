@@ -33,7 +33,7 @@ pub mod consent;
 pub use consent::{
   ConsentHookPayload, ConsentKind, ConsentSource, MARKETING_CONSENT_HELPER,
   MARKETING_CONSENT_LABEL, MARKETING_CONSENT_NODE, MARKETING_CONSENT_WITHDRAWAL,
-  MARKETING_EMAIL_PURPOSE, consent_transition,
+  MARKETING_EMAIL_PURPOSE, MAX_CONSENT_CONTEXT_BYTES, consent_transition,
 };
 
 // Contact-form request/validation/email types shared with fancier's

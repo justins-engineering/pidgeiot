@@ -9,13 +9,17 @@
 //!
 //! The split of responsibilities is the point of the design:
 //!
-//! - The **trait** (`traits.marketing_consent.granted` in the Kratos
-//!   identity schema) is the current state, and the person owns it. They
-//!   set it at registration and change it in the settings form.
+//! - The **trait** (`traits.marketing_emails` in the Kratos identity
+//!   schema) is the current state, and the person owns it. They set it at
+//!   registration and change it in the settings form.
 //! - The **row** (`consent_events` in Postgres, written only by
 //!   dovecote's `POST /internal/consent`) is the evidence, and only the
 //!   backend writes it. Evidence the subject can edit is not evidence,
-//!   which is why nothing beyond `granted` is a trait.
+//!   which is why the trait is one bare boolean and nothing more. An
+//!   object trait would be worse than useless here: Kratos renders every
+//!   property of one as its own form input, so an `at`/`source`/
+//!   `notice_version` trait would hand the person it is evidence against
+//!   a text box for each.
 //!
 //! Every row is stamped with the crate-root `PRIVACY_NOTICE_VERSION`,
 //! server-side and never from the webhook body: Kratos has no idea which
@@ -60,13 +64,14 @@ pub const MARKETING_CONSENT_WITHDRAWAL: &str = "You can turn this off at any tim
 /// The Kratos form-node name of the consent checkbox, in both flows.
 /// fancier keys its helper text off this rather than off a position in
 /// the node list, which changes whenever a trait is added.
-pub const MARKETING_CONSENT_NODE: &str = "traits.marketing_consent.granted";
+pub const MARKETING_CONSENT_NODE: &str = "traits.marketing_emails";
 
-/// What a `consent_events` row is about. One purpose exists today;
+/// What a `consent_events` row is about. One purpose exists today, named
+/// after the trait it records so the two are obviously the same thing;
 /// the column is there so a second one (say, a research panel) is a new
 /// value rather than a new table, and so a query for marketing consent
 /// never has to mean "every row".
-pub const MARKETING_EMAIL_PURPOSE: &str = "marketing_email";
+pub const MARKETING_EMAIL_PURPOSE: &str = "marketing_emails";
 
 /// Which direction a consent event went.
 ///
@@ -153,7 +158,28 @@ pub struct ConsentHookPayload {
   /// not worth failing a write over.
   #[serde(default)]
   pub flow_id: Option<Uuid>,
+  /// The address the change was made from, if the hook sends one.
+  ///
+  /// Optional in the strong sense: the hook does not send it today, and
+  /// the column it lands in is nullable, because the privacy notice
+  /// discloses addresses and user agents only as transient web logs kept
+  /// for debugging and abuse prevention. Keeping one against an identity
+  /// as consent evidence is a different purpose with a different
+  /// retention, so it needs its own line in the notice first. The field
+  /// exists so that turning it on later is a config change rather than a
+  /// migration. See `docs/consent.md`.
+  #[serde(default)]
+  pub ip: Option<String>,
+  /// The browser the change was made from, on the same terms as `ip`.
+  #[serde(default)]
+  pub user_agent: Option<String>,
 }
+
+/// Longest `ip` or `user_agent` a row will store. Both are caller-supplied
+/// text on a path that only ever appends, so they are bounded here rather
+/// than trusted: the cap is generous next to a real user-agent string and
+/// small next to anything worth truncating.
+pub const MAX_CONSENT_CONTEXT_BYTES: usize = 512;
 
 /// Whether a flow that ended with `granted` should write a row, given the
 /// last event already on file for this identity and purpose.
@@ -189,18 +215,48 @@ mod tests {
   /// below reads the shipped file rather than a copy of it.
   const IDENTITY_SCHEMA: &str = include_str!("../../schemas/kratos/identity.user.schema.json");
 
-  #[test]
-  fn schema_title_matches_label() {
+  fn traits() -> serde_json::Value {
     let schema: serde_json::Value =
       serde_json::from_str(IDENTITY_SCHEMA).expect("identity schema should be valid JSON");
-    let title = schema["properties"]["traits"]["properties"]["marketing_consent"]["properties"]
-      ["granted"]["title"]
+    schema["properties"]["traits"].clone()
+  }
+
+  #[test]
+  fn schema_title_matches_label() {
+    let title = traits()["properties"]["marketing_emails"]["title"]
       .as_str()
-      .expect("marketing_consent.granted should declare a title");
+      .expect("marketing_emails should declare a title")
+      .to_string();
     assert_eq!(
       title, MARKETING_CONSENT_LABEL,
       "the schema's title is the label Kratos renders; it and MARKETING_CONSENT_LABEL are the same string"
     );
+  }
+
+  /// One checkbox, and a bare boolean is the only shape that stays one.
+  /// Kratos emits a form input per property of an object trait, so
+  /// anything nested here becomes another field the subject can edit --
+  /// which is why `at`, `source` and `notice_version` are columns in
+  /// `consent_events` and not traits.
+  #[test]
+  fn the_trait_is_one_plain_boolean() {
+    let consent = traits()["properties"]["marketing_emails"].clone();
+    assert_eq!(consent["type"], "boolean");
+    assert!(
+      consent.get("properties").is_none(),
+      "an object trait renders one form input per property"
+    );
+  }
+
+  /// `subscribed` was the bare boolean this replaces, and nothing ever
+  /// read it. Declaring both would put two subscribe-shaped checkboxes on
+  /// the registration form, which is the opposite of the clarity a
+  /// consent request needs.
+  #[test]
+  fn the_traits_it_replaces_are_gone() {
+    let props = traits()["properties"].clone();
+    assert!(props.get("subscribed").is_none());
+    assert!(props.get("marketing_consent").is_none());
   }
 
   /// A ticked-by-default box is not consent, and the schema achieves an
@@ -210,54 +266,22 @@ mod tests {
   /// when it is bundled with something else.
   #[test]
   fn consent_trait_is_neither_defaulted_nor_required() {
-    let schema: serde_json::Value =
-      serde_json::from_str(IDENTITY_SCHEMA).expect("identity schema should be valid JSON");
-    let granted =
-      &schema["properties"]["traits"]["properties"]["marketing_consent"]["properties"]["granted"];
+    let t = traits();
     assert!(
-      granted.get("default").is_none(),
+      t["properties"]["marketing_emails"].get("default").is_none(),
       "a default would render the box pre-ticked"
     );
-
-    let traits = &schema["properties"]["traits"];
-    let required: Vec<&str> = traits["required"]
+    let required: Vec<String> = t["required"]
       .as_array()
-      .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+      .map(|a| {
+        a.iter()
+          .filter_map(|v| v.as_str().map(str::to_string))
+          .collect()
+      })
       .unwrap_or_default();
     assert!(
-      !required.contains(&"marketing_consent"),
+      !required.contains(&"marketing_emails".to_string()),
       "requiring the trait would bundle marketing with account creation"
-    );
-
-    let inner_required: Vec<&str> =
-      schema["properties"]["traits"]["properties"]["marketing_consent"]["required"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-    assert!(
-      !inner_required.contains(&"granted"),
-      "requiring `granted` would refuse a registration that leaves the box alone"
-    );
-  }
-
-  /// The trait carries the state and nothing else. `at`, `source` and
-  /// `notice_version` were proposed as traits once; they belong in
-  /// `consent_events` because Kratos renders every property of an object
-  /// trait as its own form field, which would have put the evidence in
-  /// the hands of the person it is evidence against.
-  #[test]
-  fn consent_trait_holds_only_the_state() {
-    let schema: serde_json::Value =
-      serde_json::from_str(IDENTITY_SCHEMA).expect("identity schema should be valid JSON");
-    let properties =
-      schema["properties"]["traits"]["properties"]["marketing_consent"]["properties"]
-        .as_object()
-        .expect("marketing_consent should be an object trait");
-    let names: Vec<&str> = properties.keys().map(String::as_str).collect();
-    assert_eq!(
-      names,
-      vec!["granted"],
-      "every extra property here becomes a subject-editable form field"
     );
   }
 

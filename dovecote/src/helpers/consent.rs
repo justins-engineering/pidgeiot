@@ -10,7 +10,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use capsules::PRIVACY_NOTICE_VERSION;
-use capsules::consent::{ConsentKind, ConsentSource, MARKETING_EMAIL_PURPOSE};
+use capsules::consent::{
+  ConsentKind, ConsentSource, MARKETING_EMAIL_PURPOSE, MAX_CONSENT_CONTEXT_BYTES,
+};
 use tokio_postgres::Client;
 use tokio_postgres::types::Type;
 use uuid::Uuid;
@@ -37,8 +39,12 @@ pub async fn ensure_consent_tables(client: &Client) -> Result<()> {
         source TEXT NOT NULL CHECK (source IN ('registration', 'settings', 'import')),
         notice_version TEXT NOT NULL,
         flow_id UUID,
+        ip TEXT,
+        user_agent TEXT,
         at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS ip TEXT;
+      ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS user_agent TEXT;
       CREATE INDEX IF NOT EXISTS idx_consent_events_identity
         ON consent_events(identity_id, purpose, seq DESC);",
     )
@@ -81,6 +87,8 @@ pub async fn record_consent_event(
   granted: bool,
   source: ConsentSource,
   flow_id: Option<Uuid>,
+  ip: Option<&str>,
+  user_agent: Option<&str>,
 ) -> Result<Option<i64>> {
   ensure_consent_tables_once(client).await?;
 
@@ -93,11 +101,29 @@ pub async fn record_consent_event(
   let source = source.as_str();
   let purpose = MARKETING_EMAIL_PURPOSE;
   let notice_version = PRIVACY_NOTICE_VERSION;
+  // Bounded rather than trusted: both arrive as caller-supplied strings.
+  // Truncation on a char boundary, so a multi-byte agent string cannot
+  // produce invalid UTF-8 at the cut.
+  let clamp = |v: Option<&str>| {
+    v.filter(|s| !s.is_empty()).map(|s| {
+      let end = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain([s.len()])
+        .take_while(|i| *i <= MAX_CONSENT_CONTEXT_BYTES)
+        .last()
+        .unwrap_or(0);
+      s[..end].to_string()
+    })
+  };
+  let ip = clamp(ip);
+  let user_agent = clamp(user_agent);
 
   let rows = client
     .query_typed(
-      "INSERT INTO consent_events (identity_id, purpose, kind, source, notice_version, flow_id)
-       SELECT $1, $2, $3, $4, $5, $6
+      "INSERT INTO consent_events
+         (identity_id, purpose, kind, source, notice_version, flow_id, ip, user_agent)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8
        WHERE $3 <> COALESCE(
          (SELECT e.kind FROM consent_events e
            WHERE e.identity_id = $1 AND e.purpose = $2
@@ -111,6 +137,8 @@ pub async fn record_consent_event(
         (&source, Type::TEXT),
         (&notice_version, Type::TEXT),
         (&flow_id, Type::UUID),
+        (&ip, Type::TEXT),
+        (&user_agent, Type::TEXT),
       ],
     )
     .await

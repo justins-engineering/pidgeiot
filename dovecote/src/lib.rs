@@ -591,6 +591,8 @@ async fn internal_consent_record(
     payload.granted,
     payload.source,
     payload.flow_id,
+    payload.ip.as_deref(),
+    payload.user_agent.as_deref(),
   )
   .await
   {
