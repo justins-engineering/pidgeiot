@@ -151,6 +151,9 @@ mod ops_probe;
 pub use ops_probe::probe_kratos_health;
 pub use ops_probe::send_ops_email;
 
+mod consent;
+pub use consent::record_consent_event;
+
 mod contact;
 pub use contact::notify_contact_submission;
 pub use contact::store_contact_submission;
