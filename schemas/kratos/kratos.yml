@@ -86,6 +86,35 @@ selfservice:
       ui_url: http://localhost:4455/settings
       privileged_session_max_age: 15m
       required_aal: highest_available
+      after:
+        # Only the profile method: it is the one that can move a trait, and
+        # a password or TOTP change firing this would be a round trip that
+        # can only ever conclude nothing changed.
+        profile:
+          hooks:
+            - hook: web_hook
+              config:
+                url: http://host.docker.internal:8787/internal/consent
+                method: POST
+                body: file:///opt/kratos/hooks/consent-settings.jsonnet
+                # Consent evidence must never be the thing that stops
+                # someone changing their own settings, so the result is
+                # ignored and the call is made asynchronously. What that
+                # costs is a lost row if dovecote is down; what it buys is
+                # that a backend outage cannot take the settings page with
+                # it. The trait still carries the person's choice, which is
+                # what makes the loss recoverable -- see docs/consent.md.
+                response:
+                  ignore: true
+                auth:
+                  type: api_key
+                  config:
+                    name: X-Kratos-Hook-Secret
+                    # Dev-only literal, and it must match KRATOS_HOOK_SECRET
+                    # in the gitignored dovecote/.dev.vars. Staging and
+                    # production hold their own value; see docs/consent.md.
+                    value: dev-only-consent-hook-secret
+                    in: header
 
     recovery:
       enabled: true
@@ -123,8 +152,42 @@ selfservice:
       # re-add enable_legacy_one_step on that false alarm.
       after:
         default_browser_return_url: http://localhost:4455/session/local?state=true
+        # Listed twice on purpose, and it does not double-fire. Kratos
+        # picks ONE list per registration method: the method's own if it
+        # has one, this global list otherwise -- verified by watching the
+        # executor chain, where a web hook configured only here was
+        # silently absent from a password registration. So the global copy
+        # covers passkey and code, and `password` below needs its own.
+        hooks:
+          - &consent_registration_hook_entry
+            hook: web_hook
+            config:
+              url: http://host.docker.internal:8787/internal/consent
+              method: POST
+              body: file:///opt/kratos/hooks/consent-registration.jsonnet
+              # Consent evidence must never be the thing that stops
+              # someone creating an account, so the result is ignored and
+              # the call is made asynchronously. What that costs is a lost
+              # row if dovecote is down; what it buys is that a backend
+              # outage cannot take signup with it. The trait still carries
+              # the person's choice, which is what makes the loss
+              # recoverable -- see docs/consent.md.
+              response:
+                ignore: true
+              auth:
+                type: api_key
+                config:
+                  name: X-Kratos-Hook-Secret
+                  # Dev-only literal, and it must match KRATOS_HOOK_SECRET
+                  # in the gitignored dovecote/.dev.vars. Staging and
+                  # production hold their own value; see docs/consent.md.
+                  value: dev-only-consent-hook-secret
+                  in: header
         password:
+          # First, not last: `show_verification_ui` redirects, and a hook
+          # that runs after a redirecting one is a hook that may not run.
           hooks:
+            - *consent_registration_hook_entry
             - hook: session
             - hook: show_verification_ui
 
