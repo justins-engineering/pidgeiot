@@ -1,0 +1,15 @@
+# PidgeIoT vulnerability disclosure, per RFC 9116.
+#
+# This is the one copy in the repository. fancier serves it as a static
+# asset, dovecote bakes it into the API worker with include_str!, and the
+# status worker imports it as a text module, so all three origins answer
+# with these exact bytes. Renew Expires before it passes: a security.txt
+# past its own Expires is stale by its own terms.
+
+Contact: mailto:security@pidgeiot.com
+Expires: 2027-02-26T00:00:00Z
+Preferred-Languages: en
+Canonical: https://pidgeiot.com/.well-known/security.txt
+Canonical: https://api.pidgeiot.com/.well-known/security.txt
+Canonical: https://status.pidgeiot.com/.well-known/security.txt
+Policy: https://github.com/justins-engineering/pidgeiot/blob/main/SECURITY.md

@@ -170,6 +170,46 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
   response.with_headers(headers).with_cors(&cors)
 }
 
+/// The one copy of the RFC 9116 disclosure document in this repository.
+/// fancier serves the same file as a static asset and the status worker
+/// imports it as a text module, so every origin the file's own `Canonical`
+/// fields name answers with identical bytes. Baking it in at compile time
+/// rather than fetching it keeps the API origin's copy from depending on
+/// the site being up, and makes a drift impossible instead of merely
+/// unlikely. Cross-crate `include_str!` matches how fancier already reads
+/// `docs/api.md` and dovecote's own license inventory.
+const SECURITY_TXT: &str = include_str!("../../fancier/public/.well-known/security.txt");
+
+/// `/.well-known/security.txt` handler, shared by the GET and HEAD
+/// registrations below. Unauthenticated by design: the document is public
+/// contact metadata and nothing else. Registered for HEAD as well because
+/// scanners probe with it and `worker::Router` has no automatic
+/// HEAD->GET fallback, the same reason the api-catalog route above is
+/// registered twice.
+async fn security_txt(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+  let cors = build_cors(&ctx.env, &req);
+
+  let headers = Headers::new();
+  // RFC 9116 §3 requires this exact media type, charset included.
+  if headers
+    .set("Content-Type", "text/plain; charset=utf-8")
+    .is_err()
+  {
+    console_error!("Failed to set security.txt response headers");
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(&cors);
+  }
+
+  let Ok(response) = Response::ok(SECURITY_TXT) else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(&cors);
+  };
+
+  response.with_headers(headers).with_cors(&cors)
+}
+
 /// A validated Kratos session's user id plus (if resolvable) email trait.
 /// Named rather than a bare tuple to match this codebase's proof-of-check
 /// style (`PigeonAccess`/`FlockAccess`/`AlertAccess`), though this isn't
@@ -516,6 +556,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .head_async("/.well-known/api-catalog", |req, ctx| async move {
       api_catalog(req, ctx).await
+    })
+    // RFC 9116 disclosure document, served identically here and by the
+    // site so a researcher who found the API first never has to guess
+    // which origin to trust. Unauthenticated by design.
+    .get_async("/.well-known/security.txt", |req, ctx| async move {
+      security_txt(req, ctx).await
+    })
+    .head_async("/.well-known/security.txt", |req, ctx| async move {
+      security_txt(req, ctx).await
     })
     .post_async("/pigeons/:pigeon_id/token/refresh", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
@@ -4852,5 +4901,79 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .unwrap()
         .with_cors(&fallback_cors)
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::SECURITY_TXT;
+  use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+  /// Field values for `name`, in file order. RFC 9116 fields are
+  /// case-insensitive and separated from their value by a colon.
+  fn field(name: &str) -> Vec<&'static str> {
+    SECURITY_TXT
+      .lines()
+      .filter(|line| !line.starts_with('#'))
+      .filter_map(|line| line.split_once(':'))
+      .filter(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+      .map(|(_, value)| value.trim())
+      .collect()
+  }
+
+  #[test]
+  fn security_txt_carries_the_required_fields() {
+    assert_eq!(
+      field("Expires").len(),
+      1,
+      "Expires must appear exactly once"
+    );
+    assert_eq!(
+      field("Preferred-Languages").len(),
+      1,
+      "Preferred-Languages must appear at most once"
+    );
+    assert!(!field("Contact").is_empty(), "Contact is required");
+    for contact in field("Contact") {
+      assert!(
+        contact.starts_with("mailto:") || contact.starts_with("https://"),
+        "a Contact URI must be a scheme RFC 9116 allows"
+      );
+    }
+    for policy in field("Policy") {
+      assert!(policy.starts_with("https://"), "Policy must be https");
+    }
+  }
+
+  /// The two origins that serve this document have to name themselves, or
+  /// a scanner that fetched it from one of them is told by the file itself
+  /// not to trust what it just read.
+  #[test]
+  fn security_txt_canonical_names_every_serving_origin() {
+    let canonical = field("Canonical");
+    for origin in [
+      "https://pidgeiot.com/.well-known/security.txt",
+      "https://api.pidgeiot.com/.well-known/security.txt",
+      "https://status.pidgeiot.com/.well-known/security.txt",
+    ] {
+      assert!(
+        canonical.contains(&origin),
+        "Canonical is missing an origin that serves this file"
+      );
+    }
+  }
+
+  /// A deliberate tripwire rather than a warning. A security.txt past its
+  /// own Expires is stale by its own terms, and nothing else in the build
+  /// would ever notice the date passing; failing here is what forces the
+  /// renewal while there is still someone looking.
+  #[test]
+  fn security_txt_has_not_expired() {
+    let raw = field("Expires");
+    let expires = OffsetDateTime::parse(raw[0], &Rfc3339).expect("Expires must be RFC 3339");
+    assert!(
+      expires > OffsetDateTime::now_utc(),
+      "security.txt has expired: renew Expires in fancier/public/.well-known/security.txt"
+    );
   }
 }

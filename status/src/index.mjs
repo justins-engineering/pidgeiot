@@ -17,6 +17,13 @@ import { readIncidents } from "./incidents.mjs";
 import { readDocument, applyCheck, writeDocument } from "./state.mjs";
 import { renderPage, renderJson } from "./render.mjs";
 
+// The repository's one RFC 9116 disclosure document, imported as a text
+// module (see wrangler.toml's base_dir and Text rule). dovecote bakes in
+// the same file with include_str! and fancier serves it as a static
+// asset, so all three origins the file's Canonical fields name answer
+// with identical bytes and none of them can drift.
+import SECURITY_TXT from "../../fancier/public/.well-known/security.txt";
+
 // Short enough that the page is never meaningfully stale, long enough to
 // flatten the traffic spike that an outage brings to a status page.
 const PAGE_CACHE_SECONDS = 30;
@@ -58,6 +65,20 @@ export default {
       return new Response("ok", {
         status: 200,
         headers: securityHeaders({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }),
+      });
+    }
+
+    // Answered without touching KV, for the same reason /health is: the
+    // page a researcher lands on during an outage is exactly when they
+    // most need a way to reach us.
+    if (url.pathname === "/.well-known/security.txt") {
+      return new Response(SECURITY_TXT, {
+        status: 200,
+        headers: securityHeaders({
+          // RFC 9116 §3 requires this exact media type, charset included.
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "public, max-age=3600",
+        }),
       });
     }
 
