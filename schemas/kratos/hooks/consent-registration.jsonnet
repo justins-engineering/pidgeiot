@@ -14,9 +14,8 @@
 function(ctx) {
   identity_id: ctx.identity.id,
   granted:
-    if std.objectHas(ctx.identity.traits, 'marketing_consent')
-       && std.objectHas(ctx.identity.traits.marketing_consent, 'granted')
-    then ctx.identity.traits.marketing_consent.granted
+    if std.objectHas(ctx.identity.traits, 'marketing_emails')
+    then ctx.identity.traits.marketing_emails
     else false,
   source: 'registration',
   // Kept out of the payload entirely when the hook context carries no

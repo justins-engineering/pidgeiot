@@ -15,13 +15,15 @@ what exists, why it is shaped this way, and what the owner has to apply by hand.
 
 | | Where | Who writes it | What it is |
 |---|---|---|---|
-| **State** | `traits.marketing_consent.granted` on the Kratos identity | the person, via the registration and settings forms | what they want now |
+| **State** | `traits.marketing_emails` on the Kratos identity | the person, via the registration and settings forms | what they want now |
 | **Evidence** | `consent_events` in Postgres | dovecote only, via `POST /internal/consent` | what they chose, when, against which notice |
 
 The reason for the split is that the settings form hands the subject full control of their own
 traits. An `at`/`source`/`notice_version` trait would be evidence the person it is evidence
-against can rewrite, which is not evidence. So the trait carries exactly one field, `granted`,
-and everything that makes the event provable is server-side.
+against can rewrite, which is not evidence — and Kratos renders every property of an object
+trait as its own form input (the existing `name` object is why settings shows First Name and
+Last Name separately), so those three would have arrived as three editable boxes. The trait is
+therefore one bare boolean, and everything that makes the event provable is server-side.
 
 Both halves are declared in `capsules/src/consent.rs` — the label, the helper lines, and the
 one rule (`consent_transition`) that decides whether a flow writes a row. They are in the
@@ -131,23 +133,18 @@ would be a round trip that can only ever conclude nothing changed.
 Production Kratos is the systemd binary described in `docs/infra/kratos-systemd-migration.md`;
 its config is not in this repo. Three files change under `/opt/kratos/`.
 
-**1. `identity.user.schema.json`** — add the trait, matching
+**1. `identity.user.schema.json`** — add the trait and delete `subscribed`, matching
 `schemas/kratos/identity.user.schema.json` in this repo exactly:
 
 ```json
-"marketing_consent": {
-  "type": "object",
-  "properties": {
-    "granted": {
-      "type": "boolean",
-      "title": "Email me occasional product updates about PidgeIoT"
-    }
-  }
+"marketing_emails": {
+  "type": "boolean",
+  "title": "Email me occasional product updates about PidgeIoT"
 }
 ```
 
-Additive and optional, so every existing identity stays valid — see the schema-versioning note
-below.
+Adding an optional property breaks nothing, and removing `subscribed` breaks nothing either —
+both verified on the dev stack, see the section on it below.
 
 **2. `/opt/kratos/hooks/`** — copy `schemas/kratos/hooks/consent-registration.jsonnet` and
 `consent-settings.jsonnet` from this repo, unchanged.
@@ -221,36 +218,49 @@ this is a modest exposure, but it is worth closing: create a static `kratos` gro
 no file-based input for a hook secret and Ory's config loader cannot set a list item from an
 environment variable, so there is no way to keep the value out of the config file entirely.
 
-## Deprecating `subscribed`
+## Removing `subscribed`, and the node that outlives it
 
-`subscribed` is the bare boolean this replaces. **Nothing reads it.** A grep across the
-workspace finds it only in `schemas/kratos/identity.user.schema.json`; every other match in
+`subscribed` is the bare boolean this replaces. **Nothing read it.** A grep across the
+workspace found it only in `schemas/kratos/identity.user.schema.json`; every other match in
 `dovecote`, `fancier` and `capsules` is the unrelated word inside a Stripe billing comment.
-It has no consumer, no meaning attached to any purpose, and no record behind it.
+It had no consumer, no purpose attached to it, and no record behind it. It is gone from the
+schema in the same edit that adds `marketing_emails`, because declaring both would put two
+subscribe-shaped checkboxes on the registration form — the opposite of the clarity Article
+7(2) asks for.
 
-It is still declared, on purpose. `additionalProperties: false` means a trait that is not
-declared is a trait an identity may not carry, so removing it while any identity still holds a
-`subscribed` value would make that identity's traits invalid — and Kratos validates traits on
-every settings save. Dev holds 22 identities and none carries it; production is a handful and
-almost certainly the same, but that is the owner's to confirm, not mine to assume.
+The obvious worry is that `additionalProperties: false` makes an identity whose *stored* traits
+still carry `subscribed` invalid, and Kratos revalidates traits on every settings save. **It
+does not.** Verified on the dev stack rather than reasoned about, which is worth doing because
+the actual behaviour has a surprise in it:
 
-Because it is still declared, Kratos still renders it as a form node, which would put two
-subscribe-shaped checkboxes on the registration form — the exact opposite of the clarity
-Article 7(2) is asking for. So `fancier` hides that one node by name while it remains in the
-schema. The trait stays valid; nothing offers it.
+- An identity whose stored traits carried `subscribed: true` **signed in normally** and its
+  settings flow **rendered** under the new schema.
+- Its **settings save succeeded** (303), and the stale key **dropped out of storage** — the
+  profile method writes the submitted traits object wholesale, and the form no longer carries
+  that field, so saving is what cleans it up.
+- **But Kratos still renders a node for it.** The profile form is built from the schema *and*
+  the identity's stored traits, so the flow came back with a `traits.subscribed` checkbox
+  carrying the stored value and — having no schema entry to take a title from — **no label at
+  all**. `InputCheckBoxNode` falls back to the node name, so that person would see a ticked box
+  labelled `traits.subscribed`.
 
-**To finish the deprecation** (a small, separate change, once production is checked):
+So `fancier` hides the node by name (`is_retired_node`), and hiding it is also what clears it:
+the form posts every trait except that one, and the next profile save drops the key. The rule
+also covers `traits.marketing_consent.granted`, the object trait that was briefly on `main`
+before being flattened — no production identity ever saw it, so that line can go sooner.
 
-1. Confirm nothing carries it, against the Kratos database:
-   ```sql
-   SELECT count(*) FROM identities WHERE traits ? 'subscribed';
-   ```
-2. If that is not zero, strip the key from those identities with the admin API
-   (`PATCH /admin/identities/<id>` with a JSON Patch removing `/traits/subscribed`). **Use
-   PATCH, never import**: importing identities mints new UUIDs, and `flocks.user_id` and every
-   Durable Object's `pigeon_acl` key on the existing ids.
-3. Delete `subscribed` from `identity.user.schema.json`, here and on the VPS.
-4. Delete the hide-rule in `fancier` in the same change — it exists only to cover this window.
+**To finish the cleanup**, once the counts below are zero everywhere:
+
+```sql
+SELECT count(*) FROM identities WHERE traits ? 'subscribed';
+SELECT count(*) FROM identities WHERE traits ? 'marketing_consent';
+```
+
+Then delete `is_retired_node` and its call site. Nothing else is left to do: the schema entry
+is already gone. If a stubborn identity needs the key removed without waiting for its owner to
+save, use `PATCH /admin/identities/<id>` with a JSON Patch removing `/traits/subscribed` —
+**PATCH, never import**, because importing mints new UUIDs and `flocks.user_id` and every
+Durable Object's `pigeon_acl` key on the existing ids.
 
 ## Kratos schema versioning: why this is an in-place edit
 
@@ -263,12 +273,15 @@ change: every existing identity validates against the new schema unaltered, so t
 to migrate. A new schema id would buy nothing and cost a per-identity write, and every write
 against Kratos identities is a chance to trip the id-preservation rule above.
 
-A new id earns its keep when a change would make existing identities invalid — removing a
-property they carry, tightening a type, adding a `required` entry. Step 3 of the deprecation
-above is the only such change in sight, and step 1 is precisely the check that turns it back
-into a safe in-place edit: if nothing carries `subscribed`, removing it breaks nothing. Only if
-production turns out to hold values that cannot be stripped would `user_v2` plus a per-identity
-`schema_id` PATCH be the answer.
+Removing `subscribed` in the same edit looks like the breaking case, and is the reason to
+check rather than assume. It is not: an identity carrying the stale key still signs in, still
+renders its settings form, and still saves it — the section above has the evidence. So this
+stays one in-place edit of the `user` schema.
+
+A new id earns its keep when a change really would make existing identities unusable —
+tightening a type under stored values, or adding a `required` entry nothing carries. Neither is
+in sight. If one ever is, the answer is `user_v2` plus a per-identity `schema_id` **PATCH**,
+never an import.
 
 ## Reading the current state
 
@@ -308,7 +321,7 @@ detectable, and the trait is the person's actual choice:
 
 ```sql
 -- against the Kratos database: who currently wants marketing email
-SELECT id FROM identities WHERE (traits->'marketing_consent'->>'granted')::boolean IS TRUE;
+SELECT id FROM identities WHERE (traits->>'marketing_emails')::boolean IS TRUE;
 ```
 
 Compare that set against the identities whose newest `consent_events` row is `granted`.
@@ -321,27 +334,10 @@ The reverse gap (a row saying granted, a trait saying otherwise) means a withdra
 and it matters more: acting on it would mean mailing someone who opted out. Treat the trait as
 authoritative in both directions.
 
-## Divergence from the wording document, for the owner
+## Relationship to the wording document
 
-`consent-wording.md` proposes a single flat boolean trait named `marketing_emails`, and says to
-remove `subscribed` in the same edit. This implementation instead uses
-`marketing_consent.granted` and keeps `subscribed` declared for now. Neither difference changes
-what a person sees or what gets recorded, and both are worth a sentence:
-
-- **`marketing_consent.granted` rather than `marketing_emails`.** The document's objection to an
-  object trait is that Kratos renders every property of one as its own form field, which would
-  have exposed the `at`/`source`/`notice_version` evidence fields the original design put
-  inside it. That objection is fully answered by dropping those three: an object with a single
-  property renders as a single checkbox, confirmed live — the registration flow's node list
-  contains exactly one `traits.marketing_consent.granted` node. Keeping it an object leaves an
-  obvious home for a second consent purpose later without renaming the first. If the owner
-  prefers the flat name it is a one-line schema change plus the matching constant, and it is
-  cheapest to make now, before any identity carries the trait.
-- **`subscribed` kept.** The document's reason for removing it in the same edit is that
-  `additionalProperties: false` requires it; that is not so — the flag forbids *undeclared*
-  properties, and a declared-but-unused one is valid. Keeping it is what guarantees no existing
-  identity can be invalidated by this change, which matters because production's identities
-  cannot be inspected from here. The deprecation section above is the path to removing it.
-
-Everything else — the label, the helper line, the withdrawal wording, the unticked default, the
-separation from account creation, and the evidence table's shape — follows the document.
+Every string a person reads — the label, the helper line, the settings withdrawal text and the
+list of email that keeps arriving — is verbatim from
+`pidgeiot-business/eu-paperwork-2026-08/consent-wording.md`, and the shape follows its
+correction to `phases.md`: one flat boolean trait, `subscribed` replaced rather than kept
+alongside, and the evidence in a backend-write-only append-only table.

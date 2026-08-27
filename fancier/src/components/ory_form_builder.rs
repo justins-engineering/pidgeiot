@@ -186,15 +186,26 @@ fn checkbox_helper(name: &str, in_settings: bool) -> Option<&'static str> {
 
 /// Trait nodes Kratos still renders that the forms should not show.
 ///
-/// `subscribed` is the bare boolean `marketing_consent` replaces. It stays
-/// declared in the identity schema so that no existing identity can be
-/// invalidated mid-deprecation, and staying declared is exactly why Kratos
-/// keeps emitting a node for it -- which would put two subscribe-shaped
-/// checkboxes on the registration form, the opposite of the clarity a
-/// consent request needs. Delete this together with the trait; the
-/// procedure is in docs/consent.md.
+/// A trait removed from the identity schema does not stop appearing:
+/// Kratos builds the profile form from the schema *and* the identity's
+/// stored traits, so an identity whose traits still carry the retired key
+/// gets a node for it -- as a checkbox with the stored value and, having
+/// no schema entry to take a title from, no label at all, which
+/// `InputCheckBoxNode` would render as a ticked box labelled
+/// `traits.subscribed`. Confirmed against a real settings flow.
+///
+/// Hiding it is also what clears it. The form then posts every trait
+/// except that one, and a profile save writes the submitted object
+/// wholesale, so the stale key drops out of storage on the person's next
+/// save -- verified end to end on the dev stack. Once nothing carries
+/// either key the whole rule can go; docs/consent.md has the query.
 fn is_retired_node(name: &str) -> bool {
+  // The bare boolean `marketing_emails` replaces, which nothing ever read.
   name == "traits.subscribed"
+    // Briefly on main as an object trait before it was flattened. No
+    // production identity ever saw it, so this line is for dev accounts
+    // created in that window and can go sooner than the one above.
+    || name == "traits.marketing_consent.granted"
 }
 
 #[component]
@@ -793,12 +804,14 @@ mod tests {
     assert!(checkbox_helper("remember_me", false).is_none());
   }
 
-  /// The whole point of the hide-rule is that exactly one node disappears.
-  /// A filter that caught a real field would silently drop it from the
-  /// form, and a trait that never posts is a trait Kratos clears.
+  /// The hide-rule clears the traits it names, because a field the form
+  /// does not post is a field the next profile save drops. That makes a
+  /// filter which caught a real field actively destructive, not merely
+  /// cosmetic.
   #[test]
-  fn only_the_deprecated_trait_is_hidden() {
+  fn only_the_retired_traits_are_hidden() {
     assert!(is_retired_node("traits.subscribed"));
+    assert!(is_retired_node("traits.marketing_consent.granted"));
     for kept in [
       capsules::MARKETING_CONSENT_NODE,
       "traits.email",
