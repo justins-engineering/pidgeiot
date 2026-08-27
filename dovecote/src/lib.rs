@@ -4927,6 +4927,10 @@ mod tests {
   /// swapped file has something to fail against.
   const PGP_KEY_FINGERPRINT: &str = "2ADE9368178A62EE99B35615DDE1CA3CE883F7B2";
 
+  /// The policy the disclosure document's `Policy` field points at. Read
+  /// here only to keep the fingerprint it publishes honest.
+  const SECURITY_POLICY: &str = include_str!("../../SECURITY.md");
+
   /// The lines a reader is meant to act on, from either form of the
   /// document. RFC 4880's cleartext framework wraps the text in an armor
   /// header block and a signature block, and escapes every line that opens
@@ -5212,6 +5216,22 @@ mod tests {
       primary_key_fingerprint(PGP_KEY),
       PGP_KEY_FINGERPRINT,
       "pgp-key.txt holds a different key than this repository expects"
+    );
+  }
+
+  /// The policy publishes the fingerprint as a second channel, so a reader
+  /// who distrusts the site can compare what it served against what the
+  /// repository says. That only helps while the two agree, and they are
+  /// edited in different files by different hands.
+  #[test]
+  fn pgp_key_fingerprint_is_published_in_the_policy() {
+    let policy: String = SECURITY_POLICY
+      .chars()
+      .filter(|c| !c.is_whitespace())
+      .collect();
+    assert!(
+      policy.contains(PGP_KEY_FINGERPRINT),
+      "SECURITY.md must publish the fingerprint of the key fancier serves"
     );
   }
 }
