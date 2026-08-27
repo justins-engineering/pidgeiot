@@ -61,6 +61,14 @@ pub use errors::{
   normalize_message, normalize_route, truncate_bytes,
 };
 
+/// The date the published privacy notice last changed, ISO 8601 so it sorts.
+///
+/// It lives here rather than inside the page because a notice version is the
+/// thing a consent record, an email announcing a change, or a "you agreed to
+/// this version" audit line has to name, and none of those can read a string
+/// literal buried in a Dioxus component.
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-08-26";
+
 #[macro_export]
 macro_rules! unwrap_or_return_response {
   ($expr:expr) => {
