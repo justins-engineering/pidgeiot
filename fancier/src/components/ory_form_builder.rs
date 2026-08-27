@@ -264,8 +264,9 @@ fn SecretTextNode(
   meta: Option<Box<ory_kratos_client_wasm::models::UiText>>,
   attrs: ory_kratos_client_wasm::models::UiNodeTextAttributes,
 ) -> Element {
-  let mut copied = use_signal(|| false);
-  let mut copy_failed = use_signal(|| false);
+  let copied = use_signal(|| false);
+  let copy_failed = use_signal(|| false);
+  #[cfg(feature = "web")]
   let secret = attrs.text.text.clone();
 
   rsx! {
@@ -291,6 +292,8 @@ fn SecretTextNode(
               async move {
                   #[cfg(feature = "web")]
                   if let Some(window) = web_sys::window() {
+                      let mut copied = copied;
+                      let mut copy_failed = copy_failed;
                       let result = JsFuture::from(window.navigator().clipboard().write_text(&secret))
                           .await;
                       copied.set(result.is_ok());

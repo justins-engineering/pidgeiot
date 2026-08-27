@@ -76,7 +76,7 @@
     },
     "/privacy/": {
       "title": "Privacy Policy | PidgeIoT",
-      "description": "What PidgeIoT collects, where it lives, and what we deliberately don't do with it: no selling data, no ad tracking, and no tracking cookies."
+      "description": "What PidgeIoT collects, where it is processed, how long we keep it, and every cookie and storage key the site sets. No selling, no ad tracking."
     },
     "/terms/": {
       "title": "Terms of Service | PidgeIoT",
