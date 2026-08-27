@@ -3,9 +3,9 @@
 // `why` block is the quieter investors/incubators section and must stay
 // below all of the user-facing sections, just above the closing CTA.
 //
-// These seven sections lived in their own files under partials/ until each
-// turned out to be used exactly once, here. Inlined so the whole page, and
-// every section id on it, is visible by reading one file.
+// Every section is inlined here rather than split under partials/: each is
+// used exactly once, and this keeps the whole page, and every section id on
+// it, visible by reading one file.
 
 use super::dashboard::{FlockConnStats, device_card_theme, flock_status_summary};
 use crate::Route;

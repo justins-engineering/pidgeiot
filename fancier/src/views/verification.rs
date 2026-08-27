@@ -20,7 +20,7 @@ pub fn VerificationFlow(flow: Option<String>) -> Element {
       // The address bar, not the route prop, is the source of truth for
       // `?flow=`: SSG hydration restores the prerendered `flow: None` route
       // on every full-page load — see helpers::url_query_param. Without
-      // this, the post-registration redirect to `?flow=<id>` minted a NEW
+      // this, the post-registration redirect to `?flow=<id>` mints a NEW
       // verification flow (asking for an email address) instead of showing
       // the code-entry form for the flow Kratos just created.
       let flow_param = url_query_param("flow").or(flow_param);

@@ -17,10 +17,10 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
 
       // The address bar, not the route prop, is the source of truth for
       // `?flow=`: SSG hydration restores the prerendered `flow: None` route
-      // on every full-page load — see helpers::url_query_param. This was the
-      // prod signup outage: Kratos's 303 back to `?flow=<id>` after each
-      // form POST lost its id here, so the SPA minted a brand-new flow and
-      // re-rendered a fresh empty form with no error, every time.
+      // on every full-page load — see helpers::url_query_param. Without
+      // this, Kratos's 303 back to `?flow=<id>` after each form POST loses
+      // its id here, so the SPA mints a brand-new flow and re-renders a
+      // fresh empty form with no error, every time.
       let flow_param = url_query_param("flow").or(flow_param);
 
       if let Some(id) = flow_param {

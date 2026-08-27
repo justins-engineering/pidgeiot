@@ -142,10 +142,10 @@ pub fn ContactPage() -> Element {
   // part of the first render. A prerendered page hydrates by adopting the
   // markup it was served: a value that differs only on the client changes
   // nothing on screen, because the initial render is not re-run against
-  // it -- verified in a browser, where the address bar plainly said
-  // `?about=fleet` while the page went on rendering the generic copy. A
-  // `use_future` does not run during the synchronous prerender, so what
-  // it sets is a real reactive update that patches the DOM.
+  // it: the address bar can plainly say `?about=fleet` while the page goes
+  // on rendering the generic copy. A `use_future` does not run during the
+  // synchronous prerender, so what it sets is a real reactive update that
+  // patches the DOM.
   let mut about = use_signal(|| None::<String>);
   use_future(move || async move {
     let Some(value) = url_query_param("about") else {

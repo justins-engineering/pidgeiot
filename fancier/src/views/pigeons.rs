@@ -43,9 +43,9 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
     use_signal(HashMap::new);
   // Distinguishes "this flock genuinely has no pigeons" from "the fetch
-  // failed" -- the two used to render identically (an empty
-  // LocalSession.pigeons cache either way), which is the exact silent
-  // failure a flock past the batch-request cap used to hit.
+  // failed" -- without it the two render identically (an empty
+  // LocalSession.pigeons cache either way), the silent failure a flock
+  // past the batch-request cap hits.
   let mut list_failed = use_signal(|| false);
 
   use_resource(move || {

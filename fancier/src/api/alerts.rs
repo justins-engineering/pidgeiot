@@ -1,5 +1,5 @@
-// Task #32's dovecote alert routes (docs/api.md, dovecote/src/lib.rs's
-// "Alert Routes" section) -- CRUD for user-defined `capsules::AlertDefinition`s.
+// dovecote's alert routes (docs/api.md, dovecote/src/lib.rs's "Alert
+// Routes" section) -- CRUD for user-defined `capsules::AlertDefinition`s.
 // Named `alerts.rs`, not `alert.rs`, matching the plural convention already
 // used by `pigeons.rs`/`flocks.rs` in this directory; `capsules::AlertDefinition`
 // itself is named to avoid colliding with the unrelated toast
