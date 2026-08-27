@@ -141,11 +141,14 @@ pub fn PrivacyPage() -> Element {
             "We keep data for as long as it serves the purpose it was collected for, and no longer. The concrete periods are:"
           }
           div { class: "overflow-x-auto",
-            table { class: "table table-sm",
+            // Fixed layout because the auto one asks for 20px more than a
+            // 390px phone has, and a two-column table of sentences is worth
+            // reading without nudging every row sideways.
+            table { class: "table table-sm table-fixed w-full",
               thead {
                 tr {
-                  th { class: "align-top", "Data" }
-                  th { class: "align-top", "How long, and what happens then" }
+                  th { class: "align-top w-2/5 md:w-1/3 whitespace-normal", "Data" }
+                  th { class: "align-top whitespace-normal", "How long, and what happens then" }
                 }
               }
               tbody {
