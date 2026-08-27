@@ -89,3 +89,12 @@
 /.well-known/api-catalog
   ! Content-Type
   Content-Type: application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"
+
+# RFC 9116 requires the disclosure document to carry text/plain with the
+# charset parameter set to utf-8. Wrangler's extension guess gives a bare
+# text/plain at the edge (local `wrangler dev` adds the charset, the real
+# asset server does not), so state it, same `!` detach-then-set pattern as
+# the rule above.
+/.well-known/security.txt
+  ! Content-Type
+  Content-Type: text/plain; charset=utf-8
