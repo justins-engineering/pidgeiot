@@ -33,8 +33,8 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // or double-email. Internally best-effort/logged, same as the sweep above.
   probe_kratos_health(&env).await;
 
-  // Telemetry-history retention sweep (helpers/retention.rs, task #66) --
-  // same "ride the existing cron" reasoning as the probe above, and the
+  // Telemetry-history retention sweep (helpers/retention.rs) -- same
+  // "ride the existing cron" reasoning as the probe above, and the
   // same crash-proofing as the alert sweep: internally best-effort/logged,
   // so a DB hiccup here doesn't take out the two invocations above it.
   if let Err(e) = sweep_telemetry_history_retention(&env).await {

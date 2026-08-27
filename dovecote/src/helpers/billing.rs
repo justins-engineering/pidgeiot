@@ -167,8 +167,8 @@ pub async fn attach_stripe_customer(
 /// (see CLAUDE.md's Hyperdrive note), so a customer id attached by the
 /// checkout that just returned, or a VAT number saved seconds ago, is
 /// what the next billing route reads. Separate plain lookups for the
-/// customer id and the tax identity used to sit behind the cache and
-/// answered "no billing account yet" for a minute after a first checkout.
+/// customer id and the tax identity would sit behind that cache and answer
+/// "no billing account yet" for a minute after a first checkout.
 pub struct OrgBillingState {
   pub name: String,
   pub stripe_customer_id: Option<String>,

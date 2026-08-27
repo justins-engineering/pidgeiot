@@ -1520,8 +1520,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
         }
 
-        // Best-effort cleanup of this pigeon's stored log dictionary (task
-        // #5) -- same fire-and-log convention as the PG sync above; a
+        // Best-effort cleanup of this pigeon's stored log dictionary --
+        // same fire-and-log convention as the PG sync above; a
         // leftover R2 object is unreachable anyway once the ACL rows are
         // gone (every log-dictionary route re-checks the ACL first).
         match ctx.env.bucket("FIRMWARE_BUCKET") {
@@ -1724,7 +1724,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let keys = query.key_list();
 
-        // `raw=true` keeps the old flat/truncating shape, Greptime-first
+        // `raw=true` serves the flat/truncating shape, Greptime-first
         // fallback and all -- see TelemetryHistoryQuery::raw's doc comment
         // for who still needs it. The default bucketed path below skips
         // Greptime entirely: it's unconfigured everywhere but dev (see
@@ -1956,9 +1956,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let keys = query.key_list();
 
         // Same raw/bucketed split as the authenticated pigeon-scoped route
-        // -- the demo pigeon is the exact case that motivated bucketing
-        // (5 keys at 30s, ~3.5h drawable under the old truncate-at-5000
-        // shape against a page that asks for 6h -- see capsules'
+        // -- the demo pigeon is the exact case that motivates bucketing
+        // (5 keys at 30s, ~3.5h drawable from a truncate-at-5000 flat
+        // response against a page that asks for 6h -- see capsules'
         // TELEMETRY_HISTORY_BUCKET_TARGET doc comment).
         if query.raw {
           if crate::helpers::greptime_origin(&ctx.env).is_some() {

@@ -25,8 +25,8 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// Fixed debounce window before a continuously-true condition transitions
 /// `Ok -> Firing`. Scaling this per-pigeon off `telemetry_interval` the
 /// way `connection_state::classify` (`capsules::connection_state`) already
-/// does is a reasonable follow-up, not yet done -- a single fixed window
-/// is a deliberate simplification, not an oversight.
+/// does would be reasonable; a single fixed window is a deliberate
+/// simplification, not an oversight.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` address for alert emails sent via useSend -- shares the
