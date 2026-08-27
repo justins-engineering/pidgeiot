@@ -227,6 +227,18 @@ pub fn PrivacyPage() -> Element {
           }
         }
 
+        LegalSection { id: "privacy-marketing", title: "Product updates by email",
+          p {
+            "If you tick the box for product updates, we send you occasional email about PidgeIoT. We do that only because you asked us to, which in legal terms means we rely on your consent (GDPR Article 6(1)(a)), and you can withdraw it at any time in your account settings without giving a reason and without affecting anything else about your account. Withdrawing takes effect for anything we have not already sent. We do not send this email unless you have asked for it, we do not share your address with anyone else for their own marketing, and every message we send includes a link to stop them."
+          }
+        }
+
+        LegalSection { id: "privacy-objection", title: "Objecting to how we use your data",
+          p {
+            "You can object at any time to our sending you marketing email, and we will stop; this is an absolute right and we do not weigh it against anything (GDPR Article 21(2) and 21(3)). For the smaller number of things we do because we have a legitimate interest in them, such as keeping the service secure and diagnosing faults, you can also object, and we will stop unless we can show compelling grounds that override your interests. In either case, email us at the address in this notice, or use your account settings for the marketing choice. You do not have to explain why, and objecting costs you nothing."
+          }
+        }
+
         LegalSection { id: "privacy-rights", title: "Your rights",
           p { class: "mb-4",
             "If you are in the EEA, the UK or Switzerland, you have the right to ask us for access to the personal data we hold about you, to have it corrected or deleted, to restrict or object to how we process it, to receive it in a portable format, and, where we rely on consent, to withdraw that consent. You also have the right to complain to your data protection authority."
@@ -285,11 +297,7 @@ pub fn PrivacyPage() -> Element {
           p { class: "mb-4",
             "We send transactional email only: account verification, password recovery, and the alert notifications you configure. Delivery goes through a third-party SMTP provider, which necessarily processes the recipient address and message content in order to deliver it."
           }
-          p {
-            "We do not send marketing email. If that ever changes it will be to people who asked for it, every message will carry a way to unsubscribe in one click, and you can tell us to stop at any time by emailing "
-            a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
-            ". You can also object at any time to any processing we base on our legitimate interests, and we will stop unless we have compelling grounds that override your interests."
-          }
+          p { "We do not send marketing email today." }
         }
 
         LegalSection { id: "privacy-changes", title: "Changes to this policy",
