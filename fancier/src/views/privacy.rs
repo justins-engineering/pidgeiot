@@ -47,7 +47,52 @@ pub fn PrivacyPage() -> Element {
           ul { class: "list-disc ml-6 space-y-2",
             li { "We do not sell your data. Not account data, not telemetry, not anything." }
             li { "We do not run third-party advertising or ad-tracking scripts on this site." }
-            li { "We do not use tracking cookies. The only cookie we set is a session cookie, strictly for keeping you signed in." }
+            li {
+              "We do not use cookies, browser storage or analytics to profile you or to follow you to other sites. The next section lists everything we do set, and why."
+            }
+          }
+        }
+
+        LegalSection { id: "privacy-cookies", title: "Cookies, storage and analytics",
+          p { class: "mb-4",
+            "This is the complete list of what the site stores in your browser or reads back from it. None of it is used for advertising or for cross-site tracking, and nothing on this list is sold or shared with anyone for their own purposes."
+          }
+          ul { class: "space-y-3 mb-6",
+            StorageItem {
+              name: "ory_kratos_session",
+              kind: "cookie",
+              "Keeps you signed in. Set by our authentication service on auth.pidgeiot.com and scoped to pidgeiot.com so the dashboard and the API both see it. Marked HttpOnly, so no script can read it. A session lasts 4 hours."
+            }
+            StorageItem {
+              name: "csrf_token_<hash>",
+              kind: "cookie",
+              "Protects the sign-in, registration, recovery and account settings forms against cross-site request forgery. Set by the same authentication service, one per form, with Domain=pidgeiot.com, HttpOnly and Secure, and a one-year lifetime. That lifetime is the identity software's own default and outlives by far the session it protects."
+            }
+            StorageItem {
+              name: "session_expiry",
+              kind: "cookie",
+              "Our own hint of when your session ends, so the dashboard can sign you out on time without asking the network. Its value is a timestamp and nothing else: no identifier, no account, no token. It is deliberately readable by this page's script, because the sign-in cookie above is not."
+            }
+            StorageItem {
+              name: "theme",
+              kind: "browser storage",
+              "Remembers whether you chose the light or the dark theme. Written when you click the toggle."
+            }
+            StorageItem {
+              name: "pidgeiot.graphs.v1.*",
+              kind: "browser storage",
+              "The telemetry graphs you configure for a pigeon or a flock. This is your own content, it never leaves your browser, and it exists only behind the sign-in."
+            }
+            StorageItem {
+              name: "pidgeiot.return_to.v1",
+              kind: "browser storage",
+              "The page you were on when a sign-in interrupted you, so we can put you back there afterwards. Kept for 30 minutes at most, and deleted the moment it is read."
+            }
+            StorageItem {
+              name: "Cloudflare Turnstile",
+              kind: "third-party script, contact page only",
+              "Anti-abuse on the public contact form. It loads from challenges.cloudflare.com after the page has rendered, and on no other page of this site."
+            }
           }
         }
 
@@ -256,6 +301,22 @@ fn LegalSection(id: &'static str, title: &'static str, children: Element) -> Ele
     section { id, class: "mt-12 text-base-content/70 leading-relaxed",
       h2 { class: "text-2xl md:text-3xl font-bold mb-4 tracking-tight text-base-content", "{title}" }
       {children}
+    }
+  }
+}
+
+/// One entry in the cookie and browser-storage inventory. A list rather than a
+/// table because the descriptions are sentences, and a three-column table of
+/// sentences is unreadable on a phone.
+#[component]
+fn StorageItem(name: &'static str, kind: &'static str, children: Element) -> Element {
+  rsx! {
+    li {
+      div { class: "flex flex-wrap items-baseline gap-x-2",
+        code { class: "font-mono text-sm break-all text-base-content", "{name}" }
+        span { class: "text-xs uppercase tracking-wide text-base-content/50", "{kind}" }
+      }
+      div { class: "mt-1", {children} }
     }
   }
 }
