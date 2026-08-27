@@ -5212,6 +5212,13 @@ mod tests {
       !PGP_KEY.contains("PRIVATE KEY BLOCK"),
       "pgp-key.txt must never carry private key material"
     );
+    // A block whose delimiters are right and whose body is empty passes
+    // every check above it, and would otherwise reach the fingerprint by
+    // way of an index panic rather than something a reader can act on.
+    assert!(
+      !dearmor(PGP_KEY).is_empty(),
+      "pgp-key.txt's armor decodes to no key material"
+    );
     assert_eq!(
       primary_key_fingerprint(PGP_KEY),
       PGP_KEY_FINGERPRINT,
