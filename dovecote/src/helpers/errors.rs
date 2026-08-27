@@ -107,16 +107,25 @@ fn strip_control(s: &str) -> String {
 /// A report thrown by someone else's script becomes `third_party`, keyed
 /// on that script's origin: the analytics beacon's minified column moves
 /// with every one of its releases, and each move would otherwise mint a
-/// new signature and a new email. Everything else keeps its own kind and
-/// location, including reports with no URL to judge by.
+/// new signature and a new email. A link-scanning crawler's own
+/// instrumentation becomes `third_party` too, on the strength of its
+/// message alone -- newer clients drop it before it is ever sent, but an
+/// older build still in someone's tab has no such rule and its reports
+/// must not mail. Everything else keeps its own kind and location,
+/// including reports with no URL to judge by.
 fn fold_foreign(
   own_origin: &str,
   kind: ErrorKind,
+  message: &str,
   location: Option<String>,
   stack: Option<&str>,
 ) -> (ErrorKind, Option<String>) {
-  match capsules::error_source(&[own_origin], location.as_deref(), stack) {
+  match capsules::error_source(&[own_origin], message, location.as_deref(), stack) {
     ErrorSource::Foreign(origin) => (ErrorKind::ThirdParty, Some(origin)),
+    // Whatever location it came with (in practice none) stays the group
+    // key, so this noise groups by its own message rather than joining
+    // some script origin's group.
+    ErrorSource::Scanner => (ErrorKind::ThirdParty, location),
     ErrorSource::Own => (kind, location),
   }
 }
@@ -145,6 +154,7 @@ pub async fn ingest_error_report(
   let (kind, location) = fold_foreign(
     &root_url(env),
     report.kind,
+    &report.message,
     location,
     report.stack.as_deref(),
   );
@@ -474,6 +484,7 @@ mod tests {
     let (kind, location) = fold_foreign(
       OWN,
       ErrorKind::JsException,
+      "t.entries.at is not a function",
       Some("https://static.cloudflareinsights.com/beacon.min.js:1:14186".to_string()),
       None,
     );
@@ -488,6 +499,7 @@ mod tests {
     let (_, again) = fold_foreign(
       OWN,
       ErrorKind::JsException,
+      "t.entries.at is not a function",
       Some("https://static.cloudflareinsights.com/beacon.min.js:1:7806".to_string()),
       None,
     );
@@ -497,7 +509,13 @@ mod tests {
   #[test]
   fn a_rejection_without_a_location_is_judged_by_its_stack() {
     let stack = "TypeError: t.entries.at is not a function\n    at https://static.cloudflareinsights.com/beacon.min.js:1:7806";
-    let (kind, location) = fold_foreign(OWN, ErrorKind::UnhandledRejection, None, Some(stack));
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::UnhandledRejection,
+      "t.entries.at is not a function",
+      None,
+      Some(stack),
+    );
     assert_eq!(kind, ErrorKind::ThirdParty);
     assert_eq!(
       location.as_deref(),
@@ -510,6 +528,7 @@ mod tests {
     let (kind, location) = fold_foreign(
       OWN,
       ErrorKind::JsException,
+      "x is not a function",
       Some("https://pidgeiot.com/assets/fancier-dxh1.js:12:5".to_string()),
       None,
     );
@@ -522,13 +541,49 @@ mod tests {
     let (kind, location) = fold_foreign(
       OWN,
       ErrorKind::RustPanic,
+      "called Option::unwrap() on a None value",
       Some("src/views/pigeon.rs:412:18".to_string()),
       None,
     );
     assert_eq!(kind, ErrorKind::RustPanic);
     assert_eq!(location.as_deref(), Some("src/views/pigeon.rs:412:18"));
-    let (kind, location) = fold_foreign(OWN, ErrorKind::WasmBoot, None, None);
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::WasmBoot,
+      "boot watchdog: wasm fetch completed but the app never started",
+      None,
+      None,
+    );
     assert_eq!(kind, ErrorKind::WasmBoot);
     assert_eq!(location, None);
+  }
+
+  #[test]
+  fn a_link_scanner_rejection_folds_to_third_party_and_never_mails() {
+    // What reached the ops inbox: no location, no stack, so only the
+    // message places it. A client still running the build without the
+    // shim's rule keeps sending these.
+    let (kind, location) = fold_foreign(
+      OWN,
+      ErrorKind::UnhandledRejection,
+      "Object Not Found Matching Id:5, MethodName:simulateEvent, ParamCount:4",
+      None,
+      None,
+    );
+    assert_eq!(kind, ErrorKind::ThirdParty);
+    assert_eq!(location, None);
+    assert!(!kind.notifies());
+
+    // A rejection that merely mentions one of those words is ours, and
+    // mails.
+    let (kind, _) = fold_foreign(
+      OWN,
+      ErrorKind::UnhandledRejection,
+      "Object Not Found in the flock list",
+      None,
+      None,
+    );
+    assert_eq!(kind, ErrorKind::UnhandledRejection);
+    assert!(kind.notifies());
   }
 }

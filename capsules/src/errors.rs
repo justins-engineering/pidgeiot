@@ -97,6 +97,10 @@ pub enum ErrorSource {
   /// A script from another origin, named so a folded group keys on the
   /// origin rather than on a minified column.
   Foreign(String),
+  /// A link-scanning crawler's own instrumentation, recognized by the
+  /// message alone -- these arrive with no location and no stack for the
+  /// origin rules to read.
+  Scanner,
 }
 
 /// Closed scheme lists: a bare `main.js:1:2` location would otherwise
@@ -111,21 +115,81 @@ const EXTENSION_SCHEMES: [&str; 6] = [
   "webkit-masked-url",
 ];
 
+/// The three fields of the message Microsoft's link-scanning crawler
+/// (Outlook / Defender for Office 365 Safe Links) leaves behind. It opens
+/// a linked page in an instrumented CefSharp browser whose injected host
+/// object is gone by the time the page calls back into it, and the
+/// rejection carries no location and no stack -- the message is the only
+/// evidence there is.
+const SCANNER_ID: &str = "Object Not Found Matching Id:";
+const SCANNER_METHOD: &str = ", MethodName:";
+const SCANNER_PARAMS: &str = ", ParamCount:";
+
+/// Whether a message is that crawler talking to itself. `fancier`'s
+/// `assets/error-shim.js` carries the same rule as a regex so the report
+/// is never sent at all; the two must agree, and a `fancier` test runs the
+/// shim's own pattern over these cases to keep them that way.
+///
+/// Deliberately tight: all three fields, in that order. "Object Not Found"
+/// alone is ordinary enough that a real defect of ours could say it.
+pub fn is_link_scanner_noise(message: &str) -> bool {
+  message.match_indices(SCANNER_ID).any(|(at, _)| {
+    let rest = &message[at + SCANNER_ID.len()..];
+    let Some(rest) = scanner_field(rest, |c| c.is_ascii_digit()) else {
+      return false;
+    };
+    let Some(rest) = rest.strip_prefix(SCANNER_METHOD) else {
+      return false;
+    };
+    let Some(rest) = scanner_field(rest, |c| c.is_ascii_alphanumeric() || c == '_') else {
+      return false;
+    };
+    let Some(rest) = rest.strip_prefix(SCANNER_PARAMS) else {
+      return false;
+    };
+    scanner_field(rest, |c| c.is_ascii_digit()).is_some()
+  })
+}
+
+/// One field of that signature, read either raw or as the placeholder
+/// `normalize_message` leaves in its place -- a report meets this check
+/// before normalization on the client and after it on the server.
+fn scanner_field(s: &str, raw: fn(char) -> bool) -> Option<&str> {
+  if let Some(after) = s.strip_prefix('<') {
+    let end = after.find('>')?;
+    let inner = &after[..end];
+    return (!inner.is_empty() && inner.chars().all(|c| c.is_ascii_lowercase()))
+      .then_some(&after[end + 1..]);
+  }
+  let end = s.find(|c: char| !raw(c)).unwrap_or(s.len());
+  (end > 0).then_some(&s[end..])
+}
+
 /// Classifies a report by where its code ran. `own_origins` are the page
 /// origins we serve (dovecote passes `ROOT_URL`); comparison is on
 /// `scheme://host[:port]`, case-insensitive, trailing slash ignored.
+///
+/// Origin still decides on its own wherever there is a URL to read. The
+/// message rule speaks only for a report the origin rules already call
+/// ours, which is what every one of these locationless crawler reports
+/// looks like.
 pub fn error_source(
   own_origins: &[&str],
+  message: &str,
   location: Option<&str>,
   stack: Option<&str>,
 ) -> ErrorSource {
   let url = location
     .and_then(first_url)
     .or_else(|| stack.and_then(top_frame_url));
-  match url {
+  let source = match url {
     Some(url) => classify_url(own_origins, &url),
     None => ErrorSource::Own,
+  };
+  if source == ErrorSource::Own && is_link_scanner_noise(message) {
+    return ErrorSource::Scanner;
   }
+  source
 }
 
 fn is_known_scheme(scheme: &str) -> bool {
@@ -649,6 +713,7 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         Some("https://pidgeiot.com/assets/fancier-dxh1.js:12:5"),
         None
       ),
@@ -662,6 +727,7 @@ mod tests {
       assert_eq!(
         error_source(
           OWN,
+          "",
           Some(&format!(
             "https://static.cloudflareinsights.com/beacon.min.js:1:{col}"
           )),
@@ -676,11 +742,14 @@ mod tests {
   fn rejection_with_no_location_is_judged_by_the_top_frame() {
     let stack = "TypeError: t.entries.at is not a function\n    at t.entries.at (https://cdn.jsdelivr.net/npm/thing@1.2.3/dist/x.min.js:1:14186)\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4";
     assert_eq!(
-      error_source(OWN, None, Some(stack)),
+      error_source(OWN, "", None, Some(stack)),
       ErrorSource::Foreign("https://cdn.jsdelivr.net".to_string())
     );
     let ours_on_top = "Error: boom\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4\n    at https://cdn.jsdelivr.net/x.js:1:1";
-    assert_eq!(error_source(OWN, None, Some(ours_on_top)), ErrorSource::Own);
+    assert_eq!(
+      error_source(OWN, "", None, Some(ours_on_top)),
+      ErrorSource::Own
+    );
   }
 
   #[test]
@@ -688,6 +757,7 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         None,
         Some(
           "t@https://static.cloudflareinsights.com/beacon.min.js:1:14186\nf@https://pidgeiot.com/a.js:1:1"
@@ -696,12 +766,17 @@ mod tests {
       ErrorSource::Foreign("https://static.cloudflareinsights.com".to_string())
     );
     assert_eq!(
-      error_source(OWN, None, Some("global code@https://pidgeiot.com/a.js:1:1")),
+      error_source(
+        OWN,
+        "",
+        None,
+        Some("global code@https://pidgeiot.com/a.js:1:1")
+      ),
       ErrorSource::Own
     );
     // WebKit's opaque frames carry no URL at all.
     assert_eq!(
-      error_source(OWN, None, Some("wasm-stub@[wasm code]\n@[native code]")),
+      error_source(OWN, "", None, Some("wasm-stub@[wasm code]\n@[native code]")),
       ErrorSource::Own
     );
   }
@@ -711,6 +786,7 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         None,
         Some("RuntimeError: unreachable\n    at wasm://wasm/0009e8ba:wasm-function[3812]:0x1a2b3c")
       ),
@@ -719,6 +795,7 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         None,
         Some("f@https://pidgeiot.com/wasm/fancier_bg-dxh1.wasm:wasm-function[3812]:0x1a2b3c")
       ),
@@ -731,6 +808,7 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         Some("blob:https://pidgeiot.com/8f1e2c1a-1111-4222-8333-444455556666:1:2"),
         None
       ),
@@ -739,13 +817,14 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         Some("blob:https://evil.example/8f1e2c1a-1111-4222-8333-444455556666:1:2"),
         None
       ),
       ErrorSource::Foreign("https://evil.example".to_string())
     );
     assert_eq!(
-      error_source(OWN, Some("blob:null/abc:1:2"), None),
+      error_source(OWN, "", Some("blob:null/abc:1:2"), None),
       ErrorSource::Own
     );
   }
@@ -755,30 +834,36 @@ mod tests {
     assert_eq!(
       error_source(
         OWN,
+        "",
         Some("chrome-extension://abcdefghijklmnopabcdefghijklmnop/content.js:5:9"),
         None
       ),
       ErrorSource::Foreign("chrome-extension://abcdefghijklmnopabcdefghijklmnop".to_string())
     );
     assert_eq!(
-      error_source(OWN, None, Some("f@webkit-masked-url://hidden/:1:1")),
+      error_source(OWN, "", None, Some("f@webkit-masked-url://hidden/:1:1")),
       ErrorSource::Foreign("webkit-masked-url://hidden".to_string())
     );
   }
 
   #[test]
   fn a_report_with_nothing_to_judge_by_is_ours() {
-    assert_eq!(error_source(OWN, None, None), ErrorSource::Own);
+    assert_eq!(error_source(OWN, "", None, None), ErrorSource::Own);
     assert_eq!(
-      error_source(OWN, Some("src/views/pigeon.rs:412:18"), None),
+      error_source(OWN, "", Some("src/views/pigeon.rs:412:18"), None),
       ErrorSource::Own
     );
     assert_eq!(
-      error_source(OWN, Some("main.js:12:3"), None),
+      error_source(OWN, "", Some("main.js:12:3"), None),
       ErrorSource::Own
     );
     assert_eq!(
-      error_source(OWN, None, Some("Error: something\n    at <anonymous>:1:1")),
+      error_source(
+        OWN,
+        "",
+        None,
+        Some("Error: something\n    at <anonymous>:1:1")
+      ),
       ErrorSource::Own
     );
   }
@@ -786,7 +871,7 @@ mod tests {
   #[test]
   fn a_url_quoted_in_the_message_line_is_not_a_frame() {
     let stack = "Error: could not load https://cdn.example.com/x.js for owner@example.com\n    at https://pidgeiot.com/assets/fancier-dxh1.js:3:4";
-    assert_eq!(error_source(OWN, None, Some(stack)), ErrorSource::Own);
+    assert_eq!(error_source(OWN, "", None, Some(stack)), ErrorSource::Own);
   }
 
   #[test]
@@ -794,6 +879,7 @@ mod tests {
     assert_eq!(
       error_source(
         &["https://PidgeIoT.com/"],
+        "",
         Some("https://pidgeiot.com/a.js:1:1"),
         None
       ),
@@ -802,6 +888,7 @@ mod tests {
     assert_eq!(
       error_source(
         &["http://localhost:4455"],
+        "",
         Some("http://localhost:8787/a.js:1:1"),
         None
       ),
@@ -810,10 +897,78 @@ mod tests {
     assert_eq!(
       error_source(
         &["http://localhost:4455"],
+        "",
         Some("http://localhost:4455/assets/a.js:1:1"),
         None
       ),
       ErrorSource::Own
+    );
+  }
+
+  #[test]
+  fn the_link_scanner_signature_is_read_raw_or_normalized() {
+    // The production report, and what the reporter's own normalizer makes
+    // of it -- this check runs on the client before that pass and on the
+    // server after it.
+    let raw = "Object Not Found Matching Id:5, MethodName:simulateEvent, ParamCount:4";
+    assert_eq!(
+      normalize_message(raw),
+      "Object Not Found Matching Id:<int>, MethodName:simulateEvent, ParamCount:<int>"
+    );
+    assert!(is_link_scanner_noise(raw));
+    assert!(is_link_scanner_noise(&normalize_message(raw)));
+    // The method name varies with whatever the page's own script called.
+    assert!(is_link_scanner_noise(
+      "Object Not Found Matching Id:1, MethodName:update, ParamCount:4"
+    ));
+    // Some browsers hand the rejection to us wrapped in their own prose.
+    assert!(is_link_scanner_noise(
+      "Uncaught 'Object Not Found Matching Id:2, MethodName:update, ParamCount:4'"
+    ));
+  }
+
+  #[test]
+  fn nothing_short_of_all_three_fields_in_order_is_the_scanner() {
+    assert!(!is_link_scanner_noise("Object Not Found in the flock list"));
+    assert!(!is_link_scanner_noise(
+      "Object Not Found Matching Id:5, MethodName:simulateEvent"
+    ));
+    assert!(!is_link_scanner_noise(
+      "Object Not Found Matching Id:5, ParamCount:4"
+    ));
+    assert!(!is_link_scanner_noise(
+      "MethodName:update, ParamCount:4, Object Not Found Matching Id:5"
+    ));
+    assert!(!is_link_scanner_noise(
+      "called Option::unwrap() on a None value"
+    ));
+  }
+
+  #[test]
+  fn a_locationless_scanner_rejection_is_not_ours() {
+    assert_eq!(
+      error_source(
+        OWN,
+        "Object Not Found Matching Id:5, MethodName:simulateEvent, ParamCount:4",
+        None,
+        None
+      ),
+      ErrorSource::Scanner
+    );
+    // A real failure with nothing to judge by is still ours.
+    assert_eq!(
+      error_source(OWN, "called Option::unwrap() on a None value", None, None),
+      ErrorSource::Own
+    );
+    // Where there is an origin to read, it keeps deciding by itself.
+    assert_eq!(
+      error_source(
+        OWN,
+        "Object Not Found Matching Id:5, MethodName:update, ParamCount:4",
+        Some("https://static.cloudflareinsights.com/beacon.min.js:1:1"),
+        None
+      ),
+      ErrorSource::Foreign("https://static.cloudflareinsights.com".to_string())
     );
   }
 
