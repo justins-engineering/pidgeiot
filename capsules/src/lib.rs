@@ -63,11 +63,11 @@ pub use errors::{
 
 /// The date the published privacy notice last changed, ISO 8601 so it sorts.
 ///
-/// It lives here rather than inside the page because a notice version is the
-/// thing a consent record, an email announcing a change, or a "you agreed to
-/// this version" audit line has to name, and none of those can read a string
-/// literal buried in a Dioxus component.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-08-26";
+/// It feeds the notice's own "Last updated" line and every consent event we
+/// record, and it lives in the shared crate because those are the two things
+/// that must never disagree: a stored consent naming a version the page no
+/// longer shows cannot be resolved back to the words the person was shown.
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-08-27";
 
 #[macro_export]
 macro_rules! unwrap_or_return_response {
