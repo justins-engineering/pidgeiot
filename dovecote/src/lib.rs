@@ -4947,10 +4947,15 @@ mod tests {
   }
 
   /// Field values for `name`, in file order. RFC 9116 fields are
-  /// case-insensitive and separated from their value by a colon.
+  /// case-insensitive and separated from their value by a colon. Read
+  /// through `payload` so every test below describes the served document
+  /// whether or not it is signed: the armor around a cleartext signature
+  /// carries colon-separated headers of its own, which would otherwise read
+  /// as fields, and dash escaping renames any field whose line opens with a
+  /// dash.
   fn field(name: &str) -> Vec<&'static str> {
-    SECURITY_TXT
-      .lines()
+    payload(SECURITY_TXT)
+      .into_iter()
       .filter(|line| !line.starts_with('#'))
       .filter_map(|line| line.split_once(':'))
       .filter(|(key, _)| key.trim().eq_ignore_ascii_case(name))
@@ -5010,7 +5015,8 @@ mod tests {
     let expires = OffsetDateTime::parse(raw[0], &Rfc3339).expect("Expires must be RFC 3339");
     assert!(
       expires > OffsetDateTime::now_utc(),
-      "security.txt has expired: renew Expires in fancier/public/.well-known/security.txt"
+      "security.txt has expired: renew Expires in \
+       fancier/public/.well-known/security.txt.unsigned and re-sign (see SECURITY.md)"
     );
   }
   /// The two files are edited in separate steps by separate hands: the text
