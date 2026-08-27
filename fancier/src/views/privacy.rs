@@ -1,3 +1,4 @@
+use capsules::PRIVACY_NOTICE_VERSION;
 use dioxus::prelude::*;
 
 #[component]
@@ -6,7 +7,7 @@ pub fn PrivacyPage() -> Element {
     section { id: "privacy-policy", class: "py-16 md:py-24",
       div { class: "max-w-3xl mx-auto px-4 md:px-8",
         h1 { class: "text-4xl md:text-5xl font-extrabold tracking-tighter mb-3", "Privacy Policy" }
-        p { class: "text-sm text-base-content/50 mb-10", "Last updated: August 19, 2026" }
+        p { class: "text-sm text-base-content/50 mb-10", "Last updated: {PRIVACY_NOTICE_VERSION}" }
 
         p { class: "text-lg text-base-content/70 leading-relaxed mb-4",
           "This policy describes what the PidgeIoT platform collects, where it lives, how long we keep it, and what we do (and deliberately don't do) with it."
@@ -93,6 +94,12 @@ pub fn PrivacyPage() -> Element {
               kind: "third-party script, contact page only",
               "Anti-abuse on the public contact form. It loads from challenges.cloudflare.com after the page has rendered, and on no other page of this site."
             }
+          }
+          p { class: "mb-4",
+            "Analytics. We use Cloudflare Web Analytics to count page views on our public pages. It sets no cookies, stores nothing on your device, and does not identify you or follow you to other websites; what it records is the page you viewed, the site that linked you to it, your browser, operating system and device type, the country your connection came from, and how quickly the page loaded."
+          }
+          p {
+            "Separately from that script, and whether or not it runs, our edge provider records the request itself: the standard web log described under \"What we collect\", kept for the period given in the retention table below."
           }
         }
 
