@@ -143,7 +143,6 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<Connector> {
   let pigeon = serde_wasm_bindgen::from_value::<Pigeon>(json).ok()?;
   let connector = pigeon.connector.clone();
 
-  // Update cache with new connector data
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
   pigeon_list.insert(pigeon_id.to_string(), pigeon);
   pigeon_list.write();

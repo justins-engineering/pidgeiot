@@ -1544,7 +1544,6 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
                       }
                   }
 
-                  // Build Connector enum from select value
                   pur.connector = match selected_connector.read().as_str() {
                       "Coap" => Some(Connector::Coap(CoapConfig::default())),
                       "Mqtt" => Some(Connector::Mqtt(MqttConfig::default())),

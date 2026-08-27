@@ -284,24 +284,21 @@ impl DurableObject for Pigeons {
     // here are load-bearing rather than stylistic:
     //
     // 1. `id INTEGER PRIMARY KEY` is the rowid, which SQLite does NOT give a
-    //    backing index. The retired per-key table's `key TEXT PRIMARY KEY`
-    //    did get one (`sqlite_autoindex_...`, confirmed by querying
-    //    `sqlite_master` for both shapes under workerd), and an index costs
-    //    an extra written row whenever a write touches the indexed column,
-    //    so every first report of a key used to pay two writes rather than
-    //    one.
+    //    backing index. A `key TEXT PRIMARY KEY` does get one
+    //    (`sqlite_autoindex_...`), and an index costs an extra written row
+    //    whenever a write touches the indexed column, so a key's first
+    //    report would pay two writes rather than one.
     // 2. Never add an index to this table. Rows read are rows scanned, and
-    //    the one read is already a direct rowid seek: `EXPLAIN QUERY PLAN`
-    //    reports `SEARCH pigeon_telemetry_latest USING INTEGER PRIMARY KEY
-    //    (rowid=?)`, where the old shape's previous-value lookup reported a
-    //    bare `SCAN`. An index could only add written rows, never save a
+    //    the one read is already a direct rowid seek (`EXPLAIN QUERY PLAN`:
+    //    `SEARCH pigeon_telemetry_latest USING INTEGER PRIMARY KEY
+    //    (rowid=?)`). An index could only add written rows, never save a
     //    read.
     // 3. The per-report write is an upsert that only ever changes `metrics`
     //    and `updated_at`, neither of them indexed, and an upsert bills as
     //    the one row it actually writes rather than as an insert plus an
     //    update. So a report costs one row read and one row written whatever
-    //    its key count, where the old shape cost roughly two reads and one
-    //    write per key.
+    //    its key count, where a row-per-key shape costs roughly two reads
+    //    and one write per key.
     //
     // No `updated_at` trigger like the tables above -- the single writer
     // stamps it in the same statement, and every key carries its own

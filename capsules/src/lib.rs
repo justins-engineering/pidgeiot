@@ -595,7 +595,7 @@ pub const MAX_TELEMETRY_BACKDATE_SECS: i64 = 86_400;
 ///
 /// Two spellings of "when", because the devices that need this feature
 /// most cannot express the obvious one. `~/pigeon` has no wall clock at
-/// all -- NTP was removed in 0.13.6 and there is no RTC, so `k_uptime_get()`
+/// all -- no NTP, no RTC -- so `k_uptime_get()`
 /// (monotonic milliseconds since boot) is the only time source on the
 /// device -- which makes [`age_secs`](Self::age_secs), "this many seconds
 /// before I sent the batch", the form real firmware can actually fill in.
@@ -763,10 +763,9 @@ pub struct TelemetryLatest {
 }
 
 impl TelemetryLatest {
-  /// The DO stores each key's timestamp as unix seconds (what `unixepoch()`
-  /// wrote when the per-key table still existed, kept identical so the
-  /// dashboard's deserialization never had to change), while the public
-  /// shape is RFC 3339. This is the only conversion between the two.
+  /// The DO stores each key's timestamp as unix seconds (`unixepoch()`),
+  /// while the public shape is RFC 3339. This is the only conversion
+  /// between the two.
   pub fn from_unix_seconds(key: String, value: String, reported_at: i64) -> Self {
     Self {
       key,
@@ -2443,9 +2442,8 @@ pub struct CoapPskLookup {
 mod billing_tests {
   use super::{BillingPlan, OrganizationBilling, StripeSubscriptionRow, SubscriptionStatus};
 
-  // No top-level period fields: this is the shape Stripe actually sends
-  // under API version 2026-07-29.dahlia and later, confirmed on a real
-  // delivered `customer.subscription.updated`. Tests that care about the
+  // No top-level period fields: this is the shape Stripe sends under API
+  // version 2026-07-29.dahlia and later. Tests that care about the
   // period fields supply them explicitly, either on an item (current shape)
   // or at the top level (`legacy_subscription_json`, pre-dahlia shape).
   fn subscription_json(extra: &str) -> StripeSubscriptionRow {

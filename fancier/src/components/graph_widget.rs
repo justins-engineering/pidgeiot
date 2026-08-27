@@ -218,8 +218,8 @@ fn mock_points(key: &str, since: i64, until: i64) -> Vec<(i64, f64)> {
 /// mock-data disclaimer — showing fabricated curves on a real, just-quiet
 /// pigeon would be actively misleading.
 ///
-/// No `truncated` flag any more (contrast the old flat/capped shape) --
-/// bucketing bounds the response by construction, so there's nothing the
+/// No `truncated` flag: bucketing bounds the response by construction,
+/// so there's nothing the
 /// server could have cut. See `capsules::TELEMETRY_HISTORY_BUCKET_TARGET`'s
 /// doc comment.
 enum SeriesOutcome {
@@ -282,13 +282,12 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
 /// band or richer per-point tooltip; both would need `ChartSeries.points`
 /// to carry more than `(i64, f64)`, which ripples through
 /// `telemetry_chart.rs`'s geometry/table/tooltip code for every chart kind,
-/// not just this one. Left for a future pass (see #43) rather than done
-/// here. `buckets` already carries `pigeon_id` (capsules'
+/// not just this one. `buckets` already carries `pigeon_id` (capsules'
 /// `TelemetryHistoryBucket` is shared with the flock-scoped route, see
 /// api/telemetry.rs), but every row here is the same pigeon so it's
 /// ignored — filtering by key alone is enough. A bucket with no numeric
 /// samples (`mean: None`) contributes no point, same as a non-numeric
-/// `TelemetryHistoryPoint` used to under the old shape.
+/// reading.
 fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> Vec<ChartSeries> {
   keys
     .iter()

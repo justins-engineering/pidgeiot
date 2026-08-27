@@ -1,6 +1,6 @@
-// Task #18's telemetry-history routes and capsules types landed in dovecote
-// (bc1373c) — this module is a thin wrapper around them rather than a
-// parallel guess. Setting/clearing a pigeon's telemetry endpoint lives in
+// A thin wrapper around dovecote's telemetry-history routes and the
+// capsules types they share, rather than a parallel guess at either.
+// Setting/clearing a pigeon's telemetry endpoint lives in
 // api/pigeons.rs (`update_telemetry_endpoint`) alongside the other
 // per-pigeon PUT routes, not here.
 use crate::api::fetch_json;

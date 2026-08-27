@@ -28,10 +28,7 @@ const REFRESH_MS: i32 = 30_000;
 /// How far back the graphs look. Just a sensible demo window, not a limit
 /// dodge -- the history route buckets its response rather than capping it
 /// at a row count (helpers/telemetry.rs, dovecote), so this could be
-/// widened freely. It used to matter more: at 5 keys/30s, this pigeon's own
-/// history was the case that most directly exposed the old flat/truncating
-/// shape only drawing ~3.5h of a 6h request (see capsules'
-/// `TELEMETRY_HISTORY_BUCKET_TARGET` doc comment).
+/// widened freely.
 const HISTORY_HOURS: i64 = 6;
 
 /// (key, label, unit, chart kind, why that kind suits this reading).
@@ -293,7 +290,7 @@ fn DemoContent() -> Element {
       div { class: "max-w-6xl mx-auto",
         // grid-flow-row is load-bearing: DaisyUI's `stats` sets
         // grid-auto-flow: column, which overrides the explicit column count
-        // and packs every reading into one row -- at 390px the labels landed
+        // and packs every reading into one row -- at 390px the labels land
         // on top of each other rather than wrapping.
         div { class: "stats shadow-sm bg-base-100 border border-base-content/10 w-full grid grid-flow-row grid-cols-2 sm:grid-cols-3 lg:grid-cols-5",
           for (key , label , unit , _kind , _why) in DEMO_READINGS {

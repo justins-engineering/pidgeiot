@@ -258,7 +258,7 @@ fn rows_to_buckets(rows: &[Row]) -> Vec<TelemetryHistoryBucket> {
 
 /// Backs the default (non-`raw`) shape of `GET /pigeons/:id/telemetry/history`
 /// -- see `capsules::TELEMETRY_HISTORY_BUCKET_TARGET`'s doc comment for why
-/// bucketing replaces the old truncate-to-newest-5000 behavior. Aggregates
+/// the response is bucketed rather than truncated. Aggregates
 /// happen in SQL (`GROUP BY ... date_bin(...)`), never by pulling raw rows
 /// into Rust to bucket by hand -- shipping every row into the Worker and
 /// back out again is exactly the cost bucketing exists to avoid, and
@@ -278,7 +278,7 @@ fn rows_to_buckets(rows: &[Row]) -> Vec<TelemetryHistoryBucket> {
 /// bounded by construction (at most `TELEMETRY_HISTORY_BUCKET_TARGET`
 /// buckets per key), so there's nothing to truncate and no `truncated` flag
 /// to report. Bounding the underlying table SCAN for a very wide range is
-/// a retention/partitioning concern (task #66), not this query's job.
+/// a retention/partitioning concern, not this query's job.
 pub async fn query_telemetry_history_buckets_for_pigeon(
   client: &Client,
   access: &PigeonAccess,

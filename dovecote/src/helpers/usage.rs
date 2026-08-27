@@ -1577,9 +1577,9 @@ mod tests {
 
   #[test]
   fn every_gate_refuses_in_the_same_voice() {
-    // The device refusal is the sentence that shipped first and the one
-    // the other three were shaped to match; this pins it verbatim so the
-    // shared builder can't drift away from it.
+    // The device refusal is the sentence the other three are shaped to
+    // match; this pins it verbatim so the shared builder can't drift away
+    // from it.
     assert_eq!(
       cap_refusal(BillingPlan::Perch, 10, 10, "device", None),
       "Forbidden: the free tier includes 10 devices and this account already has 10 -- upgrade to add more"
@@ -1684,8 +1684,8 @@ mod tests {
   #[test]
   fn billed_extra_devices_extend_the_pool() {
     // The case this exists for: a Builder account at 150 connected
-    // devices used to bill device overage and message overage at once for
-    // one act of growth. 100 extra devices now carry 3 M of pool with
+    // devices would otherwise bill device overage and message overage at
+    // once for one act of growth. 100 extra devices carry 3 M of pool with
     // them, so the second meter stays quiet until the fleet genuinely
     // talks more than the devices were sold to.
     assert_eq!(

@@ -8,7 +8,7 @@ use dioxus_free_icons::icons::ld_icons::LdCircleAlert;
 /// Keeps the browser tab named after the page you are actually on.
 ///
 /// Nothing else does: the per-page <title> in a prerendered page is static
-/// HTML, so once the app hydrates, every client-side navigation used to leave
+/// HTML, so once the app hydrates, every client-side navigation would leave
 /// the tab reading whatever page happened to be loaded first. Its own
 /// component rather than a line in `Wrapper` so that a navigation re-renders
 /// six lines instead of the whole chrome.

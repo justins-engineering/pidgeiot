@@ -202,8 +202,8 @@ mod attribute_tokens {
     }
   }
 
-  // The regression itself: the tokens a lowercased Debug name would have
-  // produced are the ones browsers ignore.
+  // The tokens a lowercased Debug name would produce are the ones browsers
+  // ignore.
   #[test]
   fn hyphenated_tokens_are_not_debug_lowercased() {
     assert_eq!(

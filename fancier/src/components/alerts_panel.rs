@@ -820,8 +820,8 @@ fn AlertFormModal(
                 }
               }
               // Both halves are earned. The cadence note matches the
-              // device-state field's, since the two ride the same sweep and
-              // only one used to say so. The interval warning is here
+              // device-state field's, since the two ride the same sweep.
+              // The interval warning is here
               // because a window shorter than a pigeon's reporting interval
               // does not fail loudly -- it sits firing and flips to cleared
               // whenever a sweep happens to land just after a report, mailing

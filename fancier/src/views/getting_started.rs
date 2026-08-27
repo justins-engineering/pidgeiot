@@ -9,8 +9,7 @@ use dioxus_free_icons::icons::ld_icons::{
 pub fn GettingStartedPage() -> Element {
   rsx! {
     // Header matches the other public pages (eyebrow, left-aligned h1 on
-    // base-200) rather than the centred hero this page used to carry, so the
-    // marketing set reads as one thing.
+    // base-200) so the marketing set reads as one thing.
     section { id: "getting-started-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4",

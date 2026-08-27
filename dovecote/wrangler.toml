@@ -12,7 +12,7 @@ zone_name = "pidgeiot.com"
 enabled = true
 invocation_logs = true
 # 1.0: every invocation's logs are kept. At 0 every console_error! in the
-# worker reported into nothing; Workers Observability includes 20M
+# worker reports into nothing; Workers Observability includes 20M
 # events/month, far above our volume, so full sampling is effectively free.
 head_sampling_rate = 1
 
@@ -173,10 +173,8 @@ simple = { limit = 5, period = 60 }
 # and never 401, and the check fails open on a binding fault: a limiter
 # outage must not take a fleet offline. See helpers/device_limits.rs.
 #
-# Verified enforcing on staging at this exact value: of 150 requests for
-# one pigeon inside a window, 99 reached the Durable Object and 51 were
-# refused without one. Counts this low do enforce; the firmware block
-# below documents what happens when they are not.
+# A count this low does bind, unlike the high-count/long-window case the
+# firmware limiter below documents.
 [[ratelimits]]
 name = "DEVICE_SHADOW_LIMITER"
 namespace_id = "1007"
@@ -209,9 +207,8 @@ simple = { limit = 120, period = 60 }
 # 100ms inter-chunk sleep and is measured at 21-83 req/min over LTE-M,
 # around 2% of this. The demanding case is the library's own defaults
 # (2048-byte chunks, no sleep) on a fast link, where the pace is bounded
-# by a fresh TCP+TLS handshake per chunk; a staging run at a sustained
-# 22 req/s, above what that configuration reaches in practice, passed 600
-# consecutive chunks with no 429.
+# by a fresh TCP+TLS handshake per chunk -- still well inside this
+# ceiling.
 #
 # Same 429-never-401 and fail-open-on-fault behaviour as the shadow
 # limiter above.
@@ -233,9 +230,7 @@ simple = { limit = 400, period = 10 }
 # device whose token was rotated out from under it, which retries on its
 # own poll interval rather than in a loop. Once an address is over
 # budget, further attempts from it are refused in the isolate without a
-# round trip, which is the cost this limiter exists to bound. Measured on
-# staging: 36 failures got through before the counter cut over, then
-# every subsequent request was refused with no round trip at all. Ten is
+# round trip, which is the cost this limiter exists to bound. Ten is
 # where the budget is set, not where it bites -- the binding is
 # permissive by design, and this one only has to stop a loop, not the
 # first handful of attempts.

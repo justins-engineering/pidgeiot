@@ -1,5 +1,5 @@
-// Task #13's dovecote feedback route (docs/api.md "Feedback" section) --
-// one write-only call, no LocalSession cache involvement (nothing is
+// dovecote's feedback route (docs/api.md "Feedback" section) -- one
+// write-only call, no LocalSession cache involvement (nothing is
 // persisted or ever read back). Uses `fetch_json_any_status` rather than
 // `fetch_json` for the same reason the shell route does: the modal's
 // error copy distinguishes *which* rejection happened (too long vs.

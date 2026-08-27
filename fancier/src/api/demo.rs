@@ -48,9 +48,8 @@ pub async fn get_latest() -> Option<Vec<TelemetryLatest>> {
 /// GET /demo/pigeons/:id/telemetry/history -- bucketed by default (no
 /// `raw=true`), same as `api::telemetry::get_history_buckets`. The demo
 /// pigeon (5 keys reported every 30s) is the case that most directly
-/// motivated bucketing: under the old flat/truncating shape, its 6h
-/// history request only ever drew ~3.5h before hitting
-/// `TELEMETRY_HISTORY_MAX_POINTS`.
+/// motivates bucketing: a flat/truncating response draws only ~3.5h of
+/// its 6h history request before hitting `TELEMETRY_HISTORY_MAX_POINTS`.
 pub async fn get_history(
   since: OffsetDateTime,
   until: OffsetDateTime,
