@@ -63,6 +63,11 @@ pulldown-cmark = { version = "0.13", default-features = false, features = [
   "html",
 ] }
 
+[dev-dependencies]
+# Runs the error shim's own regex literal against the Rust matcher it has
+# to agree with; never reaches the wasm bundle.
+regex = "1"
+
 [build-dependencies]
 dotenvy = "0.15"
 

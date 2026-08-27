@@ -264,6 +264,70 @@ mod imp {
   }
 }
 
+/// The shim's link-scanner rule is a JS regex and the server's is Rust, so
+/// nothing but running both over the same messages can keep them honest.
+/// The pattern is read out of the file that actually ships rather than
+/// restated here: a copy would agree with itself forever.
+#[cfg(test)]
+mod tests {
+  use capsules::is_link_scanner_noise;
+  use regex::Regex;
+
+  const SHIM: &str = include_str!("../../assets/error-shim.js");
+
+  fn shim_pattern() -> Regex {
+    let after = SHIM
+      .split_once("var LINK_SCANNER_NOISE =")
+      .expect("the shim no longer defines LINK_SCANNER_NOISE")
+      .1;
+    let source = after
+      .trim_start()
+      .strip_prefix('/')
+      .and_then(|rest| rest.split_once("/;"))
+      .expect("LINK_SCANNER_NOISE is not a one-line regex literal")
+      .0;
+    Regex::new(source).expect("the shim's pattern does not mean the same thing in Rust")
+  }
+
+  // The production report, the variant most other sites see, and the
+  // normalized form the server matches after its own redaction pass.
+  const SCANNER: [&str; 4] = [
+    "Object Not Found Matching Id:5, MethodName:simulateEvent, ParamCount:4",
+    "Object Not Found Matching Id:1, MethodName:update, ParamCount:4",
+    "Object Not Found Matching Id:<int>, MethodName:simulateEvent, ParamCount:<int>",
+    "Uncaught 'Object Not Found Matching Id:2, MethodName:update, ParamCount:4'",
+  ];
+
+  const OURS: [&str; 4] = [
+    "Object Not Found in the flock list",
+    "Object Not Found Matching Id:5, MethodName:simulateEvent",
+    "Object Not Found Matching Id:5, ParamCount:4",
+    "called Option::unwrap() on a None value",
+  ];
+
+  #[test]
+  fn the_shim_drops_exactly_what_the_server_folds() {
+    let pattern = shim_pattern();
+    for message in SCANNER {
+      assert!(pattern.is_match(message), "the shim would send: {message}");
+      assert!(
+        is_link_scanner_noise(message),
+        "the server would mail: {message}"
+      );
+    }
+    for message in OURS {
+      assert!(
+        !pattern.is_match(message),
+        "the shim would drop our own: {message}"
+      );
+      assert!(
+        !is_link_scanner_noise(message),
+        "the server would silence our own: {message}"
+      );
+    }
+  }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
   pub fn breadcrumb_api(_method: &str, _path: &str, _status: Option<u16>) {}

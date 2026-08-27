@@ -1,6 +1,6 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-fancier-MIT) — 217 package(s)
+- [MIT License (MIT)](#license-fancier-MIT) — 219 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-fancier-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-fancier-Apache-2.0) — 8 package(s)
 - [zlib License (Zlib)](#license-fancier-Zlib) — 5 package(s)
@@ -839,7 +839,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [bitflags 2.13.1](https://github.com/bitflags/bitflags), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex)
+**Used by:** [bitflags 2.13.1](https://github.com/bitflags/bitflags), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
 
 
 ````text
@@ -2795,7 +2795,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [byteorder 1.5.0](https://github.com/BurntSushi/byteorder), [memchr 2.8.3](https://github.com/BurntSushi/memchr)
+**Used by:** [aho-corasick 1.1.5](https://github.com/BurntSushi/aho-corasick), [byteorder 1.5.0](https://github.com/BurntSushi/byteorder), [memchr 2.8.3](https://github.com/BurntSushi/memchr)
 
 
 ````text

@@ -1566,6 +1566,7 @@ dependencies = [
  "js-sys",
  "ory-kratos-client-wasm",
  "pulldown-cmark",
+ "regex",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
