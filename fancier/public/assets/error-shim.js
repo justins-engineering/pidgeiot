@@ -115,6 +115,18 @@
     return origin !== own;
   }
 
+  // Microsoft's link-scanning crawler (Outlook / Defender for Office 365
+  // Safe Links) opens a linked page in an instrumented browser whose
+  // injected bridge object is gone by the time the page calls back into
+  // it. The rejection that follows names no file and carries no stack, so
+  // isForeign above has nothing to judge it by -- the message is the only
+  // evidence there is. Both the raw form and the placeholders the server's
+  // normalizer leaves in its place are accepted, because this pattern and
+  // capsules::is_link_scanner_noise must agree on exactly one set of
+  // messages; a fancier test runs this literal against that function's
+  // cases.
+  var LINK_SCANNER_NOISE = /Object Not Found Matching Id:([0-9]+|<[a-z]+>), MethodName:([A-Za-z0-9_]+|<[a-z]+>), ParamCount:([0-9]+|<[a-z]+>)/;
+
   function buildReport(kind, message, location, stack) {
     return {
       kind: kind,
@@ -139,6 +151,7 @@
     var extension = /(chrome|moz|safari)-extension:/;
     if (extension.test(location || "") || extension.test(stack || "")) return;
     if (isForeign(location, stack)) return;
+    if (LINK_SCANNER_NOISE.test(message)) return;
     var key = kind + "|" + message + "|" + (location || "");
     if (seen[key]) return;
     seen[key] = true;

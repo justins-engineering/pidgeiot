@@ -67,8 +67,8 @@ pub use errors::{
   Breadcrumb, BreadcrumbKind, ErrorKind, ErrorNoteRequest, ErrorReport, ErrorSource,
   MAX_ERROR_BREADCRUMB_DETAIL_BYTES, MAX_ERROR_BREADCRUMBS, MAX_ERROR_FIELD_BYTES,
   MAX_ERROR_MESSAGE_BYTES, MAX_ERROR_REPORT_BYTES, MAX_ERROR_REPORTS_PER_PAGE,
-  MAX_ERROR_STACK_BYTES, SessionKind, error_signature, error_source, is_valid_build,
-  normalize_message, normalize_route, truncate_bytes,
+  MAX_ERROR_STACK_BYTES, SessionKind, error_signature, error_source, is_link_scanner_noise,
+  is_valid_build, normalize_message, normalize_route, truncate_bytes,
 };
 
 /// The date the published privacy notice last changed, ISO 8601 so it sorts.
