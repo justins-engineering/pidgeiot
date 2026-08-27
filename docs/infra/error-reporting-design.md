@@ -181,10 +181,11 @@ The route's own comment is also directly on point for §3.5:
 
 ### 1.6 Cloudflare RUM collects performance, not errors
 
-`build-release.sh:203-210` bakes the Web Analytics beacon into every prerendered
-page (manual install, auto-injection deliberately off). It collects Core Web
-Vitals and Performance-API resource timings, and explicitly holds no client-side
-state and does no fingerprinting. It captures **no JavaScript errors, no
+Cloudflare injects the Web Analytics beacon at the edge, with EU, UK and Swiss
+visitors excluded (`build-release.sh` used to bake the tag in and no longer does,
+because the exclusion works by not injecting the snippet at all). It collects
+Core Web Vitals and Performance-API resource timings, and explicitly holds no
+client-side state and does no fingerprinting. It captures **no JavaScript errors, no
 exceptions, and no stack traces**. It is not a partial solution here; it is
 orthogonal, and it should be left exactly as it is.
 
@@ -390,7 +391,7 @@ Grouping and "is this fixed?" both need to know which build a report came from.
 (`fancier_bg-dxh7a1e5a63c0523eb1.wasm`) — that hash is a perfect build identity and
 is already unique per release. The build script should write it into a
 `window.__pidgeiot_build` global in the same head-injection pass that already
-writes titles, OG tags and the RUM beacon (`build-release.sh:239-258`), where both
+writes titles and OG tags (`build-release.sh:239-258`), where both
 the JS shim and the Rust hook can read it. No new constant, no `.env` entry, no
 duplicate of something that already exists.
 

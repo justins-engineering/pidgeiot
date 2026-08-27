@@ -96,10 +96,17 @@ pub fn PrivacyPage() -> Element {
             }
           }
           p { class: "mb-4",
-            "Analytics. We use Cloudflare Web Analytics to count page views on our public pages. It sets no cookies, stores nothing on your device, and does not identify you or follow you to other websites; what it records is the page you viewed, the site that linked you to it, your browser, operating system and device type, the country your connection came from, and how quickly the page loaded."
+            "Analytics. We use Cloudflare Web Analytics to count page views on our public pages. It is not served to visitors connecting from the European Economic Area, the United Kingdom or Switzerland, so if you are in one of those places no analytics script runs in your browser at all. For everyone else it sets no cookies, stores nothing on your device, and does not identify you or follow you to other websites; what it records is the page you viewed, the site that linked you to it, your browser, operating system and device type, the country your connection came from, and how quickly the page loaded."
           }
           p {
             "Separately from that script, and whether or not it runs, our edge provider records the request itself: the standard web log described under \"What we collect\", kept for the period given in the retention table below."
+          }
+        }
+
+        LegalSection { id: "privacy-tracking-signals",
+          title: "Do Not Track and Global Privacy Control",
+          p {
+            "Some browsers send a Global Privacy Control or Do Not Track signal on your behalf. There is nothing here for either signal to switch off: we sell no personal data and share none for cross-context advertising, we serve no advertising and no cross-site tracking, and the one analytics script we run is not served at all to visitors in the European Economic Area, the United Kingdom or Switzerland. If that ever changes, honoring the signal becomes something we have to build rather than something we can simply state, and this section will say so."
           }
         }
 

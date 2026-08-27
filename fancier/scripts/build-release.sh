@@ -253,14 +253,15 @@ if violations:
               f"description {desc_len} (need 120-160)")
     sys.exit("seo band violations in page-meta.json")
 
-# Cloudflare Web Analytics (RUM), installed manually: baked into the
-# artifact instead of edge auto-injection so served HTML is byte-identical
-# to what the Playwright hydration checks verify, and local Lighthouse
-# runs measure the same page composition as prod. The token is a public
-# beacon identifier (always visible in page source), not a secret.
-# type=module defers execution; non-render-blocking. Auto-injection must
-# stay OFF in the Cloudflare dashboard or pages get a second beacon.
-RUM = """<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "16f747723d074609936627f7f7daf1cf"}'></script><!-- End Cloudflare Web Analytics -->"""
+# No Cloudflare Web Analytics tag is written here on purpose. The beacon is
+# injected by Cloudflare at the edge instead, under the "excluding visitor
+# data in the EU" setting, which is the only way to keep it away from EEA,
+# UK and Swiss visitors: that exclusion works by Cloudflare declining to
+# inject the snippet, so a tag baked into the artifact could never be
+# excluded from anyone, and the privacy notice could not say it was. What
+# baking it bought, and what moving it costs, is that served HTML is no
+# longer byte-identical to what the hydration checks and local Lighthouse
+# runs measure. Edge auto-injection must therefore stay ON.
 
 # The crash panel: static HTML already in every page, hidden, revealed by
 # error-shim.js. It cannot be a Dioxus component -- after a Rust panic the
@@ -388,7 +389,6 @@ for f in root.rglob("index.html"):
         + (f'<script type="application/ld+json">{JSONLD}</script>' if route == "/" else '')
         + GLOBALS
         + NOTICE_STYLE
-        + RUM
     )
     if "</body>" in html:
         html = html.replace("</body>", PANEL + "</body>", 1)
