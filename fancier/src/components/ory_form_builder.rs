@@ -163,11 +163,46 @@ fn InputOtherNode(
   }
 }
 
+/// Explanatory text shown under a checkbox, keyed by Kratos node name.
+///
+/// Kratos's form node carries one label string and nowhere to put a second
+/// line, but the marketing-consent box needs one: Article 7(3) requires
+/// the withdrawal right to be stated *before* consent is given, not only
+/// on the page where the withdrawal happens. Keyed by node name rather
+/// than by position, which changes whenever a trait is added.
+///
+/// The settings flow says more than the registration flow does, because
+/// that is where someone reading it is deciding whether to turn it off,
+/// and the thing they need to know is what stays switched on.
+fn checkbox_helper(name: &str, in_settings: bool) -> Option<&'static str> {
+  (name == capsules::MARKETING_CONSENT_NODE).then(|| {
+    if in_settings {
+      capsules::MARKETING_CONSENT_WITHDRAWAL
+    } else {
+      capsules::MARKETING_CONSENT_HELPER
+    }
+  })
+}
+
+/// Trait nodes Kratos still renders that the forms should not show.
+///
+/// `subscribed` is the bare boolean `marketing_consent` replaces. It stays
+/// declared in the identity schema so that no existing identity can be
+/// invalidated mid-deprecation, and staying declared is exactly why Kratos
+/// keeps emitting a node for it -- which would put two subscribe-shaped
+/// checkboxes on the registration form, the opposite of the clarity a
+/// consent request needs. Delete this together with the trait; the
+/// procedure is in docs/consent.md.
+fn is_retired_node(name: &str) -> bool {
+  name == "traits.subscribed"
+}
+
 #[component]
 fn InputCheckBoxNode(
   meta: Option<Box<ory_kratos_client_wasm::models::UiText>>,
   attrs: ory_kratos_client_wasm::models::UiNodeInputAttributes,
   id_suffix: String,
+  helper: Option<&'static str>,
 ) -> Element {
   let input_id = format!("{}_{}", attrs.name, id_suffix);
   let label_text = meta.map(|m| m.text).unwrap_or_else(|| attrs.name.clone());
@@ -192,6 +227,11 @@ fn InputCheckBoxNode(
         value: node_value,
       }
       span { class: "ml-4", "{label_text}" }
+    }
+    if let Some(helper) = helper {
+      // Outside the label, so a click on the explanation does not toggle
+      // the box it is explaining.
+      p { class: "text-sm text-base-content/60 mt-1 mb-2", "{helper}" }
     }
   }
 }
@@ -422,9 +462,15 @@ fn MessageNode(message: ory_kratos_client_wasm::models::UiText) -> Element {
 // --- Node Router ---
 
 #[component]
-fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: String) -> Element {
+fn NodeBuilder(
+  nodes: Vec<ory_kratos_client_wasm::models::UiNode>,
+  id_suffix: String,
+  // Only the settings flow passes true; it is what picks the withdrawal
+  // wording over the shorter registration helper.
+  #[props(default)] in_settings: bool,
+) -> Element {
   rsx! {
-    for node in nodes {
+    for node in nodes.into_iter().filter(|n| !matches!(n.attributes.as_ref(), Input(i) if is_retired_node(&i.name))) {
       match *node.attributes {
           Input(i) => {
               // A node of any input type can carry an onload trigger; run it
@@ -506,8 +552,14 @@ fn NodeBuilder(nodes: Vec<ory_kratos_client_wasm::models::UiNode>, id_suffix: St
                       }
                   }
                   ory_kratos_client_wasm::models::ui_node_input_attributes::TypeEnum::Checkbox => {
+                      let helper = checkbox_helper(&i.name, in_settings);
                       rsx! {
-                        InputCheckBoxNode { meta: node.meta.label, attrs: *i, id_suffix: id_suffix.clone() }
+                        InputCheckBoxNode {
+                          meta: node.meta.label,
+                          attrs: *i,
+                          id_suffix: id_suffix.clone(),
+                          helper,
+                        }
                       }
                   }
                   ory_kratos_client_wasm::models::ui_node_input_attributes::TypeEnum::Hidden => {
@@ -613,6 +665,12 @@ pub fn FormBuilder(
   // own heading for that.
   #[props(default)] section_prefix: Option<String>,
 ) -> Element {
+  // Settings is the one flow that passes a section prefix (see the prop's
+  // own comment), so it doubles as "this is the page where a withdrawal
+  // happens" -- which is the wording the consent checkbox needs there.
+  // Reusing it beats a second prop that would have to be kept in step.
+  let in_settings = section_prefix.is_some();
+
   // 1. O(N) Stable Partition: Separate CSRF/Default nodes from Flow nodes
   let (default_nodes, flow_nodes): (Vec<_>, Vec<_>) = ui
     .nodes
@@ -657,6 +715,7 @@ pub fn FormBuilder(
             NodeBuilder {
               nodes: default_nodes,
               id_suffix: "default".to_string(),
+              in_settings,
             }
           }
         }
@@ -674,10 +733,12 @@ pub fn FormBuilder(
             NodeBuilder {
               nodes: default_nodes.clone(),
               id_suffix: format!("{group_enum:?}").to_lowercase(),
+              in_settings,
             }
             NodeBuilder {
               nodes: group_nodes,
               id_suffix: format!("{group_enum:?}").to_lowercase(),
+              in_settings,
             }
           }
         }
@@ -693,15 +754,59 @@ pub fn FormBuilder(
               NodeBuilder {
                 nodes: default_nodes.clone(),
                 id_suffix: format!("{group_enum:?}").to_lowercase(),
+                in_settings,
               }
               NodeBuilder {
                 nodes: group_nodes,
                 id_suffix: format!("{group_enum:?}").to_lowercase(),
+                in_settings,
               }
             }
           }
         }
       }
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{checkbox_helper, is_retired_node};
+
+  #[test]
+  fn the_consent_box_explains_itself_differently_in_each_flow() {
+    let registration = checkbox_helper(capsules::MARKETING_CONSENT_NODE, false)
+      .expect("the consent box carries a helper line wherever it appears");
+    let settings = checkbox_helper(capsules::MARKETING_CONSENT_NODE, true)
+      .expect("the consent box carries a helper line wherever it appears");
+    assert_eq!(registration, capsules::MARKETING_CONSENT_HELPER);
+    assert_eq!(settings, capsules::MARKETING_CONSENT_WITHDRAWAL);
+    // Article 7(3) wants the withdrawal right stated before consent is
+    // given, not only where the withdrawal happens.
+    assert!(registration.contains("turn it off"));
+  }
+
+  #[test]
+  fn no_other_checkbox_grows_a_helper_line() {
+    assert!(checkbox_helper("traits.subscribed", false).is_none());
+    assert!(checkbox_helper("traits.subscribed", true).is_none());
+    assert!(checkbox_helper("remember_me", false).is_none());
+  }
+
+  /// The whole point of the hide-rule is that exactly one node disappears.
+  /// A filter that caught a real field would silently drop it from the
+  /// form, and a trait that never posts is a trait Kratos clears.
+  #[test]
+  fn only_the_deprecated_trait_is_hidden() {
+    assert!(is_retired_node("traits.subscribed"));
+    for kept in [
+      capsules::MARKETING_CONSENT_NODE,
+      "traits.email",
+      "traits.name.first",
+      "csrf_token",
+      "password",
+    ] {
+      assert!(!is_retired_node(kept), "{kept} must still render");
     }
   }
 }
