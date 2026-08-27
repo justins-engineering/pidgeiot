@@ -111,8 +111,35 @@ Each hosted origin serves an [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116)
 - `https://api.pidgeiot.com/.well-known/security.txt`
 - `https://status.pidgeiot.com/.well-known/security.txt`
 
-All three are served from one file in the `pidgeiot` repository, at
-`fancier/public/.well-known/security.txt`. It carries an `Expires` date and
-has to be renewed before that date passes, otherwise the document is stale by
-its own terms. The document is unsigned: RFC 9116 recommends an OpenPGP
-cleartext signature but does not require one.
+All three are served from one source in the `pidgeiot` repository. The text
+lives at `fancier/public/.well-known/security.txt.unsigned`, and the document
+the origins answer with is `fancier/public/.well-known/security.txt`, which is
+that same text under an OpenPGP cleartext signature. A unit test compares the
+two, and the release build runs it, so a served copy that an edit left behind
+fails the build instead of shipping.
+
+The signing key is published at the address the document's `Encryption` field
+names. To check a copy you fetched:
+
+```sh
+curl -s https://pidgeiot.com/.well-known/pgp-key.txt | gpg --import
+curl -s https://pidgeiot.com/.well-known/security.txt | gpg --verify
+```
+
+The document carries an `Expires` date, currently `2027-02-26`, and has to be
+renewed before that date passes, otherwise the document is stale by its own
+terms. Renewing it now means re-signing it too: the signature covers the old
+date, so an edit in place invalidates it. Change the date in the unsigned
+source, then run this from the repository root, where `<fingerprint>` is the
+signing key's:
+
+```sh
+gpg --local-user <fingerprint> --clearsign --yes \
+  --output fancier/public/.well-known/security.txt \
+  fancier/public/.well-known/security.txt.unsigned
+gpg --verify fancier/public/.well-known/security.txt
+```
+
+`--yes` is there because the previous signed document is still in place and
+`gpg` would otherwise stop to ask before replacing it. Commit both files
+together.
