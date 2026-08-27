@@ -17,6 +17,82 @@ truth for wire formats; this document just explains how they're used over HTTP.
 All examples below use placeholder IDs and credentials — `<pigeon_id>`, `<flock_id>`,
 `<device_token>`, etc. Never substitute real secrets into a shared document or commit history.
 
+## Routes at a glance
+
+Every route in this document, in the order it appears below. The **Auth** column uses the
+vocabulary defined in [Two audiences, two auth models](#two-audiences-two-auth-models): a
+dashboard route's marker names the role it needs on top of a valid session, and
+`device token` means a per-pigeon Ed25519 bearer token instead of a session.
+
+| Route | Auth | What it does |
+|---|---|---|
+| [`GET /flocks`](#get-flocks) | session | List the flocks the caller can see |
+| [`POST /flocks`](#post-flocks) | session | Create a personal flock |
+| [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer) | flock owner + target org owner/admin | Move a personal flock into an organization |
+| [`POST /orgs`](#post-orgs) | session | Create an organization, caller as its owner |
+| [`GET /orgs`](#get-orgs) | session | List the caller's organization memberships |
+| [`GET /orgs/:org_id`](#get-orgsorg_id) | any member | Read one org with its members and pending invites |
+| [`PUT /orgs/:org_id`](#put-orgsorg_id) | owner/admin | Rename an org, set its timezone, or both |
+| [`DELETE /orgs/:org_id`](#delete-orgsorg_id) | owner | Delete an org that owns no flocks |
+| [`PUT /orgs/:org_id/members/:user_id`](#put-orgsorg_idmembersuser_id) | owner | Change a member's role |
+| [`DELETE /orgs/:org_id/members/:user_id`](#delete-orgsorg_idmembersuser_id) | owner/admin, or self | Remove a member, or leave the org |
+| [`POST /orgs/:org_id/invites`](#post-orgsorg_idinvites) | owner/admin | Invite an email address at a role |
+| [`GET /orgs/:org_id/invites`](#get-orgsorg_idinvites) | owner/admin | List pending invites |
+| [`DELETE /orgs/:org_id/invites/:invite_id`](#delete-orgsorg_idinvitesinvite_id) | owner/admin | Revoke a pending invite |
+| [`POST /invites/accept`](#post-invitesaccept) | session | Join an org by redeeming an invite token |
+| [`GET /orgs/:org_id/business-details`](#get-orgsorg_idbusiness-details) | any member | Read the invoicing name and tax registration |
+| [`PUT /orgs/:org_id/business-details`](#put-orgsorg_idbusiness-details) | owner/admin | Replace the invoicing name and tax registration |
+| [`GET /orgs/:org_id/billing`](#get-orgsorg_idbilling) | org: member | Read plan, entitlement and usage against allowance |
+| [`POST /orgs/:org_id/billing/checkout`](#post-orgsorg_idbillingcheckout) | org: manage | Mint a Stripe Checkout URL for a paid tier |
+| [`POST /orgs/:org_id/billing/portal`](#post-orgsorg_idbillingportal) | org: manage | Mint a Stripe billing portal URL |
+| [`PUT /orgs/:org_id/billing/plan`](#put-orgsorg_idbillingplan) | org: manage | Move a live subscription to another tier |
+| [`POST /billing/webhook`](#post-billingwebhook) | Stripe signature required | Stripe's event sink; not a dashboard route |
+| [`POST /flock/pigeons`](#post-flockpigeons) | flock: manage | Provision a pigeon and mint its device credentials |
+| [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id) | member | Read one pigeon, connector secrets stripped |
+| [`GET /pigeons/:pigeon_id/detail`](#get-pigeonspigeon_iddetail) | member | Read one pigeon plus the caller's ACL row and shadow |
+| [`PUT /pigeons/:pigeon_id`](#put-pigeonspigeon_id) | member | Partially update a pigeon |
+| [`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id) | owner | Deprovision a pigeon and wipe its storage |
+| [`POST /pigeons/batch`](#post-pigeonsbatch) | member (per pigeon) | Fetch up to 48 pigeons by id in one request |
+| [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh) | owner | Mint a new keypair, revoking the current token |
+| [`POST /pigeons/:pigeon_id/shell`](#post-pigeonspigeon_idshell) | owner | Run one diagnostic command on a connected device |
+| [`GET /pigeons/:pigeon_id/acl`](#get-pigeonspigeon_idacl) | owner | List every ACL entry on a pigeon |
+| [`POST /pigeons/:pigeon_id/acl`](#post-pigeonspigeon_idacl) | owner | Grant or change one ACL entry |
+| [`GET /pigeons/:pigeon_id/shadow`](#get-pigeonspigeon_idshadow) | member | Read the desired/reported config pair |
+| [`PUT /pigeons/:pigeon_id/shadow`](#put-pigeonspigeon_idshadow) | member | Set a new target config; also assigns firmware |
+| [`POST /flocks/:flock_id/firmware`](#post-flocksflock_idfirmware) | flock: manage | Upload an image into the flock's firmware catalog |
+| [`GET /flocks/:flock_id/firmware`](#get-flocksflock_idfirmware) | flock: view | List the flock's firmware catalog |
+| [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry) | member | Read the latest value per telemetry key |
+| [`GET /pigeons/:pigeon_id/telemetry/history`](#get-pigeonspigeon_idtelemetryhistory) | member | Query one pigeon's telemetry history |
+| [`GET /flocks/:flock_id/telemetry/history`](#get-flocksflock_idtelemetryhistory) | flock: view | Query telemetry history across a whole flock |
+| [`PUT /pigeons/:pigeon_id/telemetry-endpoint`](#put-pigeonspigeon_idtelemetry-endpoint) | member | Set or clear a line-protocol forwarding target |
+| [`GET /pigeons/:pigeon_id/logs`](#get-pigeonspigeon_idlogs) | member | Download the stored device log chunks |
+| [`PUT /pigeons/:pigeon_id/log-dictionary`](#put-pigeonspigeon_idlog-dictionary) | member | Upload the firmware's log dictionary |
+| [`GET /pigeons/:pigeon_id/log-dictionary`](#get-pigeonspigeon_idlog-dictionary) | member | Read the stored log dictionary |
+| [`DELETE /pigeons/:pigeon_id/log-dictionary`](#delete-pigeonspigeon_idlog-dictionary) | member | Remove the stored log dictionary |
+| [`POST /pigeons/:pigeon_id/alerts`](#post-pigeonspigeon_idalerts) | member | Create an alert scoped to one pigeon |
+| [`GET /pigeons/:pigeon_id/alerts`](#get-pigeonspigeon_idalerts) | member | List a pigeon's own alert definitions |
+| [`GET /pigeons/:pigeon_id/alerts/state`](#get-pigeonspigeon_idalertsstate) | member | Read fired/cleared state for a pigeon's alerts |
+| [`POST /flocks/:flock_id/alerts`](#post-flocksflock_idalerts) | flock: manage | Create an alert covering a whole flock |
+| [`GET /flocks/:flock_id/alerts`](#get-flocksflock_idalerts) | flock: view | List a flock's alert definitions |
+| [`GET /flocks/:flock_id/alerts/state`](#get-flocksflock_idalertsstate) | flock: view | Read fired/cleared state per pigeon in a flock |
+| [`PUT /alerts/:alert_id`](#put-alertsalert_id) | alert owner | Update an alert definition |
+| [`DELETE /alerts/:alert_id`](#delete-alertsalert_id) | alert owner | Delete an alert definition |
+| [`POST /feedback`](#post-feedback) | no auth required (optionally authenticated) | Send the in-app feedback form |
+| [`POST /contact`](#post-contact) | no auth required (optionally authenticated) | Send the public contact form |
+| [`POST /errors`](#post-errors) | no auth required (identity only on the manual JSON path) | Ingest a crash report, or a note about one |
+| [`DELETE /errors`](#delete-errors) | session required | Erase the caller's identified error reports |
+| [`GET /demo/pigeons/:pigeon_id/telemetry`](#get-demopigeonspigeon_idtelemetry) | none | Latest values for the public demo pigeon |
+| [`GET /demo/pigeons/:pigeon_id/telemetry/history`](#get-demopigeonspigeon_idtelemetryhistory) | none | Telemetry history for the public demo pigeon |
+| [`GET /demo/pigeons/:pigeon_id/alerts`](#get-demopigeonspigeon_idalerts) | none | The alert rules the demo page draws its lines from |
+| [`GET\|HEAD /.well-known/api-catalog`](#gethead-well-knownapi-catalog) | no auth required | RFC 9727 linkset for capability discovery |
+| [`GET /device/pigeons/:pigeon_id/shadow`](#get-devicepigeonspigeon_idshadow) | device token | Device reads the config it is meant to apply |
+| [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) | device token | Device reports the config it has applied |
+| [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry) | device token | Device reports readings, flat or batched |
+| [`POST /device/pigeons/:pigeon_id/logs`](#post-devicepigeonspigeon_idlogs) | device token | Device uploads one binary log chunk |
+| [`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware) | device token | Device downloads its assigned image, Range-aware |
+| [`GET /device/pigeons/:pigeon_id/ws`](#get-devicepigeonspigeon_idws) | device token | Device opens its persistent WebSocket |
+| [`GET /internal/device-psk/:pigeon_id`](#get-internaldevice-pskpigeon_id) | service secret required | Terminator resolves an identity to its PSK and token |
+
 ## Two audiences, two auth models
 
 | | Dashboard API | Device API |
@@ -262,6 +338,8 @@ client whose origin matches `ROOT_URL`) unless noted otherwise.
 
 #### `GET /flocks`
 
+**Auth:** session
+
 Lists every flock the caller can see — personal flocks they own, plus every org-owned flock
 of an org they belong to (any role) — each with its member pigeon IDs. `org_id` is `null`
 for personal flocks.
@@ -287,6 +365,8 @@ curl -s https://api.pidgeiot.com/flocks \
 
 #### `POST /flocks`
 
+**Auth:** session
+
 Creates a flock owned by the caller. Body: `capsules::FlockCreateRequest`.
 
 ```sh
@@ -304,6 +384,8 @@ There is no `PUT`/`DELETE /flocks/:id` route today, even though `capsules::Flock
 exists as a type — it isn't wired to anything yet.
 
 #### `POST /flocks/:flock_id/transfer`
+
+**Auth:** flock owner + target org owner/admin
 
 Moves a **personal** flock into an organization (task #12). Body:
 `capsules::FlockTransferRequest` (`{ org_id }`). Requirements, all enforced server-side:
@@ -379,6 +461,8 @@ authorized organization call, which is why they are not.
 
 #### `POST /orgs`
 
+**Auth:** session
+
 Creates an organization; the caller becomes its founding `owner` (an org can never exist
 without one). Body: `capsules::OrganizationCreateRequest`
 (`{ name, business_name?, tax_id?, tax_id_type? }` — the last three optional and defaulting
@@ -400,17 +484,23 @@ any of those organizations is entitled to. Deleting an organization frees its sl
 
 #### `GET /orgs`
 
+**Auth:** session
+
 Lists every org the caller belongs to, with the caller's own role —
 `Vec<capsules::OrganizationMembership>` (`{ organization, role }`).
 
-#### `GET /orgs/:org_id` — any member
+#### `GET /orgs/:org_id`
+
+**Auth:** any member
 
 Returns `capsules::OrganizationDetail`: the org, the caller's role, the full member list
 (each `capsules::OrganizationMember` carries `email` — denormalized at join time — and
 `invited_by`, the per-person audit trail), and pending invites (`invites` is only populated
 for owner/admin callers; plain members get an empty list).
 
-#### `PUT /orgs/:org_id` — owner/admin
+#### `PUT /orgs/:org_id`
+
+**Auth:** owner/admin
 
 Renames the org, sets its timezone, or both. Body:
 `capsules::OrganizationUpdateRequest` (`{ name?, timezone? }`). An absent field is left
@@ -451,18 +541,24 @@ to UTC rather than failing the send.
 The dashboard is unaffected: it renders times in the reader's own browser zone, as it always
 has.
 
-#### `DELETE /orgs/:org_id` — owner
+#### `DELETE /orgs/:org_id`
+
+**Auth:** owner
 
 Deletes the org **only when it owns no flocks** (`409` otherwise — transfer or delete them
 first). Membership and invite rows cascade. Returns `200` with an empty body.
 
-#### `PUT /orgs/:org_id/members/:user_id` — owner
+#### `PUT /orgs/:org_id/members/:user_id`
+
+**Auth:** owner
 
 Changes a member's role. Body: `capsules::OrganizationMemberRoleUpdateRequest`
 (`{ role }`). `409` if it would leave the org ownerless. Returns the updated
 `capsules::OrganizationMember`.
 
-#### `DELETE /orgs/:org_id/members/:user_id` — owner/admin, or self
+#### `DELETE /orgs/:org_id/members/:user_id`
+
+**Auth:** owner/admin, or self
 
 Removes a membership row, which is **the revocation mechanism**: the removed user loses every
 org-granted flock/pigeon right, with no ACL rows to rewrite, since the principal set is loaded
@@ -471,7 +567,9 @@ the removed user's next request; see [Organizations](#organizations) above for w
 never remove owners; anyone may remove themselves (leave); `409` if it would leave the org
 ownerless.
 
-#### `POST /orgs/:org_id/invites` — owner/admin
+#### `POST /orgs/:org_id/invites`
+
+**Auth:** owner/admin
 
 Invites an email address at a given role. Body: `capsules::OrganizationInviteCreateRequest`
 (`{ email, role }`); inviting at role `owner` is itself owner-only. Mints a random 128-bit+
@@ -498,15 +596,21 @@ its way past it and discover the problem when a colleague accepts, which is the 
 find out. `POST /invites/accept` is therefore not gated: the seat was already spent when the
 invite was sent.
 
-#### `GET /orgs/:org_id/invites` — owner/admin
+#### `GET /orgs/:org_id/invites`
+
+**Auth:** owner/admin
 
 Pending (unconsumed, unexpired) invites — `Vec<capsules::OrganizationInvite>`.
 
-#### `DELETE /orgs/:org_id/invites/:invite_id` — owner/admin
+#### `DELETE /orgs/:org_id/invites/:invite_id`
+
+**Auth:** owner/admin
 
 Revokes a pending invite. Idempotent (`200` even if already gone).
 
 #### `POST /invites/accept`
+
+**Auth:** session
 
 Consumes an invite token for the **calling session** (requires an authenticated Kratos
 session; the frontend's `/invite?token=` page routes unauthenticated visitors through
@@ -649,13 +753,17 @@ result is not read back; the org row's status remains what **we** established, a
 checks are not redundant: ours refuses a definitively invalid number before a customer reaches
 Checkout, Stripe's decides the invoice.
 
-#### `GET /orgs/:org_id/business-details` — any member
+#### `GET /orgs/:org_id/business-details`
+
+**Auth:** any member
 
 Returns `capsules::OrganizationBusinessDetails`:
 `{ org_id, business_name, tax_id, tax_id_type, tax_id_status, tax_id_validated_at, tax_id_checked_at }`.
 `404` if no such org; `403` if the caller is not a member.
 
-#### `PUT /orgs/:org_id/business-details` — owner/admin
+#### `PUT /orgs/:org_id/business-details`
+
+**Auth:** owner/admin
 
 Body: `capsules::OrganizationBusinessDetailsRequest`
 (`{ business_name?, tax_id?, tax_id_type }`). **Replaces every field wholesale** — this is a
@@ -784,7 +892,9 @@ How it resolves:
 `GET /orgs/:org_id/billing` reports it as `comp_plan`, set only when the grant is what actually
 decided `effective_plan`. The grant's note is not exposed over the API.
 
-#### `GET /orgs/:org_id/billing` — org: member
+#### `GET /orgs/:org_id/billing`
+
+**Auth:** org: member
 
 Returns `capsules::OrganizationBillingOverview`: the stored `plan`, `subscription_status`,
 whether that status is currently `entitled`, the **`effective_plan`** actually being served
@@ -807,7 +917,9 @@ fleet a little past its device count no longer bills device overage and message 
 single act of growth. The free tier has no billed extras at any device count, so its allowance
 — and the ingest fuse trained on it — is exactly the tier's own 300 K.
 
-#### `POST /orgs/:org_id/billing/checkout` — org: manage
+#### `POST /orgs/:org_id/billing/checkout`
+
+**Auth:** org: manage
 
 Mints a Stripe Checkout session for a paid tier and returns
 `capsules::BillingSessionUrl` (`{ url }`) for the dashboard to redirect to. Body:
@@ -849,7 +961,9 @@ business use), and a price's `tax_behavior` can be set only while it is still `u
 `scripts/stripe-catalog.py` builds a fresh environment's catalog with both in place and, as a
 dry run, checks an existing one; it never modifies an existing Stripe object.
 
-#### `POST /orgs/:org_id/billing/portal` — org: manage
+#### `POST /orgs/:org_id/billing/portal`
+
+**Auth:** org: manage
 
 Mints a Stripe Billing Portal session for the org's existing customer and returns
 `capsules::BillingSessionUrl` (`{ url }`) — card updates, invoice history and cancellation
@@ -858,7 +972,9 @@ multi-product subscription (and every checkout-minted subscription here is one),
 changes go through `PUT /orgs/:org_id/billing/plan` below. `409` if the org has no billing
 account yet (checkout is the flow that creates one); `502` when Stripe is unreachable.
 
-#### `PUT /orgs/:org_id/billing/plan` — org: manage
+#### `PUT /orgs/:org_id/billing/plan`
+
+**Auth:** org: manage
 
 Moves an org with a live subscription to a different paid tier, in place. Body:
 `capsules::BillingPlanChangeRequest` (`{ plan: builder|growth|scale|fleet }`). Returns the
@@ -896,7 +1012,9 @@ Errors: `400` for `perch` (that's a cancellation — use the billing portal) or 
 requested tier, or has no live (`trialing`/`active`/`past_due`) subscription to change;
 `502` when Stripe is unreachable or the catalog is missing a price.
 
-#### `POST /billing/webhook` — Stripe signature required
+#### `POST /billing/webhook`
+
+**Auth:** Stripe signature required
 
 The Stripe event sink (not a dashboard route; authenticated by `Stripe-Signature`
 HMAC verification against the endpoint signing secret, 5-minute replay window, `v1` scheme
@@ -918,7 +1036,9 @@ re-applied.
 
 ### Pigeons
 
-#### `POST /flock/pigeons` — flock: manage
+#### `POST /flock/pigeons`
+
+**Auth:** flock: manage
 
 Creates a pigeon inside a flock. Since task #12 this is gated on the **target flock**: a
 personal flock's owner, or an org owner/admin for an org-owned flock (pre-org behavior never
@@ -1009,7 +1129,9 @@ routes, through `loft`, and as an MQTT CONNECT password alike, and any pigeon th
 pair can complete a PSK handshake with either terminator. The variant records how the pigeon was
 provisioned, and decides which endpoint and credentials the dashboard shows.
 
-#### `GET /pigeons/:pigeon_id` — member
+#### `GET /pigeons/:pigeon_id`
+
+**Auth:** member
 
 Returns `capsules::Pigeon` with the connector token/PSK stripped.
 
@@ -1018,12 +1140,16 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `GET /pigeons/:pigeon_id/detail` — member
+#### `GET /pigeons/:pigeon_id/detail`
+
+**Auth:** member
 
 Same as above plus `acl` (**only the caller's own ACL row**, not the full list — use
 `GET /pigeons/:pigeon_id/acl` for that) and `shadow`. Returns `capsules::PigeonDetail`.
 
-#### `PUT /pigeons/:pigeon_id` — member
+#### `PUT /pigeons/:pigeon_id`
+
+**Auth:** member
 
 Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`flock_id`, `serial`,
 `name`, `tags`, `connector`, `board`) is optional; omitted fields keep their current value
@@ -1037,14 +1163,18 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -d '{"name":"Coop Sensor 1 (renamed)"}'
 ```
 
-#### `DELETE /pigeons/:pigeon_id` — owner
+#### `DELETE /pigeons/:pigeon_id`
+
+**Auth:** owner
 
 Wipes the pigeon's Durable Object storage (its ACL, shadow, telemetry, and log tables) and
 deletes its Postgres mirror row. Returns `200` with an empty body. As noted above, subsequent
 `GET`s against the same ID return `403`, not `404` — the Durable Object still exists, just
 empty.
 
-#### `POST /pigeons/batch` — member (per pigeon)
+#### `POST /pigeons/batch`
+
+**Auth:** member (per pigeon)
 
 Bulk-fetches up to 48 pigeons by ID in parallel, silently skipping any the caller isn't
 authorized for or that don't exist (never errors on an individual bad ID — the response is
@@ -1060,7 +1190,9 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/batch \
 
 Returns `Vec<capsules::Pigeon>`.
 
-#### `POST /pigeons/:pigeon_id/token/refresh` — owner
+#### `POST /pigeons/:pigeon_id/token/refresh`
+
+**Auth:** owner
 
 Mints a new Ed25519 keypair and device token for this pigeon, immediately revoking the old
 one (see [Device authentication](#device-authentication-bearer-token) above). Returns the
@@ -1074,7 +1206,9 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/token/refresh \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `POST /pigeons/:pigeon_id/shell` — owner (task #34, v1)
+#### `POST /pigeons/:pigeon_id/shell`
+
+**Auth:** owner
 
 Runs one diagnostic command on the device and returns its output — a remote shell relayed
 over the pigeon's existing device WebSocket connection (see [`GET
@@ -1122,7 +1256,9 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/shell \
 Roles are free-form strings; `"owner"` is the only one dovecote treats specially. Both ACL
 routes require the caller to already hold the `"owner"` role on this pigeon.
 
-#### `GET /pigeons/:pigeon_id/acl` — owner
+#### `GET /pigeons/:pigeon_id/acl`
+
+**Auth:** owner
 
 Lists every ACL entry for the pigeon (`Vec<capsules::PigeonAcl>`), not just the caller's own
 row.
@@ -1132,7 +1268,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/acl \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `POST /pigeons/:pigeon_id/acl` — owner
+#### `POST /pigeons/:pigeon_id/acl`
+
+**Auth:** owner
 
 Upserts an ACL entry (insert, or update the role if `entity_id` already has one). Body:
 `capsules::PigeonAclUpdateRequest` (`{ entity_id, role }`). Returns the entry you just set as
@@ -1161,7 +1299,9 @@ JSON objects (`serde_json::Value`). In every *response*, they come back as `caps
 second `JSON.parse()` (or equivalent) on those two fields specifically. This is a deliberate
 wire-format choice (see `capsules::PigeonShadow`'s doc comment), not a bug.
 
-#### `GET /pigeons/:pigeon_id/shadow` — member
+#### `GET /pigeons/:pigeon_id/shadow`
+
+**Auth:** member
 
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
@@ -1181,7 +1321,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
 (`updated_at` is intentionally a raw unix-seconds integer here, not RFC 3339 — it's parsed by
 device-side Zephyr firmware, where a minimal wire size matters.)
 
-#### `PUT /pigeons/:pigeon_id/shadow` — member
+#### `PUT /pigeons/:pigeon_id/shadow`
+
+**Auth:** member
 
 Sets a new `target_config`, bumping `target_version`. Body: `capsules::PigeonShadowUpdateRequest`
 (`{ target_config: <any JSON object> }`).
@@ -1263,7 +1405,11 @@ duplicated per-pigeon. The binary itself lives in R2, content-addressed by `sha2
 (`firmware/<sha256>.bin`); only metadata lives in Postgres. A pigeon's *assigned* firmware is a
 separate, per-pigeon concern set via its own shadow (see above), not here.
 
-#### `POST /flocks/:flock_id/firmware?version=<string>&board=<string>` — flock: manage
+#### `POST /flocks/:flock_id/firmware`
+
+**Auth:** flock: manage
+
+**Query:** `version=<string>&board=<string>`, both required
 
 Uploads a firmware image. The request body **is** the image, sent as raw bytes (like
 `POST /device/pigeons/:pigeon_id/logs`, not wrapped in JSON). `size` and `sha256` are always
@@ -1305,7 +1451,9 @@ curl -s -X POST 'https://api.pidgeiot.com/flocks/<flock_id>/firmware?version=0.1
 
 (`capsules::FirmwareImage`.)
 
-#### `GET /flocks/:flock_id/firmware` — flock: view
+#### `GET /flocks/:flock_id/firmware`
+
+**Auth:** flock: view
 
 Lists every firmware image uploaded for this flock, newest first. Same per-item shape as the
 `POST` response above.
@@ -1402,7 +1550,9 @@ applied), as is one carrying a key over 128 bytes or a value over 1024 bytes. Fo
 the `pigeon` device library's own per-report ceiling (`CONFIG_PIGEON_TELEMETRY_MAX_KEYS`)
 defaults to 8 and maxes out at 64, and it truncates keys at 31 bytes and values at 127.
 
-#### `GET /pigeons/:pigeon_id/telemetry` — member
+#### `GET /pigeons/:pigeon_id/telemetry`
+
+**Auth:** member
 
 Latest value per key, straight from the pigeon's own Durable Object (not Postgres) — always
 fresh, but no history.
@@ -1421,7 +1571,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry \
 
 (`Vec<capsules::TelemetryLatest>`.)
 
-#### `GET /pigeons/:pigeon_id/telemetry/history` — member
+#### `GET /pigeons/:pigeon_id/telemetry/history`
+
+**Auth:** member
 
 Time-series read from Postgres. All query params are optional:
 
@@ -1467,7 +1619,7 @@ one report backing it. `count` is how many reports landed in the bucket, not how
 were numeric. There is no truncation here and no `X-Telemetry-Truncated` header: bucketing bounds
 the response by construction, so there's nothing to cut.
 
-#### Raw mode
+##### Raw mode
 
 `?raw=true` gets the pre-bucketing shape instead: a flat `TelemetryHistoryPoint` per key per
 report, capped at `capsules::TELEMETRY_HISTORY_MAX_POINTS` = 5000 points, byte-identical to this
@@ -1522,7 +1674,9 @@ takes precedence over the platform default in both directions (write and, indire
 overridden pigeon's data never lands in the platform's own history store at all, only at the URL
 you configured).
 
-#### `GET /flocks/:flock_id/telemetry/history` — flock: view
+#### `GET /flocks/:flock_id/telemetry/history`
+
+**Auth:** flock: view
 
 Same shape and query params as above (bucketed by default, `raw=true` for the flat/capped shape),
 across every pigeon in the flock. Unlike the pigeon-scoped route, this checks *flock*-level access
@@ -1536,7 +1690,9 @@ curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `PUT /pigeons/:pigeon_id/telemetry-endpoint` — member
+#### `PUT /pigeons/:pigeon_id/telemetry-endpoint`
+
+**Auth:** member
 
 Sets or clears a per-pigeon forwarding target: when configured, every telemetry report for
 this pigeon is forwarded as an **InfluxDB line protocol v2 HTTP write** (GreptimeDB-compatible)
@@ -1580,7 +1736,9 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry-endpoint \
 
 ### Logs
 
-#### `GET /pigeons/:pigeon_id/logs` — member
+#### `GET /pigeons/:pigeon_id/logs`
+
+**Auth:** member
 
 Returns every currently-stored device log chunk for this pigeon, oldest first, as
 base64-encoded binary (see [device logs](#post-devicepigeonspigeon_idlogs) below for what's
@@ -1617,7 +1775,9 @@ schema as opaque — Zephyr's tooling and the dashboard's decoder are the consum
 backend. All three routes are **member**-gated (any ACL row on the pigeon), same bar as
 `GET /pigeons/:pigeon_id/logs`.
 
-#### `PUT /pigeons/:pigeon_id/log-dictionary` — member
+#### `PUT /pigeons/:pigeon_id/log-dictionary`
+
+**Auth:** member
 
 Uploads (or replaces) this pigeon's dictionary. The request body **is** the
 `log_dictionary.json` document, sent as raw bytes (like the firmware upload, not wrapped in an
@@ -1639,7 +1799,9 @@ found inside the uploaded document (`null` where absent):
 { "size": 11913, "build_id": "v4.4.1", "version": 3 }
 ```
 
-#### `GET /pigeons/:pigeon_id/log-dictionary` — member
+#### `GET /pigeons/:pigeon_id/log-dictionary`
+
+**Auth:** member
 
 Returns the stored dictionary verbatim (`Content-Type: application/json` — the raw Zephyr
 database document, **not** a capsules type). `404` if none has been uploaded for this pigeon.
@@ -1649,7 +1811,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/log-dictionary \
   -H 'Cookie: ory_kratos_session=<session_token>' -o log_dictionary.json
 ```
 
-#### `DELETE /pigeons/:pigeon_id/log-dictionary` — member
+#### `DELETE /pigeons/:pigeon_id/log-dictionary`
+
+**Auth:** member
 
 Removes the stored dictionary. Returns `200` with an empty body; idempotent (deleting when
 none exists is still `200`). Deleting the pigeon itself also best-effort removes its stored
@@ -1692,7 +1856,9 @@ one of the caller's own **verified** Kratos email addresses (`400` otherwise, so
 can't turn this into an arbitrary spam relay). Times in the notification follow the owning
 organization's zone, described under [Email timestamps](#email-timestamps).
 
-#### `POST /pigeons/:pigeon_id/alerts` — member
+#### `POST /pigeons/:pigeon_id/alerts`
+
+**Auth:** member
 
 Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel }`;
 `severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`).
@@ -1726,7 +1892,9 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
 (`capsules::AlertDefinition`, `201`. A flock-scoped alert's `scope` is `{"Flock":"<flock_uuid>"}`
 instead.)
 
-#### `GET /pigeons/:pigeon_id/alerts` — member
+#### `GET /pigeons/:pigeon_id/alerts`
+
+**Auth:** member
 
 Every alert scoped directly to this pigeon, newest first — **not** flock-scoped alerts that
 happen to cover it (see [`GET /flocks/:flock_id/alerts`](#get-flocksflock_idalerts) for those).
@@ -1737,7 +1905,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `GET /pigeons/:pigeon_id/alerts/state` — member
+#### `GET /pigeons/:pigeon_id/alerts/state`
+
+**Auth:** member
 
 Current fired/cleared status for every alert scoped directly to this pigeon — a separate route
 from the definitions list above because state (`capsules::AlertState`) and definitions
@@ -1768,7 +1938,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts/state \
 casing, distinct from the lowercase `"ok"`/`"firing"` `alert_state.status` is stored as in
 Postgres; `first_true_at`/`last_notified_at` are `null` while `"Ok"` and never having fired.)
 
-#### `POST /flocks/:flock_id/alerts` — flock: manage
+#### `POST /flocks/:flock_id/alerts`
+
+**Auth:** flock: manage
 
 Same body/response shape as the pigeon-scoped `POST` above, with `scope: {"Flock":"<flock_id>"}`
 in the response. Stricter than pigeon-scoped creation: only a flock **manager** (personal owner,
@@ -1784,7 +1956,9 @@ curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/alerts \
   -d '{"name":"Fleet offline","condition":{"DeviceState":{"state":"Offline","min_duration_secs":300}},"severity":"Critical","channel":{"Email":{"to":null}}}'
 ```
 
-#### `GET /flocks/:flock_id/alerts` — flock: view
+#### `GET /flocks/:flock_id/alerts`
+
+**Auth:** flock: view
 
 Every alert scoped to this flock, newest first, as `Vec<capsules::AlertDefinition>`.
 
@@ -1793,7 +1967,9 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `GET /flocks/:flock_id/alerts/state` — flock: view
+#### `GET /flocks/:flock_id/alerts/state`
+
+**Auth:** flock: view
 
 Flock counterpart of the pigeon-scoped state route above. A flock-scoped alert can appear more
 than once here — one `AlertState` row per pigeon currently in the flock that the evaluator has
@@ -1807,7 +1983,9 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts/state \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 
-#### `PUT /alerts/:alert_id` — alert owner
+#### `PUT /alerts/:alert_id`
+
+**Auth:** alert owner
 
 Partial update — an omitted field keeps its current value. Body:
 `capsules::AlertDefinitionUpdateRequest` (`{ name?, condition?, severity?, channel?, enabled? }`).
@@ -1823,14 +2001,18 @@ curl -s -X PUT https://api.pidgeiot.com/alerts/<alert_id> \
   -d '{"enabled":false}'
 ```
 
-#### `DELETE /alerts/:alert_id` — alert owner
+#### `DELETE /alerts/:alert_id`
+
+**Auth:** alert owner
 
 Same ownership gate as `PUT` above. Returns `200` with an empty body. `alert_state` rows for this
 definition cascade-delete via the table's own foreign key.
 
 ### Feedback
 
-#### `POST /feedback` — **no auth required** (optionally authenticated)
+#### `POST /feedback`
+
+**Auth:** no auth required (optionally authenticated)
 
 The dashboard's feedback form. Unlike every other Dashboard route, this one does **not**
 require a Kratos session — public marketing pages link the same form. If a valid session cookie
@@ -1870,7 +2052,9 @@ abuse appears.
 
 ### Contact
 
-#### `POST /contact` — **no auth required** (optionally authenticated)
+#### `POST /contact`
+
+**Auth:** no auth required (optionally authenticated)
 
 The public contact form at `https://pidgeiot.com/contact/`, which every "Contact" and "Talk to
 us" link on the site now opens. Unauthenticated by definition: the people it exists for do not
@@ -1961,7 +2145,9 @@ stays silent rather than becoming a `403` that names the control that fired.
 
 ### Error reporting
 
-#### `POST /errors` — **no auth required** (identity only on the manual JSON path)
+#### `POST /errors`
+
+**Auth:** no auth required (identity only on the manual JSON path)
 
 Ingest for the dashboard's automatic crash reports (Rust panic hook, pre-boot JS shim) and
 for the crash screen's manual "tell us what happened" note. Rate-limited per IP (20/60s,
@@ -2019,7 +2205,9 @@ Server-side handling (all client fields are treated as hostile):
 Rejections: `400` (unsupported `Content-Type`, invalid JSON, unknown fields on the text/plain
 envelope, empty `note`), `413` (body or `note` over cap), `429` (rate limit).
 
-#### `DELETE /errors` — session required
+#### `DELETE /errors`
+
+**Auth:** session required
 
 Erases every identified error-report row (`user_id` + `report_note`) belonging to the caller;
 automatic reports never stored an identity, so there is nothing of theirs to erase there.
@@ -2043,7 +2231,11 @@ currently-provisioned pigeon that just isn't the demo one — gets a plain **404
 surface never confirms or denies whether an arbitrary id exists. `DEMO_PIGEON_IDS` is empty in
 `dev`, so these routes 404 for every id there.
 
-### `GET /demo/pigeons/:pigeon_id/telemetry`
+### Demo telemetry
+
+#### `GET /demo/pigeons/:pigeon_id/telemetry`
+
+**Auth:** none
 
 Latest-value read — identical response shape to the dashboard's
 [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry) above (`Vec<capsules::
@@ -2054,7 +2246,9 @@ check (`objects/pigeons.rs::get_telemetry_latest_demo`).
 curl -s https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry
 ```
 
-### `GET /demo/pigeons/:pigeon_id/telemetry/history`
+#### `GET /demo/pigeons/:pigeon_id/telemetry/history`
+
+**Auth:** none
 
 History read — same query params and response shape (bucketed by default,
 `Vec<capsules::TelemetryHistoryBucket>`; `raw=true` for the flat/capped
@@ -2066,7 +2260,11 @@ without the ACL probe.
 curl -s "https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/telemetry/history?key=temp_c"
 ```
 
-### `GET /demo/pigeons/:pigeon_id/alerts`
+### Demo alerts
+
+#### `GET /demo/pigeons/:pigeon_id/alerts`
+
+**Auth:** none
 
 The alerts the platform is really enforcing on the demo pigeon, so the demo page can draw a
 threshold line from the rule itself rather than from a number written into the page.
@@ -2116,7 +2314,11 @@ curl -s https://api.pidgeiot.com/demo/pigeons/<demo_pigeon_id>/alerts
 
 ## Discovery
 
-### `GET|HEAD /.well-known/api-catalog` — **no auth required**
+### API catalog
+
+#### `GET|HEAD /.well-known/api-catalog`
+
+**Auth:** no auth required
 
 An [RFC 9727](https://www.rfc-editor.org/info/rfc9727) API catalog: a machine-readable
 linkset describing this API host, for agents and crawlers doing capability discovery
@@ -2163,7 +2365,11 @@ A copy of this catalog (anchored at the frontend origin) is also served statical
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
 `Authorization: Bearer <device_token>` — see [Device authentication](#device-authentication-bearer-token). None of these accept or check a Kratos session.
 
-### `GET /device/pigeons/:pigeon_id/shadow`
+### Device shadow
+
+#### `GET /device/pigeons/:pigeon_id/shadow`
+
+**Auth:** device token
 
 Reads the current shadow — same shape as the dashboard's `GET /pigeons/:pigeon_id/shadow`
 above (same `JsonString`-wrapped-fields caveat applies).
@@ -2173,7 +2379,9 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/shadow \
   -H 'Authorization: Bearer <device_token>'
 ```
 
-### `POST /device/pigeons/:pigeon_id/shadow`
+#### `POST /device/pigeons/:pigeon_id/shadow`
+
+**Auth:** device token
 
 Device report-back: confirms `target_config` was applied. Body:
 `capsules::PigeonShadowReportRequest` — `{ current_config: <JSON object>, current_version: <int> }`.
@@ -2198,7 +2406,11 @@ free-tier allowance fuse (see the telemetry route below) once that allowance is 
 check runs inside the Durable Object, after the bearer token is verified and before the report
 is stored, so a refused report is neither stored nor counted.
 
-### `POST /device/pigeons/:pigeon_id/telemetry`
+### Device telemetry
+
+#### `POST /device/pigeons/:pigeon_id/telemetry`
+
+**Auth:** device token
 
 Reports telemetry, in either of two body shapes.
 
@@ -2292,7 +2504,11 @@ synchronously in one round trip and returns:
 (the metrics you just sent, echoed back — for a batch, the merged newest-value-per-key union of
 every reading in it).
 
-### `POST /device/pigeons/:pigeon_id/logs`
+### Device logs
+
+#### `POST /device/pigeons/:pigeon_id/logs`
+
+**Auth:** device token
 
 Ingests one binary log chunk — the request body **is** the chunk, sent as raw bytes (not
 wrapped in JSON, no base64 encoding needed on the way in — that only happens on the read side,
@@ -2315,7 +2531,11 @@ curl -s -X POST https://api.pidgeiot.com/device/pigeons/<pigeon_id>/logs \
   --data-binary @log-chunk.bin
 ```
 
-### `GET /device/pigeons/:pigeon_id/firmware`
+### Device firmware
+
+#### `GET /device/pigeons/:pigeon_id/firmware`
+
+**Auth:** device token
 
 Downloads the firmware image currently assigned to **this pigeon's own shadow**
 (`target_config.firmware` — see [Shadow](#shadow) above). There's no version/sha256 path
@@ -2349,7 +2569,11 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
   -o chunk0.bin
 ```
 
-### `GET /device/pigeons/:pigeon_id/ws`
+### Device WebSocket
+
+#### `GET /device/pigeons/:pigeon_id/ws`
+
+**Auth:** device token
 
 Upgrades to a persistent WebSocket — the real-time channel for non-cellular (WiFi/mains-powered)
 devices (task #32), replacing the poll (`GET .../shadow`) + report (`POST .../shadow`,
@@ -2497,6 +2721,8 @@ first-party Rust service in its own repo, `github.com/justins-engineering/loft`)
 | DTLS 1.2 / UDP (RFC 7252) | `coaps://` | The **primary** device transport — cheapest secure wake-and-send for PSM'd cellular devices. CON and NON both supported; piggybacked ACK responses; duplicate CONs get the original response replayed, not re-executed. |
 | TLS 1.2 / TCP (RFC 8323) | `coaps+tcp://` | For device builds compiled with the TCP transport — same authority as the minted `coaps://` endpoint, scheme substituted. The terminator sends its CSM (7.01) after the handshake and answers Ping (7.02) with Pong (7.03), but tolerates minimal clients that never send a CSM of their own. |
 
+### PSK authentication
+
 **Authentication is the PSK handshake itself.** Both listeners accept only PSK ciphersuites
 (`TLS_PSK_WITH_AES_128_CCM_8` preferred, GCM/CBC-SHA256 fallbacks; TLS 1.2 — no certificates
 anywhere). The PSK identity is the pigeon's id, and the PSK key is the raw UTF-8 bytes of
@@ -2516,6 +2742,8 @@ validity. The device bearer token may additionally appear in a `Uri-Query` optio
 (`auth=<token>`, the `~/pigeon` client's current shape) — it's ignored; the
 handshake-authenticated secret is what's forwarded upstream.
 
+### Resource map
+
 **Resource map** (Uri-Path mirrors the HTTP paths 1:1):
 
 | CoAP request | HTTP route behind it | Response |
@@ -2530,6 +2758,8 @@ Status mapping for errors: HTTP 400/401/403/404/405/413 → CoAP 4.00/4.01/4.03/
 upstream 5xx → 5.02 Bad Gateway; dovecote unreachable → 5.04 Gateway Timeout. Error payloads
 carry the upstream diagnostic text (capped).
 
+### Block-wise transfer
+
 **Block-wise transfer (RFC 7959).** Firmware downloads are always served Block2-wise (1024-byte
 blocks max, szx ≤ 6; BERT szx 7 is down-negotiated to 6): each Block2 request maps directly to
 an HTTP `Range` request against dovecote — block N = `bytes=N*size-(N*size+size-1)` — so the
@@ -2539,6 +2769,8 @@ firmware GET without a Block2 option gets block 0 with the more-bit set (spontan
 Large JSON responses are spontaneously Block2'd over UDP only (>1024 bytes; TCP frames are sent
 whole, matching the minimal `~/pigeon` client). POST bodies may be sent Block1-wise (2.31
 Continue per intermediate block; 64 KiB reassembly cap; 4.08 on a broken sequence).
+
+### Client examples
 
 ```sh
 # libcoap client, DTLS PSK over UDP — note -k takes the RAW secret string
@@ -2554,6 +2786,8 @@ coap-client -m post -u <pigeon_id> -k '<tls_psk_secret>' \
   -t application/json -e '{"temp":"21.5"}' \
   "coaps://coap.pidgeiot.com/device/pigeons/<pigeon_id>/telemetry"
 ```
+
+### Connection ID
 
 **Connection ID (RFC 9146) is supported.** The DTLS listener runs mbedTLS with CID enabled, so
 a PSM/NAT'd cellular device whose NAT mapping dies during sleep can keep its DTLS association
@@ -2572,6 +2806,8 @@ keepalive, and every publish becomes one of the HTTP device routes above, carryi
 own bearer token. It holds no per-pigeon state and stores nothing, so authorization is still the
 owning Durable Object's, exactly as for a direct HTTPS device.
 
+### Listener and handshakes
+
 **One TLS listener, two handshakes, no cleartext.** There is no port 1883 and no unencrypted
 listener in any deployment shape: the CONNECT password is a device token, and that rule is what
 keeps it off the wire. The ClientHello decides which credential is used:
@@ -2588,6 +2824,8 @@ mode it resolves identity → (PSK, token) through
 [`GET /internal/device-psk/:pigeon_id`](#service-internal-api) at handshake time, then opens the
 same socket. Wherever an identity appears more than once (PSK identity, username, client id) all
 of them must agree.
+
+### Topics
 
 **Topics are session-scoped and carry no pigeon id** — the handshake already bound the
 connection to exactly one pigeon, so the id would be redundant weight on every publish. Payloads
@@ -2606,6 +2844,8 @@ the broker keeps: a subscriber gets the current one on SUBACK and a fresh PUBLIS
 `pigeon/#`, all meaning the shadow target; any other filter gets a SUBACK failure for that entry,
 and publishing to an unknown topic closes the connection.
 
+### Quality of service
+
 **QoS 0 and 1 only.** A QoS 1 PUBACK is sent when the upstream route answers, so an ack means
 dovecote accepted the report and nothing is buffered on the broker; QoS 0 is fire-and-forget over
 the already-open WebSocket. QoS 2 is not offered rather than shimmed: true exactly-once needs a
@@ -2615,6 +2855,8 @@ Sessions are stateless (`session_present` is always 0) — the retained shadow g
 device the catch-up a queued session would have. A Last Will is accepted when its topic is one
 this session may publish to, and delivered as an ordinary bridged publish.
 
+### Rotation and deletion
+
 Rotation and deletion reach a live session, in both directions: a bridged publish that answers
 401 ends the session, and `token/refresh` and `delete` close the pigeon's device WebSocket with
 `4004` / `4005` themselves, which ends it even if the device never publishes again. Firmware has
@@ -2622,6 +2864,8 @@ no MQTT surface — the `firmware` key arrives inside the retained shadow and th
 it over
 [`GET /device/pigeons/:id/firmware`](#get-devicepigeonspigeon_idfirmware), which already does
 ranged, resumable chunking.
+
+### Broker endpoint
 
 `MQTT_DEVICE_HOST` (`dovecote/wrangler.toml`) is what points minted endpoints at a broker;
 where an environment leaves it empty the endpoint falls back to that environment's own API host,
@@ -2631,7 +2875,11 @@ so an `Mqtt` pigeon can be provisioned with real credentials before a broker exi
 
 ## Service-internal API
 
-### `GET /internal/device-psk/:pigeon_id` — **service secret required**
+### PSK lookup
+
+#### `GET /internal/device-psk/:pigeon_id`
+
+**Auth:** service secret required
 
 Also served at its original name, `GET /internal/coap-psk/:pigeon_id`. One handler, two paths,
 identical in every respect: the neutral name is what a terminator that is not CoAP asks for, and

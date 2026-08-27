@@ -48,6 +48,8 @@ pub use tar::build_tar;
 mod crypto;
 pub use crypto::sha256_hex;
 
+pub mod api_doc;
+
 pub mod connection_state;
 
 pub mod firmware_repush;
