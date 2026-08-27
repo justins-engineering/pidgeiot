@@ -1,3 +1,6 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
 # PidgeIoT vulnerability disclosure, per RFC 9116.
 #
 # Two files carry this text. security.txt.unsigned is the source anyone
@@ -19,3 +22,11 @@ Canonical: https://pidgeiot.com/.well-known/security.txt
 Canonical: https://api.pidgeiot.com/.well-known/security.txt
 Canonical: https://status.pidgeiot.com/.well-known/security.txt
 Policy: https://github.com/justins-engineering/pidgeiot/blob/main/SECURITY.md
+
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQQq3pNoF4pi7pmzVhXd4co86IP3sgUCao+fQAAKCRDd4co86IP3
+sqDZAQDqfeUMT8CspThiJlVxKhx+Sn7h/bUrkH0xzbc6NuUaPAD/UvA42a/nGDe/
+apA/t/dj5Sw7DR5tzTQl1QdRBON28QM=
+=iH/l
+-----END PGP SIGNATURE-----
