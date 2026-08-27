@@ -170,14 +170,16 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
   response.with_headers(headers).with_cors(&cors)
 }
 
-/// The one copy of the RFC 9116 disclosure document in this repository.
-/// fancier serves the same file as a static asset and the status worker
-/// imports it as a text module, so every origin the file's own `Canonical`
-/// fields name answers with identical bytes. Baking it in at compile time
-/// rather than fetching it keeps the API origin's copy from depending on
-/// the site being up, and makes a drift impossible instead of merely
-/// unlikely. Cross-crate `include_str!` matches how fancier already reads
-/// `docs/api.md` and dovecote's own license inventory.
+/// The served form of the RFC 9116 disclosure document: either a copy of
+/// `security.txt.unsigned` beside it or a cleartext OpenPGP signature over
+/// that source. fancier serves the same file as a static asset and the
+/// status worker imports it as a text module, so every origin the file's
+/// own `Canonical` fields name answers with identical bytes, signature
+/// included. Baking it in at compile time rather than fetching it keeps the
+/// API origin's copy from depending on the site being up, and makes a drift
+/// between origins impossible instead of merely unlikely. Cross-crate
+/// `include_str!` matches how fancier already reads `docs/api.md` and
+/// dovecote's own license inventory.
 const SECURITY_TXT: &str = include_str!("../../fancier/public/.well-known/security.txt");
 
 /// `/.well-known/security.txt` handler, shared by the GET and HEAD
@@ -4909,6 +4911,41 @@ mod tests {
   use super::SECURITY_TXT;
   use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+  /// The editable source `SECURITY_TXT` is a copy of, or a signature over.
+  /// Only the tests read it: the worker serves the signed form, and this is
+  /// here to prove the two still say the same thing.
+  const SECURITY_TXT_SOURCE: &str =
+    include_str!("../../fancier/public/.well-known/security.txt.unsigned");
+
+  /// The lines a reader is meant to act on, from either form of the
+  /// document. RFC 4880's cleartext framework wraps the text in an armor
+  /// header block and a signature block, and escapes every line that opens
+  /// with a dash, so the signed and unsigned forms of one document differ
+  /// byte for byte while carrying identical content.
+  fn payload(document: &str) -> Vec<&str> {
+    let mut lines = document.lines();
+    if document.starts_with("-----BEGIN PGP SIGNED MESSAGE-----") {
+      lines.next();
+      // The armor headers the signer emitted (Hash, and whatever else) run
+      // until the blank line that opens the covered text.
+      for line in lines.by_ref() {
+        if line.trim().is_empty() {
+          break;
+        }
+      }
+    }
+    let mut body: Vec<&str> = lines
+      .take_while(|line| *line != "-----BEGIN PGP SIGNATURE-----")
+      .map(|line| line.strip_prefix("- ").unwrap_or(line))
+      .collect();
+    // The blank line before the signature block belongs to the armor rather
+    // than to the document, and neither does a missing final newline.
+    while body.last().is_some_and(|line| line.trim().is_empty()) {
+      body.pop();
+    }
+    body
+  }
+
   /// Field values for `name`, in file order. RFC 9116 fields are
   /// case-insensitive and separated from their value by a colon.
   fn field(name: &str) -> Vec<&'static str> {
@@ -4974,6 +5011,60 @@ mod tests {
     assert!(
       expires > OffsetDateTime::now_utc(),
       "security.txt has expired: renew Expires in fancier/public/.well-known/security.txt"
+    );
+  }
+  /// The two files are edited in separate steps by separate hands: the text
+  /// changes in the repository, the signature is produced interactively
+  /// against a key the build never sees. Nothing but a comparison catches a
+  /// served copy an edit left behind, and a stale one is worse than an
+  /// unsigned document, because it carries a checkable signature over text
+  /// the project has already replaced.
+  #[test]
+  fn the_served_security_txt_matches_its_unsigned_source() {
+    assert_eq!(
+      payload(SECURITY_TXT),
+      payload(SECURITY_TXT_SOURCE),
+      "fancier/public/.well-known/security.txt no longer matches \
+       security.txt.unsigned: re-copy or re-sign it (see SECURITY.md)"
+    );
+  }
+
+  /// That comparison has to keep holding once the served file is a real
+  /// signature rather than a copy, and nothing here can produce one: signing
+  /// needs a private key that lives nowhere near a build. Wrap the source by
+  /// hand instead, dash escaping included, and check the payload survives.
+  #[test]
+  fn security_txt_in_cleartext_form_reduces_to_the_document_it_covers() {
+    let mut signed = String::from("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n");
+    for line in SECURITY_TXT_SOURCE.lines() {
+      if line.starts_with('-') {
+        signed.push_str("- ");
+      }
+      signed.push_str(line);
+      signed.push('\n');
+    }
+    signed.push_str(
+      "-----BEGIN PGP SIGNATURE-----\n\n\
+       iHUEARYKAB0WIQSm9vSGN0dGVzdGZpeHR1cmVvbmx5AAoJEKb29IY3R0ZX\n\
+       c3RmaXh0dXJlb25seU5vdEFSZWFsU2lnbmF0dXJlAAAAAAAAAAAAAAAAAA==\n\
+       =Ab3d\n\
+       -----END PGP SIGNATURE-----\n",
+    );
+    assert_eq!(payload(&signed), payload(SECURITY_TXT_SOURCE));
+
+    // No line of the document opens with a dash today, so the escape rule
+    // needs a case of its own rather than riding on the fixture above.
+    let escaped = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n\
+                   Contact: mailto:security@pidgeiot.com\n\
+                   - -----BEGIN SOMETHING ELSE-----\n\
+                   -----BEGIN PGP SIGNATURE-----\n\n=Ab3d\n\
+                   -----END PGP SIGNATURE-----\n";
+    assert_eq!(
+      payload(escaped),
+      vec![
+        "Contact: mailto:security@pidgeiot.com",
+        "-----BEGIN SOMETHING ELSE-----",
+      ]
     );
   }
 }
