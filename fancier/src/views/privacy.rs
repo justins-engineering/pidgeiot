@@ -9,7 +9,7 @@ pub fn PrivacyPage() -> Element {
         p { class: "text-sm text-base-content/50 mb-10", "Last updated: August 19, 2026" }
 
         p { class: "text-lg text-base-content/70 leading-relaxed mb-4",
-          "PidgeIoT is operated by Justin's Engineering Services LLC, a Massachusetts limited liability company. This policy describes what data the platform collects, where it lives, and what we do (and deliberately don't do) with it."
+          "This policy describes what the PidgeIoT platform collects, where it lives, how long we keep it, and what we do (and deliberately don't do) with it."
         }
         p { class: "text-lg text-base-content/70 leading-relaxed",
           "Questions about anything here: "
@@ -17,7 +17,18 @@ pub fn PrivacyPage() -> Element {
           "."
         }
 
-        LegalSection { title: "What we collect",
+        LegalSection { id: "privacy-controller", title: "Who is responsible for your data",
+          p { class: "mb-4",
+            "PidgeIoT is operated by Justin's Engineering Services LLC, a Massachusetts limited liability company. For the account you create, the messages you send us, and the diagnostics your browser sends us, we are the controller of your personal data."
+          }
+          p {
+            "For the data your devices and your team put into the platform, you (or the organization you belong to) are the controller and we process it on your instructions under our Data Processing Agreement, which any customer can countersign by emailing "
+            a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
+            "."
+          }
+        }
+
+        LegalSection { id: "privacy-collect", title: "What we collect",
           p { class: "mb-4",
             "Account data. When you register a dashboard account, our self-hosted Ory Kratos identity system stores your email address and a hash of your password. We never store your password in plain text."
           }
@@ -32,16 +43,7 @@ pub fn PrivacyPage() -> Element {
           }
         }
 
-        LegalSection { title: "Where your data lives",
-          p { class: "mb-4",
-            "Account, device, and platform data are stored in managed PostgreSQL and on Cloudflare's edge infrastructure (Workers, Durable Objects, and object storage). All traffic between your browser or devices and the platform is encrypted in transit with TLS."
-          }
-          p {
-            "Device credentials are handled asymmetrically: only a device's public key is ever persisted. The platform cannot recover a device token after it is first shown to you."
-          }
-        }
-
-        LegalSection { title: "What we don't do",
+        LegalSection { id: "privacy-not-doing", title: "What we don't do",
           ul { class: "list-disc ml-6 space-y-2",
             li { "We do not sell your data. Not account data, not telemetry, not anything." }
             li { "We do not run third-party advertising or ad-tracking scripts on this site." }
@@ -49,19 +51,162 @@ pub fn PrivacyPage() -> Element {
           }
         }
 
-        LegalSection { title: "Telemetry forwarding you configure",
+        LegalSection { id: "privacy-transfers",
+          title: "Where your data is processed, and how transfers are protected",
+          p { class: "mb-4",
+            "We are a United States company, and the platform runs on infrastructure in the United States and on a global edge network. All traffic between your browser or your devices and the platform is encrypted in transit with TLS. In plain terms:"
+          }
+          ul { class: "list-disc ml-6 space-y-2 mb-4",
+            li {
+              "Each device's own state (its configuration, its latest readings and its log buffer) lives in a Cloudflare Durable Object that is created near whoever first set the device up, and stays there. For a team in Europe that is usually a European data center, but we do not guarantee it."
+            }
+            li { "Our relational database and our identity database are hosted by Crunchy Bridge on AWS in Northern Virginia (us-east-1)." }
+            li { "Our identity server and our device-transport terminator run on a server in Vint Hill, Virginia." }
+            li { "Our edge provider runs our code in whichever of its data centers receives a request, and its queues and caches have no fixed location." }
+            li { "Billing is handled by Stripe in the United States. Transactional email is sent by a third-party email provider." }
+          }
+          p { class: "mb-4",
+            "If you are in the European Economic Area, the United Kingdom or Switzerland, this means your personal data is transferred to the United States. We rely on the European Commission's Standard Contractual Clauses (Commission Implementing Decision (EU) 2021/914 of 4 June 2021, Module Two), together with the UK International Data Transfer Addendum for UK data and the Swiss adaptations for Swiss data, as the legal basis for that transfer. Those clauses are part of our Data Processing Agreement. We are not certified under the EU-U.S. Data Privacy Framework; some of our service providers are, and we rely on their certification for the part of the processing they do."
+          }
+          p { class: "mb-4",
+            "We do not offer EU data residency today. If you need it, contact us and tell us the requirement."
+          }
           p {
-            "PidgeIoT lets you configure a forwarding endpoint for a pigeon's telemetry. If you do, we send that pigeon's telemetry to the endpoint you configured instead of storing its history with us. That endpoint is chosen and controlled by you: data sent there is governed by whoever operates it, not by this policy."
+            "Device credentials are handled asymmetrically: only a device's public key is ever persisted. The platform cannot recover a device token after it is first shown to you."
           }
         }
 
-        LegalSection { title: "Email",
+        LegalSection { id: "privacy-subprocessors", title: "Service providers we use",
           p {
-            "We send transactional email only: account verification, password recovery, and the alert notifications you configure. Delivery goes through a third-party SMTP provider, which necessarily processes the recipient address and message content in order to deliver it. We do not send marketing email."
+            "We use a small number of service providers to run the platform. The current list, with what each one does, where it processes data, and the transfer safeguard that covers it, forms part of our Data Processing Agreement and is available on request from "
+            a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
+            ". We give customers thirty days' notice by email before we add or replace one."
           }
         }
 
-        LegalSection { title: "Deleting your data",
+        LegalSection { id: "privacy-retention", title: "How long we keep data",
+          p { class: "mb-4",
+            "We keep data for as long as it serves the purpose it was collected for, and no longer. The concrete periods are:"
+          }
+          div { class: "overflow-x-auto",
+            table { class: "table table-sm",
+              thead {
+                tr {
+                  th { class: "align-top", "Data" }
+                  th { class: "align-top", "How long, and what happens then" }
+                }
+              }
+              tbody {
+                RetentionRow {
+                  data: "Your account (email, name, phone if you give one, credentials)",
+                  period: "While your account exists. Deleted when you ask us to delete it.",
+                }
+                RetentionRow { data: "Sign-in sessions", period: "4 hours, then they expire." }
+                RetentionRow {
+                  data: "Verification and recovery codes",
+                  period: "Minutes to hours, and single use. The record that the message was sent stays in the identity system's own log.",
+                }
+                RetentionRow {
+                  data: "Organization invitations",
+                  period: "7 days, and single use, then they expire.",
+                }
+                RetentionRow {
+                  data: "Device configuration, latest readings, device log buffer",
+                  period: "While the device exists, and the log buffer keeps only the newest 200 chunks. Erased when you delete the device.",
+                }
+                RetentionRow {
+                  data: "Telemetry history",
+                  period: "7 days on the free tier, 30 days on Builder, 90 days on Growth, 13 months on Scale and Fleet. Deleted automatically after that.",
+                }
+                RetentionRow {
+                  data: "Firmware images",
+                  period: "While the fleet exists. Removed by us on request.",
+                }
+                RetentionRow {
+                  data: "Billing records (invoices, subscription history)",
+                  period: "As long as tax and accounting law require, held by our payment processor. Deleted at the end of the statutory period.",
+                }
+                RetentionRow {
+                  data: "Contact-form and support messages",
+                  period: "Kept as correspondence you addressed to us. Deleting your account detaches your account identifier from the message rather than deleting the message itself.",
+                }
+                RetentionRow {
+                  data: "Dashboard error reports",
+                  period: "90 days, then deleted automatically. The statistics we keep about error patterns contain no personal data.",
+                }
+                RetentionRow {
+                  data: "Web and API request logs",
+                  period: "7 days, then deleted automatically by our edge provider.",
+                }
+                RetentionRow {
+                  data: "Backups of our databases",
+                  period: "Rotated on our database host's own schedule. Deleted data disappears from a backup when that backup expires.",
+                }
+              }
+            }
+          }
+        }
+
+        LegalSection { id: "privacy-legal-bases", title: "Why we are allowed to process your data",
+          p { class: "mb-4",
+            "If you are in the EEA, the UK or Switzerland, the law requires us to tell you the legal basis for each kind of processing:"
+          }
+          ul { class: "list-disc ml-6 space-y-2",
+            li {
+              strong { "To provide the service you signed up for" }
+              " (creating and securing your account, running your devices, sending you the alerts you configure, billing your organization): performance of a contract (GDPR Article 6(1)(b))."
+            }
+            li {
+              strong { "To keep tax and accounting records" }
+              ", including validating an EU VAT number you give us against the European Commission's VIES register: a legal obligation (Article 6(1)(c))."
+            }
+            li {
+              strong { "To keep the platform secure and working" }
+              " (request logs, rate limiting, anonymous error diagnostics, notifying ourselves of failures): our legitimate interest in running a secure service (Article 6(1)(f)). We have designed these to carry as little personal data as possible; error reports carry no identity unless you choose to attach one."
+            }
+            li {
+              strong { "To answer your messages" }
+              " when you use the contact form or send feedback: our legitimate interest in responding to you, and, where you are asking about becoming a customer, steps you ask us to take before a contract (Article 6(1)(b) and (f))."
+            }
+            li {
+              strong { "Email updates" }
+              ": only with your consent, which you can withdraw at any time (Article 6(1)(a)). We do not send marketing email today."
+            }
+          }
+        }
+
+        LegalSection { id: "privacy-rights", title: "Your rights",
+          p { class: "mb-4",
+            "If you are in the EEA, the UK or Switzerland, you have the right to ask us for access to the personal data we hold about you, to have it corrected or deleted, to restrict or object to how we process it, to receive it in a portable format, and, where we rely on consent, to withdraw that consent. You also have the right to complain to your data protection authority."
+          }
+          p { class: "mb-4", "Much of this you can do yourself:" }
+          ul { class: "list-disc ml-6 space-y-2 mb-4",
+            li {
+              strong { "See and correct" }
+              " your email, name and phone number in account settings."
+            }
+            li {
+              strong { "Delete" }
+              " devices, empty organizations, and your own identified error reports in the dashboard."
+            }
+            li {
+              strong { "Take your data with you" }
+              ": every fleet, device, configuration and telemetry history you can see in the dashboard is available as JSON through the API documented on our "
+              Link { class: "link link-secondary", to: crate::Route::ApiReferencePage {}, "API reference" }
+              " page, and you can configure a forwarding endpoint to receive your telemetry continuously."
+            }
+          }
+          p { class: "mb-4",
+            "For anything else, including deleting your account, email "
+            a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
+            " from the address on your account. We will confirm receipt within five business days and answer within one month; if a request is complex we may take up to two further months and will tell you why. We do not charge for this unless a request is clearly unfounded or excessive."
+          }
+          p {
+            "If your data reached us through a customer's use of the platform (for example your organization's account, or a device your employer operates), that customer is the controller and we will pass your request to them."
+          }
+        }
+
+        LegalSection { id: "privacy-deletion", title: "Deleting your data",
           p { class: "mb-4",
             "You can delete your pigeons and flocks directly in the dashboard at any time; deleting a pigeon removes its stored shadow, telemetry, and logs from the platform."
           }
@@ -72,7 +217,30 @@ pub fn PrivacyPage() -> Element {
           }
         }
 
-        LegalSection { title: "Changes to this policy",
+        LegalSection { id: "privacy-automated-decisions", title: "Automated decisions",
+          p {
+            "We do not make decisions about you by automated means that have legal or similarly significant effects. Two automated checks exist and you should know about them: when an organization saves an EU VAT number we validate it against the European Commission's VIES register and will not accept a number the register says is invalid; and when a free-tier account exceeds its monthly message allowance, its devices' uploads are paused until the next period. Both are about the organization's account rather than about you as a person, and either can be raised with us by email."
+          }
+        }
+
+        LegalSection { id: "privacy-forwarding", title: "Telemetry forwarding you configure",
+          p {
+            "PidgeIoT lets you configure a forwarding endpoint for a pigeon's telemetry. If you do, we send that pigeon's telemetry to the endpoint you configured instead of storing its history with us. That endpoint is chosen and controlled by you: data sent there is governed by whoever operates it, not by this policy."
+          }
+        }
+
+        LegalSection { id: "privacy-email", title: "Email",
+          p { class: "mb-4",
+            "We send transactional email only: account verification, password recovery, and the alert notifications you configure. Delivery goes through a third-party SMTP provider, which necessarily processes the recipient address and message content in order to deliver it."
+          }
+          p {
+            "We do not send marketing email. If that ever changes it will be to people who asked for it, every message will carry a way to unsubscribe in one click, and you can tell us to stop at any time by emailing "
+            a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
+            ". You can also object at any time to any processing we base on our legitimate interests, and we will stop unless we have compelling grounds that override your interests."
+          }
+        }
+
+        LegalSection { id: "privacy-changes", title: "Changes to this policy",
           p {
             "As the platform evolves we may update this policy. Changes will be posted on this page with a revised \"Last updated\" date."
           }
@@ -83,11 +251,21 @@ pub fn PrivacyPage() -> Element {
 }
 
 #[component]
-fn LegalSection(title: &'static str, children: Element) -> Element {
+fn LegalSection(id: &'static str, title: &'static str, children: Element) -> Element {
   rsx! {
-    div { class: "mt-12 text-base-content/70 leading-relaxed",
+    section { id, class: "mt-12 text-base-content/70 leading-relaxed",
       h2 { class: "text-2xl md:text-3xl font-bold mb-4 tracking-tight text-base-content", "{title}" }
       {children}
+    }
+  }
+}
+
+#[component]
+fn RetentionRow(data: &'static str, period: &'static str) -> Element {
+  rsx! {
+    tr {
+      th { class: "align-top font-medium text-base-content whitespace-normal", "{data}" }
+      td { class: "align-top whitespace-normal", "{period}" }
     }
   }
 }
