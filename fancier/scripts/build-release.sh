@@ -13,6 +13,31 @@ cd "$(dirname "$0")/.."
 # rsx-body style is convention, not machine-enforced.
 cargo fmt --check -p fancier -p dovecote -p capsules
 
+# Disclosure-document gate, alongside the formatting one and for the same
+# reason: both are cheap, and both are about something the long build below
+# would otherwise ship. The served .well-known/security.txt is either a
+# copy of security.txt.unsigned or a cleartext signature over it, and an
+# ordinary edit touches only one of the two. dovecote already includes both
+# files and compares their payloads, so run that test rather than restating
+# the comparison here; a served copy an edit left behind then fails the
+# build instead of reaching three origins as a signed statement the project
+# no longer makes. The same run covers the OpenPGP key the document's
+# Encryption field sends a reporter to, which ships from the same directory
+# and is checked against its own fingerprint.
+#
+# Two details the obvious one-liner gets wrong. The host target has to be
+# named, because this script runs from fancier/, whose .cargo/config.toml
+# pins the build target to wasm32, and a wasm test binary builds happily
+# and then cannot be executed. And a name filter that matches nothing still
+# exits 0, so hold the output and require that some test actually ran
+# rather than trusting the exit status. Holding it in a variable also keeps
+# the output in order for a build whose log is a redirect to a file, which
+# `tee /dev/stderr` would truncate on open.
+security_txt_gate="$(cargo test -p dovecote \
+  --target "$(rustc -vV | sed -n 's/^host: //p')" --quiet -- security_txt pgp_key 2>&1)"
+printf '%s\n' "$security_txt_gate"
+grep -E 'test result: ok\. [1-9]' <<<"$security_txt_gate" >/dev/null
+
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 
 # Regenerates the /open-source page's crate-license inventory from the
@@ -133,6 +158,13 @@ cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started
 # identical content when dx also copied them, a repair when it didn't.
 # `/. ` form includes dot-directories.
 cp -r ./public/. "$PUBLIC_DIR/"
+
+# The passthrough above copies the whole directory, which includes
+# security.txt's unsigned source. That source is a build input, not a
+# document any origin should answer with: serving an unsigned twin beside
+# the signed disclosure document invites a reader to trust the copy whose
+# signature nobody can check.
+rm -f "$PUBLIC_DIR/.well-known/security.txt.unsigned"
 
 # Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
 # Markdown). These stable .md paths are BOTH directly fetchable AND the

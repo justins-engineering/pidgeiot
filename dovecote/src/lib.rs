@@ -170,14 +170,16 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
   response.with_headers(headers).with_cors(&cors)
 }
 
-/// The one copy of the RFC 9116 disclosure document in this repository.
-/// fancier serves the same file as a static asset and the status worker
-/// imports it as a text module, so every origin the file's own `Canonical`
-/// fields name answers with identical bytes. Baking it in at compile time
-/// rather than fetching it keeps the API origin's copy from depending on
-/// the site being up, and makes a drift impossible instead of merely
-/// unlikely. Cross-crate `include_str!` matches how fancier already reads
-/// `docs/api.md` and dovecote's own license inventory.
+/// The served form of the RFC 9116 disclosure document: either a copy of
+/// `security.txt.unsigned` beside it or a cleartext OpenPGP signature over
+/// that source. fancier serves the same file as a static asset and the
+/// status worker imports it as a text module, so every origin the file's
+/// own `Canonical` fields name answers with identical bytes, signature
+/// included. Baking it in at compile time rather than fetching it keeps the
+/// API origin's copy from depending on the site being up, and makes a drift
+/// between origins impossible instead of merely unlikely. Cross-crate
+/// `include_str!` matches how fancier already reads `docs/api.md` and
+/// dovecote's own license inventory.
 const SECURITY_TXT: &str = include_str!("../../fancier/public/.well-known/security.txt");
 
 /// `/.well-known/security.txt` handler, shared by the GET and HEAD
@@ -4909,11 +4911,153 @@ mod tests {
   use super::SECURITY_TXT;
   use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-  /// Field values for `name`, in file order. RFC 9116 fields are
-  /// case-insensitive and separated from their value by a colon.
-  fn field(name: &str) -> Vec<&'static str> {
-    SECURITY_TXT
+  /// The editable source `SECURITY_TXT` is a copy of, or a signature over.
+  /// Only the tests read it: the worker serves the signed form, and this is
+  /// here to prove the two still say the same thing.
+  const SECURITY_TXT_SOURCE: &str =
+    include_str!("../../fancier/public/.well-known/security.txt.unsigned");
+
+  /// The OpenPGP key the document's `Encryption` field sends a reporter to.
+  /// fancier serves it, not dovecote, but the rest of the document's checks
+  /// live here and a key nobody checks is the failure worth avoiding.
+  const PGP_KEY: &str = include_str!("../../fancier/public/.well-known/pgp-key.txt");
+
+  /// Which key that file is supposed to hold. Recomputed from the key
+  /// material below rather than read off the export's filename, so a
+  /// swapped file has something to fail against.
+  const PGP_KEY_FINGERPRINT: &str = "2ADE9368178A62EE99B35615DDE1CA3CE883F7B2";
+
+  /// The policy the disclosure document's `Policy` field points at. Read
+  /// here only to keep the fingerprint it publishes honest.
+  const SECURITY_POLICY: &str = include_str!("../../SECURITY.md");
+
+  /// The lines a reader is meant to act on, from either form of the
+  /// document. RFC 4880's cleartext framework wraps the text in an armor
+  /// header block and a signature block, and escapes every line that opens
+  /// with a dash, so the signed and unsigned forms of one document differ
+  /// byte for byte while carrying identical content.
+  fn payload(document: &str) -> Vec<&str> {
+    let mut lines = document.lines();
+    if document.starts_with("-----BEGIN PGP SIGNED MESSAGE-----") {
+      lines.next();
+      // The armor headers the signer emitted (Hash, and whatever else) run
+      // until the blank line that opens the covered text.
+      for line in lines.by_ref() {
+        if line.trim().is_empty() {
+          break;
+        }
+      }
+    }
+    let mut body: Vec<&str> = lines
+      .take_while(|line| *line != "-----BEGIN PGP SIGNATURE-----")
+      .map(|line| line.strip_prefix("- ").unwrap_or(line))
+      .collect();
+    // The blank line before the signature block belongs to the armor rather
+    // than to the document, and neither does a missing final newline.
+    while body.last().is_some_and(|line| line.trim().is_empty()) {
+      body.pop();
+    }
+    body
+  }
+
+  /// The bytes inside an ASCII armored block: the base64 body alone,
+  /// without the armor headers, the CRC24 line or the delimiters.
+  fn dearmor(document: &str) -> Vec<u8> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let body: String = document
       .lines()
+      .skip_while(|line| !line.starts_with("-----BEGIN "))
+      .skip(1)
+      // Armor headers, if the exporting tool wrote any, run to the blank
+      // line that opens the body.
+      .skip_while(|line| !line.trim().is_empty())
+      .skip(1)
+      .take_while(|line| !line.starts_with('=') && !line.starts_with("-----END"))
+      .collect();
+
+    STANDARD
+      .decode(body)
+      .expect("an armored block's body must be base64")
+  }
+
+  /// The tag and body of the first OpenPGP packet in `packets`. Both header
+  /// formats RFC 4880 defines are handled, because the framing depends on
+  /// the exporting tool and the key's size rather than on anything this
+  /// repository controls, and a check that only understood today's export
+  /// would report a perfectly good replacement key as the wrong key.
+  fn first_packet(packets: &[u8]) -> (u8, &[u8]) {
+    assert_eq!(packets[0] & 0x80, 0x80, "not an OpenPGP packet header");
+
+    if packets[0] & 0x40 == 0x40 {
+      // New format: the tag is the low six bits, then one, two or five
+      // octets of length.
+      let (start, length) = match packets[1] {
+        first @ 0..=191 => (2, usize::from(first)),
+        first @ 192..=223 => (
+          3,
+          (usize::from(first) - 192) * 256 + usize::from(packets[2]) + 192,
+        ),
+        255 => (
+          6,
+          u32::from_be_bytes([packets[2], packets[3], packets[4], packets[5]]) as usize,
+        ),
+        _ => panic!("a partial length body cannot be a key packet"),
+      };
+      (packets[0] & 0x3F, &packets[start..start + length])
+    } else {
+      // Old format: the tag is bits five to two, the length type the low
+      // two bits.
+      let (start, length) = match packets[0] & 0x03 {
+        0 => (2, usize::from(packets[1])),
+        1 => (3, usize::from(u16::from_be_bytes([packets[1], packets[2]]))),
+        2 => (
+          5,
+          u32::from_be_bytes([packets[1], packets[2], packets[3], packets[4]]) as usize,
+        ),
+        _ => panic!("an indeterminate length body cannot be a key packet"),
+      };
+      ((packets[0] & 0x3C) >> 2, &packets[start..start + length])
+    }
+  }
+
+  /// The v4 fingerprint of an armored key's primary key, as RFC 4880
+  /// defines it: SHA-1 over a constant, the public key packet body's length
+  /// in two octets, and the body. Computed rather than parsed out of the
+  /// file, because the fingerprint is the one property of a key file that a
+  /// wrong file cannot fake.
+  fn primary_key_fingerprint(armored: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    let packets = dearmor(armored);
+    let (tag, body) = first_packet(&packets);
+    assert_eq!(tag, 6, "an exported key opens with its primary key packet");
+
+    let mut hash = Sha1::new();
+    hash.update([0x99]);
+    hash.update(
+      u16::try_from(body.len())
+        .expect("a public key packet is far short of 64KiB")
+        .to_be_bytes(),
+    );
+    hash.update(body);
+    hash
+      .finalize()
+      .iter()
+      .map(|byte| format!("{byte:02X}"))
+      .collect()
+  }
+
+  /// Field values for `name`, in file order. RFC 9116 fields are
+  /// case-insensitive and separated from their value by a colon. Read
+  /// through `payload` so every test below describes the served document
+  /// whether or not it is signed: the armor around a cleartext signature
+  /// carries colon-separated headers of its own, which would otherwise read
+  /// as fields, and dash escaping renames any field whose line opens with a
+  /// dash.
+  fn field(name: &str) -> Vec<&'static str> {
+    payload(SECURITY_TXT)
+      .into_iter()
       .filter(|line| !line.starts_with('#'))
       .filter_map(|line| line.split_once(':'))
       .filter(|(key, _)| key.trim().eq_ignore_ascii_case(name))
@@ -4973,7 +5117,121 @@ mod tests {
     let expires = OffsetDateTime::parse(raw[0], &Rfc3339).expect("Expires must be RFC 3339");
     assert!(
       expires > OffsetDateTime::now_utc(),
-      "security.txt has expired: renew Expires in fancier/public/.well-known/security.txt"
+      "security.txt has expired: renew Expires in \
+       fancier/public/.well-known/security.txt.unsigned and re-sign (see SECURITY.md)"
+    );
+  }
+  /// The two files are edited in separate steps by separate hands: the text
+  /// changes in the repository, the signature is produced interactively
+  /// against a key the build never sees. Nothing but a comparison catches a
+  /// served copy an edit left behind, and a stale one is worse than an
+  /// unsigned document, because it carries a checkable signature over text
+  /// the project has already replaced.
+  #[test]
+  fn the_served_security_txt_matches_its_unsigned_source() {
+    assert_eq!(
+      payload(SECURITY_TXT),
+      payload(SECURITY_TXT_SOURCE),
+      "fancier/public/.well-known/security.txt no longer matches \
+       security.txt.unsigned: re-copy or re-sign it (see SECURITY.md)"
+    );
+  }
+
+  /// That comparison has to keep holding once the served file is a real
+  /// signature rather than a copy, and nothing here can produce one: signing
+  /// needs a private key that lives nowhere near a build. Wrap the source by
+  /// hand instead, dash escaping included, and check the payload survives.
+  #[test]
+  fn security_txt_in_cleartext_form_reduces_to_the_document_it_covers() {
+    let mut signed = String::from("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n");
+    for line in SECURITY_TXT_SOURCE.lines() {
+      if line.starts_with('-') {
+        signed.push_str("- ");
+      }
+      signed.push_str(line);
+      signed.push('\n');
+    }
+    signed.push_str(
+      "-----BEGIN PGP SIGNATURE-----\n\n\
+       iHUEARYKAB0WIQSm9vSGN0dGVzdGZpeHR1cmVvbmx5AAoJEKb29IY3R0ZX\n\
+       c3RmaXh0dXJlb25seU5vdEFSZWFsU2lnbmF0dXJlAAAAAAAAAAAAAAAAAA==\n\
+       =Ab3d\n\
+       -----END PGP SIGNATURE-----\n",
+    );
+    assert_eq!(payload(&signed), payload(SECURITY_TXT_SOURCE));
+
+    // No line of the document opens with a dash today, so the escape rule
+    // needs a case of its own rather than riding on the fixture above.
+    let escaped = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n\
+                   Contact: mailto:security@pidgeiot.com\n\
+                   - -----BEGIN SOMETHING ELSE-----\n\
+                   -----BEGIN PGP SIGNATURE-----\n\n=Ab3d\n\
+                   -----END PGP SIGNATURE-----\n";
+    assert_eq!(
+      payload(escaped),
+      vec![
+        "Contact: mailto:security@pidgeiot.com",
+        "-----BEGIN SOMETHING ELSE-----",
+      ]
+    );
+  }
+
+  /// The `Encryption` field and the key file are edited apart and neither
+  /// knows about the other, so state the address that has to keep naming
+  /// the file the build ships.
+  #[test]
+  fn security_txt_encryption_points_at_the_published_key() {
+    assert_eq!(
+      field("Encryption"),
+      vec!["https://pidgeiot.com/.well-known/pgp-key.txt"],
+      "Encryption must name the key fancier serves"
+    );
+  }
+
+  /// A wrong file at that address is not a broken link. It is a document
+  /// telling a reporter to encrypt to a key nobody here can read, or, in
+  /// the case worth being blunt about, one publishing private key material.
+  /// Both are checked from the bytes rather than from the file's name.
+  #[test]
+  fn pgp_key_is_a_single_public_key_and_the_expected_one() {
+    assert_eq!(
+      PGP_KEY
+        .matches("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+        .count(),
+      1,
+      "pgp-key.txt must hold exactly one public key block"
+    );
+    assert_eq!(
+      PGP_KEY
+        .matches("-----END PGP PUBLIC KEY BLOCK-----")
+        .count(),
+      1,
+      "pgp-key.txt must hold exactly one public key block"
+    );
+    assert!(
+      !PGP_KEY.contains("PRIVATE KEY BLOCK"),
+      "pgp-key.txt must never carry private key material"
+    );
+    assert_eq!(
+      primary_key_fingerprint(PGP_KEY),
+      PGP_KEY_FINGERPRINT,
+      "pgp-key.txt holds a different key than this repository expects"
+    );
+  }
+
+  /// The policy publishes the fingerprint as a second channel, so a reader
+  /// who distrusts the site can compare what it served against what the
+  /// repository says. That only helps while the two agree, and they are
+  /// edited in different files by different hands.
+  #[test]
+  fn pgp_key_fingerprint_is_published_in_the_policy() {
+    let policy: String = SECURITY_POLICY
+      .chars()
+      .filter(|c| !c.is_whitespace())
+      .collect();
+    assert!(
+      policy.contains(PGP_KEY_FINGERPRINT),
+      "SECURITY.md must publish the fingerprint of the key fancier serves"
     );
   }
 }

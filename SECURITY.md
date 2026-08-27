@@ -111,8 +111,54 @@ Each hosted origin serves an [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116)
 - `https://api.pidgeiot.com/.well-known/security.txt`
 - `https://status.pidgeiot.com/.well-known/security.txt`
 
-All three are served from one file in the `pidgeiot` repository, at
-`fancier/public/.well-known/security.txt`. It carries an `Expires` date and
-has to be renewed before that date passes, otherwise the document is stale by
-its own terms. The document is unsigned: RFC 9116 recommends an OpenPGP
-cleartext signature but does not require one.
+All three are served from one source in the `pidgeiot` repository. The text
+lives at `fancier/public/.well-known/security.txt.unsigned`, and the document
+the origins answer with is `fancier/public/.well-known/security.txt`: either a
+copy of that source or the same text under an OpenPGP cleartext signature. A
+unit test compares the two payloads and the release build runs it, so a served
+copy that an edit left behind fails the build instead of shipping.
+
+## OpenPGP key
+
+The document's `Encryption` field names our OpenPGP key, published at
+`https://pidgeiot.com/.well-known/pgp-key.txt`. Its fingerprint is:
+
+```
+2ADE 9368 178A 62EE 99B3  5615 DDE1 CA3C E883 F7B2
+```
+
+Compare that against this policy on GitHub before you trust a copy you
+downloaded from the site, since the site is the thing you might be reporting
+a problem with. The key's user id reads `ops@jes.contact`, which is where
+`security@pidgeiot.com` delivers; it is the right key even though the two
+addresses are spelled differently.
+
+Use it to encrypt a report, and, when the served document carries a signature,
+to check that signature:
+
+```sh
+curl -s https://pidgeiot.com/.well-known/pgp-key.txt | gpg --import
+curl -s https://pidgeiot.com/.well-known/security.txt | gpg --verify
+```
+
+## Renewing Expires
+
+The document carries an `Expires` date, currently `2027-02-26`, and has to be
+renewed before that date passes, otherwise the document is stale by its own
+terms. Change the date in the unsigned source, then bring the served copy back
+into step with it. If the served document is signed, that means signing it
+again: the signature covers the date being renewed, so editing the served file
+in place would leave a signature that no longer verifies. From the repository
+root:
+
+```sh
+gpg --local-user 2ADE9368178A62EE99B35615DDE1CA3CE883F7B2 --clearsign --yes \
+  --output fancier/public/.well-known/security.txt \
+  fancier/public/.well-known/security.txt.unsigned
+gpg --verify fancier/public/.well-known/security.txt
+```
+
+`--yes` is there because the previous document is still in place and `gpg`
+would otherwise stop to ask before replacing it. If the served document is not
+signed, copy the source over it instead. Either way the unit test above fails
+the build until the two match, so nothing ships half renewed.

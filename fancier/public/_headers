@@ -98,3 +98,14 @@
 /.well-known/security.txt
   ! Content-Type
   Content-Type: text/plain; charset=utf-8
+
+# The key security.txt's Encryption field points at, and the one a reader
+# checks its cleartext signature with. Same story as the rule above: the
+# armored key is text, the extension guess gives it a bare text/plain at
+# the edge, and RFC 9116 wants the charset stated. The file itself is not
+# in the repository, because it is an export of a key that lives on the
+# owner's machine (see SECURITY.md); this rule is inert until it is, and
+# the release build's public/ passthrough ships it the moment it appears.
+/.well-known/pgp-key.txt
+  ! Content-Type
+  Content-Type: text/plain; charset=utf-8

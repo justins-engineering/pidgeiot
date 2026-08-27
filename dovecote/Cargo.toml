@@ -48,3 +48,10 @@ js-sys = "0.3.102"
 wasm-bindgen = "0.2.125"
 wasm-bindgen-futures = "0.4.75"
 time-tz = { version = "2", default-features = false, features = ["db"] }
+
+[dev-dependencies]
+# Only the tests want it, and only to recompute the published OpenPGP key's
+# fingerprint from the key's own bytes. RFC 4880 v4 fingerprints are SHA-1
+# by definition, so the sha2 above cannot stand in, and a dev-dependency
+# keeps a hash nothing at runtime needs out of the worker binary.
+sha1 = "0.10"
