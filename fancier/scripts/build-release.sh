@@ -21,7 +21,9 @@ cargo fmt --check -p fancier -p dovecote -p capsules
 # files and compares their payloads, so run that test rather than restating
 # the comparison here; a served copy an edit left behind then fails the
 # build instead of reaching three origins as a signed statement the project
-# no longer makes.
+# no longer makes. The same run covers the OpenPGP key the document's
+# Encryption field sends a reporter to, which ships from the same directory
+# and is checked against its own fingerprint.
 #
 # Two details the obvious one-liner gets wrong. The host target has to be
 # named, because this script runs from fancier/, whose .cargo/config.toml
@@ -32,7 +34,7 @@ cargo fmt --check -p fancier -p dovecote -p capsules
 # the output in order for a build whose log is a redirect to a file, which
 # `tee /dev/stderr` would truncate on open.
 security_txt_gate="$(cargo test -p dovecote \
-  --target "$(rustc -vV | sed -n 's/^host: //p')" --quiet security_txt 2>&1)"
+  --target "$(rustc -vV | sed -n 's/^host: //p')" --quiet -- security_txt pgp_key 2>&1)"
 printf '%s\n' "$security_txt_gate"
 grep -E 'test result: ok\. [1-9]' <<<"$security_txt_gate" >/dev/null
 

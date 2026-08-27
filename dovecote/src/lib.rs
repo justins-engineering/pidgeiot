@@ -4917,6 +4917,16 @@ mod tests {
   const SECURITY_TXT_SOURCE: &str =
     include_str!("../../fancier/public/.well-known/security.txt.unsigned");
 
+  /// The OpenPGP key the document's `Encryption` field sends a reporter to.
+  /// fancier serves it, not dovecote, but the rest of the document's checks
+  /// live here and a key nobody checks is the failure worth avoiding.
+  const PGP_KEY: &str = include_str!("../../fancier/public/.well-known/pgp-key.txt");
+
+  /// Which key that file is supposed to hold. Recomputed from the key
+  /// material below rather than read off the export's filename, so a
+  /// swapped file has something to fail against.
+  const PGP_KEY_FINGERPRINT: &str = "2ADE9368178A62EE99B35615DDE1CA3CE883F7B2";
+
   /// The lines a reader is meant to act on, from either form of the
   /// document. RFC 4880's cleartext framework wraps the text in an armor
   /// header block and a signature block, and escapes every line that opens
@@ -4944,6 +4954,94 @@ mod tests {
       body.pop();
     }
     body
+  }
+
+  /// The bytes inside an ASCII armored block: the base64 body alone,
+  /// without the armor headers, the CRC24 line or the delimiters.
+  fn dearmor(document: &str) -> Vec<u8> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let body: String = document
+      .lines()
+      .skip_while(|line| !line.starts_with("-----BEGIN "))
+      .skip(1)
+      // Armor headers, if the exporting tool wrote any, run to the blank
+      // line that opens the body.
+      .skip_while(|line| !line.trim().is_empty())
+      .skip(1)
+      .take_while(|line| !line.starts_with('=') && !line.starts_with("-----END"))
+      .collect();
+
+    STANDARD
+      .decode(body)
+      .expect("an armored block's body must be base64")
+  }
+
+  /// The tag and body of the first OpenPGP packet in `packets`. Both header
+  /// formats RFC 4880 defines are handled, because the framing depends on
+  /// the exporting tool and the key's size rather than on anything this
+  /// repository controls, and a check that only understood today's export
+  /// would report a perfectly good replacement key as the wrong key.
+  fn first_packet(packets: &[u8]) -> (u8, &[u8]) {
+    assert_eq!(packets[0] & 0x80, 0x80, "not an OpenPGP packet header");
+
+    if packets[0] & 0x40 == 0x40 {
+      // New format: the tag is the low six bits, then one, two or five
+      // octets of length.
+      let (start, length) = match packets[1] {
+        first @ 0..=191 => (2, usize::from(first)),
+        first @ 192..=223 => (
+          3,
+          (usize::from(first) - 192) * 256 + usize::from(packets[2]) + 192,
+        ),
+        255 => (
+          6,
+          u32::from_be_bytes([packets[2], packets[3], packets[4], packets[5]]) as usize,
+        ),
+        _ => panic!("a partial length body cannot be a key packet"),
+      };
+      (packets[0] & 0x3F, &packets[start..start + length])
+    } else {
+      // Old format: the tag is bits five to two, the length type the low
+      // two bits.
+      let (start, length) = match packets[0] & 0x03 {
+        0 => (2, usize::from(packets[1])),
+        1 => (3, usize::from(u16::from_be_bytes([packets[1], packets[2]]))),
+        2 => (
+          5,
+          u32::from_be_bytes([packets[1], packets[2], packets[3], packets[4]]) as usize,
+        ),
+        _ => panic!("an indeterminate length body cannot be a key packet"),
+      };
+      ((packets[0] & 0x3C) >> 2, &packets[start..start + length])
+    }
+  }
+
+  /// The v4 fingerprint of an armored key's primary key, as RFC 4880
+  /// defines it: SHA-1 over a constant, the public key packet body's length
+  /// in two octets, and the body. Computed rather than parsed out of the
+  /// file, because the fingerprint is the one property of a key file that a
+  /// wrong file cannot fake.
+  fn primary_key_fingerprint(armored: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    let packets = dearmor(armored);
+    let (tag, body) = first_packet(&packets);
+    assert_eq!(tag, 6, "an exported key opens with its primary key packet");
+
+    let mut hash = Sha1::new();
+    hash.update([0x99]);
+    hash.update(
+      u16::try_from(body.len())
+        .expect("a public key packet is far short of 64KiB")
+        .to_be_bytes(),
+    );
+    hash.update(body);
+    hash
+      .finalize()
+      .iter()
+      .map(|byte| format!("{byte:02X}"))
+      .collect()
   }
 
   /// Field values for `name`, in file order. RFC 9116 fields are
@@ -5071,6 +5169,49 @@ mod tests {
         "Contact: mailto:security@pidgeiot.com",
         "-----BEGIN SOMETHING ELSE-----",
       ]
+    );
+  }
+
+  /// The `Encryption` field and the key file are edited apart and neither
+  /// knows about the other, so state the address that has to keep naming
+  /// the file the build ships.
+  #[test]
+  fn security_txt_encryption_points_at_the_published_key() {
+    assert_eq!(
+      field("Encryption"),
+      vec!["https://pidgeiot.com/.well-known/pgp-key.txt"],
+      "Encryption must name the key fancier serves"
+    );
+  }
+
+  /// A wrong file at that address is not a broken link. It is a document
+  /// telling a reporter to encrypt to a key nobody here can read, or, in
+  /// the case worth being blunt about, one publishing private key material.
+  /// Both are checked from the bytes rather than from the file's name.
+  #[test]
+  fn pgp_key_is_a_single_public_key_and_the_expected_one() {
+    assert_eq!(
+      PGP_KEY
+        .matches("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+        .count(),
+      1,
+      "pgp-key.txt must hold exactly one public key block"
+    );
+    assert_eq!(
+      PGP_KEY
+        .matches("-----END PGP PUBLIC KEY BLOCK-----")
+        .count(),
+      1,
+      "pgp-key.txt must hold exactly one public key block"
+    );
+    assert!(
+      !PGP_KEY.contains("PRIVATE KEY BLOCK"),
+      "pgp-key.txt must never carry private key material"
+    );
+    assert_eq!(
+      primary_key_fingerprint(PGP_KEY),
+      PGP_KEY_FINGERPRINT,
+      "pgp-key.txt holds a different key than this repository expects"
     );
   }
 }

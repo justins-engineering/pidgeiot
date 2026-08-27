@@ -1,6 +1,6 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-dovecote-MIT) — 136 package(s)
+- [MIT License (MIT)](#license-dovecote-MIT) — 137 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-dovecote-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-dovecote-Apache-2.0) — 5 package(s)
 - [BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)](#license-dovecote-BSD-3-Clause) — 5 package(s)
@@ -505,7 +505,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [sha2 0.10.9](https://github.com/RustCrypto/hashes)
+**Used by:** [sha1 0.10.7](https://github.com/RustCrypto/hashes), [sha2 0.10.9](https://github.com/RustCrypto/hashes)
 
 
 ````text
