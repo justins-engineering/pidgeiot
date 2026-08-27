@@ -134,6 +134,13 @@ cp ./assets/images/getting-started-demo-poster.webp "$PUBLIC_DIR/getting-started
 # `/. ` form includes dot-directories.
 cp -r ./public/. "$PUBLIC_DIR/"
 
+# The passthrough above copies the whole directory, which includes
+# security.txt's unsigned source. That source is a build input, not a
+# document any origin should answer with: serving an unsigned twin beside
+# the signed disclosure document invites a reader to trust the copy whose
+# signature nobody can check.
+rm -f "$PUBLIC_DIR/.well-known/security.txt.unsigned"
+
 # Agent-readable markdown variants (Cloudflare Agent Readiness checklist:
 # Markdown). These stable .md paths are BOTH directly fetchable AND the
 # backing store for real `Accept: text/markdown` content negotiation:
