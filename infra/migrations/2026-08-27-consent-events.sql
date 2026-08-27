@@ -14,11 +14,10 @@
 -- consent existed *before* it was relied on, which is the question a
 -- complaint actually asks.
 --
--- No IP or user-agent column, deliberately, matching
--- 2026-08-24-contact-submissions.sql: recording the address someone
--- consented from is itself processing that would need its own basis and
--- its own line in the privacy notice, and the identity id already
--- identifies the person whose consent this is.
+-- The IP and user-agent columns exist but are left empty: recording the
+-- address someone consented from is processing that needs its own basis
+-- and its own line in the privacy notice, and the identity id already
+-- identifies the person whose consent this is. See the columns below.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Belt-and-suspenders: dovecote's runtime
@@ -75,8 +74,23 @@ CREATE TABLE IF NOT EXISTS consent_events (
   -- reconstructing a disputed event. Nullable because it is a
   -- convenience, not the evidence.
   flow_id UUID,
+  -- The request context, both nullable and both unpopulated today. The
+  -- privacy notice discloses addresses and user agents only as transient
+  -- web logs kept for debugging and abuse prevention; keeping one against
+  -- an identity as consent evidence is a different purpose with a
+  -- different retention, so it needs its own line in the notice before
+  -- the hook starts sending them. The columns exist so that switching
+  -- them on is a config change rather than a migration --
+  -- docs/consent.md has the two jsonnet lines it takes.
+  ip TEXT,
+  user_agent TEXT,
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotent for a database that got the first cut of this file, which
+-- had neither column. Matches dovecote's own `ensure_consent_tables`.
+ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS ip TEXT;
+ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
 -- The only read pattern: the newest event for one identity and purpose,
 -- which is what decides whether an incoming change is a transition worth

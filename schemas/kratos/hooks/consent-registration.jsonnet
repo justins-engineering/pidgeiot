@@ -23,4 +23,14 @@ function(ctx) {
   // own tables, and the field is optional on the receiving side.
   [if std.objectHas(ctx, 'flow') && std.objectHas(ctx.flow, 'id') then 'flow_id']:
     ctx.flow.id,
+
+  // The address and browser the change came from are NOT sent, and the
+  // columns waiting for them stay empty. The privacy notice discloses
+  // addresses and user agents only as transient web logs kept for
+  // debugging and abuse prevention; keeping one against an identity as
+  // consent evidence is a different purpose with a different retention,
+  // so the notice needs a line about it first. When it has one, add:
+  //   ip: ctx.request_headers['X-Forwarded-For'][0],
+  //   user_agent: ctx.request_headers['User-Agent'][0],
+  // and nothing else changes -- dovecote already stores both.
 }

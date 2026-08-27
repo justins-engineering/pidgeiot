@@ -2948,10 +2948,12 @@ Body is `capsules::ConsentHookPayload`:
  "flow_id": "<kratos_flow_uuid>"}
 ```
 
-`source` is one of `registration`, `settings`, `import`; `flow_id` is optional. Neither the
-notice version nor a timestamp is accepted from the caller: dovecote stamps
-`capsules::PRIVACY_NOTICE_VERSION` and the server clock, because a value the caller supplies
-is an assertion rather than a record.
+`source` is one of `registration`, `settings`, `import`. `flow_id`, `ip` and `user_agent` are
+all optional; the shipped hooks send only `flow_id`, and the reason the other two are accepted
+but not sent is in `docs/consent.md`. `ip` and `user_agent` are truncated to
+`capsules::MAX_CONSENT_CONTEXT_BYTES`. Neither the notice version nor a timestamp is accepted
+from the caller: dovecote stamps `capsules::PRIVACY_NOTICE_VERSION` and the server clock,
+because a value the caller supplies is an assertion rather than a record.
 
 - `200 recorded` when a row was appended, `200 unchanged` when the flow left consent where it
   already was. Only transitions are stored, so a hook that fires on an unrelated settings save,
@@ -2989,9 +2991,10 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `JsonString`
 - `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)` | `Mqtt(MqttConfig)`), `CoapPskLookup`
   (service-internal, the `/internal/device-psk/:pigeon_id` response)
-- `ConsentHookPayload`, `ConsentKind`, `ConsentSource`, `PRIVACY_NOTICE_VERSION`,
-  `MARKETING_CONSENT_LABEL` — `capsules/src/consent.rs`, which also holds the transition rule
-  (`consent_transition`) the `/internal/consent` route applies
+- `ConsentHookPayload`, `ConsentKind`, `ConsentSource`, `MARKETING_CONSENT_LABEL`,
+  `MAX_CONSENT_CONTEXT_BYTES` — `capsules/src/consent.rs`, which also holds the transition
+  rule (`consent_transition`) the `/internal/consent` route applies; the notice version it
+  stamps is the crate-root `PRIVACY_NOTICE_VERSION`
 - `MQTT_TLS_PORT`, `MQTT_TOPIC_TELEMETRY`, `MQTT_TOPIC_SHADOW_REPORT`, `MQTT_TOPIC_LOGS`,
   `MQTT_TOPIC_SHADOW_TARGET` — the wire constants the broker mirrors
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,

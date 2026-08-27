@@ -158,7 +158,28 @@ pub struct ConsentHookPayload {
   /// not worth failing a write over.
   #[serde(default)]
   pub flow_id: Option<Uuid>,
+  /// The address the change was made from, if the hook sends one.
+  ///
+  /// Optional in the strong sense: the hook does not send it today, and
+  /// the column it lands in is nullable, because the privacy notice
+  /// discloses addresses and user agents only as transient web logs kept
+  /// for debugging and abuse prevention. Keeping one against an identity
+  /// as consent evidence is a different purpose with a different
+  /// retention, so it needs its own line in the notice first. The field
+  /// exists so that turning it on later is a config change rather than a
+  /// migration. See `docs/consent.md`.
+  #[serde(default)]
+  pub ip: Option<String>,
+  /// The browser the change was made from, on the same terms as `ip`.
+  #[serde(default)]
+  pub user_agent: Option<String>,
 }
+
+/// Longest `ip` or `user_agent` a row will store. Both are caller-supplied
+/// text on a path that only ever appends, so they are bounded here rather
+/// than trusted: the cap is generous next to a real user-agent string and
+/// small next to anything worth truncating.
+pub const MAX_CONSENT_CONTEXT_BYTES: usize = 512;
 
 /// Whether a flow that ended with `granted` should write a row, given the
 /// last event already on file for this identity and purpose.

@@ -32,6 +32,20 @@ The notice version every row is stamped with is `capsules::PRIVACY_NOTICE_VERSIO
 crate root rather than in this module because the privacy page renders the same constant as
 its "Last updated" line: the page and the rows can then never name different notices.
 
+### What a row holds, and what it deliberately does not
+
+`seq`, `identity_id`, `purpose` (`marketing_emails`, named after the trait so the two are
+obviously the same thing), `kind` (`granted`/`withdrawn`), `source`
+(`registration`/`settings`/`import`), `notice_version`, `flow_id`, and `at`.
+
+There are also `ip` and `user_agent` columns, and **they are left empty**. The privacy notice
+discloses addresses and user agents only as transient web logs kept "for debugging and abuse
+prevention"; keeping one against an identity as consent evidence is a different purpose with a
+different retention, so it needs its own line in the notice before the hook starts sending
+them. The columns exist so that switching them on is a config change rather than a migration:
+add two lines to each `.jsonnet` (they are written out in a comment there), and dovecote
+already stores and truncates what arrives.
+
 ### Only transitions are recorded
 
 A registration with the box left alone writes nothing: there is no consent to evidence, and a
@@ -341,3 +355,8 @@ list of email that keeps arriving — is verbatim from
 `pidgeiot-business/eu-paperwork-2026-08/consent-wording.md`, and the shape follows its
 correction to `phases.md`: one flat boolean trait, `subscribed` replaced rather than kept
 alongside, and the evidence in a backend-write-only append-only table.
+
+One thing that document leaves open is settled here rather than by it: it offers the request's
+IP and user agent "if we want them". The columns exist and stay empty, because the privacy
+notice does not yet cover keeping either as consent evidence. See the section on what a row
+holds.
