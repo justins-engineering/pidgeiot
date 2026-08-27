@@ -92,6 +92,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware) | device token | Device downloads its assigned image, Range-aware |
 | [`GET /device/pigeons/:pigeon_id/ws`](#get-devicepigeonspigeon_idws) | device token | Device opens its persistent WebSocket |
 | [`GET /internal/device-psk/:pigeon_id`](#get-internaldevice-pskpigeon_id) | service secret required | Terminator resolves an identity to its PSK and token |
+| [`POST /internal/consent`](#post-internalconsent) | service secret required | Kratos reports a marketing-consent change |
 
 ## Two audiences, two auth models
 
@@ -2921,6 +2922,51 @@ Object), no dashboard/org/flock access of any kind. `loft` caches positives for 
 every request on such a session presents the revoked bearer token and 401s at the DO, so no
 data access outlives the refresh.
 
+### Consent hooks
+
+#### `POST /internal/consent`
+
+**Auth:** service secret required
+
+Records a change of marketing consent. The only legitimate caller is our own Kratos instance,
+whose after-registration and after-settings web hooks post here; `docs/consent.md` holds the
+config block for each environment and the reasoning behind the split between the trait and this
+record.
+
+Authenticated by the `KRATOS_HOOK_SECRET` Worker secret (`wrangler secret put
+KRATOS_HOOK_SECRET`, per environment; dev reads it from the gitignored `dovecote/.dev.vars`),
+presented in an `X-Kratos-Hook-Secret` header rather than `Authorization` because Kratos's
+`api_key` hook auth sends a bare value, not a `Bearer` credential. Compared in constant time,
+and checked before the body is read. An environment with no secret set refuses every call
+(fail closed) — this route writes evidence for a legal claim, so a deploy that forgot the
+secret should record nothing rather than record whatever it is told.
+
+Body is `capsules::ConsentHookPayload`:
+
+```json
+{"identity_id": "<kratos_identity_uuid>", "granted": true, "source": "registration",
+ "flow_id": "<kratos_flow_uuid>"}
+```
+
+`source` is one of `registration`, `settings`, `import`; `flow_id` is optional. Neither the
+notice version nor a timestamp is accepted from the caller: dovecote stamps
+`capsules::PRIVACY_NOTICE_VERSION` and the server clock, because a value the caller supplies
+is an assertion rather than a record.
+
+- `200 recorded` when a row was appended, `200 unchanged` when the flow left consent where it
+  already was. Only transitions are stored, so a hook that fires on an unrelated settings save,
+  or the same hook delivered twice, is a no-op — see
+  `capsules::consent::consent_transition`.
+- `400` for a body that is not a valid payload.
+- `403` for a missing, wrong or unconfigured secret. **Never `401`** — the dashboard reads a
+  401 from this API as "the session is gone" and signs the tab out, so no misconfiguration here
+  may reach that path.
+- `500` if the write itself fails. Kratos is configured with `response.ignore: true`, so a
+  failure is logged on both sides and does not block the registration or settings save that
+  triggered it; the trait still carries the person's choice, and `docs/consent.md` describes
+  the reconciliation.
+
+
 ---
 
 ## Type reference
@@ -2943,6 +2989,9 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `JsonString`
 - `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)` | `Mqtt(MqttConfig)`), `CoapPskLookup`
   (service-internal, the `/internal/device-psk/:pigeon_id` response)
+- `ConsentHookPayload`, `ConsentKind`, `ConsentSource`, `PRIVACY_NOTICE_VERSION`,
+  `MARKETING_CONSENT_LABEL` — `capsules/src/consent.rs`, which also holds the transition rule
+  (`consent_transition`) the `/internal/consent` route applies
 - `MQTT_TLS_PORT`, `MQTT_TOPIC_TELEMETRY`, `MQTT_TOPIC_SHADOW_REPORT`, `MQTT_TOPIC_LOGS`,
   `MQTT_TOPIC_SHADOW_TARGET` — the wire constants the broker mirrors
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,

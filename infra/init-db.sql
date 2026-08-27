@@ -465,6 +465,28 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations
 -- degrades on with "no recipient, log and skip".
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
+-- Marketing-consent history. The Kratos identity trait is the current
+-- state and the person owns it; these rows are the evidence, written only
+-- by dovecote's `POST /internal/consent` and never updated or deleted
+-- while the account exists. Column-by-column reasoning, plus the erasure
+-- and subject-access statements, live in
+-- infra/migrations/2026-08-27-consent-events.sql.
+CREATE TABLE IF NOT EXISTS consent_events (
+  seq BIGSERIAL PRIMARY KEY,
+  -- Kratos identity id. No FK: Kratos owns its own tables.
+  identity_id UUID NOT NULL,
+  -- capsules::MARKETING_EMAIL_PURPOSE today; a second purpose is a new
+  -- value here rather than a new table.
+  purpose TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('granted', 'withdrawn')),
+  source TEXT NOT NULL CHECK (source IN ('registration', 'settings', 'import')),
+  -- The published privacy notice this consent was given against
+  -- (capsules::PRIVACY_NOTICE_VERSION), stamped server-side.
+  notice_version TEXT NOT NULL,
+  flow_id UUID,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;
@@ -500,3 +522,7 @@ CREATE INDEX IF NOT EXISTS idx_contact_submissions_received ON contact_submissio
 -- Partial: the "landed but never mailed" sweep, and almost every row is
 -- notified.
 CREATE INDEX IF NOT EXISTS idx_contact_submissions_unnotified ON contact_submissions(received_at) WHERE notified_at IS NULL;
+-- The only consent read: newest event for one identity and purpose, which
+-- is what decides whether an incoming change is a transition worth
+-- recording. DESC so that is a one-row backwards scan, not a sort.
+CREATE INDEX IF NOT EXISTS idx_consent_events_identity ON consent_events(identity_id, purpose, seq DESC);

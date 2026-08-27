@@ -61,6 +61,15 @@
         "subscribed": {
           "type": "boolean",
           "title": "Subscribe to email updates"
+        },
+        "marketing_consent": {
+          "type": "object",
+          "properties": {
+            "granted": {
+              "type": "boolean",
+              "title": "Email me occasional product updates about PidgeIoT"
+            }
+          }
         }
       },
       "required": [

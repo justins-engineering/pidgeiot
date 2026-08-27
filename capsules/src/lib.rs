@@ -26,6 +26,16 @@ pub use email::{
   format_alert_email, format_invite_email, html_escape,
 };
 
+// Marketing-consent wording, the evidence row's shape, and the one rule
+// that decides whether a flow writes a row. Shared because the words on
+// the form and the record behind them have to describe the same event.
+pub mod consent;
+pub use consent::{
+  ConsentHookPayload, ConsentKind, ConsentSource, MARKETING_CONSENT_HELPER,
+  MARKETING_CONSENT_LABEL, MARKETING_CONSENT_NODE, MARKETING_CONSENT_WITHDRAWAL,
+  MARKETING_EMAIL_PURPOSE, consent_transition,
+};
+
 // Contact-form request/validation/email types shared with fancier's
 // `/contact/` page. Validation lives in the shared crate on purpose: the
 // form and dovecote's route must agree on what a valid enquiry is, and

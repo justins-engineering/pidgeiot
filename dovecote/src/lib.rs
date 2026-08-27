@@ -23,12 +23,13 @@ use crate::helpers::{
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
-  remove_member, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
-  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, stripe_configured,
-  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
-  verify_webhook_signature, webhook_action, write_business_details,
+  record_consent_event, remove_member, resolve_checkout_prices, revoke_invite, root_url,
+  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
+  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
+  update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
+  write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -520,6 +521,94 @@ async fn internal_psk_lookup(req: Request, ctx: RouteContext<()>) -> worker::Res
   // unknown identity or a connector that mints no PSK -- passed through
   // unchanged so the terminator's negative cache keys off a real 404.
   psk_lookup_via_do(&obj_id).await?.with_cors(&cors)
+}
+
+/// Records a marketing-consent change reported by Kratos.
+///
+/// NOT a dashboard or device route. The only legitimate caller is our own
+/// Kratos instance, whose after-registration and after-settings web hooks
+/// post here (`docs/consent.md` has the config block for both
+/// environments). Gated by the `KRATOS_HOOK_SECRET` Worker secret,
+/// presented in the `X-Kratos-Hook-Secret` header -- Kratos's `api_key`
+/// hook auth sends a bare value rather than a `Bearer` credential, so this
+/// is its own header rather than `Authorization`.
+///
+/// **Never answers 401.** The dashboard treats a 401 from this API as
+/// "the session is gone" and signs the tab out, so a misconfigured hook
+/// secret must not be able to reach that path from a browser that
+/// happens to be signed in. A refused call is 403, matching the other
+/// service-internal route.
+///
+/// Unconfigured means refuse, like `internal_psk_lookup`: this route
+/// writes the evidence for a legal claim, and a deploy that forgot the
+/// secret should record nothing rather than record whatever it is told.
+/// The secret is checked before the body is read, so an unauthenticated
+/// caller never causes a parse.
+async fn internal_consent_record(
+  mut req: Request,
+  ctx: RouteContext<()>,
+) -> worker::Result<Response> {
+  let cors = build_cors(&ctx.env, &req);
+
+  let Ok(expected) = ctx.env.secret("KRATOS_HOOK_SECRET") else {
+    console_error!("KRATOS_HOOK_SECRET not configured; refusing consent hook");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  };
+  // An empty or whitespace-only secret counts as unconfigured -- the same
+  // definition the PSK route applies -- because an absent header would
+  // otherwise satisfy the comparison below.
+  let expected = expected.to_string();
+  if expected.trim().is_empty() {
+    console_error!("KRATOS_HOOK_SECRET is empty; refusing consent hook");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  let presented = req
+    .headers()
+    .get("X-Kratos-Hook-Secret")
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+  if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+    console_error!("Consent hook presented the wrong secret");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  let Ok(payload) = req.json::<capsules::ConsentHookPayload>().await else {
+    return Response::error("Bad Request: Invalid consent hook payload", 400)
+      .unwrap()
+      .with_cors(&cors);
+  };
+
+  get_db!(ctx.env, client, &cors);
+
+  // `record_consent_event` decides in SQL whether this is a transition at
+  // all, so a hook that fires on a save which changed nothing (or the
+  // same hook delivered twice) writes nothing and still answers 200.
+  match record_consent_event(
+    &client,
+    payload.identity_id,
+    payload.granted,
+    payload.source,
+    payload.flow_id,
+  )
+  .await
+  {
+    Ok(Some(seq)) => {
+      console_log!(
+        "Recorded consent event {seq} from {}",
+        payload.source.as_str()
+      );
+      Response::ok("recorded").unwrap().with_cors(&cors)
+    }
+    Ok(None) => Response::ok("unchanged").unwrap().with_cors(&cors),
+    Err(e) => {
+      console_error!("Consent hook failed to record event: {e}");
+      Response::error("Internal Server Error", 500)
+        .unwrap()
+        .with_cors(&cors)
+    }
+  }
 }
 
 #[event(fetch, respond_with_errors)]
@@ -1074,6 +1163,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     })
     .get_async("/internal/coap-psk/:pigeon_id", |req, ctx| async move {
       internal_psk_lookup(req, ctx).await
+    })
+    // Kratos's after-registration and after-settings web hooks land here.
+    // Service-internal like the PSK routes above, and secret-gated the
+    // same way; unlike them it writes rather than reads.
+    .post_async("/internal/consent", |req, ctx| async move {
+      internal_consent_record(req, ctx).await
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
