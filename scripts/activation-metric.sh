@@ -23,7 +23,7 @@
 #
 # Caveat: a user's devices are found via flocks.user_id = identities.id.
 # If Kratos identities are ever re-imported under new UUIDs (see CLAUDE.md's
-# note on task #47's identity remap), a flock's user_id can stop matching
+# note on the identity remap), a flock's user_id can stop matching
 # its owner's current identity id, and that user's activation would go
 # invisible to this join rather than erroring - worth a spot check after
 # any future identity migration.

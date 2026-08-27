@@ -458,13 +458,11 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations
 
 -- Denormalized flock-owner email -- needed to resolve an alert
 -- notification's recipient without a Kratos admin-API call from the edge
--- (none is reachable from staging/prod today). NULL until a follow-up
--- wires `require_auth`/`create_user_flock` to populate it from the
--- session's own `identity.traits` (already fetched, currently discarded,
--- on every authenticated request) -- see docs/design/alerts-triggers.md
--- §3.4 and dovecote's helpers/alerts.rs::resolve_alert_recipient, which
--- already reads this column and degrades to "no recipient, log and skip"
--- until it's populated.
+-- (none is reachable from staging/prod today). Written from the session's
+-- own `identity.traits` at flock creation, and backfilled opportunistically
+-- for older rows (dovecote's helpers/flocks.rs). NULL while neither has
+-- happened yet, which `resolve_alert_recipient` (helpers/alerts.rs)
+-- degrades on with "no recipient, log and skip".
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
 -- Indexes
