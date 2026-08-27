@@ -1151,7 +1151,9 @@ The "shadow" is a desired/reported config pair, modeled after AWS IoT Device Sha
 dashboard sets `target_config`; the device reports back `current_config` once it's applied it.
 `target_version` auto-increments every time `target_config` changes (a SQLite trigger inside the
 Durable Object), giving devices a cheap way to detect "there's a newer target than what I last
-applied."
+applied." Read *changes* literally: a `PUT` whose `target_config` is identical to the stored one
+leaves `target_version` exactly where it was, which matters to anything device-side that treats a
+new version as an instruction. See "re-pushing the same firmware target" under the `PUT` below.
 
 **Asymmetry to know about:** in *request* bodies, `target_config`/`current_config` are native
 JSON objects (`serde_json::Value`). In every *response*, they come back as `capsules::JsonString`
@@ -1207,6 +1209,37 @@ Old firmware that predates FOTA ignores the unknown `firmware` key entirely (Zep
 `json_obj_parse` skips unknown keys), so this is backward-compatible with already-deployed
 devices. The device picks this up on its next shadow poll and pulls the image via
 [`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware) below.
+
+**Re-pushing the same firmware target.** A device may bound how many times it will chase one
+firmware target, and the sane way to key that budget is the shadow's `target_version` rather than
+the firmware version string alone, so that an operator can authorize another try without
+republishing unchanged bytes under a new label (`pigeon`'s `CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET`
+works exactly this way). What reopens such a budget is therefore a **new `target_version`**, and
+this route only produces one when `target_config` actually differs from what is stored. Sending
+the identical config back is a no-op as far as any device can tell.
+
+To re-assert a firmware target, keep the `firmware` object byte-identical and advance a top-level
+`firmware_repush` integer alongside it:
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"target_config":{"firmware":{"version":"0.1.0+0","size":393802,"sha256":"<64-char lowercase hex>"},"firmware_repush":1}}'
+```
+
+Nothing device-side reads `firmware_repush`; its whole job is to make the config differ so the
+version moves while what the device applies does not. Two properties of that key are deliberate.
+It sits **outside** the `firmware` object, because a device decodes `firmware` into a fixed struct
+and an unknown field there would be an unexpected key inside the thing it is about to flash,
+whereas an unknown key at the top level is what every app's decoder already skips. And it is a
+small integer, because the device library caps one decoded config at
+`CONFIG_PIGEON_SHADOW_CONFIG_MAX` bytes (320 by default) and a config truncated past that fails to
+parse rather than degrading.
+
+The dashboard does this for you: the pigeon detail page's **Re-push firmware** button (next to
+Shadow → Edit, shown only when `target_config` already carries a `firmware` key) sends exactly
+this `PUT` and reports the new `target_version`.
 
 **Board/geometry compatibility check (task #20, phase 1) — fail-closed.** Whenever this PUT's
 `target_config` contains a `firmware` key, dovecote looks up the target image's `board` (matched

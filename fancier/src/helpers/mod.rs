@@ -50,6 +50,8 @@ pub use crypto::sha256_hex;
 
 pub mod connection_state;
 
+pub mod firmware_repush;
+
 pub mod device_credentials;
 
 pub mod dict_log;
