@@ -5,6 +5,7 @@ use crate::components::{
   TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
+use crate::helpers::firmware_repush;
 use crate::helpers::gps_track;
 use crate::{Route, api};
 use capsules::{
@@ -177,7 +178,15 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   PigeonAlerts { pigeon_id: pigeon_id.clone() }
                 }
                 section { id: "shadowInfo",
-                  ShadowInfo { shadow: pd.shadow.clone() }
+                  ShadowInfo {
+                    pigeon_id: pigeon_id.clone(),
+                    shadow: pd.shadow.clone(),
+                    on_repushed: move |new_shadow: PigeonShadow| {
+                        if let Some(detail) = pigeon_detail.write().as_mut() {
+                            detail.shadow = new_shadow;
+                        }
+                    },
+                  }
                 }
                 section { id: "logViewer",
                   LogViewer {
@@ -836,18 +845,97 @@ fn TelemetryEndpointInfo(
   }
 }
 
+/// The shadow pair, plus the two ways to move `target_config`: edit it, or
+/// re-push the firmware target already in it.
+///
+/// Re-push exists because a device bounds its FOTA retries on the shadow's
+/// `target_version`, and that version only advances when `target_config`
+/// changes (see `helpers::firmware_repush`). An operator who wants a device
+/// to try the same image again would otherwise have to invent an unrelated
+/// edit, or republish identical bytes under a new version string.
 #[component]
-fn ShadowInfo(shadow: PigeonShadow) -> Element {
+fn ShadowInfo(
+  pigeon_id: String,
+  shadow: PigeonShadow,
+  on_repushed: EventHandler<PigeonShadow>,
+) -> Element {
+  let can_repush = firmware_repush::has_firmware_target(&shadow.target_config);
+  let base_target_config = shadow.target_config.clone();
+  let mut is_repushing = use_signal(|| false);
+  let mut repush_error: Signal<Option<String>> = use_signal(|| None);
+  let mut repushed_version: Signal<Option<i32>> = use_signal(|| None);
+
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col md:flex-row gap-4 items-start md:justify-between md:px-4",
         h2 { class: "text-3xl font-bold ", "Shadow" }
-        button {
-          class: "btn btn-secondary",
-          onclick: move |_| {
-              document::eval(r#"document.getElementById('edit_shadow_modal').showModal()"#);
-          },
-          "Edit"
+        div { class: "flex flex-col items-stretch md:items-end gap-2",
+          div { class: "flex flex-row gap-2",
+            if can_repush {
+              button {
+                class: "btn btn-outline btn-secondary",
+                disabled: is_repushing(),
+                onclick: move |_| {
+                    let pigeon_id = pigeon_id.clone();
+                    let base_target_config = base_target_config.clone();
+                    async move {
+                        is_repushing.set(true);
+                        repush_error.set(None);
+                        repushed_version.set(None);
+                        match firmware_repush::repush_target_config(&base_target_config) {
+                            Ok(target_config) => {
+                                let req = PigeonShadowUpdateRequest {
+                                    target_config,
+                                };
+                                match api::pigeons::update_shadow(&pigeon_id, &req).await {
+                                    Some(new_shadow) => {
+                                        repushed_version.set(Some(new_shadow.target_version));
+                                        on_repushed.call(new_shadow);
+                                    }
+                                    None => {
+                                        repush_error
+                                            .set(
+                                                Some(
+                                                    "Failed to re-push the firmware target. Please try again."
+                                                        .to_string(),
+                                                ),
+                                            );
+                                    }
+                                }
+                            }
+                            Err(err) => repush_error.set(Some(err)),
+                        }
+                        is_repushing.set(false);
+                    }
+                },
+                if is_repushing() {
+                  span { class: "loading loading-spinner loading-xs" }
+                } else {
+                  "Re-push firmware"
+                }
+              }
+            }
+            button {
+              class: "btn btn-secondary",
+              onclick: move |_| {
+                  document::eval(r#"document.getElementById('edit_shadow_modal').showModal()"#);
+              },
+              "Edit"
+            }
+          }
+          if can_repush {
+            p { class: "text-base-content/60 text-xs md:text-right md:max-w-xs",
+              "Re-sends this same firmware target under a new target version, which reopens a device's FOTA attempt budget. Use it when a device has spent its attempts or has stopped retrying an update."
+            }
+          }
+          if let Some(version) = repushed_version() {
+            p { class: "text-success text-xs md:text-right",
+              "Re-pushed. Target version is now {version}."
+            }
+          }
+          if let Some(error) = repush_error() {
+            p { class: "text-error text-xs md:text-right md:max-w-xs", "{error}" }
+          }
         }
       }
       div { class: "flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4",
