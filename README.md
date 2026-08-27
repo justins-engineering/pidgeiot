@@ -12,6 +12,13 @@ This project is structured as a Cargo Workspace containing three primary crates:
 - 🖥️ **`fancier` (Frontend):** A blazing-fast WebAssembly Single Page Application (SPA) built with [Dioxus](https://dioxuslabs.com/) and styled with TailwindCSS & DaisyUI. This is the human-facing dashboard.
 - 💊 **`capsules` (Shared Models):** The shared data structures, serialization logic, and RPC schemas ensuring the frontend and backend are always 100% in sync.
 
+A Cloudflare Workers runtime is HTTP-only, so the protocols that constrained devices actually speak are terminated by two small services that run on an ordinary VPS in front of `dovecote` and translate onto its device HTTP routes. Each lives in its own repository:
+
+- 📡 **[`loft`](https://github.com/justins-engineering/loft) (CoAP terminator):** `coaps://` over DTLS/UDP and `coaps+tcp://` over TLS/TCP on one port, pre-shared-key authentication, block-wise transfer.
+- 📬 **[`pigeonhole`](https://github.com/justins-engineering/pigeonhole) (MQTT broker):** MQTT 5 and 3.1.1 over TLS, certificate or pre-shared-key authentication, one session per device, the device shadow fed back as a retained message.
+
+🕊️ **Device library:** [`pigeon`](https://github.com/justins-engineering/pigeon) is the Zephyr RTOS client module devices run, with sample applications in [`pigeon-examples`](https://github.com/justins-engineering/pigeon-examples).
+
 📖 **API Reference:** the full `dovecote` HTTP surface (dashboard + device routes, auth models, request/response shapes) is documented in [`docs/api.md`](docs/api.md).
 
 ## 🚀 Development Guide
@@ -67,4 +74,7 @@ bunx mmdc -i assets/architecture.mmd -o assets/images/architecture.svg -b transp
 ```
 
 ## 🤝 Contributing
-PidgeIoT is open-source. We welcome contributions regarding device protocol support (CoAP, MQTT, custom NIDD over cellular), frontend improvements, or core backend stability. Please open an issue before submitting major architectural pull requests.
+PidgeIoT is open-source. Contributions to the dashboard, to core backend stability, and to the device library are all welcome. Protocol work belongs in the repository that owns the transport: CoAP in [`loft`](https://github.com/justins-engineering/loft), MQTT in [`pigeonhole`](https://github.com/justins-engineering/pigeonhole), on-device support in [`pigeon`](https://github.com/justins-engineering/pigeon). Cellular NIDD has no implementation anywhere yet and is open to anyone who wants it. Please open an issue before submitting major architectural pull requests.
+
+## 📜 License
+AGPL-3.0. See [`LICENSE`](LICENSE); third-party components are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
