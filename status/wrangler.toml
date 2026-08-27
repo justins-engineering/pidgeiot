@@ -12,6 +12,15 @@
 # an incident needs no toolchain.
 name = "pidgeiot-status"
 main = "src/index.mjs"
+
+# src/index.mjs imports the repository's single security.txt as a text
+# module so this origin cannot drift from the other two that serve it.
+# `base_dir` widens the module root from status/src to the repository root,
+# which is what lets that import reach a file outside status/. A .txt is
+# already a text module under wrangler's default rules, so nothing else is
+# needed and no build step appears: the bundler wrangler always runs does
+# it, and the source still uploads as-is.
+base_dir = ".."
 compatibility_date = "2026-08-24"
 send_metrics = false
 workers_dev = false
