@@ -20,7 +20,7 @@ pub fn PrivacyPage() -> Element {
 
         LegalSection { id: "privacy-controller", title: "Who is responsible for your data",
           p { class: "mb-4",
-            "PidgeIoT is operated by Justin's Engineering Services LLC, a Massachusetts limited liability company. For the account you create, the messages you send us, and the diagnostics your browser sends us, we are the controller of your personal data."
+            "PidgeIoT is operated by Justin's Engineering Services LLC, a Montana limited liability company registered to do business in Massachusetts. For the account you create, the messages you send us, and the diagnostics your browser sends us, we are the controller of your personal data."
           }
           p {
             "For the data your devices and your team put into the platform, you (or the organization you belong to) are the controller and we process it on your instructions under our Data Processing Agreement, which any customer can countersign by emailing "
