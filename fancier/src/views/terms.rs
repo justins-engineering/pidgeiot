@@ -9,7 +9,7 @@ pub fn TermsPage() -> Element {
         p { class: "text-sm text-base-content/50 mb-10", "Last updated: July 26, 2026" }
 
         p { class: "text-lg text-base-content/70 leading-relaxed",
-          "These terms govern your use of PidgeIoT, operated by Justin's Engineering Services LLC, a Massachusetts limited liability company (\"we\", \"us\"). By creating an account or connecting a device, you agree to them. Questions: "
+          "These terms govern your use of PidgeIoT, operated by Justin's Engineering Services LLC, a Montana limited liability company registered to do business in Massachusetts (\"we\", \"us\"). By creating an account or connecting a device, you agree to them. Questions: "
           a { class: "link link-secondary", href: "mailto:info@jes.contact", "info@jes.contact" }
           "."
         }
