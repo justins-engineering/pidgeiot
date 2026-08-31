@@ -147,17 +147,28 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
             }
           }
           // Org affordance: a personal flock offers transfer
-          // into an org the caller manages; an org-owned one just shows
-          // the marker (no org->org re-transfer today, see docs/api.md).
+          // into an org the caller manages; an org-owned one links into
+          // its owner (no org->org re-transfer today, see docs/api.md).
           {
-              let is_org_owned = binding
-                  .flocks
-                  .read()
-                  .get(&flock_id)
-                  .is_some_and(|f| f.org_id.is_some());
+              let org_id = binding.flocks.read().get(&flock_id).and_then(|f| f.org_id);
+              // Name off the org list cached at sign-in; an empty data-tip
+              // draws no tooltip, so a cache miss costs the hover text, not
+              // the link. Anchored below because `main`'s overflow-x makes
+              // it a scroll box that clips a tooltip drawn above the header.
+              let org_name = org_id
+                  .and_then(|id| binding.orgs.read().get(&id).map(|m| m.organization.name.clone()))
+                  .unwrap_or_default();
               rsx! {
-                if is_org_owned {
-                  span { class: "badge badge-outline badge-secondary self-center", "Org" }
+                if let Some(org_id) = org_id {
+                  div {
+                    class: "tooltip tooltip-bottom self-center",
+                    "data-tip": "{org_name}",
+                    Link {
+                      to: Route::OrgView { org_id },
+                      class: "badge badge-outline badge-secondary hover:bg-secondary/20",
+                      "Org"
+                    }
+                  }
                 } else {
                   button {
                     class: "btn btn-outline btn-secondary btn-sm self-center",
