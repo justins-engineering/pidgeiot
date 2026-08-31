@@ -81,6 +81,9 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`POST /contact`](#post-contact) | no auth required (optionally authenticated) | Send the public contact form |
 | [`POST /errors`](#post-errors) | no auth required (identity only on the manual JSON path) | Ingest a crash report, or a note about one |
 | [`DELETE /errors`](#delete-errors) | session required | Erase the caller's identified error reports |
+| [`GET /dashboard-state/:scope_key`](#get-dashboard-statescope_key) | session | Read the caller's saved document for one scope |
+| [`PUT /dashboard-state/:scope_key`](#put-dashboard-statescope_key) | session | Replace the caller's document for one scope |
+| [`DELETE /dashboard-state/:scope_key`](#delete-dashboard-statescope_key) | session | Drop the caller's document for one scope |
 | [`GET /demo/pigeons/:pigeon_id/telemetry`](#get-demopigeonspigeon_idtelemetry) | none | Latest values for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/telemetry/history`](#get-demopigeonspigeon_idtelemetryhistory) | none | Telemetry history for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/alerts`](#get-demopigeonspigeon_idalerts) | none | The alert rules the demo page draws its lines from |
@@ -2222,6 +2225,57 @@ Erases every identified error-report row (`user_id` + `report_note`) belonging t
 automatic reports never stored an identity, so there is nothing of theirs to erase there.
 Returns `{"deleted": <count>}`. The manual account-deletion runbook runs the same statement
 directly (documented in `infra/migrations/2026-08-19-error-reporting.sql`).
+
+### Dashboard state
+
+How a person has set their dashboard up — which telemetry graphs they saved against a pigeon,
+and at what time range. Stored against the **Kratos identity**, never the organization: a saved
+graph is how one person chose to look at a fleet, not a fact about the fleet, so two members of
+one org keep their own.
+
+A document is **opaque**. The platform stores the JSON body verbatim and never reads inside it,
+which is what lets a new widget claim a key without a schema change. The only rules are the
+ones below, and they are about size and naming, not shape.
+
+`:scope_key` names what the document is about, and the dashboard mints it — today
+`graphs.v1.pigeon.<pigeon_id>` and `graphs.v1.flock.<flock_id>` (`fancier`'s
+`helpers::graph_store`). It must be 1–128 bytes of `[A-Za-z0-9._-]`
+(`capsules::valid_scope_key`); anything else is a `400`, so a key can never escape its path
+segment. There is no listing route: a client reads the scope it is rendering.
+
+**Reads are served from Hyperdrive's ~60s query cache**, so a `GET` issued shortly after a
+`PUT` can still answer with the replaced document — the `PUT`'s own response body is the read
+that is guaranteed fresh, which is why it echoes the stored entry. `updated_at` is the server's
+clock and is what a client compares its own copy against.
+
+#### `GET /dashboard-state/:scope_key`
+
+**Auth:** session
+
+Returns `capsules::DashboardStateEntry` — `{ scope_key, value, updated_at }`, where `value` is
+the stored JSON as a string (same convention as the shadow's `target_config`). **404** when the
+account has never saved this scope, which is a normal state and not an error.
+
+#### `PUT /dashboard-state/:scope_key`
+
+**Auth:** session
+
+The request body **is** the document — no wrapper object. Replaces whatever was stored
+wholesale and returns the stored `DashboardStateEntry`.
+
+Rejections: `400` (invalid scope key, body that is not JSON), `413` (body over
+`capsules::MAX_DASHBOARD_STATE_BYTES`, 16 KiB). An account may hold
+`capsules::MAX_DASHBOARD_STATE_KEYS` (256) distinct keys; a **new** key past that is refused
+`400`, while replacing a key that already exists never is, so an account at the cap can still
+work with what it has.
+
+#### `DELETE /dashboard-state/:scope_key`
+
+**Auth:** session
+
+Drops the document and frees its key against the cap. **204**, and deleting a scope that was
+never stored is not an error. Account-deletion erasure removes every row for an identity
+directly (`infra/migrations/2026-08-31-dashboard-state.sql`).
 
 ---
 
