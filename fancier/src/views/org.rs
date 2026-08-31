@@ -15,9 +15,9 @@ use crate::helpers::org_detail;
 use crate::helpers::timezone::{suggested_zone, zone_options};
 use crate::{Create, Route, api};
 use capsules::{
-  BillingPlan, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole, OrganizationBillingOverview,
-  OrganizationBusinessDetails, OrganizationBusinessDetailsRequest, OrganizationDetail,
-  OrganizationInviteCreated, OrganizationUpdateRequest, TaxIdStatus, TaxIdType,
+  BillingPlan, Flock, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole,
+  OrganizationBillingOverview, OrganizationBusinessDetails, OrganizationBusinessDetailsRequest,
+  OrganizationDetail, OrganizationInviteCreated, OrganizationUpdateRequest, TaxIdStatus, TaxIdType,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -108,6 +108,7 @@ pub fn OrgView(org_id: Uuid) -> Element {
 
       match detail {
         Some(Some(d)) => rsx! {
+          FlocksSection { org_id }
           MembersSection {
             detail: d.clone(),
             me,
@@ -163,6 +164,50 @@ pub fn OrgView(org_id: Uuid) -> Element {
         InviteLinkReveal {
           created,
           on_close: move |_| invite_created.set(None),
+        }
+      }
+    }
+  }
+}
+
+/// The way from an organization to the fleet it owns. Reads the app-wide
+/// flock cache `App` fills at sign-in rather than fetching: this page is
+/// reachable only from inside the dashboard, where that fetch already ran.
+#[component]
+fn FlocksSection(org_id: Uuid) -> Element {
+  let local_session = use_context::<crate::LocalSession>();
+  let load_failed = (local_session.flocks_load_failed)();
+  let mut flocks: Vec<Flock> = local_session
+    .flocks
+    .read()
+    .values()
+    .filter(|f| f.org_id == Some(org_id))
+    .cloned()
+    .collect();
+  flocks.sort_by(|a, b| a.name.cmp(&b.name));
+
+  rsx! {
+    section { id: "org-flocks", class: "mb-10",
+      h2 { class: "text-lg font-semibold mb-3", "Flocks ({flocks.len()})" }
+      if load_failed {
+        p { class: "text-base-content/60 text-sm",
+          "This organization's flocks could not be loaded."
+        }
+      } else if flocks.is_empty() {
+        p { class: "text-base-content/60 text-sm",
+          "No flocks belong to this organization yet."
+        }
+      } else {
+        div { class: "rounded-box border border-base-content/10 shadow-sm bg-base-100 divide-y divide-base-content/10",
+          for flock in flocks {
+            Link {
+              key: "{flock.id}",
+              to: Route::Pigeons { flock_id: flock.id },
+              class: "flex items-center justify-between gap-4 px-4 py-3 hover:bg-base-200/50",
+              span { class: "font-semibold", "{flock.name}" }
+              span { class: "text-sm text-base-content/60", "{flock.pigeon_ids.len()} pigeons" }
+            }
+          }
         }
       }
     }
