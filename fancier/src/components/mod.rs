@@ -79,3 +79,6 @@ pub use comparison::{ComparisonTable, ComparisonTables};
 
 mod danger_zone;
 pub use danger_zone::{DangerAction, DangerZone};
+
+mod confirm_modal;
+pub use confirm_modal::ConfirmModal;
