@@ -81,6 +81,10 @@ pub fn VerificationFlow(flow: Option<String>) -> Element {
   match &*get_flow.read() {
     Some(Ok(res)) => {
       let error_messages = extract_ui_messages(&res.ui);
+      // Our own courier dispatches in about a second; a recipient's mail
+      // provider can hold the message for minutes. Say so where the wait
+      // happens, so the code-entry form doesn't read as a failure.
+      let email_sent = res.state.as_ref().and_then(|s| s.as_str()) == Some("sent_email");
 
       rsx! {
         h1 { class: "text-center text-2xl mt-10", "Account Verification" }
@@ -96,6 +100,12 @@ pub fn VerificationFlow(flow: Option<String>) -> Element {
 
             // Pure HTML submission.
             FormBuilder { ui: *res.ui.to_owned() }
+
+            if email_sent {
+              p { class: "mt-4 text-center text-sm text-base-content/60",
+                "Emails can take a few minutes to arrive. If the code is not in your inbox yet, check your spam folder."
+              }
+            }
           }
         }
       }

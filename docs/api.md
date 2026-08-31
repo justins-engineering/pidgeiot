@@ -463,6 +463,14 @@ through the same cache and can admit whatever fits in one window. Anchoring thes
 `now()` would keep them out of that cache at the price of a database round trip on every
 authorized organization call, which is why they are not.
 
+**The lists a human reads are exempt, deliberately.** `GET /orgs`, and the member and invite
+lists inside `GET /orgs/:org_id`, each anchor their statement on `now()` and are therefore
+never served from that cache: they answer within one round trip of the row changing. These
+are the reads somebody stares at during onboarding — an invitee's own org list, and the
+inviter's view of who has accepted — and the browser watching them is never the browser that
+performed the write, so response-driven client state cannot cover the gap. Authorization
+stays cached; what the page shows does not.
+
 #### `POST /orgs`
 
 **Auth:** session
@@ -491,7 +499,8 @@ any of those organizations is entitled to. Deleting an organization frees its sl
 **Auth:** session
 
 Lists every org the caller belongs to, with the caller's own role —
-`Vec<capsules::OrganizationMembership>` (`{ organization, role }`).
+`Vec<capsules::OrganizationMembership>` (`{ organization, role }`). Not cached (see
+[Organizations](#organizations)): an invite accepted a second ago is in this list.
 
 #### `GET /orgs/:org_id`
 
@@ -500,7 +509,9 @@ Lists every org the caller belongs to, with the caller's own role —
 Returns `capsules::OrganizationDetail`: the org, the caller's role, the full member list
 (each `capsules::OrganizationMember` carries `email` — denormalized at join time — and
 `invited_by`, the per-person audit trail), and pending invites (`invites` is only populated
-for owner/admin callers; plain members get an empty list).
+for owner/admin callers; plain members get an empty list). Neither list is cached (see
+[Organizations](#organizations)), so an invite disappears from `invites` and its acceptor
+appears among the members on the first load after they accept.
 
 #### `PUT /orgs/:org_id`
 

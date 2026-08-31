@@ -306,6 +306,15 @@ pub async fn create_organization(
 }
 
 /// Every org the caller belongs to, with the caller's own role.
+///
+/// `read_at` is never read back: it carries a volatile function so
+/// Hyperdrive will not cache the statement, the same device
+/// [`load_dashboard_state`](super::load_dashboard_state) uses. This is the
+/// read behind "No organizations yet", and the browser looking at it is
+/// the one that did NOT perform the write -- an invitee whose acceptance
+/// happened in another session, or in the same session before this list
+/// was first fetched. Response-driven client state cannot help the other
+/// party, so this list has to be true when asked.
 pub async fn list_user_organizations(
   client: &Client,
   user_id_str: &str,
@@ -315,13 +324,11 @@ pub async fn list_user_organizations(
 
   let rows = client
     .query_typed(
-      &format!(
-        "SELECT o.id, o.name, o.timezone, o.created_at, o.updated_at, m.role
-         FROM organizations o
-         JOIN organization_members m ON m.org_id = o.id
-         WHERE m.user_id = $1
-         ORDER BY o.created_at ASC;"
-      ),
+      "SELECT o.id, o.name, o.timezone, o.created_at, o.updated_at, m.role, now() AS read_at
+       FROM organizations o
+       JOIN organization_members m ON m.org_id = o.id
+       WHERE m.user_id = $1
+       ORDER BY o.created_at ASC;",
       &[(&user_uuid, Type::UUID)],
     )
     .await
@@ -355,10 +362,19 @@ pub async fn get_organization(client: &Client, org_id: &Uuid) -> Result<Option<O
   Ok(rows.first().map(row_to_organization))
 }
 
+/// An org's roster.
+///
+/// `read_at` is never read back -- it keeps the statement out of
+/// Hyperdrive's query cache, on the same grounds as
+/// [`list_user_organizations`]. An inviter watches this list to learn that
+/// the person they invited has joined, and that acceptance was written by
+/// somebody else's browser, so there is no mutation response to build the
+/// answer from. Deliberately unlike [`org_role_of`], which is cached: this
+/// one runs when a human opens the org page, not on every org call.
 pub async fn list_org_members(client: &Client, org_id: &Uuid) -> Result<Vec<OrganizationMember>> {
   let rows = client
     .query_typed(
-      "SELECT org_id, user_id, role, email, invited_by, created_at
+      "SELECT org_id, user_id, role, email, invited_by, created_at, now() AS read_at
        FROM organization_members WHERE org_id = $1 ORDER BY created_at ASC;",
       &[(org_id, Type::UUID)],
     )
@@ -372,10 +388,17 @@ pub async fn list_org_members(client: &Client, org_id: &Uuid) -> Result<Vec<Orga
 
 /// Pending (unconsumed, unexpired) invites only -- consumed/expired rows
 /// are history, not actionable state.
+///
+/// `read_at` is never read back. The expiry predicate already keeps this
+/// statement out of Hyperdrive's query cache, but only as a side effect;
+/// selecting `now()` says so outright, so an invite still showing as
+/// pending minutes after it was accepted cannot come back through a
+/// rewrite of that predicate. Same reasoning as [`list_org_members`] --
+/// the inviter is watching this list while the invitee acts elsewhere.
 pub async fn list_org_invites(client: &Client, org_id: &Uuid) -> Result<Vec<OrganizationInvite>> {
   let rows = client
     .query_typed(
-      "SELECT id, org_id, email, role, expires_at, created_by, created_at
+      "SELECT id, org_id, email, role, expires_at, created_by, created_at, now() AS read_at
        FROM organization_invites
        WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > now()
        ORDER BY created_at ASC;",
