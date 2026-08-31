@@ -76,3 +76,6 @@ pub use feedback_modal::{FeedbackForm, FeedbackModal};
 
 mod comparison;
 pub use comparison::{ComparisonTable, ComparisonTables};
+
+mod danger_zone;
+pub use danger_zone::{DangerAction, DangerZone};

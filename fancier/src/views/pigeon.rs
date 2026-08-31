@@ -1,8 +1,8 @@
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::components::{
-  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, GraphDef,
-  JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal, TelemetryStatTiles,
-  TrackWidget,
+  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, DangerAction, DangerZone,
+  FirmwareModal, GraphDef, JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs,
+  TelemetryEndpointModal, TelemetryStatTiles, TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::firmware_repush;
@@ -129,11 +129,6 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     onclick: move |_| show_firmware_modal.set(true),
                     "Upload Firmware"
                   }
-                  button {
-                    class: "btn btn-outline btn-error sm:px-6",
-                    onclick: move |_| show_delete_modal.set(true),
-                    "Delete"
-                  }
                 }
               }
               div { class: "w-full flex flex-col items-center justify-between gap-4 my-2 md:my-4",
@@ -210,6 +205,14 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }
+                }
+                DangerZone { id: "pigeon-danger-zone",
+                  DangerAction {
+                    title: "Delete this pigeon",
+                    description: "Removes the pigeon and revokes its device credentials for good.",
+                    label: "Delete Pigeon",
+                    onclick: move |_| show_delete_modal.set(true),
+                  }
                 }
                 UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
                 EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
