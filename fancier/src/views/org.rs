@@ -10,6 +10,7 @@
 //! refetching: a refetch right after a save comes back from Hyperdrive's
 //! query cache with the rows from before it.
 
+use crate::components::{DangerAction, DangerZone};
 use crate::helpers::org_detail;
 use crate::helpers::timezone::{suggested_zone, zone_options};
 use crate::{Create, Route, api};
@@ -41,11 +42,10 @@ fn patch_detail(mut detail: DetailState, patch: impl FnOnce(&mut OrganizationDet
 #[component]
 pub fn OrgView(org_id: Uuid) -> Element {
   let mut detail_state: DetailState = use_signal(|| None);
-  let mut action_error = use_signal(|| Option::<String>::None);
+  let action_error = use_signal(|| Option::<String>::None);
   // One-time invite-link reveal -- conditional-render pattern (see module
   // comment).
   let mut invite_created = use_signal(|| Option::<OrganizationInviteCreated>::None);
-  let nav = use_navigator();
 
   use_future(move || async move {
     detail_state.set(Some(api::orgs::detail(org_id).await));
@@ -90,21 +90,6 @@ pub fn OrgView(org_id: Uuid) -> Element {
                     document::eval(r#"document.getElementById("rename_org_modal").showModal();"#);
                 },
                 "Rename"
-              }
-            }
-            if d.caller_role == OrgRole::Owner {
-              button {
-                class: "btn btn-outline btn-error btn-sm",
-                onclick: move |_| async move {
-                    action_error.set(None);
-                    match api::orgs::delete(org_id).await {
-                        Ok(()) => {
-                            nav.replace(Route::Orgs {});
-                        }
-                        Err(msg) => action_error.set(Some(msg)),
-                    }
-                },
-                "Delete"
               }
             }
           },
@@ -152,6 +137,11 @@ pub fn OrgView(org_id: Uuid) -> Element {
             org_id,
             caller_role: d.caller_role,
           }
+          OrgDangerZone {
+            org_id,
+            caller_role: d.caller_role,
+            me,
+          }
           RenameOrgModal { org_id, detail_state }
         },
         Some(None) => rsx! {
@@ -188,7 +178,6 @@ fn MembersSection(
 ) -> Element {
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
-  let nav = use_navigator();
   // Part of each row's key. A refused role change leaves the row's data
   // exactly as it was, so nothing in the re-render would touch the
   // select, and it would keep showing the choice the server just
@@ -278,25 +267,14 @@ fn MembersSection(
                       }
                       td { class: "text-right",
                         // Server-enforced rules (docs/api.md): managers may
-                        // remove (admins never owners), anyone may leave,
-                        // last-owner removal always refused.
-                        if is_me || caller_role.is_manager() {
+                        // remove (admins never owners), last-owner removal
+                        // always refused. Leaving is the caller acting on
+                        // themselves, so it lives in the danger zone.
+                        if !is_me && caller_role.is_manager() {
                           button {
                             class: "btn btn-ghost btn-xs text-error",
                             onclick: move |_| async move {
                                 action_error.set(None);
-                                // Leaving ends the caller's access to this page,
-                                // so it goes back to the list instead of patching
-                                // a detail they may no longer read.
-                                if is_me {
-                                    match api::orgs::leave(org_id, member_user_id).await {
-                                        Ok(()) => {
-                                            nav.replace(Route::Orgs {});
-                                        }
-                                        Err(msg) => action_error.set(Some(msg)),
-                                    }
-                                    return;
-                                }
                                 match api::orgs::remove_member(org_id, member_user_id).await {
                                     Ok(()) => {
                                         patch_detail(
@@ -307,11 +285,7 @@ fn MembersSection(
                                     Err(msg) => action_error.set(Some(msg)),
                                 }
                             },
-                            if is_me {
-                              "Leave"
-                            } else {
-                              "Remove"
-                            }
+                            "Remove"
                           }
                         }
                       }
@@ -1176,6 +1150,60 @@ fn InviteLinkReveal(created: OrganizationInviteCreated, on_close: EventHandler<(
         div { class: "modal-action",
           button { class: "btn btn-primary", onclick: move |_| on_close.call(()), "Done" }
         }
+      }
+    }
+  }
+}
+
+/// Both actions end the caller's access to this page, so each navigates back
+/// to the org list rather than patching a detail they may no longer read.
+/// Failures render here rather than in the page-wide alert, which sits a
+/// screen away from the button that caused them.
+#[component]
+fn OrgDangerZone(org_id: Uuid, caller_role: OrgRole, me: Option<Uuid>) -> Element {
+  let nav = use_navigator();
+  let mut error = use_signal(|| Option::<String>::None);
+
+  rsx! {
+    DangerZone { id: "org-danger-zone",
+      if let Some(me) = me {
+        DangerAction {
+          title: "Leave this organization",
+          description: "Gives up every flock and pigeon it grants you. An organization must keep one owner.",
+          label: "Leave Organization",
+          onclick: move |_| {
+              spawn(async move {
+                  error.set(None);
+                  match api::orgs::leave(org_id, me).await {
+                      Ok(()) => {
+                          nav.replace(Route::Orgs {});
+                      }
+                      Err(msg) => error.set(Some(msg)),
+                  }
+              });
+          },
+        }
+      }
+      if caller_role == OrgRole::Owner {
+        DangerAction {
+          title: "Delete this organization",
+          description: "Removes it and every membership and invite. Its flocks must be gone first.",
+          label: "Delete Organization",
+          onclick: move |_| {
+              spawn(async move {
+                  error.set(None);
+                  match api::orgs::delete(org_id).await {
+                      Ok(()) => {
+                          nav.replace(Route::Orgs {});
+                      }
+                      Err(msg) => error.set(Some(msg)),
+                  }
+              });
+          },
+        }
+      }
+      if let Some(err) = error.read().as_ref() {
+        p { class: "text-error text-sm", "⚠️ {err}" }
       }
     }
   }
