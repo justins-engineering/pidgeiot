@@ -1,8 +1,8 @@
 use crate::api::pigeons::{ShellError, ShellExecuteResponse};
 use crate::components::{
-  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FirmwareModal, GraphDef,
-  JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs, TelemetryEndpointModal, TelemetryStatTiles,
-  TrackWidget,
+  BOARD_DATALIST_ID, BoardDatalist, ConfirmModal, ConnectionBadge, ConnectorBadge, DangerAction,
+  DangerZone, FirmwareModal, GraphDef, JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs,
+  TelemetryEndpointModal, TelemetryStatTiles, TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::firmware_repush;
@@ -129,11 +129,6 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     onclick: move |_| show_firmware_modal.set(true),
                     "Upload Firmware"
                   }
-                  button {
-                    class: "btn btn-outline btn-error sm:px-6",
-                    onclick: move |_| show_delete_modal.set(true),
-                    "Delete"
-                  }
                 }
               }
               div { class: "w-full flex flex-col items-center justify-between gap-4 my-2 md:my-4",
@@ -210,6 +205,14 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
                 section { id: "aclInfo",
                   AclInfo { acl: pd.acl }
+                }
+                DangerZone { id: "pigeon-danger-zone",
+                  DangerAction {
+                    title: "Delete this pigeon",
+                    description: "Removes the pigeon and revokes its device credentials for good.",
+                    label: "Delete Pigeon",
+                    onclick: move |_| show_delete_modal.set(true),
+                  }
                 }
                 UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
                 EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
@@ -460,6 +463,7 @@ fn ConnectorInfo(
   let mut refreshed_psk = use_signal(|| None::<String>);
   let mut is_refreshing = use_signal(|| false);
   let mut refresh_error = use_signal(|| Option::<String>::None);
+  let mut confirm_refresh = use_signal(|| false);
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
@@ -694,31 +698,7 @@ fn ConnectorInfo(
                   button {
                     class: "btn btn-warning btn-sm",
                     disabled: is_refreshing(),
-                    onclick: move |_| {
-                        let id = pigeon_id.clone();
-                        async move {
-                            is_refreshing.set(true);
-                            refresh_error.set(None);
-                            match api::pigeons::refresh_token(&id).await {
-                                Some(connector) => {
-                                    is_refreshing.set(false);
-                                    refreshed_token.set(Some(connector.token().to_string()));
-                                    refreshed_psk
-                                        .set(connector.psk().map(|(_, secret)| secret.to_string()));
-                                }
-                                None => {
-                                    is_refreshing.set(false);
-                                    refresh_error
-                                        .set(
-                                            Some(
-                                                "Failed to refresh token. Please try again."
-                                                    .to_string(),
-                                            ),
-                                        );
-                                }
-                            }
-                        }
-                    },
+                    onclick: move |_| confirm_refresh.set(true),
                     if is_refreshing() {
                       span { class: "loading loading-spinner loading-xs" }
                     } else {
@@ -784,6 +764,41 @@ fn ConnectorInfo(
             },
             "I've Saved the Token"
           }
+        }
+      }
+
+      if confirm_refresh() {
+        ConfirmModal {
+          id: "refresh_token_title",
+          title: "Refresh Device Token",
+          confirm_label: "Refresh Token",
+          on_close: move |_| confirm_refresh.set(false),
+          on_confirm: move |_| {
+              confirm_refresh.set(false);
+              let id = pigeon_id.clone();
+              spawn(async move {
+                  is_refreshing.set(true);
+                  refresh_error.set(None);
+                  match api::pigeons::refresh_token(&id).await {
+                      Some(connector) => {
+                          is_refreshing.set(false);
+                          refreshed_token.set(Some(connector.token().to_string()));
+                          refreshed_psk
+                              .set(connector.psk().map(|(_, secret)| secret.to_string()));
+                      }
+                      None => {
+                          is_refreshing.set(false);
+                          refresh_error
+                              .set(Some("Failed to refresh token. Please try again.".to_string()));
+                      }
+                  }
+              });
+          },
+          "The current token stops working "
+          strong { "immediately" }
+          ", and any pre-shared key rotates with it. A device already in the field keeps "
+          "failing every request until its firmware is rebuilt with the new token and "
+          "reflashed on site."
         }
       }
     }

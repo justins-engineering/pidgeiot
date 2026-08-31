@@ -1,3 +1,5 @@
+use crate::api;
+use crate::components::{Alert, ConfirmModal};
 use crate::helpers::dict_log::{
   LogDictionary, LogEvent, decode_chunks, level_str, render_hexdump, render_plaintext,
 };
@@ -5,7 +7,6 @@ use crate::helpers::{
   build_tar, connection_state, decode_base64, download_bytes, is_page_hidden, sleep_ms,
 };
 use crate::models::AlertVariant;
-use crate::{api, components::Alert};
 use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -307,6 +308,7 @@ pub fn LogViewer(
   let download_all_id = pigeon_id.clone();
   let download_decoded_id = pigeon_id.clone();
   let remove_dict_id = pigeon_id.clone();
+  let mut confirm_remove_dict = use_signal(|| false);
   let refresh_id = pigeon_id.clone();
 
   rsx! {
@@ -406,14 +408,7 @@ pub fn LogViewer(
             button {
               class: "btn btn-ghost btn-sm text-error",
               title: "Remove the stored dictionary",
-              onclick: move |_| {
-                  let pid = remove_dict_id.clone();
-                  async move {
-                      if api::pigeons::delete_log_dictionary(&pid).await.is_some() {
-                          dict_state.set(DictState::Missing);
-                      }
-                  }
-              },
+              onclick: move |_| confirm_remove_dict.set(true),
               Icon { icon: LdTrash2, width: 16, height: 16 }
             }
           }
@@ -562,6 +557,26 @@ pub fn LogViewer(
           } else {
             table
           }
+        }
+      }
+
+      if confirm_remove_dict() {
+        ConfirmModal {
+          id: "remove_dictionary_title",
+          title: "Remove Log Dictionary",
+          confirm_label: "Remove Dictionary",
+          on_close: move |_| confirm_remove_dict.set(false),
+          on_confirm: move |_| {
+              confirm_remove_dict.set(false);
+              let pid = remove_dict_id.clone();
+              spawn(async move {
+                  if api::pigeons::delete_log_dictionary(&pid).await.is_some() {
+                      dict_state.set(DictState::Missing);
+                  }
+              });
+          },
+          "Chunks go back to raw binary until a dictionary is uploaded again, and it has to "
+          "be the one from the exact build this device is running."
         }
       }
     }

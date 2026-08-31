@@ -10,13 +10,14 @@
 //! refetching: a refetch right after a save comes back from Hyperdrive's
 //! query cache with the rows from before it.
 
+use crate::components::{ConfirmModal, DangerAction, DangerZone};
 use crate::helpers::org_detail;
 use crate::helpers::timezone::{suggested_zone, zone_options};
 use crate::{Create, Route, api};
 use capsules::{
-  BillingPlan, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole, OrganizationBillingOverview,
-  OrganizationBusinessDetails, OrganizationBusinessDetailsRequest, OrganizationDetail,
-  OrganizationInviteCreated, OrganizationUpdateRequest, TaxIdStatus, TaxIdType,
+  BillingPlan, Flock, MAX_BUSINESS_NAME_CHARS, MAX_TAX_ID_CHARS, OrgRole,
+  OrganizationBillingOverview, OrganizationBusinessDetails, OrganizationBusinessDetailsRequest,
+  OrganizationDetail, OrganizationInviteCreated, OrganizationUpdateRequest, TaxIdStatus, TaxIdType,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -41,11 +42,10 @@ fn patch_detail(mut detail: DetailState, patch: impl FnOnce(&mut OrganizationDet
 #[component]
 pub fn OrgView(org_id: Uuid) -> Element {
   let mut detail_state: DetailState = use_signal(|| None);
-  let mut action_error = use_signal(|| Option::<String>::None);
+  let action_error = use_signal(|| Option::<String>::None);
   // One-time invite-link reveal -- conditional-render pattern (see module
   // comment).
   let mut invite_created = use_signal(|| Option::<OrganizationInviteCreated>::None);
-  let nav = use_navigator();
 
   use_future(move || async move {
     detail_state.set(Some(api::orgs::detail(org_id).await));
@@ -92,21 +92,6 @@ pub fn OrgView(org_id: Uuid) -> Element {
                 "Rename"
               }
             }
-            if d.caller_role == OrgRole::Owner {
-              button {
-                class: "btn btn-outline btn-error btn-sm",
-                onclick: move |_| async move {
-                    action_error.set(None);
-                    match api::orgs::delete(org_id).await {
-                        Ok(()) => {
-                            nav.replace(Route::Orgs {});
-                        }
-                        Err(msg) => action_error.set(Some(msg)),
-                    }
-                },
-                "Delete"
-              }
-            }
           },
           Some(None) => rsx! {
             h1 { class: "text-xl font-bold grow", "Organization" }
@@ -123,6 +108,7 @@ pub fn OrgView(org_id: Uuid) -> Element {
 
       match detail {
         Some(Some(d)) => rsx! {
+          FlocksSection { org_id }
           MembersSection {
             detail: d.clone(),
             me,
@@ -152,6 +138,12 @@ pub fn OrgView(org_id: Uuid) -> Element {
             org_id,
             caller_role: d.caller_role,
           }
+          OrgDangerZone {
+            org_id,
+            org_name: d.organization.name.clone(),
+            caller_role: d.caller_role,
+            me,
+          }
           RenameOrgModal { org_id, detail_state }
         },
         Some(None) => rsx! {
@@ -179,6 +171,50 @@ pub fn OrgView(org_id: Uuid) -> Element {
   }
 }
 
+/// The way from an organization to the fleet it owns. Reads the app-wide
+/// flock cache `App` fills at sign-in rather than fetching: this page is
+/// reachable only from inside the dashboard, where that fetch already ran.
+#[component]
+fn FlocksSection(org_id: Uuid) -> Element {
+  let local_session = use_context::<crate::LocalSession>();
+  let load_failed = (local_session.flocks_load_failed)();
+  let mut flocks: Vec<Flock> = local_session
+    .flocks
+    .read()
+    .values()
+    .filter(|f| f.org_id == Some(org_id))
+    .cloned()
+    .collect();
+  flocks.sort_by(|a, b| a.name.cmp(&b.name));
+
+  rsx! {
+    section { id: "org-flocks", class: "mb-10",
+      h2 { class: "text-lg font-semibold mb-3", "Flocks ({flocks.len()})" }
+      if load_failed {
+        p { class: "text-base-content/60 text-sm",
+          "This organization's flocks could not be loaded."
+        }
+      } else if flocks.is_empty() {
+        p { class: "text-base-content/60 text-sm",
+          "No flocks belong to this organization yet."
+        }
+      } else {
+        div { class: "rounded-box border border-base-content/10 shadow-sm bg-base-100 divide-y divide-base-content/10",
+          for flock in flocks {
+            Link {
+              key: "{flock.id}",
+              to: Route::Pigeons { flock_id: flock.id },
+              class: "flex items-center justify-between gap-4 px-4 py-3 hover:bg-base-200/50",
+              span { class: "font-semibold", "{flock.name}" }
+              span { class: "text-sm text-base-content/60", "{flock.pigeon_ids.len()} pigeons" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 #[component]
 fn MembersSection(
   detail: OrganizationDetail,
@@ -188,12 +224,14 @@ fn MembersSection(
 ) -> Element {
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
-  let nav = use_navigator();
   // Part of each row's key. A refused role change leaves the row's data
   // exactly as it was, so nothing in the re-render would touch the
   // select, and it would keep showing the choice the server just
   // rejected; bumping this remounts the rows with the stored roles.
   let mut rows_generation = use_signal(|| 0u32);
+  // The member awaiting its confirm, carried with the label the dialog
+  // names so the row it came from stays identifiable.
+  let mut pending_removal = use_signal(|| Option::<(Uuid, String)>::None);
 
   rsx! {
     section { id: "org-members", class: "mb-10",
@@ -278,40 +316,20 @@ fn MembersSection(
                       }
                       td { class: "text-right",
                         // Server-enforced rules (docs/api.md): managers may
-                        // remove (admins never owners), anyone may leave,
-                        // last-owner removal always refused.
-                        if is_me || caller_role.is_manager() {
+                        // remove (admins never owners), last-owner removal
+                        // always refused. Leaving is the caller acting on
+                        // themselves, so it lives in the danger zone.
+                        if !is_me && caller_role.is_manager() {
                           button {
                             class: "btn btn-ghost btn-xs text-error",
-                            onclick: move |_| async move {
-                                action_error.set(None);
-                                // Leaving ends the caller's access to this page,
-                                // so it goes back to the list instead of patching
-                                // a detail they may no longer read.
-                                if is_me {
-                                    match api::orgs::leave(org_id, member_user_id).await {
-                                        Ok(()) => {
-                                            nav.replace(Route::Orgs {});
-                                        }
-                                        Err(msg) => action_error.set(Some(msg)),
-                                    }
-                                    return;
-                                }
-                                match api::orgs::remove_member(org_id, member_user_id).await {
-                                    Ok(()) => {
-                                        patch_detail(
-                                            detail_state,
-                                            |d| org_detail::remove_member(d, member_user_id),
-                                        );
-                                    }
-                                    Err(msg) => action_error.set(Some(msg)),
-                                }
+                            onclick: {
+                                let label = member
+                                    .email
+                                    .clone()
+                                    .unwrap_or_else(|| member_user_id.to_string());
+                                move |_| pending_removal.set(Some((member_user_id, label.clone())))
                             },
-                            if is_me {
-                              "Leave"
-                            } else {
-                              "Remove"
-                            }
+                            "Remove"
                           }
                         }
                       }
@@ -320,6 +338,29 @@ fn MembersSection(
               }
             }
           }
+        }
+      }
+      if let Some((user_id, label)) = pending_removal() {
+        ConfirmModal {
+          id: "remove_member_title",
+          title: "Remove Member",
+          confirm_label: "Remove Member",
+          on_close: move |_| pending_removal.set(None),
+          on_confirm: move |_| {
+              pending_removal.set(None);
+              spawn(async move {
+                  action_error.set(None);
+                  match api::orgs::remove_member(org_id, user_id).await {
+                      Ok(()) => {
+                          patch_detail(detail_state, |d| org_detail::remove_member(d, user_id));
+                      }
+                      Err(msg) => action_error.set(Some(msg)),
+                  }
+              });
+          },
+          "Removes "
+          strong { "{label}" }
+          " from this organization, along with every flock and pigeon it grants them."
         }
       }
     }
@@ -336,6 +377,8 @@ fn InvitesSection(
   let org_id = detail.organization.id;
   let caller_role = detail.caller_role;
   let mut is_sending = use_signal(|| false);
+  // The invite awaiting its confirm, with the address the dialog names.
+  let mut pending_revoke = use_signal(|| Option::<(Uuid, String)>::None);
   // `selected` is volatile, so Dioxus rewrites it on every rerender of
   // this section: pinned to one option it would drag the visible role
   // back there the moment the send button changed state.
@@ -455,16 +498,9 @@ fn InvitesSection(
                         td { class: "text-right",
                           button {
                             class: "btn btn-ghost btn-xs text-error",
-                            onclick: move |_| async move {
-                                action_error.set(None);
-                                if api::orgs::revoke_invite(org_id, invite_id).await.is_some() {
-                                    patch_detail(
-                                        detail_state,
-                                        |d| org_detail::remove_invite(d, invite_id),
-                                    );
-                                } else {
-                                    action_error.set(Some("Failed to revoke invite.".to_string()));
-                                }
+                            onclick: {
+                                let email = invite.email.clone();
+                                move |_| pending_revoke.set(Some((invite_id, email.clone())))
                             },
                             "Revoke"
                           }
@@ -475,6 +511,28 @@ fn InvitesSection(
               }
             }
           }
+        }
+      }
+      if let Some((invite_id, email)) = pending_revoke() {
+        ConfirmModal {
+          id: "revoke_invite_title",
+          title: "Revoke Invite",
+          confirm_label: "Revoke Invite",
+          on_close: move |_| pending_revoke.set(None),
+          on_confirm: move |_| {
+              pending_revoke.set(None);
+              spawn(async move {
+                  action_error.set(None);
+                  if api::orgs::revoke_invite(org_id, invite_id).await.is_some() {
+                      patch_detail(detail_state, |d| org_detail::remove_invite(d, invite_id));
+                  } else {
+                      action_error.set(Some("Failed to revoke invite.".to_string()));
+                  }
+              });
+          },
+          "The invitation link sent to "
+          strong { "{email}" }
+          " stops working. Inviting them again sends a new one."
         }
       }
     }
@@ -1176,6 +1234,105 @@ fn InviteLinkReveal(created: OrganizationInviteCreated, on_close: EventHandler<(
         div { class: "modal-action",
           button { class: "btn btn-primary", onclick: move |_| on_close.call(()), "Done" }
         }
+      }
+    }
+  }
+}
+
+/// Which danger-zone action is waiting on its confirm.
+#[derive(Clone, Copy, PartialEq)]
+enum OrgDanger {
+  Leave,
+  Delete,
+}
+
+/// Both actions end the caller's access to this page, so each navigates back
+/// to the org list rather than patching a detail they may no longer read.
+/// Failures render here rather than in the page-wide alert, which sits a
+/// screen away from the button that caused them.
+#[component]
+fn OrgDangerZone(
+  org_id: Uuid,
+  org_name: String,
+  caller_role: OrgRole,
+  me: Option<Uuid>,
+) -> Element {
+  let nav = use_navigator();
+  let mut error = use_signal(|| Option::<String>::None);
+  let mut pending = use_signal(|| Option::<OrgDanger>::None);
+
+  rsx! {
+    DangerZone { id: "org-danger-zone",
+      if me.is_some() {
+        DangerAction {
+          title: "Leave this organization",
+          description: "Gives up every flock and pigeon it grants you. An organization must keep one owner.",
+          label: "Leave Organization",
+          onclick: move |_| pending.set(Some(OrgDanger::Leave)),
+        }
+      }
+      if caller_role == OrgRole::Owner {
+        DangerAction {
+          title: "Delete this organization",
+          description: "Removes it and every membership and invite. Its flocks must be gone first.",
+          label: "Delete Organization",
+          onclick: move |_| pending.set(Some(OrgDanger::Delete)),
+        }
+      }
+      if let Some(err) = error.read().as_ref() {
+        p { class: "text-error text-sm", "⚠️ {err}" }
+      }
+    }
+    if let Some(kind) = pending() {
+      match kind {
+        OrgDanger::Leave => rsx! {
+          ConfirmModal {
+            id: "leave_org_title",
+            title: "Leave Organization",
+            confirm_label: "Leave Organization",
+            on_close: move |_| pending.set(None),
+            on_confirm: move |_| {
+                pending.set(None);
+                spawn(async move {
+                    error.set(None);
+                    let Some(me) = me else { return };
+                    match api::orgs::leave(org_id, me).await {
+                        Ok(()) => {
+                            nav.replace(Route::Orgs {});
+                        }
+                        Err(msg) => error.set(Some(msg)),
+                    }
+                });
+            },
+            "You lose access to every flock and pigeon "
+            strong { "{org_name}" }
+            " grants you. Rejoining needs a new invitation."
+          }
+        },
+        OrgDanger::Delete => rsx! {
+          ConfirmModal {
+            id: "delete_org_title",
+            title: "Delete Organization",
+            confirm_label: "Delete Organization",
+            confirm_value: org_name.clone(),
+            on_close: move |_| pending.set(None),
+            on_confirm: move |_| {
+                pending.set(None);
+                spawn(async move {
+                    error.set(None);
+                    match api::orgs::delete(org_id).await {
+                        Ok(()) => {
+                            nav.replace(Route::Orgs {});
+                        }
+                        Err(msg) => error.set(Some(msg)),
+                    }
+                });
+            },
+            "Deletes "
+            strong { "{org_name}" }
+            " with every membership and pending invite. This cannot be undone."
+          }
+        },
       }
     }
   }
