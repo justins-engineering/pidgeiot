@@ -71,6 +71,15 @@ pub use errors::{
   is_valid_build, normalize_message, normalize_route, truncate_bytes,
 };
 
+// Opaque per-account dashboard preferences, keyed by scope. Shared so the
+// dashboard and the route storing its documents agree on what a key and a
+// document may be.
+pub mod dashboard_state;
+pub use dashboard_state::{
+  DashboardStateEntry, DashboardStateEntryRow, MAX_DASHBOARD_STATE_BYTES,
+  MAX_DASHBOARD_STATE_KEY_BYTES, MAX_DASHBOARD_STATE_KEYS, valid_scope_key,
+};
+
 /// The date the published privacy notice last changed, ISO 8601 so it sorts.
 ///
 /// It feeds the notice's own "Last updated" line and every consent event we

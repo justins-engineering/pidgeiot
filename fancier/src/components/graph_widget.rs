@@ -21,9 +21,9 @@ use std::collections::BTreeMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// One saved graph. Persisted client-side only for now; see
-/// `helpers::graph_store` for where that is, why, and what a move to the
-/// backend would and would not involve.
+/// One saved graph. Persisted against the account, with this browser
+/// keeping a mirror; see `helpers::graph_store` for how the two are
+/// reconciled and for the rule every new field here must follow.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GraphDef {
   pub id: String,
@@ -404,10 +404,21 @@ pub fn PigeonGraphs(
   forwarding_to: Option<String>,
 ) -> Element {
   let scope = GraphScope::Pigeon(pigeon_id.clone());
-  let mut graphs = use_signal({
+  let mut graphs: Signal<Vec<GraphDef>> = use_signal(Vec::new);
+  // Saved graphs come from the account now, so the first paint has none
+  // yet: without this the empty state flashes on every visit, and an edit
+  // made in the meantime would be overwritten by the arriving document.
+  let mut graphs_loaded = use_signal(|| false);
+  {
     let scope = scope.clone();
-    move || graph_store::load(&scope)
-  });
+    use_future(move || {
+      let scope = scope.clone();
+      async move {
+        graphs.set(graph_store::load(&scope).await);
+        graphs_loaded.set(true);
+      }
+    });
+  }
   let mut show_add = use_signal(|| false);
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
@@ -430,6 +441,11 @@ pub fn PigeonGraphs(
   {
     let scope = scope.clone();
     use_effect(move || {
+      // Held, not dropped, until the saved graphs are in: this reads
+      // `graphs_loaded` so the effect runs again the moment they are.
+      if !graphs_loaded() {
+        return;
+      }
       if let Some(def) = quick_add() {
         // Idempotent: clicking "+ Speed graph" twice shouldn't create two
         // near-identical graphs -- a graph already covering this exact
@@ -474,6 +490,7 @@ pub fn PigeonGraphs(
         h2 { class: "text-3xl font-bold", "Telemetry" }
         button {
           class: "btn btn-secondary",
+          disabled: !graphs_loaded(),
           onclick: move |_| show_add.set(true),
           "Add Graph"
         }
@@ -485,7 +502,9 @@ pub fn PigeonGraphs(
         }
       }
 
-      if graphs.read().is_empty() {
+      if !graphs_loaded() {
+        p { class: "text-sm text-base-content/50 italic md:px-4", "Loading saved graphs…" }
+      } else if graphs.read().is_empty() {
         p { class: "text-sm text-base-content/50 italic md:px-4",
           "No graphs yet. Add one to start tracking telemetry over time."
         }
@@ -543,10 +562,19 @@ pub fn PigeonGraphs(
 #[component]
 pub fn FlockGraphs(flock_id: Uuid) -> Element {
   let scope = GraphScope::Flock(flock_id);
-  let mut graphs = use_signal({
+  let mut graphs: Signal<Vec<GraphDef>> = use_signal(Vec::new);
+  // See `PigeonGraphs` for why the loaded flag is separate from the list.
+  let mut graphs_loaded = use_signal(|| false);
+  {
     let scope = scope.clone();
-    move || graph_store::load(&scope)
-  });
+    use_future(move || {
+      let scope = scope.clone();
+      async move {
+        graphs.set(graph_store::load(&scope).await);
+        graphs_loaded.set(true);
+      }
+    });
+  }
   let mut show_add = use_signal(|| false);
   let local_session = use_context::<LocalSession>();
 
@@ -584,6 +612,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
         h2 { class: "text-3xl font-bold", "Flock Telemetry" }
         button {
           class: "btn btn-secondary",
+          disabled: !graphs_loaded(),
           onclick: move |_| show_add.set(true),
           "Add Graph"
         }
@@ -595,7 +624,9 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
         }
       }
 
-      if graphs.read().is_empty() {
+      if !graphs_loaded() {
+        p { class: "text-sm text-base-content/50 italic md:px-4", "Loading saved graphs…" }
+      } else if graphs.read().is_empty() {
         p { class: "text-sm text-base-content/50 italic md:px-4",
           "No graphs yet. Add one to compare a metric across the flock's pigeons."
         }
