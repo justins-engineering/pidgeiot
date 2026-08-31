@@ -1,5 +1,5 @@
 name = "fancier"
-compatibility_date = "2026-08-24"
+compatibility_date = "2026-08-31"
 send_metrics = false
 # Keep version-preview URLs enabled on prod deploys: `versions upload -c
 # wrangler.staging.toml --preview-alias <name>` attaches a quick preview of
@@ -92,7 +92,9 @@ watch_dir = ["./src", "./worker"]
 # CF_ACCESS_CERTS_URL:<url>`), since a deploy without --keep-vars drops
 # whatever vars the previous one set.
 [env.staging]
-routes = [{ pattern = "staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" }]
+routes = [
+  { pattern = "staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" },
+]
 
 # FANCIER_ENV selects .env.staging (build.rs). Without this override the
 # inherited command would bake production's API host into the bundle that

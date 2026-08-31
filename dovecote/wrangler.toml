@@ -1,5 +1,5 @@
 name = "dovecote"
-compatibility_date = "2026-08-24"
+compatibility_date = "2026-08-31"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
@@ -315,7 +315,9 @@ watch_dir = ["./src"]
 # prod and staging share no data plane.
 [env.staging]
 workers_dev = true
-routes = [{ pattern = "api-staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" }]
+routes = [
+  { pattern = "api-staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" },
+]
 
 # Same missing-heartbeat sweep as the production block above -- staging
 # gets its own cron since it's a wholly separate Worker script

@@ -666,7 +666,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.25.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.26.0](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -1524,7 +1524,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [chacha20 0.10.1](https://github.com/RustCrypto/stream-ciphers)
+**Used by:** [chacha20 0.10.2](https://github.com/RustCrypto/stream-ciphers)
 
 
 ````text
