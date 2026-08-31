@@ -1776,6 +1776,12 @@ schema as opaque — Zephyr's tooling and the dashboard's decoder are the consum
 backend. All three routes are **member**-gated (any ACL row on the pigeon), same bar as
 `GET /pigeons/:pigeon_id/logs`.
 
+**Upload only a sanitized dictionary.** `database_gen.py` collects the image's whole static
+rodata string pool so that `%s` pointers resolve, so a build that bakes a credential (a device
+token, a PSK) ships that value verbatim as a `string_mappings` entry, and every member of the
+org can read it back through the `GET` route below. Replace such a value with a placeholder
+before uploading: lookup is by address, so no real log line decodes differently.
+
 #### `PUT /pigeons/:pigeon_id/log-dictionary`
 
 **Auth:** member
