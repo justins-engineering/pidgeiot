@@ -15,7 +15,31 @@ use std::collections::BTreeMap;
 #[cfg(feature = "web")]
 use wasm_bindgen_futures::JsFuture;
 
-const TEL_REGEX: &str = "\\+?(9[976]\\d|8[987530]\\d|6[987]\\d|5[90]\\d|42\\d|3[875]\\d|2[98654321]\\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\\d{1,14}";
+/// The leading `+` is mandatory because the server insists on it: Kratos parses
+/// a `format: tel` trait with no default region, so a number carrying no country
+/// code is refused there however permissive the browser was.
+const TEL_REGEX: &str = "\\+(9[976]\\d|8[987530]\\d|6[987]\\d|5[90]\\d|42\\d|3[875]\\d|2[98654321]\\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\\d{1,14}";
+
+/// Text the browser appends to its own "match the requested format" bubble.
+/// Without a `title` that bubble names no format at all.
+const TEL_TITLE: &str = "Start with + and the country code, like +18605551234";
+
+/// Drop the punctuation people group digits with, keeping everything else.
+///
+/// Phone numbers get written `860.777.5695`, `(860) 777-5695` or with plain
+/// spaces, and `TEL_REGEX` accepts none of it. Stripping the separators as
+/// the field is typed keeps that regex as the acceptance bar instead of
+/// widening it. Anything that is not a separator survives, so a real typo
+/// still fails validation rather than being silently reshaped.
+fn strip_separators(raw: &str) -> String {
+  let mut cleaned = String::with_capacity(raw.len());
+  for c in raw.chars() {
+    if !(c.is_whitespace() || matches!(c, '.' | '-' | '(' | ')')) {
+      cleaned.push(c);
+    }
+  }
+  cleaned
+}
 
 // --- Input Node Components ---
 
@@ -27,6 +51,16 @@ fn InputFieldNode(
   validate: bool,
   pattern: Option<String>,
   hint: Option<Element>,
+  /// Appended to the browser's native validation bubble.
+  title: Option<String>,
+  /// Show the hint from the start rather than only once the value is bad.
+  #[props(default)]
+  persistent_hint: bool,
+  /// Strip grouping punctuation as the field is typed. This makes the field
+  /// controlled, which is the point: the browser must validate and post the
+  /// cleaned value, not what was keyed.
+  #[props(default)]
+  strip_separators_on_input: bool,
   id_suffix: String,
 ) -> Element {
   let input_id = format!("{}_{}", attrs.name, id_suffix);
@@ -34,25 +68,44 @@ fn InputFieldNode(
     .as_ref()
     .map(|m| m.text.clone())
     .unwrap_or_else(|| format!("{:?}", attrs.r#type));
+  let initial = parse_json_string(&attrs.value);
+  let mut typed = use_signal(|| initial.clone());
 
   rsx! {
-    label { class: "floating-label my-4", r#for: "{input_id}",
-      span { "{label_text}" }
-      input {
-        id: "{input_id}",
-        name: attrs.name,
-        class: "input w-full",
-        class: if validate { "validator" },
-        required: attrs.required.unwrap_or_default(),
-        disabled: attrs.disabled,
-        autocomplete: attrs.autocomplete.map(autocomplete_token),
-        placeholder: label_text,
-        r#type: input_type_token(attrs.r#type),
-        pattern,
-        value: parse_json_string(&attrs.value),
+    // `floating-label` is a flex row, so a hint nested in it lands beside a
+    // full-width input instead of under it -- which is why the hints were
+    // never seen. It sits outside the label, and the label carries
+    // `validator` too so daisyUI's `:has(:user-invalid) ~ .validator-hint`
+    // still reveals it; the input keeps its own for the error border.
+    div { class: "my-4",
+      label { class: "floating-label", class: if validate { "validator" }, r#for: "{input_id}",
+        span { "{label_text}" }
+        input {
+          id: "{input_id}",
+          name: attrs.name,
+          class: "input w-full",
+          class: if validate { "validator" },
+          required: attrs.required.unwrap_or_default(),
+          disabled: attrs.disabled,
+          autocomplete: attrs.autocomplete.map(autocomplete_token),
+          placeholder: label_text,
+          title,
+          r#type: input_type_token(attrs.r#type),
+          pattern,
+          value: if strip_separators_on_input { typed() } else { initial.clone() },
+          oninput: move |event| {
+            if strip_separators_on_input {
+              typed.set(strip_separators(&event.value()));
+            }
+          },
+        }
       }
       if validate {
-        div { class: "validator-hint hidden", {hint} }
+        div {
+          class: "validator-hint",
+          class: if persistent_hint { "visible" } else { "hidden" },
+          {hint}
+        }
       }
     }
     // Render field-specific field validation errors neatly below the input element
@@ -540,15 +593,15 @@ fn NodeBuilder(
                           attrs: *i,
                           messages: node.messages,
                           validate: true,
+                          // The format is not guessable, so say it before the
+                          // first keystroke rather than after a rejection.
+                          persistent_hint: true,
+                          strip_separators_on_input: true,
                           hint: rsx! {
-                            p { "Please enter a valid phone number without:" }
-                            ul { class: "list-disc list-inside",
-                              li { "Characters" }
-                              li { "Spaces" }
-                              li { "Hyphens -" }
-                              li { "Parenthesis ()" }
-                            }
+                            p { "Optional. Start with + and the country code." }
+                            p { "Spaces, dots, dashes and parentheses are fine: +1 860 555-1234." }
                           },
+                          title: TEL_TITLE,
                           pattern: TEL_REGEX,
                           id_suffix: id_suffix.clone(),
                         }
@@ -782,7 +835,49 @@ pub fn FormBuilder(
 
 #[cfg(test)]
 mod tests {
-  use super::{checkbox_helper, is_retired_node};
+  use super::{TEL_REGEX, checkbox_helper, is_retired_node, strip_separators};
+
+  /// The number that was refused at registration, in the shapes people
+  /// actually type it, all landing on the same digits.
+  #[test]
+  fn every_way_of_writing_one_number_strips_to_the_same_digits() {
+    for written in [
+      "860.777.5695",
+      "860-777-5695",
+      "860 777 5695",
+      "(860) 777-5695",
+      "(860).777 5695",
+      "8607775695",
+    ] {
+      assert_eq!(strip_separators(written), "8607775695", "{written}");
+    }
+  }
+
+  #[test]
+  fn the_country_code_survives_and_nothing_is_invented() {
+    assert_eq!(strip_separators("+1 (860) 777-5695"), "+18607775695");
+    assert_eq!(strip_separators(""), "");
+    assert_eq!(strip_separators("   "), "");
+    // Not a separator, so it reaches the pattern and is rejected there
+    // rather than being quietly deleted into a different number.
+    assert_eq!(strip_separators("860x7775695"), "860x7775695");
+  }
+
+  /// The stripped value has to clear the pattern the input enforces, or
+  /// normalising only moves where the rejection happens. The bare national
+  /// number is the case that matters: the browser used to wave it through and
+  /// Kratos, which parses `format: tel` with no default region, refused it.
+  #[test]
+  fn the_pattern_accepts_what_the_server_accepts() {
+    let anchored = String::from("^(?:") + TEL_REGEX + ")$";
+    let re = regex::Regex::new(&anchored).expect("TEL_REGEX is a valid pattern");
+    for accepted in ["+1 (860) 555-1234", "+1.860.555.1234", "+44 20 7946 0958"] {
+      assert!(re.is_match(&strip_separators(accepted)), "{accepted}");
+    }
+    for refused in ["860.555.1234", "020 7946 0958", "+1 860 555 12x4"] {
+      assert!(!re.is_match(&strip_separators(refused)), "{refused}");
+    }
+  }
 
   #[test]
   fn the_consent_box_explains_itself_differently_in_each_flow() {
