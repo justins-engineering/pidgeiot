@@ -2249,10 +2249,12 @@ ones below, and they are about size and naming, not shape.
 (`capsules::valid_scope_key`); anything else is a `400`, so a key can never escape its path
 segment. There is no listing route: a client reads the scope it is rendering.
 
-**Reads are served from Hyperdrive's ~60s query cache**, so a `GET` issued shortly after a
-`PUT` can still answer with the replaced document — the `PUT`'s own response body is the read
-that is guaranteed fresh, which is why it echoes the stored entry. `updated_at` is the server's
-clock and is what a client compares its own copy against.
+**The `GET` is deliberately exempt from Hyperdrive's ~60s query cache** — its statement carries
+`now()`, which Hyperdrive refuses to cache. A browser with no local copy of a document has to
+see a save made seconds ago, and without the exemption a page load's `404` seeds the cache and
+the next profile is served that `404` after the document exists. The `PUT` still echoes the
+stored entry, so a client never needs to re-read to confirm its own write. `updated_at` is the
+server's clock and is what a client compares its own copy against.
 
 #### `GET /dashboard-state/:scope_key`
 

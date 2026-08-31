@@ -43,6 +43,15 @@ fn row_to_entry(row: &Row) -> DashboardStateEntry {
 
 /// One account's document for a scope, or `None` when it has never saved
 /// one.
+///
+/// `read_at` is never read back. It is there because Hyperdrive will not
+/// cache a statement carrying a volatile function, and this read must not
+/// be cached: a browser with no local mirror -- a fresh profile, which is
+/// the whole point of storing this server-side -- has to see a save made
+/// seconds ago. Same device as `load_org_billing_state`, and load-bearing
+/// for the same kind of reason. Observed on staging without it: a page
+/// load's 404 seeded the cache, and the next profile was served that 404
+/// twenty seconds after the document was written.
 pub async fn load_dashboard_state(
   client: &Client,
   user_id: &Uuid,
@@ -50,10 +59,10 @@ pub async fn load_dashboard_state(
 ) -> Result<Option<DashboardStateEntry>> {
   ensure_dashboard_state_table(client).await?;
 
-  let mut sql = String::with_capacity(128);
+  let mut sql = String::with_capacity(160);
   sql.push_str("SELECT ");
   sql.push_str(DASHBOARD_STATE_COLUMNS);
-  sql.push_str(" FROM dashboard_state WHERE user_id = $1 AND scope_key = $2;");
+  sql.push_str(", now() AS read_at FROM dashboard_state WHERE user_id = $1 AND scope_key = $2;");
 
   let rows = client
     .query_typed(&sql, &[(user_id, Type::UUID), (&scope_key, Type::TEXT)])
