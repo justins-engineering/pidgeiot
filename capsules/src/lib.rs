@@ -1288,22 +1288,131 @@ impl Default for AlertCondition {
   }
 }
 
+/// Upper bound on `AlertChannel::Email`'s recipient list. One transition
+/// sends one message per address, so this is the fan-out a single threshold
+/// crossing can buy; eight covers an on-call rotation and a shared inbox
+/// without letting one alert become a mailing list.
+pub const MAX_ALERT_RECIPIENTS: usize = 8;
+
+/// Upper bound on `AlertDefinition::notes`. The notes ride in every
+/// notification the definition sends and in every list response that
+/// carries it, so this is sized for the operator context that belongs next
+/// to an alert -- a runbook link, which cabinet to check first -- not for a
+/// procedure document.
+pub const MAX_ALERT_NOTES_BYTES: usize = 1024;
+
 /// Delivery channel for a fired/cleared alert (design doc §3). `Email` is
 /// the only variant today -- kept as an enum (rather than a bare struct) so
 /// adding `Webhook`/`Sms`/`Push` later is additive, matching how
 /// `Connector` already lets `Pigeon` support more than one protocol without
-/// a rewrite. `to: None` means "use the owning flock's stored
-/// `owner_email`" (design doc §3.4); `Some` is an explicit per-alert
-/// override.
+/// a rewrite. An empty `to` means "use the owning flock's stored
+/// `owner_email`" (design doc §3.4); a non-empty one names the addresses
+/// explicitly, each of which must already be tied to the account (see
+/// `docs/api.md`).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertChannel {
-  Email { to: Option<String> },
+  Email {
+    /// Also accepts the single-address shapes stored before this was a
+    /// list (`null`, or one bare string), so definitions written by the
+    /// earlier model keep loading without a backfill.
+    #[serde(default, deserialize_with = "deserialize_recipients")]
+    to: Vec<String>,
+  },
+}
+
+fn deserialize_recipients<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  #[derive(Deserialize)]
+  #[serde(untagged)]
+  enum Recipients {
+    One(String),
+    Many(Vec<String>),
+  }
+
+  Ok(match Option::<Recipients>::deserialize(deserializer)? {
+    Some(Recipients::One(one)) if !one.trim().is_empty() => vec![one],
+    Some(Recipients::Many(many)) => many,
+    _ => Vec::new(),
+  })
 }
 
 impl Default for AlertChannel {
   fn default() -> Self {
-    AlertChannel::Email { to: None }
+    AlertChannel::Email { to: Vec::new() }
   }
+}
+
+/// Normalizes and checks a recipient list against the addresses this
+/// account may aim an alert at. Trims, lowercases and drops duplicates and
+/// blanks, then refuses the whole list if it is too long or names an
+/// address that is neither plausibly formed nor in `allowed`. Shared so the
+/// dashboard can refuse a list before sending it and the routes can refuse
+/// the same list on arrival.
+pub fn normalize_alert_recipients(
+  to: &[String],
+  allowed: &[String],
+) -> Result<Vec<String>, AlertRecipientRejection> {
+  let mut normalized: Vec<String> = Vec::with_capacity(to.len());
+  for address in to {
+    let address = address.trim().to_lowercase();
+    if address.is_empty() {
+      continue;
+    }
+    if !contact::is_plausible_email(&address) {
+      return Err(AlertRecipientRejection::Malformed);
+    }
+    if !allowed
+      .iter()
+      .any(|a| a.trim().eq_ignore_ascii_case(&address))
+    {
+      return Err(AlertRecipientRejection::NotAllowed);
+    }
+    if !normalized.contains(&address) {
+      normalized.push(address);
+    }
+  }
+  if normalized.len() > MAX_ALERT_RECIPIENTS {
+    return Err(AlertRecipientRejection::TooMany);
+  }
+  Ok(normalized)
+}
+
+/// Why a recipient list was refused. Carries no address, so a route can
+/// log or return the reason without echoing what was submitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertRecipientRejection {
+  Malformed,
+  NotAllowed,
+  TooMany,
+}
+
+impl AlertRecipientRejection {
+  pub fn message(&self) -> &'static str {
+    match self {
+      AlertRecipientRejection::Malformed => {
+        "Bad Request: one of the alert's email recipients is not a valid address"
+      }
+      AlertRecipientRejection::NotAllowed => {
+        "Bad Request: alert email recipients must be your account's verified address or a \
+         member of the organization that owns this flock"
+      }
+      AlertRecipientRejection::TooMany => "Bad Request: too many alert email recipients",
+    }
+  }
+}
+
+/// Trims an alert's notes and drops them entirely when empty, so "no notes"
+/// has one representation. `Err` when past `MAX_ALERT_NOTES_BYTES`.
+pub fn normalize_alert_notes(notes: Option<&str>) -> Result<Option<String>, ()> {
+  let Some(notes) = notes.map(str::trim).filter(|n| !n.is_empty()) else {
+    return Ok(None);
+  };
+  if notes.len() > MAX_ALERT_NOTES_BYTES {
+    return Err(());
+  }
+  Ok(Some(notes.to_string()))
 }
 
 /// Mirrors ThingsBoard's alarm severity framing (design doc §2.3) -- carried
@@ -1375,6 +1484,7 @@ pub struct AlertDefinitionRow {
   pub condition: String,
   pub severity: String,
   pub channel: String,
+  pub notes: Option<String>,
   pub enabled: bool,
   pub created_at: OffsetDateTime,
   pub updated_at: OffsetDateTime,
@@ -1402,6 +1512,7 @@ impl From<AlertDefinitionRow> for AlertDefinition {
       condition: serde_json::from_str(&row.condition).unwrap_or_default(),
       severity: row.severity.parse().unwrap_or_default(),
       channel: serde_json::from_str(&row.channel).unwrap_or_default(),
+      notes: row.notes,
       enabled: row.enabled,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -1425,6 +1536,10 @@ pub struct AlertDefinition {
   pub condition: AlertCondition,
   pub severity: AlertSeverity,
   pub channel: AlertChannel,
+  /// Free text the operator wrote for whoever reads the notification --
+  /// what to check first, a runbook link. Never interpreted, only shown.
+  #[serde(default)]
+  pub notes: Option<String>,
   pub enabled: bool,
   #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
@@ -1444,16 +1559,21 @@ pub struct AlertDefinitionCreateRequest {
   #[serde(default)]
   pub severity: AlertSeverity,
   pub channel: AlertChannel,
+  #[serde(default)]
+  pub notes: Option<String>,
 }
 
 /// Body for `PUT /alerts/:alert_id` -- `None` keeps the current value for
 /// that field, same partial-update convention as `PigeonUpdateRequest`.
+/// Notes are cleared by sending an empty string, since an omitted `notes`
+/// already means "leave them alone".
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct AlertDefinitionUpdateRequest {
   pub name: Option<String>,
   pub condition: Option<AlertCondition>,
   pub severity: Option<AlertSeverity>,
   pub channel: Option<AlertChannel>,
+  pub notes: Option<String>,
   pub enabled: Option<bool>,
 }
 
@@ -1565,6 +1685,89 @@ impl DemoAlert {
       comparator,
       value,
     }
+  }
+}
+
+#[cfg(test)]
+mod alert_channel_tests {
+  use super::*;
+
+  fn channel(json: &str) -> AlertChannel {
+    serde_json::from_str(json).expect("channel parses")
+  }
+
+  #[test]
+  fn the_single_address_shapes_written_before_the_list_still_load() {
+    let AlertChannel::Email { to } = channel(r#"{"Email":{"to":"ops@example.com"}}"#);
+    assert_eq!(to, vec!["ops@example.com".to_string()]);
+
+    let AlertChannel::Email { to } = channel(r#"{"Email":{"to":null}}"#);
+    assert!(to.is_empty());
+
+    let AlertChannel::Email { to } = channel(r#"{"Email":{}}"#);
+    assert!(to.is_empty());
+
+    let AlertChannel::Email { to } = channel(r#"{"Email":{"to":["a@x.com","b@x.com"]}}"#);
+    assert_eq!(to.len(), 2);
+  }
+
+  #[test]
+  fn recipients_are_lowercased_deduplicated_and_bounded() {
+    let allowed = vec!["Ops@Example.com".to_string(), "b@example.com".to_string()];
+    assert_eq!(
+      normalize_alert_recipients(
+        &[
+          " OPS@example.com ".to_string(),
+          "ops@example.com".to_string(),
+          String::new(),
+          "b@example.com".to_string(),
+        ],
+        &allowed
+      ),
+      Ok(vec![
+        "ops@example.com".to_string(),
+        "b@example.com".to_string()
+      ])
+    );
+
+    let many: Vec<String> = (0..MAX_ALERT_RECIPIENTS + 1)
+      .map(|i| {
+        let mut a = String::with_capacity(16);
+        a.push('a');
+        a.push_str(&i.to_string());
+        a.push_str("@example.com");
+        a
+      })
+      .collect();
+    assert_eq!(
+      normalize_alert_recipients(&many, &many),
+      Err(AlertRecipientRejection::TooMany)
+    );
+  }
+
+  #[test]
+  fn a_recipient_the_account_does_not_own_is_refused() {
+    let allowed = vec!["ops@example.com".to_string()];
+    assert_eq!(
+      normalize_alert_recipients(&["stranger@example.com".to_string()], &allowed),
+      Err(AlertRecipientRejection::NotAllowed)
+    );
+    assert_eq!(
+      normalize_alert_recipients(&["not an address".to_string()], &allowed),
+      Err(AlertRecipientRejection::Malformed)
+    );
+  }
+
+  #[test]
+  fn blank_notes_are_absent_and_oversized_notes_are_refused() {
+    assert_eq!(normalize_alert_notes(Some("  \n ")), Ok(None));
+    assert_eq!(normalize_alert_notes(None), Ok(None));
+    assert_eq!(
+      normalize_alert_notes(Some(" check the breaker ")),
+      Ok(Some("check the breaker".to_string()))
+    );
+    let long = "x".repeat(MAX_ALERT_NOTES_BYTES + 1);
+    assert_eq!(normalize_alert_notes(Some(&long)), Err(()));
   }
 }
 

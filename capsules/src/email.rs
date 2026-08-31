@@ -316,11 +316,14 @@ pub fn format_alert_email(alert: &AlertEmail<'_>, clock: Clock<'_>) -> EmailMess
   ));
   facts.push(Fact::new("When", when.clone()));
 
-  let lead = if alert.fired {
+  let mut lead = vec![if alert.fired {
     format!("{location} has met the condition of the alert {name}.")
   } else {
     format!("{location} no longer meets the condition of the alert {name}.")
-  };
+  }];
+  // The operator's own words sit above the facts table, where "check the
+  // cabinet breaker first" is read before the numbers rather than after.
+  lead.extend(note_paragraphs(alert.definition.notes.as_deref()));
 
   let kind = match (alert.fired, &def.severity) {
     (true, AlertSeverity::Critical) => "Critical alert",
@@ -339,7 +342,7 @@ pub fn format_alert_email(alert: &AlertEmail<'_>, clock: Clock<'_>) -> EmailMess
     } else {
       format!("{name} has resolved")
     },
-    lead: vec![lead],
+    lead,
     facts,
     action: Some(Action {
       label: "View pigeon in dashboard",
@@ -355,6 +358,18 @@ pub fn format_alert_email(alert: &AlertEmail<'_>, clock: Clock<'_>) -> EmailMess
   };
 
   doc.render()
+}
+
+/// One paragraph per line the operator typed. `inline` per line rather
+/// than over the whole note, so a runbook written as a short list keeps its
+/// breaks instead of collapsing into a wall of text.
+fn note_paragraphs(notes: Option<&str>) -> Vec<String> {
+  notes
+    .unwrap_or_default()
+    .lines()
+    .map(inline)
+    .filter(|line| !line.is_empty())
+    .collect()
 }
 
 // --- Content vocabulary ---
@@ -1019,7 +1034,8 @@ mod tests {
       name: name.to_string(),
       condition,
       severity,
-      channel: AlertChannel::Email { to: None },
+      channel: AlertChannel::default(),
+      notes: None,
       enabled: true,
       created_at: datetime!(2026-08-01 00:00:00 UTC),
       updated_at: datetime!(2026-08-01 00:00:00 UTC),
@@ -1082,6 +1098,17 @@ mod tests {
       },
       AlertSeverity::Warning,
     );
+    let noted = {
+      let mut noted = definition(
+        "Freezer door",
+        threshold("temp_c", 4.0),
+        AlertSeverity::Critical,
+      );
+      noted.notes = Some(
+        "Check the breaker & the door seal first\nRunbook: https://ops.example.com/freezer".into(),
+      );
+      noted
+    };
     let value = AlertObservation::Value { observed: 34.2 };
     let change = AlertObservation::Change {
       previous: 1013.2,
@@ -1104,6 +1131,7 @@ mod tests {
       format_alert_email(&alert(&offline, true, Some(&silence)), Clock::utc()),
       format_alert_email(&alert(&offline, false, Some(&silence)), Clock::utc()),
       format_alert_email(&alert(&missing, true, Some(&never)), Clock::utc()),
+      format_alert_email(&alert(&noted, true, Some(&value)), Clock::utc()),
     ]
   }
 
@@ -1436,6 +1464,47 @@ mod tests {
       message
         .text
         .contains("https://pidgeiot.com/flocks/x/pigeons/y?a=1&b=2")
+    );
+  }
+
+  #[test]
+  fn operator_notes_are_escaped_and_kept_line_per_line() {
+    let mut def = definition("Freezer", threshold("temp_c", 1.0), AlertSeverity::Critical);
+    def.notes = Some(
+      "Check the breaker & the door seal <script>alert('xss')</script> first\n\
+       Runbook: https://ops.example.com/f"
+        .into(),
+    );
+    let message = format_alert_email(&alert(&def, true, None), Clock::utc());
+
+    assert!(!message.html.contains("<script>"));
+    assert!(message.html.contains(
+      "Check the breaker &amp; the door seal &lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt; first"
+    ));
+    // The link keeps its own paragraph, and stays clickable.
+    assert!(message.html.contains("href=\"https://ops.example.com/f\""));
+    assert!(
+      message
+        .text
+        .contains("Check the breaker & the door seal <script>alert('xss')</script> first\n")
+    );
+    assert!(
+      message
+        .text
+        .contains("Runbook: https://ops.example.com/f\n")
+    );
+  }
+
+  #[test]
+  fn an_alert_without_notes_reads_exactly_as_it_did() {
+    let def = definition("Freezer", threshold("temp_c", 1.0), AlertSeverity::Warning);
+    let plain = format_alert_email(&alert(&def, true, None), Clock::utc());
+
+    let mut blank = def.clone();
+    blank.notes = Some("   \n  ".to_string());
+    assert_eq!(
+      format_alert_email(&alert(&blank, true, None), Clock::utc()),
+      plain
     );
   }
 
