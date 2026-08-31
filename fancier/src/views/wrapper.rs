@@ -42,23 +42,32 @@ pub fn Wrapper() -> Element {
     PageTitle {}
     Navbar {}
     main { Outlet::<Route> {} }
-    Footer {}
     // Signed-in only, by owner decision: maximum value where breakage
     // actually happens, no effect on the marketing pages' conversion
     // surface. Hanging off AuthState also makes it SSG-safe for free --
     // the prerender pass never leaves Pending, so no prerendered page
     // carries the button.
     if (session.state)().is_authenticated() {
-      button {
-        id: "report-a-problem",
-        class: "btn btn-primary btn-sm fixed bottom-4 inset-e-4 z-40 shadow-lg gap-2 rounded-full",
-        r#type: "button",
-        aria_label: "Report a problem",
-        onclick: move |_| problem_open.set(true),
-        Icon { icon: LdCircleAlert, class: "size-4" }
-        "Report a problem"
+      // Sticky in flow just above the footer rather than fixed to the
+      // viewport: it floats while the footer is off screen and settles
+      // into this slot once the footer scrolls in, so it can never cover
+      // the footer's links. The strip spans the width, hence
+      // pointer-events-none on it and auto on the button, so it doesn't
+      // swallow clicks on whatever it floats over.
+      div {
+        class: "sticky bottom-4 z-40 mb-2 flex justify-end pe-4 pointer-events-none",
+        button {
+          id: "report-a-problem",
+          class: "btn btn-primary btn-sm shadow-lg gap-2 rounded-full pointer-events-auto",
+          r#type: "button",
+          aria_label: "Report a problem",
+          onclick: move |_| problem_open.set(true),
+          Icon { icon: LdCircleAlert, class: "size-4" }
+          "Report a problem"
+        }
       }
     }
+    Footer {}
     if feedback_open() {
       FeedbackModal { on_close: move |_| feedback_open.set(false) }
     }
