@@ -204,6 +204,7 @@ mod timezone;
 pub use timezone::canonical_timezone;
 
 mod alerts;
+pub use alerts::allowed_alert_recipients;
 pub use alerts::check_telemetry_alerts_batch;
 pub use alerts::create_flock_alert;
 pub use alerts::create_pigeon_alert;

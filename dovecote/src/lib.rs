@@ -3,8 +3,8 @@ use crate::helpers::{
   INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
   STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
   TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite,
-  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
-  build_invite_url, canonical_timezone, change_member_role, check_device_cap,
+  allowed_alert_recipients, apply_subscription, attach_stripe_customer, authenticate_browser,
+  backfill_owner_email, build_invite_url, canonical_timezone, change_member_role, check_device_cap,
   check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
   check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
   count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
@@ -295,20 +295,22 @@ pub async fn require_auth_session(req: &Request, env: &Env) -> worker::Result<Au
 /// fine. Returns the user-facing rejection message so both create routes
 /// and the update route emit the same 400 body. Case-insensitive;
 /// `verified_emails` is already lowercased at construction.
-fn validate_alert_channel(
-  channel: &capsules::AlertChannel,
-  verified_emails: &[String],
+fn normalize_alert_channel(
+  channel: &mut capsules::AlertChannel,
+  allowed: &[String],
 ) -> std::result::Result<(), &'static str> {
-  let capsules::AlertChannel::Email { to: Some(addr) } = channel else {
-    return Ok(());
-  };
-  if verified_emails
-    .iter()
-    .any(|v| v == &addr.trim().to_lowercase())
-  {
-    Ok(())
-  } else {
-    Err("Bad Request: alert email override must match your account's verified email address")
+  let capsules::AlertChannel::Email { to } = channel;
+  match capsules::normalize_alert_recipients(to, allowed) {
+    Ok(normalized) => *to = normalized,
+    Err(rejection) => return Err(rejection.message()),
+  }
+  Ok(())
+}
+
+fn check_alert_notes(notes: Option<&str>) -> std::result::Result<(), &'static str> {
+  match capsules::normalize_alert_notes(notes) {
+    Ok(_) => Ok(()),
+    Err(()) => Err("Bad Request: alert notes are too long"),
   }
 }
 
@@ -2631,7 +2633,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(resp) => return resp.with_cors(&cors),
         };
 
-        let Ok(payload) = req.json::<AlertDefinitionCreateRequest>().await else {
+        let Ok(mut payload) = req.json::<AlertDefinitionCreateRequest>().await else {
           return Response::error("Bad Request: Invalid JSON payload", 400)
             .unwrap()
             .with_cors(&cors);
@@ -2643,11 +2645,22 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
-        if let Err(msg) = validate_alert_channel(&payload.channel, &principal.verified_emails) {
+        get_db!(ctx.env, client, &cors);
+
+        let scope = capsules::AlertScope::Pigeon(pigeon_id.clone());
+        let Ok(allowed) =
+          allowed_alert_recipients(&client, &scope, &principal.verified_emails).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if let Err(msg) = normalize_alert_channel(&mut payload.channel, &allowed)
+          .and_then(|()| check_alert_notes(payload.notes.as_deref()))
+        {
           return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
-
-        get_db!(ctx.env, client, &cors);
 
         // Alert-count entitlement. The limit is per account across every
         // flock and pigeon it owns, not per pigeon.
@@ -2753,7 +2766,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        let Ok(payload) = req.json::<AlertDefinitionCreateRequest>().await else {
+        let Ok(mut payload) = req.json::<AlertDefinitionCreateRequest>().await else {
           return Response::error("Bad Request: Invalid JSON payload", 400)
             .unwrap()
             .with_cors(&cors);
@@ -2763,10 +2776,6 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return Response::error("Bad Request: 'name' cannot be empty", 400)
             .unwrap()
             .with_cors(&cors);
-        }
-
-        if let Err(msg) = validate_alert_channel(&payload.channel, &principal.verified_emails) {
-          return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
 
         get_db!(ctx.env, client, &cors);
@@ -2789,6 +2798,26 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+
+        let Ok(flock_uuid) = uuid::Uuid::parse_str(&flock_id) else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let scope = capsules::AlertScope::Flock(flock_uuid);
+        let Ok(allowed) =
+          allowed_alert_recipients(&client, &scope, &principal.verified_emails).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if let Err(msg) = normalize_alert_channel(&mut payload.channel, &allowed)
+          .and_then(|()| check_alert_notes(payload.notes.as_deref()))
+        {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
+        }
 
         // Alert-count entitlement, same per-account limit as the
         // pigeon-scoped route.
@@ -2923,17 +2952,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         };
 
-        let Ok(payload) = req.json::<AlertDefinitionUpdateRequest>().await else {
+        let Ok(mut payload) = req.json::<AlertDefinitionUpdateRequest>().await else {
           return Response::error("Bad Request: Invalid JSON payload", 400)
             .unwrap()
             .with_cors(&cors);
         };
-
-        if let Some(channel) = &payload.channel
-          && let Err(msg) = validate_alert_channel(channel, &auth.verified_emails)
-        {
-          return Response::error(msg, 400).unwrap().with_cors(&cors);
-        }
 
         get_db!(ctx.env, client, &cors);
 
@@ -2948,6 +2971,26 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+
+        // The allowlist is the definition's own scope, so an alert moved
+        // between organizations is checked against where it lives now.
+        let Ok(allowed) =
+          allowed_alert_recipients(&client, alert_access.scope(), &auth.verified_emails).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        if let Some(channel) = &mut payload.channel
+          && let Err(msg) = normalize_alert_channel(channel, &allowed)
+        {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
+        }
+
+        if let Err(msg) = check_alert_notes(payload.notes.as_deref()) {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
+        }
 
         let Ok(alert) = update_alert_definition(&client, &alert_access, &payload).await else {
           return Response::error("Internal Server Error", 500)

@@ -1075,6 +1075,7 @@ mod tests {
       },
       severity: AlertSeverity::Warning,
       channel: AlertChannel::default(),
+      notes: None,
       enabled,
       created_at: OffsetDateTime::UNIX_EPOCH,
       updated_at: OffsetDateTime::UNIX_EPOCH,

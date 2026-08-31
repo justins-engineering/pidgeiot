@@ -90,6 +90,18 @@ fn main() {
   };
   write(out, "alert_resolved", &format_alert_email(&resolved, clock));
 
+  let mut noted = high_temp.clone();
+  noted.notes = Some(
+    "Vents & shades are on the same breaker: check that first.\n\
+     Runbook: https://pidgeiot.com/documentation"
+      .to_string(),
+  );
+  let with_notes = AlertEmail {
+    definition: &noted,
+    ..firing.clone()
+  };
+  write(out, "alert_notes", &format_alert_email(&with_notes, clock));
+
   let gone_quiet = definition(
     "Pump controller silent",
     AlertCondition::DeviceState {
@@ -123,7 +135,8 @@ fn definition(name: &str, condition: AlertCondition, severity: AlertSeverity) ->
     name: name.to_string(),
     condition,
     severity,
-    channel: AlertChannel::Email { to: None },
+    channel: AlertChannel::default(),
+    notes: None,
     enabled: true,
     created_at: datetime!(2026-08-01 00:00:00 UTC),
     updated_at: datetime!(2026-08-01 00:00:00 UTC),

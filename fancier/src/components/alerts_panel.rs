@@ -105,6 +105,17 @@ fn duration_label(secs: i64) -> String {
   }
 }
 
+/// Who the alert mails, for the list row. An empty list is the default the
+/// backend resolves, so it is named rather than shown as nothing.
+fn recipient_summary(channel: &AlertChannel) -> String {
+  let AlertChannel::Email { to } = channel;
+  if to.is_empty() {
+    "the flock owner".to_string()
+  } else {
+    to.join(", ")
+  }
+}
+
 /// One-line summary of an alert's condition for the list table -- the four
 /// variants `capsules::AlertCondition` has today. All four are evaluated
 /// by the backend: `Threshold`/`RateOfChange` at every telemetry ingest
@@ -340,6 +351,12 @@ fn AlertRow(
       td { class: "font-semibold text-primary", "{alert.name}" }
       td { class: "font-mono text-xs text-base-content/80",
         div { "{condition_summary(&alert.condition)}" }
+        div { class: "font-sans text-base-content/60",
+          "notifies {recipient_summary(&alert.channel)}"
+        }
+        if let Some(notes) = alert.notes.as_deref() {
+          div { class: "font-sans text-base-content/70 mt-1 whitespace-pre-line", "{notes}" }
+        }
       }
       td {
         span {
@@ -471,9 +488,15 @@ fn AlertFormModal(
   });
 
   let mut severity = use_signal(|| editing.as_ref().map(|a| a.severity).unwrap_or_default());
-  let mut recipient = use_signal(|| match editing.as_ref().map(|a| &a.channel) {
-    Some(AlertChannel::Email { to: Some(addr) }) => addr.clone(),
-    _ => String::new(),
+  let mut recipients = use_signal(|| match editing.as_ref().map(|a| &a.channel) {
+    Some(AlertChannel::Email { to }) => to.clone(),
+    None => Vec::new(),
+  });
+  let mut notes = use_signal(|| {
+    editing
+      .as_ref()
+      .and_then(|a| a.notes.clone())
+      .unwrap_or_default()
   });
 
   let mut is_saving = use_signal(|| false);
@@ -501,7 +524,21 @@ fn AlertFormModal(
       .trim()
       .parse::<i64>()
       .is_ok_and(|m| m > 0);
+  // Blank rows are dropped on submit, so only what the operator actually
+  // typed has to look like an address.
+  let recipients_valid = recipients
+    .read()
+    .iter()
+    .filter(|address| !address.trim().is_empty())
+    .all(|address| capsules::is_plausible_email(address))
+    && recipients.read().len() <= capsules::MAX_ALERT_RECIPIENTS;
+  let notes_valid = notes.read().trim().len() <= capsules::MAX_ALERT_NOTES_BYTES;
+  // Cloned out of the signal so the rows can be rendered while their own
+  // handlers hold a write borrow of it.
+  let recipient_rows = recipients.read().clone();
   let can_submit = !name.read().trim().is_empty()
+    && recipients_valid
+    && notes_valid
     && match condition_kind() {
       ConditionKind::Threshold => !key.read().trim().is_empty() && threshold_value_valid,
       ConditionKind::DeviceState => true,
@@ -606,10 +643,17 @@ fn AlertFormModal(
                           }
                       }
                   };
-                  let recipient_value = recipient.read().trim().to_string();
                   let channel = AlertChannel::Email {
-                      to: if recipient_value.is_empty() { None } else { Some(recipient_value) },
+                      to: recipients
+                          .read()
+                          .iter()
+                          .map(|address| address.trim().to_string())
+                          .filter(|address| !address.is_empty())
+                          .collect(),
                   };
+                  // An empty string clears stored notes; omitting the field
+                  // would keep them.
+                  let notes = Some(notes.read().trim().to_string());
 
                   is_saving.set(true);
                   submit_error.set(None);
@@ -620,6 +664,7 @@ fn AlertFormModal(
                           condition: Some(condition),
                           severity: Some(severity()),
                           channel: Some(channel),
+                          notes,
                           enabled: None,
                       };
                       api::alerts::update(id, &req).await
@@ -629,6 +674,7 @@ fn AlertFormModal(
                           condition,
                           severity: severity(),
                           channel,
+                          notes,
                       };
                       match scope {
                           AlertScope::Pigeon(pigeon_id) => {
@@ -918,16 +964,73 @@ fn AlertFormModal(
 
             div {
               label { class: "fieldset-legend text-xs font-semibold mb-1", "Notify (email)" }
-              input {
-                class: "input input-bordered w-full text-sm",
-                r#type: "email",
-                placeholder: "defaults to flock owner's email",
-                disabled: is_saving(),
-                value: "{recipient}",
-                oninput: move |e| recipient.set(e.value()),
+              div { class: "flex flex-col gap-2",
+                for (index , address) in recipient_rows.iter().enumerate() {
+                  div { class: "flex gap-2", key: "{index}",
+                    input {
+                      class: "input input-bordered w-full text-sm",
+                      r#type: "email",
+                      placeholder: "name@example.com",
+                      "aria-label": "Alert recipient {index + 1}",
+                      disabled: is_saving(),
+                      value: "{address}",
+                      oninput: move |e| {
+                          if let Some(slot) = recipients.write().get_mut(index) {
+                              *slot = e.value();
+                          }
+                      },
+                    }
+                    button {
+                      class: "btn btn-ghost btn-sm",
+                      r#type: "button",
+                      title: "Remove recipient",
+                      disabled: is_saving(),
+                      onclick: move |_| {
+                          recipients.write().remove(index);
+                      },
+                      Icon { width: 14, height: 14, icon: LdX, title: "remove" }
+                    }
+                  }
+                }
+              }
+              if recipient_rows.len() < capsules::MAX_ALERT_RECIPIENTS {
+                button {
+                  class: "btn btn-ghost btn-xs mt-2",
+                  r#type: "button",
+                  disabled: is_saving(),
+                  onclick: move |_| recipients.write().push(String::new()),
+                  "+ Add recipient"
+                }
+              }
+              if !recipients_valid {
+                p { class: "text-error text-xs mt-1",
+                  "Every recipient must be a valid email address."
+                }
               }
               p { class: "text-xs text-base-content/60 mt-1",
-                "Leave blank to notify the flock owner's own address."
+                "Each address gets its own copy. Add none to notify the flock owner's own address. \
+                 An address has to be your account's verified one or a member of the organization \
+                 that owns this flock."
+              }
+            }
+
+            div {
+              label { class: "fieldset-legend text-xs font-semibold mb-1", "Notes" }
+              textarea {
+                class: "textarea textarea-bordered w-full text-sm",
+                rows: 3,
+                placeholder: "What should whoever gets this email check first?",
+                disabled: is_saving(),
+                value: "{notes}",
+                oninput: move |e| notes.set(e.value()),
+              }
+              if !notes_valid {
+                p { class: "text-error text-xs mt-1",
+                  "Notes are limited to {capsules::MAX_ALERT_NOTES_BYTES} characters."
+                }
+              }
+              p { class: "text-xs text-base-content/60 mt-1",
+                "Shown here and in every notification this alert sends."
               }
             }
           }
@@ -1043,11 +1146,27 @@ fn DeleteAlertModal(
 mod tests {
   use super::{
     comparator_from_label, comparator_label, condition_summary, duration_label,
-    numeric_keys_from_history, numeric_keys_from_latest, state_from_label, state_label,
+    numeric_keys_from_history, numeric_keys_from_latest, recipient_summary, state_from_label,
+    state_label,
   };
   use capsules::{
-    AlertCondition, Comparator, ConnectionStateKind, TelemetryHistoryPoint, TelemetryLatest,
+    AlertChannel, AlertCondition, Comparator, ConnectionStateKind, TelemetryHistoryPoint,
+    TelemetryLatest,
   };
+
+  #[test]
+  fn an_empty_recipient_list_names_the_default_rather_than_showing_nothing() {
+    assert_eq!(
+      recipient_summary(&AlertChannel::default()),
+      "the flock owner"
+    );
+    assert_eq!(
+      recipient_summary(&AlertChannel::Email {
+        to: vec!["a@x.com".to_string(), "b@x.com".to_string()],
+      }),
+      "a@x.com, b@x.com"
+    );
+  }
   use time::OffsetDateTime;
 
   fn latest(key: &str, value: &str) -> TelemetryLatest {

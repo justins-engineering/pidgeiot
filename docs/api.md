@@ -1860,17 +1860,33 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window.
 
-`capsules::AlertChannel` is `{"Email":{"to":null}}` (deliver to the owning flock's stored
-`owner_email`) or `{"Email":{"to":"you@example.com"}}` — an explicit override, which must match
-one of the caller's own **verified** Kratos email addresses (`400` otherwise, so open signup
-can't turn this into an arbitrary spam relay). Times in the notification follow the owning
-organization's zone, described under [Email timestamps](#email-timestamps).
+`capsules::AlertChannel` is `{"Email":{"to":[]}}` (deliver to the owning flock's stored
+`owner_email`) or `{"Email":{"to":["you@example.com","oncall@example.com"]}}` — up to
+`capsules::MAX_ALERT_RECIPIENTS` (8) explicit addresses. **Each recipient gets its own copy** of
+the message, so a bounce for one costs only that delivery and nobody learns who else is on the
+alert; the fired/cleared transition is still decided once per (definition, pigeon), so the
+debounce fires for the whole list or for none of it.
+
+Every address has to be one the platform already ties to this account — the caller's own
+**verified** Kratos addresses, the owning flock's `owner_email`, or the stored address of a
+member of the organization that owns that flock. Anything else refuses the whole request with
+`400`, so open signup can't turn alert mail into an arbitrary spam relay; the same check runs
+again at send time against the flock and its organization, and drops a recipient that has since
+lost its claim. Addresses are lowercased and de-duplicated on write. For compatibility with
+definitions written before the list, `to` also accepts `null` or a single bare string.
+
+`notes` is free text the operator writes for whoever reads the notification — which breaker to
+check first, a runbook link. Up to `capsules::MAX_ALERT_NOTES_BYTES` (1024) bytes, `null` when
+unset, and rendered above the alert's facts in the email, one paragraph per line, escaped.
+
+Times in the notification follow the owning organization's zone, described under
+[Email timestamps](#email-timestamps).
 
 #### `POST /pigeons/:pigeon_id/alerts`
 
 **Auth:** member
 
-Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel }`;
+Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel, notes? }`;
 `severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`).
 
 **Alert-count entitlement.** `403` past the owning account's tier's alert count (see
@@ -1881,7 +1897,7 @@ and flock-scoped alike, across all of its flocks — not just this pigeon's.
 curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
   -H 'Cookie: ory_kratos_session=<session_token>' \
   -H 'Content-Type: application/json' \
-  -d '{"name":"High temp","condition":{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}},"channel":{"Email":{"to":null}}}'
+  -d '{"name":"High temp","condition":{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}},"channel":{"Email":{"to":["you@example.com"]}},"notes":"Check the vent breaker first."}'
 ```
 
 ```json
@@ -1892,7 +1908,8 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts \
   "name": "High temp",
   "condition": { "Threshold": { "key": "temp", "comparator": "Gt", "value": 30.0 } },
   "severity": "Warning",
-  "channel": { "Email": { "to": null } },
+  "channel": { "Email": { "to": ["you@example.com"] } },
+  "notes": "Check the vent breaker first.",
   "enabled": true,
   "created_at": "2026-07-17T15:21:08Z",
   "updated_at": "2026-07-17T15:21:08Z"
@@ -1963,7 +1980,7 @@ alert-count entitlement as the pigeon-scoped route (see
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/alerts \
   -H 'Cookie: ory_kratos_session=<session_token>' \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Fleet offline","condition":{"DeviceState":{"state":"Offline","min_duration_secs":300}},"severity":"Critical","channel":{"Email":{"to":null}}}'
+  -d '{"name":"Fleet offline","condition":{"DeviceState":{"state":"Offline","min_duration_secs":300}},"severity":"Critical","channel":{"Email":{"to":[]}}}'
 ```
 
 #### `GET /flocks/:flock_id/alerts`
@@ -1998,7 +2015,8 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts/state \
 **Auth:** alert owner
 
 Partial update — an omitted field keeps its current value. Body:
-`capsules::AlertDefinitionUpdateRequest` (`{ name?, condition?, severity?, channel?, enabled? }`).
+`capsules::AlertDefinitionUpdateRequest` (`{ name?, condition?, severity?, channel?, notes?,
+enabled? }`). An omitted `notes` keeps the stored notes; an empty string clears them.
 Gated by a direct `alert_definitions.user_id` check (whoever created the alert), regardless of
 whether it's pigeon- or flock-scoped — **not** the pigeon's ACL or the flock's ownership. The
 `enabled`-only body is also how the dashboard's list-view toggle flips an alert on/off without a
