@@ -175,6 +175,9 @@ CREATE TABLE IF NOT EXISTS alert_definitions (
   condition JSONB NOT NULL,
   severity TEXT NOT NULL DEFAULT 'warning',
   channel JSONB NOT NULL,
+  -- Free text the operator wrote for whoever reads the notification. Shown
+  -- in the dashboard and rendered into the alert email, never interpreted.
+  notes TEXT,
   enabled BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -19,7 +19,7 @@ use worker::{Env, Error, Fetch, Method, Request, RequestInit, Result, console_er
 /// `tokio-postgres` directly, so this cast is the read-side mirror of the
 /// `$N::jsonb` write pattern those columns already use.
 const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, \
-  condition::text AS condition, severity, channel::text AS channel, enabled, \
+  condition::text AS condition, severity, channel::text AS channel, notes, enabled, \
   created_at, updated_at";
 
 /// Fixed debounce window before a continuously-true condition transitions
@@ -80,6 +80,7 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
         last_notified_at TIMESTAMPTZ,
         PRIMARY KEY (alert_definition_id, pigeon_id)
       );
+      ALTER TABLE alert_definitions ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;",
     )
     .await
@@ -99,10 +100,19 @@ fn row_to_alert_definition_row(row: &Row) -> AlertDefinitionRow {
     condition: row.get("condition"),
     severity: row.get("severity"),
     channel: row.get("channel"),
+    notes: row.get("notes"),
     enabled: row.get("enabled"),
     created_at: row.get("created_at"),
     updated_at: row.get("updated_at"),
   }
+}
+
+/// Stored form of an alert's notes. The routes have already refused
+/// anything past `MAX_ALERT_NOTES_BYTES`; dropping the notes rather than
+/// storing an oversized value is the safe reading of a request that got
+/// here another way.
+fn normalized_notes(notes: Option<&str>) -> Option<String> {
+  capsules::normalize_alert_notes(notes).unwrap_or_default()
 }
 
 /// `capsules::AlertState` has no `*Row` variant (see its doc comment --
@@ -126,12 +136,87 @@ fn row_to_alert_state(row: &Row) -> AlertState {
 /// applied to alert ownership.
 pub struct AlertAccess {
   alert_id: Uuid,
+  scope: AlertScope,
 }
 
 impl AlertAccess {
   pub fn alert_id(&self) -> Uuid {
     self.alert_id
   }
+
+  /// What the definition is scoped to, read by the same query that proved
+  /// ownership -- the update route needs it to resolve which addresses
+  /// this alert may be aimed at.
+  pub fn scope(&self) -> &AlertScope {
+    &self.scope
+  }
+}
+
+/// Every address this account may aim an alert at: its own verified Kratos
+/// addresses, the owning flock's stored `owner_email`, and the addresses of
+/// the members of the organization that owns that flock. Signup is open, so
+/// an unrestricted recipient would make alert mail an arbitrary-content
+/// relay; a recipient always has to be one the platform already ties to
+/// this account. Case-folded, since an address is compared, not displayed.
+pub async fn allowed_alert_recipients(
+  client: &Client,
+  scope: &AlertScope,
+  verified_emails: &[String],
+) -> Result<Vec<String>> {
+  ensure_alert_tables(client).await?;
+
+  // string_agg rather than an array: every address here has already been
+  // shape-checked against `is_plausible_email`, which refuses commas.
+  const MEMBER_EMAILS: &str = "(SELECT string_agg(DISTINCT m.email, ',')
+     FROM organization_members m
+     WHERE m.org_id = f.org_id AND m.email IS NOT NULL) AS member_emails";
+
+  let row = match scope {
+    AlertScope::Flock(flock_id) => {
+      client
+        .query_typed_opt(
+          &format!("SELECT f.owner_email, {MEMBER_EMAILS} FROM flocks f WHERE f.id = $1;"),
+          &[(flock_id, Type::UUID)],
+        )
+        .await
+    }
+    AlertScope::Pigeon(pigeon_id) => {
+      client
+        .query_typed_opt(
+          &format!(
+            "SELECT f.owner_email, {MEMBER_EMAILS}
+             FROM flocks f JOIN pigeons p ON p.flock_id = f.id
+             WHERE p.id = $1;"
+          ),
+          &[(pigeon_id, Type::TEXT)],
+        )
+        .await
+    }
+  }
+  .map_err(|e| {
+    console_error!("Alert recipient allowlist lookup failed: {e}");
+    Error::RustError("Internal Server Error".into())
+  })?;
+
+  let owner_email: Option<String> = row.as_ref().and_then(|row| row.get("owner_email"));
+  let member_emails: Option<String> = row.as_ref().and_then(|row| row.get("member_emails"));
+
+  let mut allowed: Vec<String> = verified_emails
+    .iter()
+    .map(|e| e.trim().to_lowercase())
+    .collect();
+  allowed.extend(owner_email.iter().map(|e| e.trim().to_lowercase()));
+  allowed.extend(
+    member_emails
+      .iter()
+      .flat_map(|list| list.split(','))
+      .map(|e| e.trim().to_lowercase()),
+  );
+  allowed.retain(|e| !e.is_empty());
+  allowed.sort_unstable();
+  allowed.dedup();
+
+  Ok(allowed)
 }
 
 /// Ownership check backing `PUT`/`DELETE /alerts/:alert_id` -- an alert
@@ -151,8 +236,8 @@ pub async fn is_alert_owner(
     .map_err(|e| Error::RustError(format!("Invalid X-User-Id format: {e}")))?;
 
   let row = client
-    .query_typed_one(
-      "SELECT EXISTS(SELECT 1 FROM alert_definitions WHERE id = $1 AND user_id = $2) AS exists_flag",
+    .query_typed_opt(
+      "SELECT flock_id, pigeon_id FROM alert_definitions WHERE id = $1 AND user_id = $2;",
       &[(&alert_uuid, Type::UUID), (&user_uuid, Type::UUID)],
     )
     .await
@@ -161,8 +246,20 @@ pub async fn is_alert_owner(
       Error::RustError("Internal Server Error".into())
     })?;
 
-  Ok(row.get::<_, bool>("exists_flag").then_some(AlertAccess {
-    alert_id: alert_uuid,
+  Ok(row.map(|row| {
+    let flock_id: Option<Uuid> = row.get("flock_id");
+    let pigeon_id: Option<String> = row.get("pigeon_id");
+    // The table's own CHECK constraint guarantees exactly one is set; the
+    // empty-pigeon fallback mirrors `AlertDefinitionRow`'s conversion.
+    let scope = match (pigeon_id, flock_id) {
+      (Some(id), _) => AlertScope::Pigeon(id),
+      (None, Some(id)) => AlertScope::Flock(id),
+      (None, None) => AlertScope::Pigeon(String::new()),
+    };
+    AlertAccess {
+      alert_id: alert_uuid,
+      scope,
+    }
   }))
 }
 
@@ -184,12 +281,14 @@ pub async fn create_pigeon_alert(
   let condition_json = serde_json::to_string(&req.condition).unwrap_or_else(|_| "{}".to_string());
   let channel_json = serde_json::to_string(&req.channel).unwrap_or_else(|_| "{}".to_string());
   let severity_str = req.severity.as_str();
+  let notes = normalized_notes(req.notes.as_deref());
 
   let row = client
     .query_typed_one(
       &format!(
-        "INSERT INTO alert_definitions (user_id, pigeon_id, name, condition, severity, channel)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb)
+        "INSERT INTO alert_definitions
+           (user_id, pigeon_id, name, condition, severity, channel, notes)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7)
          RETURNING {ALERT_DEFINITION_COLUMNS};"
       ),
       &[
@@ -199,6 +298,7 @@ pub async fn create_pigeon_alert(
         (&condition_json, Type::TEXT),
         (&severity_str, Type::TEXT),
         (&channel_json, Type::TEXT),
+        (&notes, Type::TEXT),
       ],
     )
     .await
@@ -228,12 +328,14 @@ pub async fn create_flock_alert(
   let condition_json = serde_json::to_string(&req.condition).unwrap_or_else(|_| "{}".to_string());
   let channel_json = serde_json::to_string(&req.channel).unwrap_or_else(|_| "{}".to_string());
   let severity_str = req.severity.as_str();
+  let notes = normalized_notes(req.notes.as_deref());
 
   let row = client
     .query_typed_one(
       &format!(
-        "INSERT INTO alert_definitions (user_id, flock_id, name, condition, severity, channel)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb)
+        "INSERT INTO alert_definitions
+           (user_id, flock_id, name, condition, severity, channel, notes)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7)
          RETURNING {ALERT_DEFINITION_COLUMNS};"
       ),
       &[
@@ -243,6 +345,7 @@ pub async fn create_flock_alert(
         (&condition_json, Type::TEXT),
         (&severity_str, Type::TEXT),
         (&channel_json, Type::TEXT),
+        (&notes, Type::TEXT),
       ],
     )
     .await
@@ -463,6 +566,10 @@ pub async fn update_alert_definition(
     .map(|c| serde_json::to_string(c).unwrap_or_else(|_| "{}".to_string()));
   let severity_str = req.severity.map(|s| s.as_str().to_string());
   let alert_id = access.alert_id();
+  // Notes need the submitted/omitted distinction COALESCE cannot express:
+  // an omitted `notes` keeps what is stored, an empty one clears it.
+  let notes_submitted = req.notes.is_some();
+  let notes = normalized_notes(req.notes.as_deref());
 
   let row = client
     .query_typed_one(
@@ -473,6 +580,7 @@ pub async fn update_alert_definition(
            severity = COALESCE($4, severity),
            channel = COALESCE($5::jsonb, channel),
            enabled = COALESCE($6, enabled),
+           notes = CASE WHEN $7 THEN $8 ELSE notes END,
            updated_at = now()
          WHERE id = $1
          RETURNING {ALERT_DEFINITION_COLUMNS};"
@@ -484,6 +592,8 @@ pub async fn update_alert_definition(
         (&severity_str, Type::TEXT),
         (&channel_json, Type::TEXT),
         (&req.enabled, Type::BOOL),
+        (&notes_submitted, Type::BOOL),
+        (&notes, Type::TEXT),
       ],
     )
     .await
@@ -579,7 +689,8 @@ pub async fn check_telemetry_alerts_batch(
       &format!(
         "SELECT ad.id, ad.user_id, ad.flock_id, ad.pigeon_id, ad.name,
                 ad.condition::text AS condition, ad.severity,
-                ad.channel::text AS channel, ad.enabled, ad.created_at, ad.updated_at
+                ad.channel::text AS channel, ad.notes, ad.enabled, ad.created_at,
+                ad.updated_at
          FROM alert_definitions ad
          LEFT JOIN pigeons p ON p.id = $1
          WHERE ad.enabled = true
@@ -1076,7 +1187,7 @@ async fn apply_alert_transition(
 /// trip: who it goes to, and the names it should call the pigeon and its
 /// flock by.
 struct AlertMailContext {
-  recipient: Option<String>,
+  recipients: Vec<String>,
   pigeon_name: Option<String>,
   flock_id: Option<Uuid>,
   flock_name: Option<String>,
@@ -1087,8 +1198,8 @@ struct AlertMailContext {
 }
 
 /// Resolves who an alert's notification email should go to: the channel's
-/// own explicit override if set, otherwise the owning flock's stored
-/// `owner_email` -- resolved via this definition's own `flock_id` if
+/// own recipient list if it names anyone, otherwise the owning flock's
+/// stored `owner_email` -- resolved via this definition's own `flock_id` if
 /// flock-scoped, or via its pigeon's `flock_id` if pigeon-scoped.
 /// `owner_email` is populated by `lib.rs`'s
 /// `require_auth_session`/`helpers/flocks.rs` (`create_user_flock` on
@@ -1104,16 +1215,23 @@ async fn resolve_alert_context(
 ) -> AlertMailContext {
   let AlertChannel::Email { to } = &def.channel;
 
+  const COLUMNS: &str = "f.owner_email, f.id AS flock_id, f.name AS flock_name,
+     p.name AS pigeon_name, o.timezone AS org_timezone,
+     (SELECT string_agg(DISTINCT m.email, ',')
+        FROM organization_members m
+        WHERE m.org_id = f.org_id AND m.email IS NOT NULL) AS member_emails";
+
   let result = match &def.scope {
     AlertScope::Flock(flock_id) => {
       client
         .query_typed_opt(
-          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name,
-                  o.timezone AS org_timezone
-           FROM flocks f
-           LEFT JOIN pigeons p ON p.id = $2 AND p.flock_id = f.id
-           LEFT JOIN organizations o ON o.id = f.org_id
-           WHERE f.id = $1;",
+          &format!(
+            "SELECT {COLUMNS}
+             FROM flocks f
+             LEFT JOIN pigeons p ON p.id = $2 AND p.flock_id = f.id
+             LEFT JOIN organizations o ON o.id = f.org_id
+             WHERE f.id = $1;"
+          ),
           &[(flock_id, Type::UUID), (&pigeon_id, Type::TEXT)],
         )
         .await
@@ -1121,12 +1239,13 @@ async fn resolve_alert_context(
     AlertScope::Pigeon(_) => {
       client
         .query_typed_opt(
-          "SELECT f.owner_email, f.id AS flock_id, f.name AS flock_name, p.name AS pigeon_name,
-                  o.timezone AS org_timezone
-           FROM flocks f
-           JOIN pigeons p ON p.flock_id = f.id
-           LEFT JOIN organizations o ON o.id = f.org_id
-           WHERE p.id = $1;",
+          &format!(
+            "SELECT {COLUMNS}
+             FROM flocks f
+             JOIN pigeons p ON p.flock_id = f.id
+             LEFT JOIN organizations o ON o.id = f.org_id
+             WHERE p.id = $1;"
+          ),
           &[(&pigeon_id, Type::TEXT)],
         )
         .await
@@ -1135,33 +1254,47 @@ async fn resolve_alert_context(
 
   let row = result.ok().flatten();
   let owner_email: Option<String> = row.as_ref().and_then(|row| row.get("owner_email"));
+  let member_emails: Option<String> = row.as_ref().and_then(|row| row.get("member_emails"));
   let mut context = AlertMailContext {
-    recipient: owner_email.clone(),
+    recipients: owner_email.iter().cloned().collect(),
     pigeon_name: row.as_ref().and_then(|row| row.get("pigeon_name")),
     flock_id: row.as_ref().and_then(|row| row.get("flock_id")),
     flock_name: row.as_ref().and_then(|row| row.get("flock_name")),
     timezone: row.as_ref().and_then(|row| row.get("org_timezone")),
   };
 
-  // Defense-in-depth: the create/update routes already reject an override
-  // that isn't the caller's own verified address, but definitions that
-  // predate that validation (or rows written outside the API) could still
-  // carry an arbitrary `to`. At send time an override is honored only if
-  // it matches the flock's owner_email -- anything else falls back to the
-  // owner with a log line, so alert delivery can never be aimed at an
-  // address the platform hasn't tied to this account.
-  if let Some(explicit) = to {
-    match &owner_email {
-      Some(owner) if owner.eq_ignore_ascii_case(explicit.trim()) => {
-        context.recipient = Some(explicit.clone());
+  // Defense-in-depth: the create/update routes already reject a recipient
+  // the account has no claim to, but definitions that predate that
+  // validation (or rows written outside the API) could still carry an
+  // arbitrary address. At send time a recipient is honored only if it is
+  // still the flock's owner or a member of the organization that owns it
+  // -- anything else is dropped with a log line, so alert delivery can
+  // never be aimed at an address the platform hasn't tied to this account.
+  if !to.is_empty() {
+    let mut deliverable: Vec<String> = Vec::with_capacity(to.len());
+    let mut refused = 0usize;
+    for address in to {
+      let address = address.trim();
+      let known = owner_email
+        .iter()
+        .map(String::as_str)
+        .chain(member_emails.iter().flat_map(|list| list.split(',')))
+        .any(|known| known.trim().eq_ignore_ascii_case(address));
+      if known {
+        deliverable.push(address.to_string());
+      } else {
+        refused += 1;
       }
-      _ => {
-        console_error!(
-          "Alert '{}' ({}): ignoring email override that doesn't match the flock owner_email; delivering to owner instead",
-          def.name,
-          def.id
-        );
-      }
+    }
+    if refused > 0 {
+      console_error!(
+        "Alert '{}' ({}): dropping {refused} recipient(s) no longer tied to this account",
+        def.name,
+        def.id
+      );
+    }
+    if !deliverable.is_empty() {
+      context.recipients = deliverable;
     }
   }
 
@@ -1178,15 +1311,15 @@ async fn send_alert_email(
   at: OffsetDateTime,
 ) {
   let context = resolve_alert_context(client, def, pigeon_id).await;
-  let Some(recipient) = context.recipient else {
+  if context.recipients.is_empty() {
     console_error!(
-      "Alert '{}' ({}): no recipient resolved (owner_email unset and no channel override) -- cannot send {} notification",
+      "Alert '{}' ({}): no recipient resolved (owner_email unset and no channel recipients) -- cannot send {} notification",
       def.name,
       def.id,
       if fired { "fired" } else { "cleared" }
     );
     return;
-  };
+  }
 
   // A pigeon-scoped alert is edited from the pigeon's own page, a
   // flock-scoped one from the flock's pigeon list; both sections carry a
@@ -1235,8 +1368,14 @@ async fn send_alert_email(
     clock_for(zone.as_ref()),
   );
 
-  if let Err(e) = send_email_message(env, &recipient, &message).await {
-    console_error!("Alert email send failed for definition {}: {e}", def.id);
+  // One message per recipient rather than one with several addressees: a
+  // bounce or a suppression on one address then costs only that delivery,
+  // and nobody learns who else is on the alert. The transition itself is
+  // still decided once, so the debounce fires for everyone or for no one.
+  for recipient in &context.recipients {
+    if let Err(e) = send_email_message(env, recipient, &message).await {
+      console_error!("Alert email send failed for definition {}: {e}", def.id);
+    }
   }
 }
 
