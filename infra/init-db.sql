@@ -497,6 +497,18 @@ CREATE TABLE IF NOT EXISTS consent_events (
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Dashboard preferences, owned by the person rather than the browser.
+-- Column-by-column reasoning lives in
+-- infra/migrations/2026-08-31-dashboard-state.sql.
+CREATE TABLE IF NOT EXISTS dashboard_state (
+  -- Kratos identity id. No FK: Kratos owns its own tables.
+  user_id UUID NOT NULL,
+  scope_key TEXT NOT NULL,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, scope_key)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;

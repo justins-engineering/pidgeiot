@@ -9,24 +9,24 @@ use crate::helpers::{
   check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
   count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
   create_invite, create_organization, create_pigeon_alert, create_portal_session,
-  create_user_flock, delete_alert_definition, delete_organization_if_empty, delete_pigeon_pg_db,
-  device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
+  create_user_flock, delete_alert_definition, delete_dashboard_state, delete_organization_if_empty,
+  delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
   ensure_business_details_columns, erase_user_error_reports, fetch_subscription, get_db_client,
   get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
   grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_business_details, load_org_billing_overview, load_org_billing_state, load_org_roles,
-  mark_webhook_event_processed, mint_invite_token, notify_contact_submission, org_role_of,
-  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
+  load_org_roles, mark_webhook_event_processed, mint_invite_token, notify_contact_submission,
+  org_role_of, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   record_consent_event, remove_member, resolve_checkout_prices, revoke_invite, root_url,
   send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
-  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
-  update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
+  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
+  update_organization, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
   update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
   verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
   write_business_details,
@@ -35,12 +35,12 @@ use crate::queue::TelemetryMessage;
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationBusinessDetailsRequest,
-  OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
-  OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
-  OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label,
+  FlockCreateRequest, MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, OrgRole,
+  OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
+  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
+  OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use futures::future::join_all;
 use worker::{
@@ -3413,6 +3413,131 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .unwrap()
         .with_cors(&cors)
     })
+    // --- Dashboard State Routes ---
+    // Opaque per-account preference documents, keyed by scope. Scoped to
+    // the caller's own Kratos identity and nothing else: there is no id in
+    // the path to authorize against, which is why these are the only
+    // dashboard routes with no role check beyond a live session.
+    .get_async(
+      "/dashboard-state/:scope_key",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(scope_key) = ctx.param("scope_key").filter(|k| valid_scope_key(k)).cloned() else {
+          return Response::error("Bad Request: invalid scope key", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(entry) = load_dashboard_state(&client, &user_uuid, &scope_key).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(entry) = entry else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        Response::from_json(&entry)?.with_cors(&cors)
+      },
+    )
+    .put_async(
+      "/dashboard-state/:scope_key",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(scope_key) = ctx.param("scope_key").filter(|k| valid_scope_key(k)).cloned() else {
+          return Response::error("Bad Request: invalid scope key", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // The body is the document itself, not a wrapper around it -- the
+        // platform stores it verbatim and never looks inside.
+        let Ok(value) = req.text().await else {
+          return Response::error("Bad Request: unreadable body", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if value.len() > MAX_DASHBOARD_STATE_BYTES {
+          return Response::error("Payload Too Large: document exceeds size cap", 413)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        if serde_json::from_str::<serde_json::Value>(&value).is_err() {
+          return Response::error("Bad Request: body is not JSON", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(stored) = store_dashboard_state(&client, &user_uuid, &scope_key, &value).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(stored) = stored else {
+          return Response::error("Bad Request: too many saved dashboard scopes", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        Response::from_json(&stored)?.with_cors(&cors)
+      },
+    )
+    .delete_async(
+      "/dashboard-state/:scope_key",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(scope_key) = ctx.param("scope_key").filter(|k| valid_scope_key(k)).cloned() else {
+          return Response::error("Bad Request: invalid scope key", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        if delete_dashboard_state(&client, &user_uuid, &scope_key)
+          .await
+          .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        Response::empty()?.with_status(204).with_cors(&cors)
+      },
+    )
     // --- Organization Routes ---
     // Shared-org access for teams: individual Kratos accounts, org-level
     // RBAC, membership-row revocation. Authorization funnels through

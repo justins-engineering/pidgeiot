@@ -170,6 +170,11 @@ pub use errors::erase_user_error_reports;
 pub use errors::ingest_error_report;
 pub use errors::sweep_error_retention;
 
+mod dashboard_state;
+pub use dashboard_state::delete_dashboard_state;
+pub use dashboard_state::load_dashboard_state;
+pub use dashboard_state::store_dashboard_state;
+
 mod orgs;
 pub use orgs::FlockAction;
 pub use orgs::Principal;
