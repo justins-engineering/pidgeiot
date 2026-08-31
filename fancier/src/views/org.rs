@@ -1314,6 +1314,7 @@ fn OrgDangerZone(
             id: "delete_org_title",
             title: "Delete Organization",
             confirm_label: "Delete Organization",
+            confirm_value: org_name.clone(),
             on_close: move |_| pending.set(None),
             on_confirm: move |_| {
                 pending.set(None);
