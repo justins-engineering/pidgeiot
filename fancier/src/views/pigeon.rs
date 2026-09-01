@@ -220,7 +220,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     onclick: move |_| show_delete_modal.set(true),
                   }
                 }
-                UpdatePigeonModal { flock_id, pigeon: pd.pigeon.clone() }
+                UpdatePigeonModal { pigeon: pd.pigeon.clone() }
                 EditShadowModal { pigeon_id: pigeon_id.clone(), pigeon_detail }
                 if show_firmware_modal() {
                   FirmwareModal {
@@ -1619,7 +1619,7 @@ fn DeletePigeonModal(
 }
 
 #[component]
-fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
+fn UpdatePigeonModal(pigeon: Pigeon) -> Element {
   let mut selected_connector = use_signal(|| match pigeon.connector {
     Connector::Coap(_) => "Coap".to_string(),
     Connector::Mqtt(_) => "Mqtt".to_string(),
