@@ -5,9 +5,8 @@ use dioxus::prelude::*;
 /// Error-tinted section a detail page ends with. `id` carries the
 /// page-prefixed section id, e.g. `pigeon-danger-zone`.
 ///
-/// The theme's `error` is a light rose in both palettes: legible as a fill,
-/// not as text on `base-100`, so the tint, border and solid button carry the
-/// warning while the words stay `base-content`.
+/// The tint, border and solid button already carry the warning, so the words
+/// stay `base-content` rather than compete with them.
 #[component]
 pub fn DangerZone(id: &'static str, children: Element) -> Element {
   rsx! {
