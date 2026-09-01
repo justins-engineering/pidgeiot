@@ -840,12 +840,12 @@ fn suffix_hint(s: &str, n: usize) -> String {
   format!("...{}", &s[start..])
 }
 
-/// Sends the invite email through the EXISTING Resend transport
-/// (`helpers/alerts.rs::send_email_message` -- no new provider/secret). In
-/// an environment with no `RESEND_API_KEY` configured (dev), this logs a
-/// (redacted) stand-in for the invite link instead, keeping the flow
-/// locally testable end-to-end: `wrangler dev`'s own admin/DB access can
-/// recover the real token, so nothing testable is lost. `org_id` is for
+/// Sends the invite email through the platform's shared mail transport
+/// (`helpers/alerts.rs::send_email_message`). In an environment with no
+/// transport configured, this logs a (redacted) stand-in for the invite
+/// link instead, keeping the flow locally testable end-to-end: `wrangler
+/// dev`'s own admin/DB access can recover the real token, so nothing
+/// testable is lost. `org_id` is for
 /// logging only -- the email body addresses the org by name and the
 /// inviter by the name and email address on their session, whichever of
 /// the two the identity carries.
@@ -861,7 +861,7 @@ pub async fn send_invite_email(
 ) {
   let org_id = organization.id;
   let org_name = &organization.name;
-  if !crate::helpers::alerts::usesend_configured(env) {
+  if !crate::helpers::alerts::email_configured(env) {
     // Never log `to` or the full `invite_url` -- the URL's query string IS
     // the live, single-use invite token (see `build_invite_url`), a
     // credential. Only its last 4 characters are shown.
