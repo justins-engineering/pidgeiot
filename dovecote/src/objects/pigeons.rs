@@ -1132,23 +1132,21 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  let connector_json = row
-    .connector
-    .map(|c| serde_json::to_string(&c).unwrap_or_default());
-
+  // The connector is not writable here: its credentials are minted in this
+  // DO, and a caller-supplied one would strand the device behind a PSK
+  // terminator that no longer holds its key. `token/refresh` is the only
+  // way it changes.
   match pigeons.sql.exec(
     "UPDATE pigeons SET
       serial = COALESCE(?, serial),
       name = COALESCE(?, name),
       tags = COALESCE(?, tags),
-      connector = COALESCE(?, connector),
       board = COALESCE(?, board)
     WHERE id = ?;",
     vec![
       row.serial.into(),
       row.name.into(),
       row.tags.into(),
-      connector_json.into(), // None becomes SQL NULL, Some becomes JSON text
       row.board.into(),
       pigeons.state.id().to_string().into(),
     ],

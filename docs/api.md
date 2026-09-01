@@ -1195,14 +1195,17 @@ Same as above plus `acl` (**only the caller's own ACL row**, not the full list �
 **Auth:** member
 
 Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`serial`, `name`, `tags`,
-`connector`, `board`) is optional; omitted fields keep their current value (`COALESCE`
-semantics, not a full replace). Returns the updated `capsules::Pigeon`. This is how an existing
-(pre-task-#20) pigeon gets its `board` tagged after the fact.
+`board`) is optional; omitted fields keep their current value (`COALESCE` semantics, not a full
+replace). Returns the updated `capsules::Pigeon`. This is how an existing pigeon gets its
+`board` tagged after the fact.
 
-Flock membership is **not** settable here — this route authorizes against the pigeon alone, so
-honouring a `flock_id` would write the pigeon into a flock nobody checked the caller against.
-Use [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) below; a `flock_id` in this
-body is ignored, as any unknown field is.
+Neither the **connector** nor **flock membership** is settable here, and both are ignored in
+this body as any unknown field is. A connector's credentials are minted server-side, so
+accepting one would let a caller overwrite a live device's PSK and bearer token with values of
+their own choosing — [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh)
+is the only route that changes them. A `flock_id` would write the pigeon into a flock nobody
+checked the caller against, since this route authorizes against the pigeon alone; use
+[`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) below.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id> \
