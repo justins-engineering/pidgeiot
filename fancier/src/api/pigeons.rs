@@ -17,7 +17,28 @@ use wasm_bindgen_futures::JsFuture;
 // dropped from the flock's pigeon list.
 const BATCH_LIMIT: usize = 48;
 
-pub async fn list(pigeon_ids: &[String]) -> Option<()> {
+/// Requested ids the batch response did not carry, in request order.
+/// `POST /pigeons/batch` answers with only the pigeons the caller can
+/// reach, so this difference is the client's only signal that a flock
+/// holds a device it cannot read.
+fn unreturned_ids(requested: &[String], returned: &HashMap<String, Pigeon>) -> Vec<String> {
+  requested
+    .iter()
+    .filter(|id| !returned.contains_key(*id))
+    .cloned()
+    .collect()
+}
+
+/// Loads every id into the shared pigeon cache, returning the ids the
+/// server did not answer for -- empty when the whole flock came back.
+/// `None` is a failed request, and leaves the cache untouched so the
+/// caller can render its own load-failure state.
+///
+/// Unreachable ids are *removed* from the cache, the one place this
+/// otherwise-additive cache prunes: a pigeon that answered on an earlier
+/// visit and stops answering now would keep rendering as an ordinary row
+/// while this call reports it unavailable.
+pub async fn list(pigeon_ids: &[String]) -> Option<Vec<String>> {
   let mut fetched: HashMap<String, Pigeon> = HashMap::with_capacity(pigeon_ids.len());
 
   for chunk in pigeon_ids.chunks(BATCH_LIMIT) {
@@ -38,10 +59,16 @@ pub async fn list(pigeon_ids: &[String]) -> Option<()> {
   // if it were the complete list, which is indistinguishable from a
   // genuinely smaller flock and is exactly the silent-failure shape this
   // function exists to avoid.
+  let missing = unreturned_ids(pigeon_ids, &fetched);
   let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
-  pigeon_list.extend(fetched);
-  pigeon_list.write();
-  Some(())
+  {
+    let mut pigeons = pigeon_list.write();
+    pigeons.extend(fetched);
+    for id in &missing {
+      pigeons.remove(id);
+    }
+  }
+  Some(missing)
 }
 
 pub async fn get(pigeon_id: &str) -> Option<String> {
@@ -466,4 +493,54 @@ pub async fn execute_shell(
       body: body_text,
     },
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::unreturned_ids;
+  use capsules::Pigeon;
+  use std::collections::HashMap;
+
+  fn returned(ids: &[&str]) -> HashMap<String, Pigeon> {
+    ids
+      .iter()
+      .map(|id| ((*id).to_string(), Pigeon::default()))
+      .collect()
+  }
+
+  fn requested(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| (*id).to_string()).collect()
+  }
+
+  #[test]
+  fn every_id_answered_leaves_nothing_missing() {
+    let ids = requested(&["a", "b"]);
+    assert!(unreturned_ids(&ids, &returned(&["b", "a"])).is_empty());
+  }
+
+  #[test]
+  fn unanswered_ids_come_back_in_request_order() {
+    let ids = requested(&["a", "b", "c", "d"]);
+    assert_eq!(
+      unreturned_ids(&ids, &returned(&["c", "a"])),
+      vec!["b".to_string(), "d".to_string()]
+    );
+  }
+
+  #[test]
+  fn an_empty_response_leaves_every_id_missing() {
+    let ids = requested(&["a", "b"]);
+    assert_eq!(unreturned_ids(&ids, &returned(&[])), ids);
+  }
+
+  // A response carrying an id nobody asked for is still merged into the
+  // cache; it just cannot make a requested id look answered.
+  #[test]
+  fn an_unrequested_id_does_not_cover_a_missing_one() {
+    let ids = requested(&["a"]);
+    assert_eq!(
+      unreturned_ids(&ids, &returned(&["z"])),
+      vec!["a".to_string()]
+    );
+  }
 }

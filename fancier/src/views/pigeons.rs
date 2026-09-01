@@ -48,6 +48,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // LocalSession.pigeons cache either way), the silent failure a flock
   // past the batch-request cap hits.
   let mut list_failed = use_signal(|| false);
+  // Ids this flock holds that the batch fetch could not return -- a
+  // per-pigeon failure inside a request that otherwise succeeded, so it
+  // has to be shown row by row rather than as the whole-list error above.
+  let mut unavailable = use_signal(Vec::<String>::new);
 
   use_resource(move || {
     let flocks = binding.flocks;
@@ -57,8 +61,16 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
         guard.get(&flock_id).map(|flock| flock.pigeon_ids.clone())
       };
       if let Some(pigeon_ids) = ids_to_fetch {
-        let ok = api::pigeons::list(&pigeon_ids).await.is_some();
-        list_failed.set(!ok);
+        match api::pigeons::list(&pigeon_ids).await {
+          Some(missing) => {
+            list_failed.set(false);
+            unavailable.set(missing);
+          }
+          None => {
+            list_failed.set(true);
+            unavailable.set(Vec::new());
+          }
+        }
       };
     }
   });
@@ -130,6 +142,25 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
     })
     .map(|(id, pigeon)| (id.clone(), pigeon.clone()))
     .collect();
+  // An id is the only text an unavailable row carries, so it is what the
+  // search matches on. Paired with a truncated form for the cell itself.
+  let unavailable_rows: Vec<(String, String)> = unavailable
+    .read()
+    .iter()
+    .filter(|id| {
+      let query = search.read().to_lowercase();
+      query.is_empty() || id.to_lowercase().contains(&query)
+    })
+    .map(|id| {
+      let mut short: String = id.chars().take(12).collect();
+      short.push('…');
+      (id.clone(), short)
+    })
+    .collect();
+  // The count has to include what could not be loaded, or the header
+  // repeats the undercount the rows exist to expose.
+  let shown = filtered.len() + unavailable_rows.len();
+  let unavailable_total = unavailable.read().len();
 
   rsx! {
     section { id: "pigeons",
@@ -152,7 +183,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           // one wraps instead of pushing everything else off the row.
           div { id: "flock-pigeons-header", class: "text-center shrink-0 max-w-xs",
             h1 { class: "text-xl font-bold", "{flock_name}" }
-            p { class: "text-sm text-base-content/70", "Pigeons ({filtered.len()})" }
+            p { class: "text-sm text-base-content/70", "Pigeons ({shown})" }
           }
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
             label { class: "input input-bordered flex items-center gap-2 bg-base-100 w-full",
@@ -214,13 +245,13 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
         }
 
-        if total == 0 {
+        if total == 0 && unavailable_total == 0 {
           if list_failed() {
             ErrorPigeonsState {}
           } else {
             EmptyPigeonsState {}
           }
-        } else if filtered.is_empty() {
+        } else if filtered.is_empty() && unavailable_rows.is_empty() {
           div { class: "flex flex-col items-center text-center gap-2 bg-base-100 border border-base-content/10 rounded-box p-12 mb-10 max-w-xl mx-auto",
             h2 { class: "text-lg font-semibold", "No pigeons match \"{search}\"" }
             p { class: "text-base-content/60 max-w-sm",
@@ -241,6 +272,36 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                 }
               }
               tbody {
+                // First, because an id the server would not return is the
+                // one thing on this page the operator has to act on.
+                for (id , short_id) in unavailable_rows {
+                  tr { class: "hover",
+                    td {
+                      div { class: "flex items-center gap-2 font-semibold text-warning",
+                        Icon {
+                          width: 16,
+                          height: 16,
+                          icon: LdTriangleAlert,
+                          title: "Unavailable",
+                        }
+                        "Unavailable device"
+                      }
+                      div { class: "font-mono text-xs text-base-content/50", title: "{id}",
+                        "{short_id}"
+                      }
+                    }
+                    td { class: "text-base-content/40", "--" }
+                    td { class: "text-base-content/40", "--" }
+                    td {
+                      span {
+                        class: "badge badge-warning badge-outline badge-sm",
+                        title: "This device is registered to the flock but did not load. Your access to it may have changed.",
+                        "Unavailable"
+                      }
+                    }
+                    td { class: "text-right text-base-content/40", "--" }
+                  }
+                }
                 for (id , pigeon) in filtered {
                   tr { class: "hover",
                     td { class: "font-semibold text-primary",
@@ -295,7 +356,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
             FlockDangerZone {
               flock_id,
               flock_name: flock_name.clone(),
-              pigeon_count: total,
+              pigeon_count: total + unavailable_total,
             }
           }
         }
@@ -341,7 +402,8 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 /// Deleting the flock this page lists. dovecote refuses while any pigeon is
 /// still in it, so the count is stated up front rather than the button
 /// disabled -- the server's own refusal names it too, and is the one that
-/// counts.
+/// counts. A pigeon this page could not load blocks the delete like any
+/// other, so `pigeon_count` includes it.
 #[component]
 fn FlockDangerZone(flock_id: uuid::Uuid, flock_name: String, pigeon_count: usize) -> Element {
   let nav = use_navigator();

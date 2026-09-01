@@ -4,8 +4,8 @@ use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
 /// Idempotently ensures the PG firmware catalog table + index exist --
-/// staging and production share one Hyperdrive-backed Postgres with no
-/// separate migration runner, so each read/write path calls this first
+/// no environment has a separate migration runner against its Hyperdrive
+/// Postgres, so each read/write path calls this first
 /// rather than relying on a one-time manual migration. Cheap no-op after
 /// the first call (`IF NOT EXISTS`).
 pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {

@@ -1324,29 +1324,65 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         let u_id = principal.user_id.clone();
         let org_json = org_roles_json.clone();
 
+        // An id the caller cannot reach is simply absent from the
+        // response (docs/api.md) -- the client renders the difference as
+        // unavailable, so the reason only ever exists in this log.
         async move {
-          let stub = namespace_clone.id_from_string(&id).ok()?.get_stub().ok()?;
+          let object_id = match namespace_clone.id_from_string(&id) {
+            Ok(object_id) => object_id,
+            Err(e) => {
+              console_error!("Batch: {id} is not an id in this PIGEONS namespace: {e}");
+              return None;
+            }
+          };
+          let stub = match object_id.get_stub() {
+            Ok(stub) => stub,
+            Err(e) => {
+              console_error!("Batch: no stub for {id}: {e}");
+              return None;
+            }
+          };
 
-          let headers = worker::Headers::new();
-          headers.append("X-User-Id", &u_id).ok()?;
-          if let Some(org_json) = &org_json {
-            headers.append("X-Org-Roles", org_json).ok()?;
+          let build_req = || {
+            let headers = worker::Headers::new();
+            headers.append("X-User-Id", &u_id)?;
+            if let Some(org_json) = &org_json {
+              headers.append("X-Org-Roles", org_json)?;
+            }
+            let mut do_req_init = RequestInit::default();
+            do_req_init.with_headers(headers);
+            Request::new_with_init("https://internal/pigeon/get", &do_req_init)
+          };
+          let do_req = match build_req() {
+            Ok(do_req) => do_req,
+            Err(e) => {
+              console_error!("Batch: could not build DO request for {id}: {e}");
+              return None;
+            }
+          };
+
+          match stub.fetch_with_request(do_req).await {
+            Ok(resp) => Some((id, resp)),
+            Err(e) => {
+              console_error!("Batch: DO fetch failed for {id}: {e}");
+              None
+            }
           }
-
-          let mut do_req_init = RequestInit::default();
-          do_req_init.with_headers(headers);
-
-          let do_req = Request::new_with_init("https://internal/pigeon/get", &do_req_init).ok()?;
-          stub.fetch_with_request(do_req).await.ok()
         }
       });
 
       let responses = join_all(fetch_tasks).await;
       let mut pigeons: Vec<Pigeon> = Vec::with_capacity(responses.len());
 
-      for mut resp in responses.into_iter().flatten() {
-        if let Ok(pigeon) = resp.json::<Pigeon>().await {
-          pigeons.push(pigeon);
+      for (id, mut resp) in responses.into_iter().flatten() {
+        let status = resp.status_code();
+        if status >= 400 {
+          console_error!("Batch: DO answered {status} for {id}");
+          continue;
+        }
+        match resp.json::<Pigeon>().await {
+          Ok(pigeon) => pigeons.push(pigeon),
+          Err(e) => console_error!("Batch: unparsable DO response for {id}: {e}"),
         }
       }
 

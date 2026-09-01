@@ -47,8 +47,8 @@ const EMAIL_BINDING: &str = "EMAIL";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
 /// indexes) exist -- mirrors `ensure_telemetry_history_table`/
-/// `ensure_flock_firmware_table`'s rationale: staging and production share
-/// one Hyperdrive-backed Postgres with no separate migration runner.
+/// `ensure_flock_firmware_table`'s rationale: no environment has a
+/// separate migration runner against its Hyperdrive Postgres.
 /// Deliberately does NOT (re-)create the `updated_at` trigger `init-db.sql`
 /// sets up for a fresh database -- `CREATE TRIGGER` has no `IF NOT EXISTS`
 /// guard on the Postgres version this project targets, so every other

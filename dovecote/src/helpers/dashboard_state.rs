@@ -10,9 +10,9 @@ use worker::{Error, Result, console_error};
 const DASHBOARD_STATE_COLUMNS: &str = "scope_key, value::text AS value, updated_at";
 
 /// Idempotently ensures the `dashboard_state` table exists -- the same
-/// lazy-DDL convention as `ensure_alert_tables`, since staging and
-/// production share one Hyperdrive-backed Postgres with no migration
-/// runner. The primary key is also the only index the table needs: both
+/// lazy-DDL convention as `ensure_alert_tables`, since no environment has
+/// a migration runner against its Hyperdrive Postgres. The primary key is
+/// also the only index the table needs: both
 /// reads are a point lookup or a per-user prefix scan of it.
 pub async fn ensure_dashboard_state_table(client: &Client) -> Result<()> {
   client

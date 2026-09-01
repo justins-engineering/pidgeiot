@@ -90,7 +90,7 @@ impl Principal {
 
 /// Idempotently ensures the org tables + `flocks.org_id` exist -- mirrors
 /// `ensure_alert_tables`/`ensure_flock_firmware_table`'s rationale (no
-/// separate migration runner against the shared staging/prod database).
+/// separate migration runner against any environment's database).
 /// The identical statements live in
 /// `infra/migrations/2026-08-08-organizations.sql` for explicit
 /// deploy-time application; this is the runtime belt-and-suspenders.
