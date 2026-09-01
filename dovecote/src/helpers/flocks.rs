@@ -164,9 +164,13 @@ pub async fn delete_flock_if_empty(
     return Ok(Ok(()));
   }
 
+  // `now()` keeps this out of Hyperdrive's query cache: a count served from
+  // the caller's own earlier refusal would name pigeons they have since
+  // deleted, and would refuse a flock that is already gone.
   let rows = client
     .query_typed(
-      "SELECT COUNT(*)::BIGINT AS pigeon_count FROM pigeons WHERE flock_id = $1;",
+      "SELECT COUNT(*)::BIGINT AS pigeon_count, now() AS read_at
+         FROM pigeons WHERE flock_id = $1;",
       &[(flock_id, Type::UUID)],
     )
     .await
