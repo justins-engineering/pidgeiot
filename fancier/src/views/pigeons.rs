@@ -147,7 +147,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               title: "Flocks",
             }
           }
-          div { id: "flock-pigeons-header", class: "text-center",
+          // Sized to its own content so the search field's `grow` cannot
+          // squeeze the name into a column of single words; capped so a long
+          // one wraps instead of pushing everything else off the row.
+          div { id: "flock-pigeons-header", class: "text-center shrink-0 max-w-xs",
             h1 { class: "text-xl font-bold", "{flock_name}" }
             p { class: "text-sm text-base-content/70", "Pigeons ({filtered.len()})" }
           }
