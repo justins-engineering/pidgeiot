@@ -147,7 +147,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
               title: "Flocks",
             }
           }
-          h1 { class: "text-xl font-bold", "Pigeons ({filtered.len()})" }
+          div { id: "flock-pigeons-header", class: "text-center",
+            h1 { class: "text-xl font-bold", "{flock_name}" }
+            p { class: "text-sm text-base-content/70", "Pigeons ({filtered.len()})" }
+          }
           div { class: "grow max-w-2xl mx-auto w-full sm:px-4",
             label { class: "input input-bordered flex items-center gap-2 bg-base-100 w-full",
               input {
