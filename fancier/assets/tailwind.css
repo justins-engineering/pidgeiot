@@ -26,6 +26,7 @@
   --color-warning-content: oklch(41% 0.112 45.904);
   --color-error: oklch(71% 0.194 13.428);
   --color-error-content: oklch(27% 0.105 12.094);
+  --color-error-text: oklch(52% 0.194 13.428);
   --radius-selector: 0.5rem;
   --radius-field: 0.5rem;
   --radius-box: 0.5rem;
@@ -61,6 +62,7 @@
   --color-warning-content: oklch(42% 0.095 57.708);
   --color-error: oklch(70% 0.191 22.216);
   --color-error-content: oklch(25% 0.092 26.042);
+  --color-error-text: var(--color-error);
   --radius-selector: 0.5rem;
   --radius-field: 0.5rem;
   --radius-box: 0.5rem;
@@ -72,6 +74,18 @@
 }
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* daisyUI tunes --color-error as a fill and it only reaches 2.7:1 as light-theme
+   text, so text takes its own darker token while btn/badge fills keep the original.
+   The hint rebinds the var instead of setting a color, so a persistent hint stays
+   base-content until daisyUI's own invalid-state rule paints it. */
+.text-error {
+  color: var(--color-error-text);
+}
+
+.validator-hint {
+  --color-error: var(--color-error-text);
+}
 
 /* Telemetry chart tokens. Chrome/grid/ink reuse the app's own DaisyUI
    theme vars so they swap with the existing light/dark toggle for free;
