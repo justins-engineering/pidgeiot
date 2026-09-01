@@ -7,6 +7,7 @@ use crate::components::{
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::firmware_repush;
 use crate::helpers::gps_track;
+use crate::helpers::move_flock;
 use crate::{Route, api};
 use capsules::{
   CoapConfig, Connector, HttpsConfig, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, MqttConfig, Pigeon,
@@ -813,7 +814,10 @@ fn ConnectorInfo(
 
 /// Moves this pigeon into another flock. Only flocks under the same owner
 /// are offered, which is the line dovecote refuses across -- for a personal
-/// flock every cached flock without an `org_id` is the caller's own.
+/// flock every cached flock without an `org_id` is the caller's own, and for
+/// an org-owned one only that org's flocks qualify. With nothing to offer,
+/// which rule applies (and whether the cache can even say yet) decides the
+/// wording -- see `helpers::move_flock`.
 ///
 /// The move is reversible and the device never notices it, so a plain
 /// confirm rather than a typed name. The route this page was reached by
@@ -826,11 +830,14 @@ fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
   let mut confirming = use_signal(|| Option::<(Uuid, String)>::None);
   let mut error = use_signal(|| Option::<String>::None);
 
-  let current_org = local_session
+  // The outer `None` is the flocks cache having no answer yet, which the
+  // empty state has to say differently from an owner rule.
+  let cached_org = local_session
     .flocks
     .read()
     .get(&current_flock)
-    .and_then(|flock| flock.org_id);
+    .map(|flock| flock.org_id);
+  let current_org = cached_org.flatten();
   let mut destinations: Vec<(Uuid, String)> = local_session
     .flocks
     .read()
@@ -840,15 +847,24 @@ fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
     .collect();
   destinations.sort_by(|a, b| a.1.cmp(&b.1));
 
+  let empty_message = destinations.is_empty().then(|| {
+    let org_name = current_org.and_then(|org_id| {
+      local_session
+        .orgs
+        .read()
+        .get(&org_id)
+        .map(|m| m.organization.name.clone())
+    });
+    move_flock::no_destination_message(cached_org, org_name.as_deref())
+  });
+
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
       div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Flock" }
       }
-      if destinations.is_empty() {
-        p { class: "text-base-content/50 italic text-sm",
-          "No other flock under the same owner to move this pigeon to."
-        }
+      if let Some(message) = empty_message {
+        p { class: "text-base-content/50 italic text-sm", "{message}" }
       } else {
         div { class: "flex flex-col gap-3 md:flex-row md:items-center md:px-4",
           select {
