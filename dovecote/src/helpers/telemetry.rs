@@ -11,8 +11,8 @@ use crate::helpers::get_db_client;
 
 /// Idempotently ensures the PG telemetry-history table + indexes exist —
 /// mirrors the DO's own `CREATE TABLE IF NOT EXISTS` bootstrap pattern in
-/// `objects/pigeons.rs::DurableObject::new`. Staging and production share
-/// one Hyperdrive-backed Postgres with no separate migration runner, so
+/// `objects/pigeons.rs::DurableObject::new`. No environment has a separate
+/// migration runner against its Hyperdrive Postgres, so
 /// each write/read path calls this first rather than relying on a one-time
 /// manual migration. Cheap no-op after the first call (`IF NOT EXISTS`).
 pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
@@ -477,7 +477,7 @@ pub async fn query_telemetry_history_buckets_for_flock(
 /// Idempotently ensures the `pigeons.telemetry_endpoint` column exists on
 /// the Postgres mirror table -- same rationale as
 /// `ensure_telemetry_history_table` (no separate migration runner against
-/// the shared staging/production database). Postgres, unlike SQLite,
+/// any environment's database). Postgres, unlike SQLite,
 /// supports `ADD COLUMN IF NOT EXISTS` directly, so no duplicate-column
 /// error handling is needed here (contrast the DO's SQLite fallback in
 /// `objects/pigeons.rs`).

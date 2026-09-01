@@ -3,8 +3,8 @@ use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
-/// Idempotently ensures `flocks.owner_email` exists -- staging/prod share
-/// one Hyperdrive-backed Postgres with no separate migration runner. The
+/// Idempotently ensures `flocks.owner_email` exists -- no environment has
+/// a separate migration runner against its Hyperdrive Postgres. The
 /// column is already created by `init-db.sql` and by
 /// `helpers/alerts.rs::ensure_alert_tables`, so on a database that already
 /// ran either this is a cheap no-op -- it's here purely so

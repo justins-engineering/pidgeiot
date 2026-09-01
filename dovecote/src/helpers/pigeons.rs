@@ -491,9 +491,8 @@ pub async fn update_shadow_pg_db(
 /// /pigeons/:pigeon_id/telemetry-endpoint` route -- mirrors
 /// `update_shadow_pg_db`'s shape (single-column update, called after the
 /// DO's own write already succeeded). Calls
-/// `ensure_pigeons_telemetry_endpoint_column` first since staging and
-/// production share one Hyperdrive-backed Postgres with no separate
-/// migration runner (see `helpers/telemetry.rs`).
+/// `ensure_pigeons_telemetry_endpoint_column` first since no environment
+/// has a separate migration runner (see `helpers/telemetry.rs`).
 pub async fn update_telemetry_endpoint_pg_db(
   client: Client,
   pigeon_id: &str,
