@@ -8,14 +8,17 @@ fn main() {
   // a staging release build from a production one. FANCIER_ENV, when set,
   // overrides that profile-based pick — e.g. `FANCIER_ENV=staging` picks
   // .env.staging instead of .env.release for an otherwise-identical release
-  // build. Unset (the normal `dx serve`/`dx build --release` invocations),
-  // behavior is unchanged: debug -> .env.dev, release -> .env.release — this
-  // never affects a regular build since nothing sets FANCIER_ENV except the
-  // staging bundle build in wrangler.staging.toml.
+  // build. Unset (the normal `dx serve`/`dx build --release` invocations):
+  // release -> .env.release, and debug -> .env.dev, since the environment is
+  // named for what it is rather than for the profile that builds it.
   let profile = env::var("PROFILE").expect("PROFILE should be set by Cargo");
+  let profile_env = match profile.as_str() {
+    "debug" => "dev",
+    other => other,
+  };
   let env_filename = match env::var("FANCIER_ENV") {
     Ok(name) if !name.is_empty() => format!(".env.{}", name),
-    _ => format!(".env.{}", profile),
+    _ => format!(".env.{}", profile_env),
   };
   let env_path = Path::new(&env_filename);
 
