@@ -1258,10 +1258,15 @@ empty.
 
 **Auth:** member (per pigeon)
 
-Bulk-fetches up to 48 pigeons by ID in parallel, silently skipping any the caller isn't
-authorized for or that don't exist (never errors on an individual bad ID — the response is
-just shorter than the request). Body: a plain JSON array of pigeon ID strings. `400` if more
-than 48 are requested.
+Bulk-fetches up to 48 pigeons by ID in parallel, skipping any the caller isn't authorized for,
+that don't exist, or that couldn't be reached (never errors on an individual bad ID — the
+response is just shorter than the request). Body: a plain JSON array of pigeon ID strings.
+`400` if more than 48 are requested.
+
+**An ID absent from the response is a per-pigeon failure, not an empty result.** The response
+carries no marker for it, so subtract the response from what you asked for and show the
+difference as unavailable devices — rendering only what came back reports a flock as smaller
+than it is. dovecote logs each dropped ID with the reason it was dropped.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/pigeons/batch \
