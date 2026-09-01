@@ -302,15 +302,17 @@ pub struct PigeonDetail {
   pub shadow: PigeonShadow,
 }
 
-/// Partial update of a pigeon's own fields. Flock membership is deliberately
-/// absent: moving a pigeon is authorized against the destination flock, which
-/// only [`PigeonFlockUpdateRequest`]'s route checks.
+/// Partial update of a pigeon's own fields. Two things are deliberately
+/// absent: flock membership, because moving a pigeon is authorized against
+/// the destination flock, which only [`PigeonFlockUpdateRequest`]'s route
+/// checks; and the connector, because its credentials are minted server-side
+/// and a caller-supplied one would overwrite a live device's PSK. A connector
+/// key in the body is ignored, as any unknown field is.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct PigeonUpdateRequest {
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,
-  pub connector: Option<Connector>,
   // Same COALESCE/partial-update semantics as every other field here --
   // omitted keeps the current value, `Some` replaces it. No way to
   // explicitly clear an already-set board via this route today, same
@@ -728,6 +730,24 @@ mod connector_tests {
     assert_eq!(coap(Some("abc"), Some("hex")).psk(), Some(("abc", "hex")));
     // What a read route hands back: the identity survives, the secret does not.
     assert_eq!(coap(Some("abc"), None).psk(), None);
+  }
+}
+
+#[cfg(test)]
+mod pigeon_update_request_tests {
+  use super::*;
+
+  #[test]
+  fn a_connector_in_the_body_is_ignored() {
+    // What a client built against the old shape still sends: it has to save
+    // the rest of the form rather than fail the request.
+    let body = r#"{"name":"renamed","connector":{"Https":{"endpoint":"","token":""}}}"#;
+    let request = serde_json::from_str::<PigeonUpdateRequest>(body).unwrap();
+
+    let round_tripped = serde_json::to_string(&request).unwrap();
+
+    assert_eq!(request.name.as_deref(), Some("renamed"));
+    assert!(!round_tripped.contains("connector"));
   }
 }
 

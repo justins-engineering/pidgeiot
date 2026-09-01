@@ -10,9 +10,8 @@ use crate::helpers::gps_track;
 use crate::helpers::move_flock;
 use crate::{Route, api};
 use capsules::{
-  CoapConfig, Connector, HttpsConfig, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, MqttConfig, Pigeon,
-  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
-  TelemetryEndpoint, TelemetryLatest,
+  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
+  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -1636,11 +1635,6 @@ fn DeletePigeonModal(
 
 #[component]
 fn UpdatePigeonModal(pigeon: Pigeon) -> Element {
-  let mut selected_connector = use_signal(|| match pigeon.connector {
-    Connector::Coap(_) => "Coap".to_string(),
-    Connector::Mqtt(_) => "Mqtt".to_string(),
-    Connector::Https(_) => "Https".to_string(),
-  });
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
 
@@ -1681,12 +1675,6 @@ fn UpdatePigeonModal(pigeon: Pigeon) -> Element {
                       }
                   }
 
-                  pur.connector = match selected_connector.read().as_str() {
-                      "Coap" => Some(Connector::Coap(CoapConfig::default())),
-                      "Mqtt" => Some(Connector::Mqtt(MqttConfig::default())),
-                      _ => Some(Connector::Https(HttpsConfig::default())),
-                  };
-
                   is_saving.set(true);
                   submit_error.set(None);
                   if api::pigeons::update(&pigeon_id, &pur).await.is_some() {
@@ -1726,37 +1714,6 @@ fn UpdatePigeonModal(pigeon: Pigeon) -> Element {
                 placeholder: "e.g., SN-12345",
                 r#type: "text",
                 value: pigeon.serial.as_deref().unwrap_or(""),
-              }
-            }
-            div {
-              label { class: "fieldset-legend text-xs font-semibold mb-1",
-                "Protocol"
-              }
-              select {
-                class: "select select-bordered w-full text-sm",
-                name: "connector",
-                onchange: move |evt: Event<FormData>| {
-                    for (key, val) in evt.data().values() {
-                        if key == "connector" && let FormValue::Text(val) = val {
-                            selected_connector.set(val.clone());
-                        }
-                    }
-                },
-                option {
-                  value: "Https",
-                  selected: selected_connector() == "Https",
-                  "HTTPS (REST API)"
-                }
-                option {
-                  value: "Coap",
-                  selected: selected_connector() == "Coap",
-                  "CoAP (DTLS/TLS)"
-                }
-                option {
-                  value: "Mqtt",
-                  selected: selected_connector() == "Mqtt",
-                  "MQTT (TLS)"
-                }
               }
             }
             div {

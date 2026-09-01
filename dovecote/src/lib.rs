@@ -685,7 +685,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       match get_db_client(&ctx.env).await {
         Ok(client) => {
-          if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+          // The connector this response carries is the one just minted, so
+          // the mirror takes it too.
+          if let Err(e) = update_pigeon_pg_db(client, &pigeon, Some(&pigeon.connector)).await {
             console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
           }
         }
@@ -1723,7 +1725,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       match get_db_client(&ctx.env).await {
         Ok(client) => {
-          if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+          if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
             console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
           }
         }
@@ -1832,7 +1834,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       let pigeon = parse_do_response::<Pigeon>(do_response).await?;
 
-      if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+      if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
         console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
       }
 
