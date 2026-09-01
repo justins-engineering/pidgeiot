@@ -1,5 +1,6 @@
 use crate::components::{
-  BOARD_DATALIST_ID, BoardDatalist, ConnectionBadge, ConnectorBadge, FlockAlerts, FlockGraphs,
+  BOARD_DATALIST_ID, BoardDatalist, ConfirmModal, ConnectionBadge, ConnectorBadge, DangerAction,
+  DangerZone, FlockAlerts, FlockGraphs,
 };
 use crate::helpers::{connection_state, device_credentials};
 use crate::{Route, api};
@@ -69,6 +70,28 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
       last_seen_by_pigeon.set(connection_state::latest_seen_by_pigeon(&history.points));
     }
   });
+
+  // Named from the cache the sign-in flock fetch fills, which is the same
+  // one this page reads its pigeon ids from -- a direct load renders the
+  // placeholder for as long as that fetch is in flight, then the real name.
+  let flock = binding.flocks.read().get(&flock_id).cloned();
+  let flock_name = flock
+    .as_ref()
+    .map(|f| f.name.clone())
+    .unwrap_or_else(|| "Flock".to_string());
+  // Same rule dovecote applies to the delete: a personal flock in this cache
+  // is the caller's own, an org-owned one needs owner/admin in that org.
+  let can_manage = match flock.as_ref() {
+    Some(f) => match f.org_id {
+      None => true,
+      Some(org) => binding
+        .orgs
+        .read()
+        .get(&org)
+        .is_some_and(|m| m.role.is_manager()),
+    },
+    None => false,
+  };
 
   let mut search = use_signal(String::new);
   // Scoped to this flock's own pigeon_ids, not the full LocalSession.pigeons
@@ -261,6 +284,16 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           FlockAlerts { flock_id }
         }
 
+        if can_manage {
+          div { class: "mt-10",
+            FlockDangerZone {
+              flock_id,
+              flock_name: flock_name.clone(),
+              pigeon_count: total,
+            }
+          }
+        }
+
         // One-time token reveal modal. Dismissal — not creation success —
         // is the flow-complete moment: navigating away must never preempt
         // or unmount this modal while the token is still showing.
@@ -294,6 +327,60 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
             on_close: move |_| show_transfer.set(false),
           }
         }
+      }
+    }
+  }
+}
+
+/// Deleting the flock this page lists. dovecote refuses while any pigeon is
+/// still in it, so the count is stated up front rather than the button
+/// disabled -- the server's own refusal names it too, and is the one that
+/// counts.
+#[component]
+fn FlockDangerZone(flock_id: uuid::Uuid, flock_name: String, pigeon_count: usize) -> Element {
+  let nav = use_navigator();
+  let mut confirming = use_signal(|| false);
+  let mut error = use_signal(|| Option::<String>::None);
+
+  rsx! {
+    DangerZone { id: "flock-danger-zone",
+      DangerAction {
+        title: "Delete this flock",
+        description: "Removes the flock with its firmware catalog and its alerts. Its pigeons must be gone first.",
+        label: "Delete Flock",
+        onclick: move |_| confirming.set(true),
+      }
+      if pigeon_count > 0 {
+        p { class: "text-sm text-base-content/70",
+          "Delete all {pigeon_count} pigeon(s) in this flock before it can go."
+        }
+      }
+      if let Some(message) = error.read().as_ref() {
+        p { class: "text-error text-sm", "⚠️ {message}" }
+      }
+    }
+    if confirming() {
+      ConfirmModal {
+        id: "delete_flock_title",
+        title: "Delete Flock",
+        confirm_label: "Delete Flock",
+        confirm_value: flock_name.clone(),
+        on_close: move |_| confirming.set(false),
+        on_confirm: move |_| {
+            confirming.set(false);
+            spawn(async move {
+                error.set(None);
+                match api::flocks::delete(flock_id).await {
+                    Ok(()) => {
+                        nav.replace(Route::Flocks {});
+                    }
+                    Err(message) => error.set(Some(message)),
+                }
+            });
+        },
+        "Deletes "
+        strong { "{flock_name}" }
+        " with its firmware catalog and alert definitions. This cannot be undone."
       }
     }
   }

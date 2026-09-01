@@ -135,6 +135,12 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 section { id: "pigeonInfo",
                   PigeonInfo { pigeon: pd.pigeon.clone() }
                 }
+                section { id: "pigeon-move-flock",
+                  MoveFlockControl {
+                    pigeon_id: pigeon_id.clone(),
+                    current_flock: pd.pigeon.flock_id,
+                  }
+                }
                 section { id: "connectorInfo",
                   ConnectorInfo {
                     pigeon_id: pigeon_id.clone(),
@@ -800,6 +806,109 @@ fn ConnectorInfo(
           "failing every request until its firmware is rebuilt with the new token and "
           "reflashed on site."
         }
+      }
+    }
+  }
+}
+
+/// Moves this pigeon into another flock. Only flocks under the same owner
+/// are offered, which is the line dovecote refuses across -- for a personal
+/// flock every cached flock without an `org_id` is the caller's own.
+///
+/// The move is reversible and the device never notices it, so a plain
+/// confirm rather than a typed name. The route this page was reached by
+/// carries the old flock, hence the navigation on success.
+#[component]
+fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
+  let local_session = use_context::<crate::LocalSession>();
+  let nav = use_navigator();
+  let mut selected = use_signal(String::new);
+  let mut confirming = use_signal(|| Option::<(Uuid, String)>::None);
+  let mut error = use_signal(|| Option::<String>::None);
+
+  let current_org = local_session
+    .flocks
+    .read()
+    .get(&current_flock)
+    .and_then(|flock| flock.org_id);
+  let mut destinations: Vec<(Uuid, String)> = local_session
+    .flocks
+    .read()
+    .values()
+    .filter(|flock| flock.id != current_flock && flock.org_id == current_org)
+    .map(|flock| (flock.id, flock.name.clone()))
+    .collect();
+  destinations.sort_by(|a, b| a.1.cmp(&b.1));
+
+  rsx! {
+    div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+        h2 { class: "text-3xl font-bold", "Flock" }
+      }
+      if destinations.is_empty() {
+        p { class: "text-base-content/50 italic text-sm",
+          "No other flock under the same owner to move this pigeon to."
+        }
+      } else {
+        div { class: "flex flex-col gap-3 md:flex-row md:items-center md:px-4",
+          select {
+            class: "select select-bordered grow",
+            "aria-label": "Destination flock",
+            onchange: move |evt| selected.set(evt.value()),
+            option {
+              value: "",
+              selected: selected.read().is_empty(),
+              "Move to another flock…"
+            }
+            for (id , name) in destinations.clone() {
+              option { value: "{id}", "{name}" }
+            }
+          }
+          button {
+            class: "btn btn-secondary md:min-w-36",
+            disabled: selected.read().is_empty(),
+            onclick: move |_| {
+                let chosen = selected.read().clone();
+                if let Some((id, name)) = destinations
+                    .iter()
+                    .find(|(id, _)| id.to_string() == chosen)
+                {
+                    confirming.set(Some((*id, name.clone())));
+                }
+            },
+            "Move"
+          }
+        }
+      }
+      if let Some(message) = error.read().as_ref() {
+        p { class: "text-error text-sm", "⚠️ {message}" }
+      }
+    }
+    if let Some((destination, name)) = confirming() {
+      ConfirmModal {
+        id: "move_pigeon_flock_title",
+        title: "Move Pigeon",
+        confirm_label: "Move Pigeon",
+        on_close: move |_| confirming.set(None),
+        on_confirm: move |_| {
+            let pigeon_id = pigeon_id.clone();
+            confirming.set(None);
+            spawn(async move {
+                error.set(None);
+                match api::pigeons::move_to_flock(&pigeon_id, destination).await {
+                    Ok(_) => {
+                        nav.replace(Route::PigeonView {
+                            flock_id: destination,
+                            pigeon_id: pigeon_id.clone(),
+                        });
+                    }
+                    Err(message) => error.set(Some(message)),
+                }
+            });
+        },
+        "Moves this pigeon into "
+        strong { "{name}" }
+        ". Its credentials and endpoint are unchanged, and the device carries on as it is."
       }
     }
   }

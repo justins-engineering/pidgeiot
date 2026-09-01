@@ -1,11 +1,13 @@
+use crate::api::orgs::{error_text, parse, to_body};
 use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
-  Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail, PigeonLogChunk,
-  PigeonShadow, PigeonShadowUpdateRequest, PigeonTelemetryEndpointUpdateRequest,
-  PigeonUpdateRequest, TelemetryEndpoint,
+  Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail,
+  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonShadow, PigeonShadowUpdateRequest,
+  PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
+use uuid::Uuid;
 use wasm_bindgen_futures::JsFuture;
 
 // dovecote's POST /pigeons/batch caps a single request at 48 ids
@@ -111,6 +113,57 @@ pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, Connector)>
   pigeon_list.write();
 
   Some((id, detail.pigeon.connector.clone()))
+}
+
+/// Moves a pigeon into another flock, keeping both flocks' cached
+/// `pigeon_ids` in step with the pigeon's own new `flock_id` -- the pigeon
+/// list fetches by the flock's id list, so leaving it stale would show the
+/// pigeon in neither flock until the next sign-in. `Err` carries the
+/// server's message: a cross-owner move and an unmanaged destination are
+/// each a distinct refusal the user needs to read.
+pub async fn move_to_flock(pigeon_id: &str, flock_id: Uuid) -> Result<Pigeon, String> {
+  let mut path = String::with_capacity(79);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/flock");
+
+  let Some(body) = to_body(&PigeonFlockUpdateRequest { flock_id }) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("PUT", &path, Some(&body)).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  let Some(pigeon) = parse::<Pigeon>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
+
+  let local_session = consume_context::<crate::LocalSession>();
+  let mut pigeon_list = local_session.pigeons;
+  let previous_flock = pigeon_list
+    .read()
+    .get(pigeon_id)
+    .map(|p| p.flock_id)
+    .unwrap_or(flock_id);
+  pigeon_list.insert(pigeon_id.to_string(), pigeon.clone());
+  pigeon_list.write();
+
+  let mut flock_list = local_session.flocks;
+  {
+    let mut flocks = flock_list.write();
+    if let Some(source) = flocks.get_mut(&previous_flock) {
+      source.pigeon_ids.retain(|id| id != pigeon_id);
+    }
+    if let Some(destination) = flocks.get_mut(&flock_id)
+      && !destination.pigeon_ids.iter().any(|id| id == pigeon_id)
+    {
+      destination.pigeon_ids.push(pigeon_id.to_string());
+    }
+  }
+
+  Ok(pigeon)
 }
 
 pub async fn delete(pigeon_id: &str) -> Option<String> {
