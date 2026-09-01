@@ -132,6 +132,70 @@ pub async fn create_user_flock(
   })
 }
 
+/// Deletes a flock only when it holds no pigeons. `pigeons.flock_id`
+/// cascades, so an unguarded delete would take every device's mirror row
+/// (and its history, firmware catalog and alerts) with it while the Durable
+/// Objects lived on -- the caller deletes pigeons one at a time instead.
+/// `Err` carries the user-facing 409 message, which names the count so the
+/// dashboard can say how many are in the way.
+///
+/// The guard and the delete are one statement, but READ COMMITTED still
+/// lets a pigeon created against this flock in a concurrent transaction
+/// commit just after the subquery ran; that pigeon keeps its own Durable
+/// Object, so what a lost race costs is its Postgres mirror row, not the
+/// device.
+pub async fn delete_flock_if_empty(
+  client: &Client,
+  flock_id: &Uuid,
+) -> Result<std::result::Result<(), String>> {
+  let deleted = client
+    .execute_typed(
+      "DELETE FROM flocks WHERE id = $1
+         AND NOT EXISTS (SELECT 1 FROM pigeons WHERE pigeons.flock_id = flocks.id);",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock delete error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  if deleted > 0 {
+    return Ok(Ok(()));
+  }
+
+  let rows = client
+    .query_typed(
+      "SELECT COUNT(*)::BIGINT AS pigeon_count FROM pigeons WHERE flock_id = $1;",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock emptiness check error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let pigeon_count = rows
+    .first()
+    .map(|row| row.get::<_, i64>("pigeon_count"))
+    .unwrap_or_default();
+
+  // Nothing deleted and nothing in the way means the flock is already gone.
+  if pigeon_count == 0 {
+    return Ok(Ok(()));
+  }
+
+  const PREFIX: &str = "Conflict: flock still holds ";
+  const SUFFIX: &str = " pigeon(s) -- delete them first";
+  let count = pigeon_count.to_string();
+  let mut message = String::with_capacity(PREFIX.len() + count.len() + SUFFIX.len());
+  message.push_str(PREFIX);
+  message.push_str(&count);
+  message.push_str(SUFFIX);
+
+  Ok(Err(message))
+}
+
 /// Opportunistically fills in `owner_email` for flocks that predate this
 /// column being populated on create. Chosen over a one-time backfill
 /// script because there's no separate migration runner in this codebase --

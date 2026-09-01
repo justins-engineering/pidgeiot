@@ -70,6 +70,7 @@ pub use usage::report_billing_meters;
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
+pub use flocks::delete_flock_if_empty;
 pub use flocks::get_user_flocks;
 
 mod pigeons;

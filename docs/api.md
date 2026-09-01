@@ -28,6 +28,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 |---|---|---|
 | [`GET /flocks`](#get-flocks) | session | List the flocks the caller can see |
 | [`POST /flocks`](#post-flocks) | session | Create a personal flock |
+| [`DELETE /flocks/:flock_id`](#delete-flocksflock_id) | flock: manage | Delete a flock that holds no pigeons |
 | [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer) | flock owner + target org owner/admin | Move a personal flock into an organization |
 | [`POST /orgs`](#post-orgs) | session | Create an organization, caller as its owner |
 | [`GET /orgs`](#get-orgs) | session | List the caller's organization memberships |
@@ -384,8 +385,34 @@ Response is `capsules::Flock` JSON (empty `pigeon_ids`) with status `201` and a
 `Location: /flocks/<flock_id>` header. `400` if `name` is empty. A freshly-created flock is
 always **personal** (`org_id: null`) — see the transfer route below for moving it into an org.
 
-There is no `PUT`/`DELETE /flocks/:id` route today, even though `capsules::FlockUpdateRequest`
-exists as a type — it isn't wired to anything yet.
+There is no `PUT /flocks/:id` route today, even though `capsules::FlockUpdateRequest` exists as
+a type — it isn't wired to anything yet.
+
+#### `DELETE /flocks/:flock_id`
+
+**Auth:** flock: manage
+
+Deletes an **empty** flock. A flock that still holds pigeons is refused with `409` and a
+message naming how many are in the way — `pigeons.flock_id` cascades, so an unguarded delete
+would drop every device's mirror row, history, firmware catalog and alerts while the Durable
+Objects lived on. Delete the pigeons first, one at a time, through
+[`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id).
+
+`403` when the caller neither owns the flock nor is an owner/admin of the org that does, and
+for an unknown flock id (missing and forbidden are deliberately indistinguishable). Returns
+`200` with an empty body on success, and on a flock that was already gone. Firmware images the
+flock's catalog referenced stay in R2: object keys are the image's own sha256, shared across
+flocks.
+
+The emptiness guard and the delete are one statement, but a pigeon created against this flock
+by a concurrent request can still commit just after the guard ran. That pigeon keeps its own
+Durable Object — its device credentials and shadow are untouched — so what a lost race costs
+is its Postgres mirror row.
+
+```sh
+curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
 
 #### `POST /flocks/:flock_id/transfer`
 
