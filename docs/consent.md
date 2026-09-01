@@ -227,8 +227,11 @@ records a row through production dovecote, or add a second Kratos config if that
 under `DynamicUser=yes`, whose ephemeral uid can only read world-readable files. Putting
 `<SECRET>` in that file therefore makes it readable by any local account. The secret only
 grants "write a consent row for an identity id you name" — no reads, no dashboard access — so
-this is a modest exposure, but it is worth closing: create a static `kratos` group, add
-`SupplementaryGroups=kratos` to the unit, and set the config to `root:kratos` 0640. Kratos has
+this is a modest exposure, but it is worth closing: create a static `kratos-conf` group, add
+`SupplementaryGroups=kratos-conf` to the unit, and set the config to `root:kratos-conf` 0640.
+The group must NOT be named `kratos`: `DynamicUser=yes` allocates a dynamic user and group named
+after the unit, and a static namesake group collides with that allocation, failing the start
+with `217/USER` (observed live). Kratos has
 no file-based input for a hook secret and Ory's config loader cannot set a list item from an
 environment variable, so there is no way to keep the value out of the config file entirely.
 
