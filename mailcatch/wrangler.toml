@@ -1,0 +1,17 @@
+name = "mailcatch"
+compatibility_date = "2026-08-31"
+main = "src/index.mjs"
+
+# No custom domain and no workers.dev alias: the HTTP read surface is for
+# curl and agents, reached at the deploy-reported *.workers.dev host, and
+# the email handler is invoked by Email Routing rather than over HTTP.
+workers_dev = true
+
+# Caught messages. TTL is set per write (src/index.mjs), not here.
+[[kv_namespaces]]
+binding = "MAILCATCH_KV"
+id = "b66d2f4175fd4fecab155084616a8637"
+
+# MAILCATCH_READ_TOKEN is a Worker secret (`wrangler secret put`), mirrored
+# into the gitignored secrets.env so agents and the owner can read
+# deliveries. An unset secret denies every request.
