@@ -132,6 +132,115 @@ pub async fn create_user_flock(
   })
 }
 
+/// Deletes a flock only when it holds no pigeons. `pigeons.flock_id`
+/// cascades, so an unguarded delete would take every device's mirror row
+/// (and its history, firmware catalog and alerts) with it while the Durable
+/// Objects lived on -- the caller deletes pigeons one at a time instead.
+/// `Err` carries the user-facing 409 message, which names the count so the
+/// dashboard can say how many are in the way.
+///
+/// The guard and the delete are one statement, but READ COMMITTED still
+/// lets a pigeon created against this flock in a concurrent transaction
+/// commit just after the subquery ran; that pigeon keeps its own Durable
+/// Object, so what a lost race costs is its Postgres mirror row, not the
+/// device.
+pub async fn delete_flock_if_empty(
+  client: &Client,
+  flock_id: &Uuid,
+) -> Result<std::result::Result<(), String>> {
+  let deleted = client
+    .execute_typed(
+      "DELETE FROM flocks WHERE id = $1
+         AND NOT EXISTS (SELECT 1 FROM pigeons WHERE pigeons.flock_id = flocks.id);",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock delete error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  if deleted > 0 {
+    return Ok(Ok(()));
+  }
+
+  // `now()` keeps this out of Hyperdrive's query cache: a count served from
+  // the caller's own earlier refusal would name pigeons they have since
+  // deleted, and would refuse a flock that is already gone.
+  let rows = client
+    .query_typed(
+      "SELECT COUNT(*)::BIGINT AS pigeon_count, now() AS read_at
+         FROM pigeons WHERE flock_id = $1;",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock emptiness check error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let pigeon_count = rows
+    .first()
+    .map(|row| row.get::<_, i64>("pigeon_count"))
+    .unwrap_or_default();
+
+  // Nothing deleted and nothing in the way means the flock is already gone.
+  if pigeon_count == 0 {
+    return Ok(Ok(()));
+  }
+
+  const PREFIX: &str = "Conflict: flock still holds ";
+  const SUFFIX: &str = " pigeon(s) -- delete them first";
+  let count = pigeon_count.to_string();
+  let mut message = String::with_capacity(PREFIX.len() + count.len() + SUFFIX.len());
+  message.push_str(PREFIX);
+  message.push_str(&count);
+  message.push_str(SUFFIX);
+
+  Ok(Err(message))
+}
+
+/// Whether a pigeon's current flock and `dest_flock_id` answer to the same
+/// owner -- the same user for two personal flocks, the same org for two
+/// org-owned ones. A move across that line is refused rather than
+/// half-applied: the pigeon's `pigeon_acl` rows live in its Durable Object
+/// and name the old owner, so it would either vanish from the destination's
+/// members or stay readable by the org it left. Moving a whole flock between
+/// owners is what the transfer route is for.
+///
+/// `None` when the pigeon has no mirrored row, or the destination flock does
+/// not exist.
+pub async fn pigeon_move_shares_owner(
+  client: &Client,
+  pigeon_id: &str,
+  dest_flock_id: &Uuid,
+) -> Result<Option<bool>> {
+  let rows = client
+    .query_typed(
+      "SELECT src.user_id AS src_user, src.org_id AS src_org,
+              dst.user_id AS dst_user, dst.org_id AS dst_org
+         FROM pigeons
+         JOIN flocks src ON src.id = pigeons.flock_id
+         JOIN flocks dst ON dst.id = $2
+        WHERE pigeons.id = $1;",
+      &[(&pigeon_id, Type::TEXT), (dest_flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Pigeon flock-move lookup error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.first().map(|row| {
+    let src_org: Option<Uuid> = row.get("src_org");
+    let dst_org: Option<Uuid> = row.get("dst_org");
+    if src_org.is_some() || dst_org.is_some() {
+      return src_org == dst_org;
+    }
+    row.get::<_, Uuid>("src_user") == row.get::<_, Uuid>("dst_user")
+  }))
+}
+
 /// Opportunistically fills in `owner_email` for flocks that predate this
 /// column being populated on create. Chosen over a one-time backfill
 /// script because there's no separate migration runner in this codebase --

@@ -351,6 +351,19 @@ GREPTIMEDB_ENDPOINT = ""
 # call staging's internal PSK route: empty is a deliberate deny-all, not
 # an oversight. A future staging terminator lists its egress here.
 COAP_SERVICE_ALLOWED_IPS = ""
+# `From:` for every mail this Worker sends (helpers/alerts.rs). A sending
+# domain is onboarded per environment and Cloudflare Email Service signs
+# only what it is authoritative for, so staging must not claim production's
+# noreply.pidgeiot.com. Unset elsewhere -- the code's default is that
+# production address, which useSend still sends from.
+MAIL_FROM_ADDRESS = "alerts@noreply-staging.pidgeiot.com"
+
+# Cloudflare Email Service. The binding's presence is what selects it over
+# the useSend HTTP path (helpers/alerts.rs), so only environments whose
+# sending domain is onboarded declare it -- production is deliberately
+# absent and keeps useSend.
+[[env.staging.send_email]]
+name = "EMAIL"
 
 [env.staging.durable_objects]
 bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
@@ -451,6 +464,13 @@ COAP_SERVICE_ALLOWED_IPS = "127.0.0.1,::1"
 # GREPTIMEDB_AUTH_TOKEN nor the GREPTIMEDB_ACCESS_CLIENT_* secrets are
 # needed here.
 GREPTIMEDB_ENDPOINT = "http://127.0.0.1:4000"
+
+# Cloudflare Email Service -- see the staging block above for why the
+# binding's presence is the transport switch. `wrangler dev` binds it
+# locally and nothing leaves the machine, so dev needs no onboarded
+# sending domain and keeps the default `From:`.
+[[env.dev.send_email]]
+name = "EMAIL"
 
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name

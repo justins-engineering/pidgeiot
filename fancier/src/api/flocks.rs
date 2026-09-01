@@ -1,4 +1,5 @@
-use crate::api::fetch_json;
+use crate::api::orgs::error_text;
+use crate::api::{fetch_json, fetch_json_any_status};
 use capsules::{Flock, FlockCreateRequest, FlockUpdateRequest};
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -49,14 +50,22 @@ pub async fn update(flock_id: Uuid, flock: &FlockUpdateRequest) -> Option<Uuid> 
   Some(id)
 }
 
-pub async fn delete(flock_id: Uuid) -> Option<Uuid> {
+/// `Err` carries the server's own message -- the 409 naming how many pigeons
+/// still hold the flock is the whole reason the UI needs the text.
+pub async fn delete(flock_id: Uuid) -> Result<(), String> {
   let mut path = String::with_capacity(72);
   path.push_str("/flocks/");
   path.push_str(&flock_id.to_string());
 
-  let _response = fetch_json("DELETE", &path, None).await?;
+  let Some(response) = fetch_json_any_status("DELETE", &path, None).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+
   let mut flock_list = consume_context::<crate::LocalSession>().flocks;
   flock_list.remove(&flock_id);
   flock_list.write();
-  Some(flock_id)
+  Ok(())
 }

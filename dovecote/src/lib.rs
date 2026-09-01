@@ -9,27 +9,27 @@ use crate::helpers::{
   check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
   count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
   create_invite, create_organization, create_pigeon_alert, create_portal_session,
-  create_user_flock, delete_alert_definition, delete_dashboard_state, delete_organization_if_empty,
-  delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables, ensure_billing_usage_tables,
-  ensure_business_details_columns, erase_user_error_reports, fetch_subscription, get_db_client,
-  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
-  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  create_user_flock, delete_alert_definition, delete_dashboard_state, delete_flock_if_empty,
+  delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
+  ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
+  fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
+  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
   load_org_roles, mark_webhook_event_processed, mint_invite_token, notify_contact_submission,
-  org_role_of, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
-  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
-  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
-  query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
-  record_consent_event, remove_member, resolve_checkout_prices, revoke_invite, root_url,
-  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
-  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
-  update_organization, update_pigeon_pg_db, update_shadow_pg_db, update_subscription_tier,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
-  write_business_details,
+  org_role_of, pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do,
+  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
+  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
+  raise_message_allowance_floor, readings_from_body, record_consent_event, remove_member,
+  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
+  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
+  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
+  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
+  verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -39,8 +39,9 @@ use capsules::{
   OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
+  PigeonFlockUpdateRequest, PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint,
+  TelemetryHistoryBucket, TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label,
+  valid_scope_key,
 };
 use futures::future::join_all;
 use worker::{
@@ -1241,6 +1242,56 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .with_headers(headers)
         .with_cors(&cors)
     })
+    .delete_async("/flocks/:flock_id", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let Some(flock_id_str) = ctx.param("flock_id").cloned() else {
+        return Response::error("Flock ID cannot be empty or invalid", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(flock_id) = uuid::Uuid::parse_str(&flock_id_str) else {
+        return Response::error("Flock ID cannot be empty or invalid", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+
+      let Ok(access) = crate::helpers::authorize_flock(
+        &client,
+        &flock_id_str,
+        &principal,
+        crate::helpers::FlockAction::Manage,
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if access.is_none() {
+        return Response::error("Forbidden: You do not have access to this flock", 403)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let Ok(outcome) = delete_flock_if_empty(&client, &flock_id).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if let Err(message) = outcome {
+        return Response::error(message, 409).unwrap().with_cors(&cors);
+      }
+
+      Response::empty()?.with_cors(&cors)
+    })
     .post_async("/pigeons/batch", |mut req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(principal) = require_principal(&req, &ctx.env).await else {
@@ -1641,6 +1692,112 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
         }
         Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
+      }
+
+      Response::from_json(&pigeon)?.with_cors(&cors)
+    })
+    .put_async("/pigeons/:pigeon_id/flock", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      // Peek the destination out without consuming the body the DO's own
+      // handler parses below (same clone pattern as POST /flock/pigeons).
+      let Ok(mut peek_req) = req.clone() else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(payload) = peek_req.json::<PigeonFlockUpdateRequest>().await else {
+        return Response::error("Bad Request: Invalid JSON", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // The pigeon's own ACL gates the route before any of the destination
+      // checks below, so a caller with no claim on this pigeon learns
+      // nothing about which flock it is in.
+      let Ok(probe_req) = req.clone() else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(authorized) = check_pigeon_authz(
+        probe_req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        &pigeon_id,
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if let Err(denied) = authorized {
+        return denied.with_cors(&cors);
+      }
+
+      get_db!(ctx.env, client, &cors);
+
+      // The destination flock is only known here, so it is gated before
+      // anything is written.
+      let Ok(access) = crate::helpers::authorize_flock(
+        &client,
+        &payload.flock_id.to_string(),
+        &principal,
+        crate::helpers::FlockAction::Manage,
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if access.is_none() {
+        return Response::error("Forbidden: You do not manage the destination flock", 403)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      let Ok(shares_owner) = pigeon_move_shares_owner(&client, &pigeon_id, &payload.flock_id).await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      match shares_owner {
+        None => {
+          return Response::error("Not Found: unknown pigeon or destination flock", 404)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        Some(false) => {
+          return Response::error(
+            "Conflict: a pigeon can only move between flocks with the same owner",
+            409,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+        Some(true) => {}
+      }
+
+      let do_response = proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/flock/update").await?;
+      if do_response.status_code() >= 400 {
+        return do_response.with_cors(&cors);
+      }
+
+      let pigeon = parse_do_response::<Pigeon>(do_response).await?;
+
+      if let Err(e) = update_pigeon_pg_db(client, &pigeon).await {
+        console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
       }
 
       Response::from_json(&pigeon)?.with_cors(&cors)

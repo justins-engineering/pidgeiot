@@ -28,6 +28,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 |---|---|---|
 | [`GET /flocks`](#get-flocks) | session | List the flocks the caller can see |
 | [`POST /flocks`](#post-flocks) | session | Create a personal flock |
+| [`DELETE /flocks/:flock_id`](#delete-flocksflock_id) | flock: manage | Delete a flock that holds no pigeons |
 | [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer) | flock owner + target org owner/admin | Move a personal flock into an organization |
 | [`POST /orgs`](#post-orgs) | session | Create an organization, caller as its owner |
 | [`GET /orgs`](#get-orgs) | session | List the caller's organization memberships |
@@ -51,6 +52,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id) | member | Read one pigeon, connector secrets stripped |
 | [`GET /pigeons/:pigeon_id/detail`](#get-pigeonspigeon_iddetail) | member | Read one pigeon plus the caller's ACL row and shadow |
 | [`PUT /pigeons/:pigeon_id`](#put-pigeonspigeon_id) | member | Partially update a pigeon |
+| [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) | owner + destination flock: manage | Move a pigeon into another flock of the same owner |
 | [`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id) | owner | Deprovision a pigeon and wipe its storage |
 | [`POST /pigeons/batch`](#post-pigeonsbatch) | member (per pigeon) | Fetch up to 48 pigeons by id in one request |
 | [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh) | owner | Mint a new keypair, revoking the current token |
@@ -384,8 +386,34 @@ Response is `capsules::Flock` JSON (empty `pigeon_ids`) with status `201` and a
 `Location: /flocks/<flock_id>` header. `400` if `name` is empty. A freshly-created flock is
 always **personal** (`org_id: null`) — see the transfer route below for moving it into an org.
 
-There is no `PUT`/`DELETE /flocks/:id` route today, even though `capsules::FlockUpdateRequest`
-exists as a type — it isn't wired to anything yet.
+There is no `PUT /flocks/:id` route today, even though `capsules::FlockUpdateRequest` exists as
+a type — it isn't wired to anything yet.
+
+#### `DELETE /flocks/:flock_id`
+
+**Auth:** flock: manage
+
+Deletes an **empty** flock. A flock that still holds pigeons is refused with `409` and a
+message naming how many are in the way — `pigeons.flock_id` cascades, so an unguarded delete
+would drop every device's mirror row, history, firmware catalog and alerts while the Durable
+Objects lived on. Delete the pigeons first, one at a time, through
+[`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id).
+
+`403` when the caller neither owns the flock nor is an owner/admin of the org that does, and
+for an unknown flock id (missing and forbidden are deliberately indistinguishable). Returns
+`200` with an empty body on success, and on a flock that was already gone. Firmware images the
+flock's catalog referenced stay in R2: object keys are the image's own sha256, shared across
+flocks.
+
+The emptiness guard and the delete are one statement, but a pigeon created against this flock
+by a concurrent request can still commit just after the guard ran. That pigeon keeps its own
+Durable Object — its device credentials and shadow are untouched — so what a lost race costs
+is its Postgres mirror row.
+
+```sh
+curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
 
 #### `POST /flocks/:flock_id/transfer`
 
@@ -589,12 +617,12 @@ ownerless.
 Invites an email address at a given role. Body: `capsules::OrganizationInviteCreateRequest`
 (`{ email, role }`); inviting at role `owner` is itself owner-only. Mints a random 128-bit+
 token, stores **only its sha256 hash** (`organization_invites.token_hash`), and emails the
-invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's existing Resend
+invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's shared mail
 transport. The message (`capsules::format_invite_email`, HTML plus a plain-text part that says
 the same thing; subject `[PidgeIoT] Invitation to join <org>`) names the inviter by the name and
 email address on their session (`Ana Ruiz (ana@example.com)`, or whichever the identity
 carries), the organization, the role and what it allows, the expiry, and what
-to do if the invitation was unexpected. In an environment with no `RESEND_API_KEY` configured (dev), the link is logged to
+to do if the invitation was unexpected. In an environment with no mail transport configured, the link is logged to
 the Worker console instead — grab it from `wrangler dev` output. Returns `201` with
 `capsules::OrganizationInviteCreated` (`{ invite, token, invite_url }`) — **the only place
 the cleartext token ever appears** (write-once, same convention as device connector tokens);
@@ -1166,16 +1194,55 @@ Same as above plus `acl` (**only the caller's own ACL row**, not the full list �
 
 **Auth:** member
 
-Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`flock_id`, `serial`,
-`name`, `tags`, `connector`, `board`) is optional; omitted fields keep their current value
-(`COALESCE` semantics, not a full replace). Returns the updated `capsules::Pigeon`. This is how
-an existing (pre-task-#20) pigeon gets its `board` tagged after the fact.
+Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`serial`, `name`, `tags`,
+`connector`, `board`) is optional; omitted fields keep their current value (`COALESCE`
+semantics, not a full replace). Returns the updated `capsules::Pigeon`. This is how an existing
+(pre-task-#20) pigeon gets its `board` tagged after the fact.
+
+Flock membership is **not** settable here — this route authorizes against the pigeon alone, so
+honouring a `flock_id` would write the pigeon into a flock nobody checked the caller against.
+Use [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) below; a `flock_id` in this
+body is ignored, as any unknown field is.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"Coop Sensor 1 (renamed)"}'
+```
+
+#### `PUT /pigeons/:pigeon_id/flock`
+
+**Auth:** owner + destination flock: manage
+
+Moves a pigeon into another flock. Body: `capsules::PigeonFlockUpdateRequest`
+(`{ flock_id }`). Both ends are checked: the caller must be an owner on the pigeon's own ACL,
+and must manage the destination flock (its owner, or an owner/admin of the org that owns it).
+Returns the updated `capsules::Pigeon`.
+
+Source and destination must answer to the **same owner** — two personal flocks of the same
+user, or two flocks of the same org — `409` otherwise. A pigeon's ACL rows live in its own
+Durable Object and name that owner, so a cross-owner move would either hide the pigeon from the
+flock it arrived in or leave it readable by the org it left. Moving a whole flock to an
+organization is [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer); there is no
+route that moves one pigeon across that line.
+
+The pigeon's own ACL is checked first, so a caller with no claim on it gets that `403` and
+learns nothing about which flock it is in. An unknown destination flock is the destination
+`403` (missing and forbidden are indistinguishable there too); `404` is reserved for a pigeon
+with no Postgres mirror row to compare owners against.
+
+The move is **invisible to the device**: its id, bearer token, connector endpoint and Durable
+Object are all untouched, and it needs no reboot or re-provisioning. What changes is which
+flock lists it, and therefore which flock-scoped firmware catalog and alerts apply to it. The
+Durable Object is written first and the Postgres mirror synced best-effort after, per the usual
+convention.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/flock \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"flock_id":"<destination_flock_id>"}'
 ```
 
 #### `DELETE /pigeons/:pigeon_id`
@@ -3084,7 +3151,8 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `TaxIdStatus`, `MAX_TAX_ID_CHARS`, `MAX_BUSINESS_NAME_CHARS` — `capsules/src/tax_id.rs`,
   which also holds the shared format rules (`prepare_tax_id`, `parse_eu_vat`) and the
   save-versus-recheck state machine (`decide_status`, `recheck_status`)
-- `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`, `PigeonDetail`
+- `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`,
+  `PigeonFlockUpdateRequest`, `PigeonDetail`
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
   `JsonString`
