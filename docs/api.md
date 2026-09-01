@@ -52,6 +52,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id) | member | Read one pigeon, connector secrets stripped |
 | [`GET /pigeons/:pigeon_id/detail`](#get-pigeonspigeon_iddetail) | member | Read one pigeon plus the caller's ACL row and shadow |
 | [`PUT /pigeons/:pigeon_id`](#put-pigeonspigeon_id) | member | Partially update a pigeon |
+| [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) | owner + destination flock: manage | Move a pigeon into another flock of the same owner |
 | [`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id) | owner | Deprovision a pigeon and wipe its storage |
 | [`POST /pigeons/batch`](#post-pigeonsbatch) | member (per pigeon) | Fetch up to 48 pigeons by id in one request |
 | [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh) | owner | Mint a new keypair, revoking the current token |
@@ -1193,16 +1194,52 @@ Same as above plus `acl` (**only the caller's own ACL row**, not the full list �
 
 **Auth:** member
 
-Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`flock_id`, `serial`,
-`name`, `tags`, `connector`, `board`) is optional; omitted fields keep their current value
-(`COALESCE` semantics, not a full replace). Returns the updated `capsules::Pigeon`. This is how
-an existing (pre-task-#20) pigeon gets its `board` tagged after the fact.
+Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`serial`, `name`, `tags`,
+`connector`, `board`) is optional; omitted fields keep their current value (`COALESCE`
+semantics, not a full replace). Returns the updated `capsules::Pigeon`. This is how an existing
+(pre-task-#20) pigeon gets its `board` tagged after the fact.
+
+Flock membership is **not** settable here — this route authorizes against the pigeon alone, so
+honouring a `flock_id` would write the pigeon into a flock nobody checked the caller against.
+Use [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) below; a `flock_id` in this
+body is ignored, as any unknown field is.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"Coop Sensor 1 (renamed)"}'
+```
+
+#### `PUT /pigeons/:pigeon_id/flock`
+
+**Auth:** owner + destination flock: manage
+
+Moves a pigeon into another flock. Body: `capsules::PigeonFlockUpdateRequest`
+(`{ flock_id }`). Both ends are checked: the caller must be an owner on the pigeon's own ACL,
+and must manage the destination flock (its owner, or an owner/admin of the org that owns it).
+Returns the updated `capsules::Pigeon`.
+
+Source and destination must answer to the **same owner** — two personal flocks of the same
+user, or two flocks of the same org — `409` otherwise. A pigeon's ACL rows live in its own
+Durable Object and name that owner, so a cross-owner move would either hide the pigeon from the
+flock it arrived in or leave it readable by the org it left. Moving a whole flock to an
+organization is [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer); there is no
+route that moves one pigeon across that line.
+
+`404` when the pigeon has no Postgres mirror row or the destination flock does not exist.
+
+The move is **invisible to the device**: its id, bearer token, connector endpoint and Durable
+Object are all untouched, and it needs no reboot or re-provisioning. What changes is which
+flock lists it, and therefore which flock-scoped firmware catalog and alerts apply to it. The
+Durable Object is written first and the Postgres mirror synced best-effort after, per the usual
+convention.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/flock \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"flock_id":"<destination_flock_id>"}'
 ```
 
 #### `DELETE /pigeons/:pigeon_id`
@@ -3111,7 +3148,8 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `TaxIdStatus`, `MAX_TAX_ID_CHARS`, `MAX_BUSINESS_NAME_CHARS` — `capsules/src/tax_id.rs`,
   which also holds the shared format rules (`prepare_tax_id`, `parse_eu_vat`) and the
   save-versus-recheck state machine (`decide_status`, `recheck_status`)
-- `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`, `PigeonDetail`
+- `Pigeon` / `PigeonRow`, `PigeonCreateRequest`, `PigeonUpdateRequest`,
+  `PigeonFlockUpdateRequest`, `PigeonDetail`
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
   `JsonString`

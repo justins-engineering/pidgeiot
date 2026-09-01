@@ -1534,10 +1534,7 @@ fn UpdatePigeonModal(flock_id: Uuid, pigeon: Pigeon) -> Element {
               let pigeon_id = pigeon.id.to_owned();
               async move {
                   evt.prevent_default();
-                  let mut pur = PigeonUpdateRequest {
-                      flock_id: Some(flock_id),
-                      ..Default::default()
-                  };
+                  let mut pur = PigeonUpdateRequest::default();
 
                   for (key, val) in evt.values() {
                       if let FormValue::Text(val) = val {

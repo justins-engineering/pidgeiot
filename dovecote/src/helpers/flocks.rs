@@ -196,6 +196,47 @@ pub async fn delete_flock_if_empty(
   Ok(Err(message))
 }
 
+/// Whether a pigeon's current flock and `dest_flock_id` answer to the same
+/// owner -- the same user for two personal flocks, the same org for two
+/// org-owned ones. A move across that line is refused rather than
+/// half-applied: the pigeon's `pigeon_acl` rows live in its Durable Object
+/// and name the old owner, so it would either vanish from the destination's
+/// members or stay readable by the org it left. Moving a whole flock between
+/// owners is what the transfer route is for.
+///
+/// `None` when the pigeon has no mirrored row, or the destination flock does
+/// not exist.
+pub async fn pigeon_move_shares_owner(
+  client: &Client,
+  pigeon_id: &str,
+  dest_flock_id: &Uuid,
+) -> Result<Option<bool>> {
+  let rows = client
+    .query_typed(
+      "SELECT src.user_id AS src_user, src.org_id AS src_org,
+              dst.user_id AS dst_user, dst.org_id AS dst_org
+         FROM pigeons
+         JOIN flocks src ON src.id = pigeons.flock_id
+         JOIN flocks dst ON dst.id = $2
+        WHERE pigeons.id = $1;",
+      &[(&pigeon_id, Type::TEXT), (dest_flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Pigeon flock-move lookup error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(rows.first().map(|row| {
+    let src_org: Option<Uuid> = row.get("src_org");
+    let dst_org: Option<Uuid> = row.get("dst_org");
+    if src_org.is_some() || dst_org.is_some() {
+      return src_org == dst_org;
+    }
+    row.get::<_, Uuid>("src_user") == row.get::<_, Uuid>("dst_user")
+  }))
+}
+
 /// Opportunistically fills in `owner_email` for flocks that predate this
 /// column being populated on create. Chosen over a one-time backfill
 /// script because there's no separate migration runner in this codebase --

@@ -302,9 +302,11 @@ pub struct PigeonDetail {
   pub shadow: PigeonShadow,
 }
 
+/// Partial update of a pigeon's own fields. Flock membership is deliberately
+/// absent: moving a pigeon is authorized against the destination flock, which
+/// only [`PigeonFlockUpdateRequest`]'s route checks.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct PigeonUpdateRequest {
-  pub flock_id: Option<Uuid>,
   pub serial: Option<String>,
   pub name: Option<String>,
   pub tags: Option<String>,

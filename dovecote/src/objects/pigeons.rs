@@ -9,9 +9,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
   MqttConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail,
-  PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
-  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
-  unwrap_or_return_response,
+  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow,
+  PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -346,6 +346,7 @@ impl DurableObject for Pigeons {
       "/pigeon/detail" => get_detail(self, req).await,
       "/pigeon/create" => create(self, req).await,
       "/pigeon/update" => update(self, req).await,
+      "/pigeon/flock/update" => update_flock(self, req).await,
       "/pigeon/acl/get" => get_acl(self, req).await,
       "/pigeon/acl/list" => list_acl(self, req).await,
       "/pigeon/acl/update" => update_acl(self, req).await,
@@ -1137,7 +1138,6 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
   match pigeons.sql.exec(
     "UPDATE pigeons SET
-      flock_id = COALESCE(?, flock_id),
       serial = COALESCE(?, serial),
       name = COALESCE(?, name),
       tags = COALESCE(?, tags),
@@ -1145,7 +1145,6 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       board = COALESCE(?, board)
     WHERE id = ?;",
     vec![
-      row.flock_id.map(|u| u.to_string()).into(),
       row.serial.into(),
       row.name.into(),
       row.tags.into(),
@@ -1154,26 +1153,61 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       pigeons.state.id().to_string().into(),
     ],
   ) {
-    Ok(_) => {
-      match pigeons.sql.exec(
-        &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
-        None,
-      ) {
-        Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
-          Ok(p) => Response::from_json(&Pigeon::from(p)),
-          Err(e) => {
-            console_error!("Pigeon deserialization error: {e}");
-            Response::error("Internal Server Error", 500)
-          }
-        },
-        Err(e) => {
-          console_error!("Pigeons READ error: {e}");
-          Response::error("Internal Server Error", 500)
-        }
-      }
-    }
+    Ok(_) => read_back_pigeon(pigeons),
     Err(e) => {
       console_error!("Pigeon UPDATE execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Moves this pigeon into another flock. The gateway has already checked the
+/// caller manages the destination flock and that it answers to the same
+/// owner as the current one, so only the pigeon's own ACL applies here.
+/// Nothing the device sees changes: its id, token, endpoint and Durable
+/// Object are all untouched.
+async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  let row = match req.json::<PigeonFlockUpdateRequest>().await {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Pigeon flock update json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  match pigeons.sql.exec(
+    "UPDATE pigeons SET flock_id = ? WHERE id = ?;",
+    vec![
+      row.flock_id.to_string().into(),
+      pigeons.state.id().to_string().into(),
+    ],
+  ) {
+    Ok(_) => read_back_pigeon(pigeons),
+    Err(e) => {
+      console_error!("Pigeon flock update execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// This pigeon as the mutating routes answer with it, read back after the
+/// write so the caller sees the row the DO now holds.
+fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
+  match pigeons.sql.exec(
+    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    None,
+  ) {
+    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
+      Ok(p) => Response::from_json(&Pigeon::from(p)),
+      Err(e) => {
+        console_error!("Pigeon deserialization error: {e}");
+        Response::error("Internal Server Error", 500)
+      }
+    },
+    Err(e) => {
+      console_error!("Pigeons READ error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
