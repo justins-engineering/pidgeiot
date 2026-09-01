@@ -1227,7 +1227,10 @@ flock it arrived in or leave it readable by the org it left. Moving a whole floc
 organization is [`POST /flocks/:flock_id/transfer`](#post-flocksflock_idtransfer); there is no
 route that moves one pigeon across that line.
 
-`404` when the pigeon has no Postgres mirror row or the destination flock does not exist.
+The pigeon's own ACL is checked first, so a caller with no claim on it gets that `403` and
+learns nothing about which flock it is in. An unknown destination flock is the destination
+`403` (missing and forbidden are indistinguishable there too); `404` is reserved for a pigeon
+with no Postgres mirror row to compare owners against.
 
 The move is **invisible to the device**: its id, bearer token, connector endpoint and Durable
 Object are all untouched, and it needs no reboot or re-provisioning. What changes is which

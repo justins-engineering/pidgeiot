@@ -1718,10 +1718,36 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      // The pigeon's own ACL gates the route before any of the destination
+      // checks below, so a caller with no claim on this pigeon learns
+      // nothing about which flock it is in.
+      let Ok(probe_req) = req.clone() else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(authorized) = check_pigeon_authz(
+        probe_req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        &pigeon_id,
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if let Err(denied) = authorized {
+        return denied.with_cors(&cors);
+      }
+
       get_db!(ctx.env, client, &cors);
 
-      // The pigeon's own ACL is checked inside the DO; the destination flock
-      // is only known here, so it is gated before anything is written.
+      // The destination flock is only known here, so it is gated before
+      // anything is written.
       let Ok(access) = crate::helpers::authorize_flock(
         &client,
         &payload.flock_id.to_string(),
