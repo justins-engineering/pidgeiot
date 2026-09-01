@@ -589,12 +589,12 @@ ownerless.
 Invites an email address at a given role. Body: `capsules::OrganizationInviteCreateRequest`
 (`{ email, role }`); inviting at role `owner` is itself owner-only. Mints a random 128-bit+
 token, stores **only its sha256 hash** (`organization_invites.token_hash`), and emails the
-invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's existing Resend
+invite link (`<ROOT_URL>/invite?token=<token>`) through the platform's shared mail
 transport. The message (`capsules::format_invite_email`, HTML plus a plain-text part that says
 the same thing; subject `[PidgeIoT] Invitation to join <org>`) names the inviter by the name and
 email address on their session (`Ana Ruiz (ana@example.com)`, or whichever the identity
 carries), the organization, the role and what it allows, the expiry, and what
-to do if the invitation was unexpected. In an environment with no `RESEND_API_KEY` configured (dev), the link is logged to
+to do if the invitation was unexpected. In an environment with no mail transport configured, the link is logged to
 the Worker console instead — grab it from `wrangler dev` output. Returns `201` with
 `capsules::OrganizationInviteCreated` (`{ invite, token, invite_url }`) — **the only place
 the cleartext token ever appears** (write-once, same convention as device connector tokens);
