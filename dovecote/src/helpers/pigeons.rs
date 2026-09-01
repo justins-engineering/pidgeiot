@@ -1,4 +1,4 @@
-use capsules::{Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
+use capsules::{Connector, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
 
@@ -418,11 +418,20 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
   Ok(())
 }
 
-pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Result<()> {
+/// Mirrors a pigeon's row into Postgres. `connector` is taken separately
+/// rather than from `pigeon` because only the routes that mint credentials
+/// hold one worth mirroring -- everything else answers with a
+/// secret-stripped pigeon, and passing `None` leaves the column alone
+/// instead of blanking the mirror's copy of a live device's PSK.
+pub async fn update_pigeon_pg_db(
+  client: Client,
+  pigeon: &Pigeon,
+  connector: Option<&Connector>,
+) -> worker::Result<()> {
   ensure_pigeons_board_column(&client).await?;
 
   let connector_json =
-    serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
+    connector.map(|c| serde_json::to_string(c).unwrap_or_else(|_| "{}".to_string()));
 
   client
     .execute_typed(
@@ -431,7 +440,7 @@ pub async fn update_pigeon_pg_db(client: Client, pigeon: &Pigeon) -> worker::Res
          serial = $3,
          name = $4,
          tags = $5,
-         connector = $6::jsonb,
+         connector = COALESCE($6::jsonb, connector),
          board = $7,
          updated_at = $8
        WHERE id = $1;",

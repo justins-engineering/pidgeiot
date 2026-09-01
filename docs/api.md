@@ -1196,8 +1196,8 @@ Same as above plus `acl` (**only the caller's own ACL row**, not the full list �
 
 Partial update. Body: `capsules::PigeonUpdateRequest` — every field (`serial`, `name`, `tags`,
 `board`) is optional; omitted fields keep their current value (`COALESCE` semantics, not a full
-replace). Returns the updated `capsules::Pigeon`. This is how an existing pigeon gets its
-`board` tagged after the fact.
+replace). Returns the updated `capsules::Pigeon` with the connector token/PSK stripped, same as
+a read route. This is how an existing pigeon gets its `board` tagged after the fact.
 
 Neither the **connector** nor **flock membership** is settable here, and both are ignored in
 this body as any unknown field is. A connector's credentials are minted server-side, so
@@ -1221,7 +1221,7 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id> \
 Moves a pigeon into another flock. Body: `capsules::PigeonFlockUpdateRequest`
 (`{ flock_id }`). Both ends are checked: the caller must be an owner on the pigeon's own ACL,
 and must manage the destination flock (its owner, or an owner/admin of the org that owns it).
-Returns the updated `capsules::Pigeon`.
+Returns the updated `capsules::Pigeon` with the connector token/PSK stripped.
 
 Source and destination must answer to the **same owner** — two personal flocks of the same
 user, or two flocks of the same org — `409` otherwise. A pigeon's ACL rows live in its own

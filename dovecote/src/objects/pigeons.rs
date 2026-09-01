@@ -1191,14 +1191,20 @@ async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 }
 
 /// This pigeon as the mutating routes answer with it, read back after the
-/// write so the caller sees the row the DO now holds.
+/// write so the caller sees the row the DO now holds. Stripped like a read
+/// route: neither of these routes can change a credential, so neither has
+/// any reason to hand one back.
 fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
   match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
-      Ok(p) => Response::from_json(&Pigeon::from(p)),
+      Ok(p) => {
+        let mut pigeon = Pigeon::from(p);
+        strip_secrets(&mut pigeon);
+        Response::from_json(&pigeon)
+      }
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         Response::error("Internal Server Error", 500)
