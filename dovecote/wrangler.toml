@@ -131,6 +131,13 @@ COAP_SERVICE_ALLOWED_IPS = "15.204.254.3,2604:2dc0:121::5be"
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
 
+# Cloudflare Email Service. The binding's presence selects it over the
+# useSend HTTP path (helpers/alerts.rs), which stays as the fallback rail.
+# No MAIL_FROM_ADDRESS var here: the code's default From is already the
+# production address on the onboarded noreply.pidgeiot.com domain.
+[[send_email]]
+name = "EMAIL"
+
 # Per-IP throttle on the unauthenticated POST /errors ingest. Counters are
 # roughly per-colo, so this bounds request volume, not the ops inbox --
 # the new-signature email has its own global budget (helpers/errors.rs).
@@ -355,13 +362,12 @@ COAP_SERVICE_ALLOWED_IPS = ""
 # domain is onboarded per environment and Cloudflare Email Service signs
 # only what it is authoritative for, so staging must not claim production's
 # noreply.pidgeiot.com. Unset elsewhere -- the code's default is that
-# production address, which useSend still sends from.
+# production address, which both rails send from.
 MAIL_FROM_ADDRESS = "alerts@noreply-staging.pidgeiot.com"
 
 # Cloudflare Email Service. The binding's presence is what selects it over
 # the useSend HTTP path (helpers/alerts.rs), so only environments whose
-# sending domain is onboarded declare it -- production is deliberately
-# absent and keeps useSend.
+# sending domain is onboarded declare it.
 [[env.staging.send_email]]
 name = "EMAIL"
 
