@@ -9,7 +9,10 @@ use capsules::{
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
-use worker::{Env, Error, Fetch, Method, Request, RequestInit, Result, console_error, console_log};
+use worker::{
+  Env, Error, Fetch, Method, Request, RequestInit, Result, SendEmail, SendEmailBuilder,
+  console_error, console_log,
+};
 
 /// Column list shared by every `alert_definitions` read/RETURNING statement
 /// -- `condition`/`channel` are cast to `::text` rather than read as native
@@ -29,14 +32,18 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// simplification, not an oversight.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
-/// `From:` address for alert emails sent via useSend -- shares the
-/// platform's one verified sending domain with Kratos's courier setup, but
-/// never the credential. The Worker secret is still NAMED
-/// `RESEND_API_KEY` for historical reasons but holds a useSend API key --
-/// useSend speaks the Resend-shaped payload, so sends 401 against
-/// api.resend.com if this ever gets swapped for a real Resend key (see
-/// `send_via_usesend` below).
-const USESEND_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
+/// `From:` fallback for platform mail -- shares the platform's one
+/// verified useSend sending domain with Kratos's courier setup, but never
+/// the credential. The Worker secret is still NAMED `RESEND_API_KEY` for
+/// historical reasons but holds a useSend API key -- useSend speaks the
+/// Resend-shaped payload, so sends 401 against api.resend.com if this ever
+/// gets swapped for a real Resend key (see `post_via_usesend` below).
+const DEFAULT_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
+
+/// Cloudflare Email Service binding (`[[send_email]]`, wrangler.toml).
+/// Its presence is what selects that transport over useSend, so it is
+/// declared only in the environments whose sending domain is onboarded.
+const EMAIL_BINDING: &str = "EMAIL";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
 /// indexes) exist -- mirrors `ensure_telemetry_history_table`/
@@ -1379,12 +1386,24 @@ async fn send_alert_email(
   }
 }
 
-/// Whether the useSend transport is configured for this environment --
+/// Whether this environment can send mail at all, by either transport --
 /// lets callers with a graceful no-op path (e.g. org invites) log a link
 /// instead of "sending" into the void, without duplicating the
-/// secret-read logic.
-pub(crate) fn usesend_configured(env: &Env) -> bool {
-  usesend_api_key(env).is_some()
+/// binding/secret lookups.
+pub(crate) fn email_configured(env: &Env) -> bool {
+  env.send_email(EMAIL_BINDING).is_ok() || usesend_api_key(env).is_some()
+}
+
+/// `From:` address for platform mail. A sending domain is onboarded per
+/// environment, so `MAIL_FROM_ADDRESS` ([env.*.vars], wrangler.toml)
+/// overrides the useSend default where one differs.
+fn mail_from_address(env: &Env) -> String {
+  env
+    .var("MAIL_FROM_ADDRESS")
+    .map(|v| v.to_string())
+    .ok()
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| DEFAULT_FROM_ADDRESS.to_string())
 }
 
 /// `RESEND_API_KEY` Worker secret, if configured -- mirrors
@@ -1444,6 +1463,57 @@ pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessa
   .await
 }
 
+/// One transactional email, Cloudflare Email Service first: the
+/// `[[send_email]]` binding resolves only where it is declared, so its
+/// absence is what routes an environment back to useSend's HTTP API.
+async fn send_email(
+  env: &Env,
+  to: &str,
+  subject: &str,
+  text: &str,
+  html: Option<&str>,
+) -> Result<()> {
+  let from = mail_from_address(env);
+  match env.send_email(EMAIL_BINDING) {
+    Ok(sender) => send_via_binding(&sender, &from, to, subject, text, html).await,
+    Err(_) => post_via_usesend(env, &from, to, subject, text, html).await,
+  }
+}
+
+/// Hands the message to Cloudflare Email Service, which signs it with the
+/// sending domain's DKIM key and takes custody -- a resolved promise is
+/// acceptance, not delivery.
+async fn send_via_binding(
+  sender: &SendEmail,
+  from: &str,
+  to: &str,
+  subject: &str,
+  text: &str,
+  html: Option<&str>,
+) -> Result<()> {
+  let mut builder = SendEmailBuilder::builder(from, to, subject).text(text);
+  if let Some(html) = html {
+    builder = builder.html(html);
+  }
+
+  match sender.send_with_builder(&builder.build()).await {
+    Ok(_) => {
+      console_log!(
+        "Email Service accepted mail to {} (subject: {subject})",
+        redact_email(to)
+      );
+      Ok(())
+    }
+    Err(e) => {
+      let reason = String::from(e.message());
+      let mut message = String::with_capacity(29 + reason.len());
+      message.push_str("Email Service send rejected: ");
+      message.push_str(&reason);
+      Err(Error::RustError(message))
+    }
+  }
+}
+
 /// POSTs one transactional email via useSend's Resend-compatible HTTP API
 /// (`https://app.usesend.com/api/v1/emails`) -- mirrors
 /// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
@@ -1451,8 +1521,9 @@ pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessa
 /// `wrangler secret put`) is treated the same way `greptime_auth_token`
 /// being absent is treated elsewhere -- logged, never a hard failure,
 /// since alert delivery is always best-effort.
-async fn send_email(
+async fn post_via_usesend(
   env: &Env,
+  from: &str,
   to: &str,
   subject: &str,
   text: &str,
@@ -1467,7 +1538,7 @@ async fn send_email(
   };
 
   let body = UsesendEmailRequest {
-    from: USESEND_FROM_ADDRESS,
+    from,
     to: [to],
     subject,
     text,
