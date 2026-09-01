@@ -15,12 +15,13 @@ Everything here is applied on the VPS (`debian@15.204.254.3`) by the owner.
 Background and the phase plan live in the #65 scoping report
 (`~/pidgeiot-business/cf-email-migration-2026-09/scoping-report.md`).
 
-## Status: not yet run
+## Status: not yet run; rehearsed 2026-09-01
 
-This is Phase 4, and it goes last, alone, in its own window. Phase 3 —
-rehearsing the same courier path on the dev stack against the real Cloudflare
-SMTP endpoint — is the gate, and its record belongs in the Rehearsal section
-at the bottom before anyone runs the steps here.
+This is Phase 4, and it goes last, alone, in its own window. Phase 3 — the
+same courier path on the dev stack against the real Cloudflare SMTP endpoint —
+is the gate, and it **passed**; see the Rehearsal record at the bottom. The
+URI, the sender and the verdicts below are what that run actually produced,
+not what it was expected to produce.
 
 ## What changes
 
@@ -259,10 +260,42 @@ its database and loses nothing but MailSlurper capture for the duration.
 `docker-compose -f infra/docker-compose.yml up -d --force-recreate kratos`
 puts it back.
 
-## Rehearsal record (Phase 3)
+## Rehearsal record (Phase 3), 2026-09-01
 
-Fill in from the dev-stack rehearsal before running the procedure above:
-courier row status and `send_count`, catcher round-trip latency, the
-`Authentication-Results` verdicts on the caught MIME, whether the flow
-completed from a code read out of stored mail, and anything that had to
-differ from what this runbook says.
+Dev Kratos couriered a real `verification_code_valid` mail through
+`smtp.mx.cloudflare.net:465` from `account@noreply-staging.pidgeiot.com` to the
+catcher, and the flow was completed with the code read back out of stored MIME.
+
+- **Courier dispatch.** Row `8cf88e4a`, `created_at` 20:59:54.180584Z, observed
+  `queued`/`send_count` 0 then `sent`/`send_count` 1 on the next three-second
+  poll. One send, no retry, so Cloudflare accepted the submission on the first
+  attempt.
+- **Round trip: 2.4 s** from flow submission to the catcher's `receivedAt`
+  (20:59:56.586Z), covering SMTP submission, Email Sending, Email Routing and
+  the KV write. The message's own `Date` is 20:59:54, so dispatch was within
+  half a second of the row appearing.
+- **Authentication-Results** (added by Email Routing, `mx.cloudflare.net`):
+  `dkim=pass header.d=noreply-staging.pidgeiot.com header.s=cf-bounce`,
+  `dmarc=pass header.from=noreply-staging.pidgeiot.com policy.dmarc=reject`,
+  `spf=pass smtp.mailfrom=bounces@cf-bounce.noreply-staging.pidgeiot.com`.
+  DKIM is strictly aligned, SPF relaxed-aligned, and DMARC passes against the
+  `p=reject` record onboarding published. The `spf=none` that also appears is
+  for the HELO identity (`bg-ig.cloudflare-smtp.net`), which is Cloudflare's
+  own relay and not a DMARC input.
+- **Flow completion.** `passed_challenge`, and the identity's verifiable
+  address reached `completed`.
+
+What Phase 4 must carry over:
+
+- **`COURIER_SMTP_FROM_ADDRESS` is mandatory unless `kratos.yml` already names
+  an on-domain sender.** Without it Kratos sends as its built-in
+  `no-reply@ory.kratos.sh`, which is off every onboarded domain. Observed
+  directly: the same stack sent as that address before the override.
+- **`local_name` was fine at its `localhost` default** — Cloudflare accepted
+  the greeting, so `COURIER_SMTP_LOCAL_NAME` is not needed. It stays a
+  fallback, not a step.
+- **The token needed no percent-encoding**, being URI-safe as issued. Re-check
+  before pasting rather than assuming; a reissued token may differ.
+- Nothing else diverged. The URI form, `smtps` implicit TLS, the literal
+  `api_token` username and the env-over-`kratos.yml` override all behaved as
+  this runbook describes.

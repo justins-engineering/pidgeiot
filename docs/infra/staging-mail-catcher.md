@@ -51,6 +51,11 @@ curl -s -H "Authorization: Bearer $TOKEN" $B/messages/<id>
 curl -s -X DELETE -H "Authorization: Bearer $TOKEN" $B/messages/<id>
 ```
 
+Send a User-Agent from anything that is not curl. Cloudflare's edge answers
+the default `Python-urllib/3.x` signature with a **1010** block before the
+Worker ever runs, and a 1010 body looks enough like a rejection to read as a
+bad token. Any string of your own passes.
+
 Pulling a Kratos code out of a stored message:
 
 ```sh
