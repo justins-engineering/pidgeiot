@@ -1274,8 +1274,11 @@ pub enum AlertCondition {
   /// check (has this pigeon reported *anything* recently) rather than a
   /// per-metric absence check, which `Threshold` combined with a
   /// dashboard-side "hasn't crossed in a while" isn't really a fit for
-  /// anyway. Evaluated the same way as `DeviceState` -- see
-  /// `evaluate_scheduled_alerts`'s doc comment (`dovecote/src/helpers/alerts.rs`).
+  /// anyway. Evaluated by the same sweep as `DeviceState` -- see
+  /// `evaluate_scheduled_alerts`'s doc comment (`dovecote/src/helpers/alerts.rs`)
+  /// -- but fires on the first sweep that sees the window crossed, since
+  /// `max_silence_secs` is already the duration a fixed debounce would
+  /// otherwise re-impose on top.
   MissingReport { max_silence_secs: i64 },
   /// Fires when `key`'s numeric value has moved by more than `max_delta`
   /// (`|new - old| > max_delta`) since the previous report of that same

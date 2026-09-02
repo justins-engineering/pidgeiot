@@ -29,7 +29,8 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// `Ok -> Firing`. Scaling this per-pigeon off `telemetry_interval` the
 /// way `connection_state::classify` (`capsules::connection_state`) already
 /// does would be reasonable; a single fixed window is a deliberate
-/// simplification, not an oversight.
+/// simplification, not an oversight. Does not apply to `MissingReport`,
+/// which carries its own window -- see `should_fire_now`.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` fallback for platform mail -- shares the platform's one
@@ -1072,13 +1073,38 @@ async fn resolve_pigeon_last_seen(
   }))
 }
 
+/// Whether a condition that is currently true should fire on this
+/// observation. `first_true_at` is when the current true episode began, or
+/// `None` when this observation starts it.
+///
+/// `MissingReport` names its own silence window, so that window *is* the
+/// debounce and it fires on the first observation crossing it. Waiting out
+/// `ALERT_DEBOUNCE_SECS` on top would add a whole sweep period to every
+/// window an operator configures, since the sweep samples far more coarsely
+/// than the debounce it is checked against. The other conditions describe a
+/// point sample with no duration of its own and keep the fixed window.
+fn should_fire_now(
+  condition: &AlertCondition,
+  first_true_at: Option<OffsetDateTime>,
+  now: OffsetDateTime,
+) -> bool {
+  let debounce = match condition {
+    AlertCondition::MissingReport { .. } => 0,
+    AlertCondition::DeviceState { .. }
+    | AlertCondition::Threshold { .. }
+    | AlertCondition::RateOfChange { .. } => ALERT_DEBOUNCE_SECS,
+  };
+  (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
+}
+
 /// One alert definition's `Ok`/`Firing` state machine for one pigeon.
 /// Upserts a fresh `alert_state` row on first sight, then applies the
 /// transition table described on `capsules::AlertState`'s doc comment.
 /// Sends at most one email per transition (fired or cleared); staying
 /// `Firing` while still true is intentionally a no-op -- periodic
 /// re-notify is a deferred, off-by-default extension, not implemented
-/// here.
+/// here. How long a true condition waits before firing is
+/// `should_fire_now`'s call, not a fixed window.
 async fn apply_alert_transition(
   client: &Client,
   env: &Env,
@@ -1112,40 +1138,44 @@ async fn apply_alert_transition(
 
   match (status, is_true) {
     (AlertStatus::Ok, true) => {
-      let Some(since) = first_true_at else {
-        // Start of a new "true" episode -- record when it began, don't
-        // fire until it has stayed true across the debounce window.
-        client
-          .execute_typed(
-            "UPDATE alert_state SET first_true_at = $3 WHERE alert_definition_id = $1 AND pigeon_id = $2;",
-            &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT), (&now, Type::TIMESTAMPTZ)],
-          )
-          .await
-          .map_err(|e| {
-            console_error!("Alert state first_true_at write failed: {e}");
-            Error::RustError("Internal Server Error".into())
-          })?;
+      let since = first_true_at.unwrap_or(now);
+      if !should_fire_now(&def.condition, first_true_at, now) {
+        if first_true_at.is_none() {
+          // Start of a new "true" episode -- record when it began, don't
+          // fire until it has stayed true across the debounce window.
+          client
+            .execute_typed(
+              "UPDATE alert_state SET first_true_at = $3 WHERE alert_definition_id = $1 AND pigeon_id = $2;",
+              &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT), (&now, Type::TIMESTAMPTZ)],
+            )
+            .await
+            .map_err(|e| {
+              console_error!("Alert state first_true_at write failed: {e}");
+              Error::RustError("Internal Server Error".into())
+            })?;
+        }
         return Ok(());
-      };
-
-      if (now - since).whole_seconds() >= ALERT_DEBOUNCE_SECS {
-        client
-          .execute_typed(
-            "UPDATE alert_state SET status = 'firing', last_notified_at = $3
-             WHERE alert_definition_id = $1 AND pigeon_id = $2;",
-            &[
-              (&def.id, Type::UUID),
-              (&pigeon_id, Type::TEXT),
-              (&now, Type::TIMESTAMPTZ),
-            ],
-          )
-          .await
-          .map_err(|e| {
-            console_error!("Alert state fire transition failed: {e}");
-            Error::RustError("Internal Server Error".into())
-          })?;
-        send_alert_email(env, client, def, pigeon_id, true, observation, now).await;
       }
+
+      // `first_true_at` is written here too, for the episode that fires on
+      // the same observation that starts it and never stamped one.
+      client
+        .execute_typed(
+          "UPDATE alert_state SET status = 'firing', first_true_at = $3, last_notified_at = $4
+           WHERE alert_definition_id = $1 AND pigeon_id = $2;",
+          &[
+            (&def.id, Type::UUID),
+            (&pigeon_id, Type::TEXT),
+            (&since, Type::TIMESTAMPTZ),
+            (&now, Type::TIMESTAMPTZ),
+          ],
+        )
+        .await
+        .map_err(|e| {
+          console_error!("Alert state fire transition failed: {e}");
+          Error::RustError("Internal Server Error".into())
+        })?;
+      send_alert_email(env, client, def, pigeon_id, true, observation, now).await;
     }
     (AlertStatus::Ok, false) => {
       if first_true_at.is_some() {
@@ -1584,10 +1614,13 @@ async fn post_via_usesend(
 
 #[cfg(test)]
 mod tests {
-  use super::{ResolvedReading, evaluate_ingest_condition, redact_email, transitions_to_apply};
+  use super::{
+    ResolvedReading, evaluate_ingest_condition, redact_email, should_fire_now, transitions_to_apply,
+  };
   use crate::objects::pigeons::PreviousTelemetryValue;
-  use capsules::{AlertCondition, AlertObservation, Comparator};
+  use capsules::{AlertCondition, AlertObservation, Comparator, ConnectionStateKind};
   use std::collections::HashMap;
+  use time::OffsetDateTime;
 
   fn decide(condition: &AlertCondition, reading: &ResolvedReading) -> Option<bool> {
     evaluate_ingest_condition(condition, reading).map(|(is_true, _)| is_true)
@@ -1753,5 +1786,138 @@ mod tests {
   fn redact_email_handles_malformed_input_without_echoing_it() {
     assert_eq!(redact_email("not-an-email"), "***@(unparseable)");
     assert_eq!(redact_email("trailing@"), "***@(unparseable)");
+  }
+
+  fn at(unix_secs: i64) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(unix_secs).expect("timestamp in range")
+  }
+
+  fn missing_report() -> AlertCondition {
+    AlertCondition::MissingReport {
+      max_silence_secs: 1200,
+    }
+  }
+
+  fn device_offline() -> AlertCondition {
+    AlertCondition::DeviceState {
+      state: ConnectionStateKind::Offline,
+      min_duration_secs: None,
+    }
+  }
+
+  #[test]
+  fn missing_report_fires_on_the_observation_that_crosses_its_window() {
+    assert!(should_fire_now(&missing_report(), None, at(1_000)));
+  }
+
+  #[test]
+  fn missing_report_still_fires_when_an_episode_was_already_stamped() {
+    assert!(should_fire_now(
+      &missing_report(),
+      Some(at(1_000)),
+      at(1_300)
+    ));
+  }
+
+  #[test]
+  fn device_state_waits_out_the_fixed_debounce() {
+    assert!(!should_fire_now(&device_offline(), None, at(1_000)));
+    assert!(!should_fire_now(
+      &device_offline(),
+      Some(at(1_000)),
+      at(1_059)
+    ));
+    assert!(should_fire_now(
+      &device_offline(),
+      Some(at(1_000)),
+      at(1_060)
+    ));
+  }
+
+  #[test]
+  fn threshold_and_rate_of_change_keep_the_fixed_debounce() {
+    let threshold = AlertCondition::Threshold {
+      key: "temp".to_string(),
+      comparator: Comparator::Gt,
+      value: 30.0,
+    };
+    let rate = AlertCondition::RateOfChange {
+      key: "temp".to_string(),
+      max_delta: 5.0,
+      window_secs: None,
+    };
+    assert!(!should_fire_now(&threshold, None, at(1_000)));
+    assert!(!should_fire_now(&rate, None, at(1_000)));
+    assert!(should_fire_now(&threshold, Some(at(1_000)), at(1_060)));
+    assert!(should_fire_now(&rate, Some(at(1_000)), at(1_060)));
+  }
+
+  /// Replays the sweep's sampling: at each tick the pigeon's last signal is
+  /// its return if it is back, otherwise its final report before the gap.
+  /// Answers the tick that fires, if any. All times are unix seconds.
+  fn replay(
+    condition: &AlertCondition,
+    window_secs: i64,
+    last_report: i64,
+    returned_at: i64,
+    ticks: &[i64],
+  ) -> Option<i64> {
+    let mut first_true_at: Option<OffsetDateTime> = None;
+    for &tick in ticks {
+      let last_seen = if tick >= returned_at {
+        returned_at
+      } else {
+        last_report
+      };
+      if tick - last_seen < window_secs {
+        first_true_at = None;
+        continue;
+      }
+      if should_fire_now(condition, first_true_at, at(tick)) {
+        return Some(tick);
+      }
+      first_true_at.get_or_insert(at(tick));
+    }
+    None
+  }
+
+  // Sign 1670, 2026-09-02: last report 17:25:08Z, back at 17:49:57Z, ticks
+  // at 17:45:20Z and 17:50:20Z. The board returned 23 s before the deciding
+  // tick, so the two-tick debounce sent nothing.
+  #[test]
+  fn the_incident_gap_now_fires_on_the_tick_that_observes_it() {
+    let ticks = [1_212, 1_512];
+    assert_eq!(
+      replay(&missing_report(), 1_200, 0, 1_489, &ticks),
+      Some(1_212)
+    );
+    // The same gap under a fixed-debounce condition still misses, which is
+    // what the old behavior did to every MissingReport.
+    assert_eq!(replay(&device_offline(), 1_200, 0, 1_489, &ticks), None);
+  }
+
+  // Evaluation is a sample, not a scan of history, so a silence that both
+  // crosses the window and ends between two ticks is still never seen.
+  // Accepted: firing on the first qualifying sample bounds that blind spot
+  // to one sweep period rather than two.
+  #[test]
+  fn a_silence_that_ends_between_ticks_is_still_missed() {
+    assert_eq!(
+      replay(&missing_report(), 1_200, 0, 1_250, &[1_000, 1_300]),
+      None
+    );
+  }
+
+  #[test]
+  fn a_sustained_outage_still_fires_for_both_condition_kinds() {
+    let ticks = [1_200, 1_500, 1_800];
+    assert_eq!(
+      replay(&missing_report(), 1_200, 0, i64::MAX, &ticks),
+      Some(1_200)
+    );
+    assert_eq!(
+      replay(&device_offline(), 1_200, 0, i64::MAX, &ticks),
+      Some(1_500)
+    );
   }
 }
