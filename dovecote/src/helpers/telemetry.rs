@@ -490,3 +490,56 @@ pub async fn ensure_pigeons_telemetry_endpoint_column(client: &Client) -> Result
       worker::Error::RustError("Internal Server Error".into())
     })
 }
+
+/// Idempotently ensures the `pigeons.last_forwarded_at` column exists --
+/// same rationale as `ensure_pigeons_telemetry_endpoint_column` above.
+pub async fn ensure_pigeons_last_forwarded_column(client: &Client) -> Result<()> {
+  client
+    .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;")
+    .await
+    .map_err(|e| {
+      console_error!("pigeons.last_forwarded_at column bootstrap error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })
+}
+
+/// Records that a pigeon was heard from on a report that was forwarded to
+/// its `telemetry_endpoint` instead of stored. Such a report writes no
+/// `pigeon_telemetry_history` row, so this stamp is the only trace it
+/// leaves; without it `resolve_pigeon_last_seen` sees nothing and every
+/// forwarding pigeon reads as permanently silent to the alert evaluator.
+///
+/// Stamped whether or not the forward itself succeeded -- the device was
+/// heard either way, and a customer's unreachable endpoint must not make
+/// their own fleet look offline.
+///
+/// The `WHERE` self-throttles: an already-fresh stamp skips the write, so
+/// a ten-second reporter costs one row write a minute rather than six.
+/// That caps how stale the stamp can be at the same minute, immaterial
+/// against silence windows measured in tens of them. Best-effort and
+/// logged throughout, like every other Postgres sync on this path.
+pub async fn stamp_forwarded_report(env: &Env, pigeon_id: &str) {
+  let client = match get_db_client(env).await {
+    Ok(client) => client,
+    Err(e) => {
+      console_error!("Forwarded last-seen stamp skipped for '{pigeon_id}': {e}");
+      return;
+    }
+  };
+
+  if ensure_pigeons_last_forwarded_column(&client).await.is_err() {
+    return;
+  }
+
+  if let Err(e) = client
+    .execute_typed(
+      "UPDATE pigeons SET last_forwarded_at = now()
+       WHERE id = $1
+         AND (last_forwarded_at IS NULL OR last_forwarded_at < now() - interval '60 seconds');",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+  {
+    console_error!("Forwarded last-seen stamp failed for '{pigeon_id}': {e}");
+  }
+}

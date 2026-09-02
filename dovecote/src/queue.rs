@@ -8,7 +8,7 @@ use crate::helpers::ResolvedReading;
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
   build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
-  post_line_protocol, url_encode_component,
+  post_line_protocol, stamp_forwarded_report, url_encode_component,
 };
 use crate::objects::pigeons::{
   PreviousTelemetryValue, TelemetryEndpointLookup, TelemetryWriteResult,
@@ -374,6 +374,10 @@ async fn store_and_alert(
           pigeon_id
         );
       }
+
+      // A forwarded report leaves no history row, so this stamp is the
+      // only evidence the scheduled evaluator gets that the device spoke.
+      stamp_forwarded_report(env, pigeon_id).await;
     }
     None => {
       if let Err(e) = write_telemetry_default_batch(env, pigeon_id, readings).await {

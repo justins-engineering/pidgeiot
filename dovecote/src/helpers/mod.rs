@@ -118,6 +118,7 @@ pub use telemetry::query_telemetry_history_buckets_for_flock;
 pub use telemetry::query_telemetry_history_buckets_for_pigeon;
 pub use telemetry::query_telemetry_history_for_flock;
 pub use telemetry::query_telemetry_history_for_pigeon;
+pub use telemetry::stamp_forwarded_report;
 pub use telemetry::write_telemetry_history_batch;
 
 mod telemetry_batch;
