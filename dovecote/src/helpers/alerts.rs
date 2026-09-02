@@ -89,7 +89,8 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
         PRIMARY KEY (alert_definition_id, pigeon_id)
       );
       ALTER TABLE alert_definitions ADD COLUMN IF NOT EXISTS notes TEXT;
-      ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;",
+      ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;",
     )
     .await
     .map_err(|e| {
@@ -1031,8 +1032,9 @@ async fn resolve_pigeon_last_seen(
   let row = client
     .query_typed_opt(
       "SELECT s.current_version, s.current_config::text AS current_config,
-              s.updated_at AS shadow_updated_at, t.last_at
+              s.updated_at AS shadow_updated_at, t.last_at, p.last_forwarded_at
        FROM pigeon_shadow s
+       LEFT JOIN pigeons p ON p.id = s.id
        LEFT JOIN (
          SELECT MAX(reported_at) AS last_at
          FROM pigeon_telemetry_history
@@ -1055,6 +1057,9 @@ async fn resolve_pigeon_last_seen(
   let current_config_raw: String = row.get("current_config");
   let shadow_updated_at: i64 = row.get("shadow_updated_at");
   let telemetry_last_at: Option<OffsetDateTime> = row.get("last_at");
+  // A pigeon forwarding to its own `telemetry_endpoint` writes no history,
+  // so this stamp is the only signal its reports leave behind.
+  let last_forwarded_at: Option<OffsetDateTime> = row.get("last_forwarded_at");
 
   let config = JsonString::new(current_config_raw).ok();
 
@@ -1068,7 +1073,11 @@ async fn resolve_pigeon_last_seen(
     .and_then(connection_state::telemetry_interval_secs);
 
   Ok(Some(PigeonLastSeen {
-    last_seen: connection_state::latest_of([shadow_last_seen, telemetry_last_at]),
+    last_seen: connection_state::latest_of([
+      shadow_last_seen,
+      telemetry_last_at,
+      last_forwarded_at,
+    ]),
     interval_secs,
   }))
 }
