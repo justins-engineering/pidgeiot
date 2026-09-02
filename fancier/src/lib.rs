@@ -2,7 +2,7 @@ use crate::components::SetSessionCookie;
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use crate::helpers::session_cookie_valid;
 use crate::models::AuthState;
-use capsules::{AlertDefinition, Flock, OrganizationMembership, Pigeon};
+use capsules::{AlertDefinition, BillingPlan, Flock, OrganizationMembership, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
 use ory_kratos_client_wasm::apis::configuration::Configuration;
@@ -34,6 +34,16 @@ struct Session {
   // being shown instead of the page that was asked for.
   signed_out: Signal<bool>,
 }
+
+/// The paid tier a signed-in visitor picked on the pricing page, carried to
+/// the Organizations page because a plan attaches to an org, never to a
+/// person. A context signal rather than a query param: SSG hydration
+/// restores the prerendered route and drops the query string (see
+/// `helpers::url_query_param`). Only a client-side navigation sets it, so a
+/// full page reload losing it is the intended failure -- the visitor is
+/// then on the Organizations page with the ordinary create flow.
+#[derive(Clone, Copy)]
+struct UpgradeIntent(Signal<Option<BillingPlan>>);
 
 trait Create {
   fn create() -> Configuration;
@@ -266,6 +276,8 @@ pub fn App() -> Element {
 
     session.state.set(AuthState::Unauthenticated);
   });
+
+  use_context_provider(|| UpgradeIntent(Signal::new(None)));
 
   let mut local_session = use_context_provider(|| LocalSession {
     flocks: Signal::new(HashMap::new()),

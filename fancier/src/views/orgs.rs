@@ -3,8 +3,8 @@
 //! `LocalSession.orgs` cache that `api/orgs.rs` keeps current from each
 //! mutation's response.
 
-use crate::{Route, api};
-use capsules::{OrganizationCreateRequest, OrganizationMembership, TaxIdType};
+use crate::{Route, UpgradeIntent, api};
+use capsules::{BillingPlan, OrganizationCreateRequest, OrganizationMembership, TaxIdType};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdTriangleAlert, LdX};
@@ -25,15 +25,41 @@ fn sorted_memberships(
   memberships
 }
 
+/// Why this page opened, for a visitor sent here by a pricing-page
+/// upgrade. Only someone who manages more than one organization arrives
+/// this way -- the plan has to attach to one of them, and the org's own
+/// Billing section is where that choice is made.
+fn upgrade_intent_message(plan: BillingPlan) -> String {
+  const HEAD: &str = "Open the organization you want on the ";
+  const TAIL: &str = " plan and use Upgrade in its Billing section.";
+  let plan = plan.as_str();
+  let mut message = String::with_capacity(HEAD.len() + plan.len() + TAIL.len());
+  message.push_str(HEAD);
+  message.push_str(plan);
+  message.push_str(TAIL);
+  message
+}
+
 #[component]
 pub fn Orgs() -> Element {
   let local_session = use_context::<crate::LocalSession>();
+  let mut upgrade_intent = use_context::<UpgradeIntent>().0;
+  // The notice explains one arrival, so it must not outlive the visit it
+  // was set for: coming back to this page later is not that arrival.
+  use_drop(move || upgrade_intent.set(None));
   let load_failed = (local_session.orgs_load_failed)();
   let orgs = sorted_memberships(&local_session.orgs.read());
 
   rsx! {
     section { id: "orgs",
       div { class: "my-1",
+        // In flow rather than the shared `Alert`: that one is sticky, and
+        // here it would sit on top of the header it pushes down.
+        if let Some(plan) = upgrade_intent() {
+          div { role: "alert", class: "alert alert-info alert-soft mb-6",
+            "{upgrade_intent_message(plan)}"
+          }
+        }
         header { class: "flex flex-col md:flex-row items-center justify-between gap-4 mb-10 grow",
           h1 { class: "text-xl font-bold", "Organizations ({orgs.len()})" }
           button {
@@ -267,6 +293,36 @@ fn CreateOrgModal() -> Element {
       form { class: "modal-backdrop", method: "dialog",
         button { "close" }
       }
+    }
+  }
+}
+
+#[cfg(test)]
+mod upgrade_intent_message_tests {
+  use super::upgrade_intent_message;
+  use capsules::BillingPlan;
+
+  #[test]
+  fn names_the_plan_and_where_to_apply_it() {
+    let message = upgrade_intent_message(BillingPlan::Growth);
+    assert_eq!(
+      message,
+      "Open the organization you want on the growth plan and use Upgrade in its Billing section."
+    );
+  }
+
+  // The capacity is the whole point of building it this way: a resize
+  // would mean the parts were mis-counted.
+  #[test]
+  fn message_is_one_allocation() {
+    for plan in [
+      BillingPlan::Builder,
+      BillingPlan::Growth,
+      BillingPlan::Scale,
+      BillingPlan::Fleet,
+    ] {
+      let message = upgrade_intent_message(plan);
+      assert_eq!(message.len(), message.capacity(), "{plan}");
     }
   }
 }

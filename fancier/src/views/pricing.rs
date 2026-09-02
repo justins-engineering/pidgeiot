@@ -1,11 +1,12 @@
 use super::org::redirect_to;
 use crate::components::ComparisonTables;
 use crate::helpers::pricing_data::View;
-use crate::{Route, Session, api};
-use capsules::BillingPlan;
+use crate::{Route, Session, UpgradeIntent, api};
+use capsules::{BillingPlan, OrganizationCreateRequest, TaxIdType};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdCheck, LdPlay};
+use uuid::Uuid;
 
 /// One rung of the ladder. Every paid tier carries a "planned" badge and a
 /// price note saying it is not billing, because publishing numbers we do not
@@ -86,15 +87,19 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
 /// visitor, and even then only resolves for someone who manages exactly
 /// one org with no live subscription (an entitled org changes plan in the
 /// Billing Portal from its own page instead, since a second Checkout would
-/// create a second subscription). Anyone else lands on the Organizations
-/// page to pick or create the org to bill.
+/// create a second subscription). Someone with nothing to bill yet names
+/// an organization right here; someone managing several is sent to the
+/// Organizations page carrying the picked tier, since which one goes on
+/// the plan is a choice only they can make.
 #[component]
 fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let session = use_context::<Session>();
   let local_session = use_context::<crate::LocalSession>();
+  let mut upgrade_intent = use_context::<UpgradeIntent>().0;
   let nav = use_navigator();
   let mut busy = use_signal(|| false);
   let mut cta_error = use_signal(|| Option::<String>::None);
+  let mut naming_org = use_signal(|| false);
 
   if !(session.state)().is_authenticated() {
     return rsx! {
@@ -117,6 +122,9 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
               .cloned()
               .collect();
           match managed.as_slice() {
+              // Checkout's only missing input is the org to bill, so ask
+              // for it here rather than sending them off to find it.
+              [] => naming_org.set(true),
               [only] => {
                   let org_id = only.organization.id;
                   match api::billing::overview(org_id).await {
@@ -132,6 +140,7 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
                   }
               }
               _ => {
+                  upgrade_intent.set(Some(plan));
                   nav.push(Route::Orgs {});
               }
           }
@@ -145,6 +154,153 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
     }
     if let Some(msg) = cta_error() {
       p { class: "text-error text-xs mt-2", "{msg}" }
+    }
+    if naming_org() {
+      UpgradeOrgCreate { plan, on_close: move |_| naming_org.set(false) }
+    }
+  }
+}
+
+/// The sentence over the org-name field, naming the tier that is waiting on
+/// it so the form cannot be mistaken for an unrelated detour.
+fn name_org_prompt(plan: BillingPlan) -> String {
+  const HEAD: &str = "A plan is billed to an organization, and you don't have one yet. Name it \
+                      and we'll take you straight to ";
+  const TAIL: &str = " checkout.";
+  let plan = plan.as_str();
+  let mut prompt = String::with_capacity(HEAD.len() + plan.len() + TAIL.len());
+  prompt.push_str(HEAD);
+  prompt.push_str(plan);
+  prompt.push_str(TAIL);
+  prompt
+}
+
+/// One field, because the org's name is all checkout is missing -- business
+/// details and tax registration belong to the org's own page, and asking
+/// for them here would put a form between someone and the thing they
+/// already decided to buy.
+///
+/// Rendered from a signal rather than a native `<dialog>` so every open
+/// remounts it empty, same reason as `TokenReveal` in `views/pigeons.rs`.
+#[component]
+fn UpgradeOrgCreate(plan: BillingPlan, on_close: EventHandler<()>) -> Element {
+  let mut busy = use_signal(|| false);
+  let mut error = use_signal(|| Option::<String>::None);
+  // Set once the org exists. Submitting again would create a second one,
+  // so a checkout that fails after the org landed stops offering the
+  // button and points at what it already made.
+  let mut created = use_signal(|| Option::<Uuid>::None);
+
+  rsx! {
+    div {
+      class: "modal modal-open",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "upgrade_org_title",
+      tabindex: "-1",
+      onkeydown: move |e| {
+          if e.key() == Key::Escape {
+              on_close.call(());
+          }
+      },
+      div { class: "modal-box relative max-w-sm",
+        h3 { class: "text-lg font-bold", id: "upgrade_org_title",
+          if created().is_some() {
+            "Organization created"
+          } else {
+            "Name your organization"
+          }
+        }
+        p { class: "py-3 text-sm text-base-content/70",
+          if created().is_some() {
+            "Checkout didn't start, so nothing has been charged. Its Billing section can start one."
+          } else {
+            "{name_org_prompt(plan)}"
+          }
+        }
+
+        // Outside the branch below: a checkout that fails after the org
+        // landed replaces the form, and that is exactly when the reason
+        // matters most.
+        if let Some(msg) = error.read().as_ref() {
+          p { class: "text-error text-xs mb-3", "{msg}" }
+        }
+
+        if let Some(org_id) = created() {
+          Link {
+            class: "btn btn-primary w-full font-bold",
+            to: Route::OrgView { org_id },
+            "Open the organization"
+          }
+        } else {
+          form {
+            onsubmit: move |evt: FormEvent| async move {
+                evt.prevent_default();
+                let mut name = String::new();
+                for (key, val) in evt.values() {
+                    if key == "name"
+                        && let FormValue::Text(val) = val
+                    {
+                        name = val;
+                    }
+                }
+                busy.set(true);
+                error.set(None);
+                let request = OrganizationCreateRequest {
+                    name,
+                    business_name: None,
+                    tax_id: None,
+                    tax_id_type: TaxIdType::None,
+                };
+                match api::orgs::create(&request).await {
+                    Ok(org) => {
+                        match api::billing::checkout(org.id, plan).await {
+                            Ok(url) => redirect_to(&url),
+                            Err(msg) => {
+                                created.set(Some(org.id));
+                                error.set(Some(msg));
+                            }
+                        }
+                    }
+                    Err(msg) => error.set(Some(msg)),
+                }
+                busy.set(false);
+            },
+            label { class: "input w-full focus:outline-0",
+              input {
+                class: "grow focus:outline-0",
+                name: "name",
+                placeholder: "e.g. Pioneer Valley Transit Authority",
+                r#type: "text",
+                required: true,
+                // Focus lands on the field, not the dialog: Escape still
+                // reaches the container by bubbling.
+                onmounted: move |e| async move {
+                    let _ = e.set_focus(true).await;
+                },
+              }
+            }
+            div { class: "mt-5 flex items-center justify-end gap-3",
+              button {
+                class: "btn btn-ghost",
+                r#type: "button",
+                onclick: move |_| on_close.call(()),
+                "Cancel"
+              }
+              button {
+                class: "btn btn-primary font-bold",
+                r#type: "submit",
+                disabled: busy(),
+                if busy() {
+                  span { class: "loading loading-spinner loading-sm" }
+                } else {
+                  "Continue to checkout"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -413,6 +569,35 @@ pub fn PricingPage() -> Element {
           }
         }
       }
+    }
+  }
+}
+
+#[cfg(test)]
+mod name_org_prompt_tests {
+  use super::name_org_prompt;
+  use capsules::BillingPlan;
+
+  #[test]
+  fn names_the_plan_checkout_is_waiting_on() {
+    assert_eq!(
+      name_org_prompt(BillingPlan::Builder),
+      "A plan is billed to an organization, and you don't have one yet. Name it and we'll take \
+       you straight to builder checkout."
+    );
+  }
+
+  // A resize would mean the parts were mis-counted.
+  #[test]
+  fn prompt_is_one_allocation() {
+    for plan in [
+      BillingPlan::Builder,
+      BillingPlan::Growth,
+      BillingPlan::Scale,
+      BillingPlan::Fleet,
+    ] {
+      let prompt = name_org_prompt(plan);
+      assert_eq!(prompt.len(), prompt.capacity(), "{plan}");
     }
   }
 }
