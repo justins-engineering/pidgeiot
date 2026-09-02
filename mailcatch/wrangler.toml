@@ -1,5 +1,5 @@
 name = "mailcatch"
-compatibility_date = "2026-08-31"
+compatibility_date = "2026-09-02"
 main = "src/index.mjs"
 
 # No custom domain and no workers.dev alias: the HTTP read surface is for
