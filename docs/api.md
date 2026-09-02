@@ -1940,9 +1940,13 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`).
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
-  this long.
+  this long. A state has to survive a 60-second debounce before it fires, which in practice means
+  two consecutive sweeps.
 - `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
-  this long.
+  this long. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
+  the window crossed — an outage is reported within one sweep period of the window elapsing, not
+  two. Evaluation is a sample rather than a scan of history, so a silence that both crosses the
+  window and ends between two sweeps is not reported at all.
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window.
 
