@@ -373,6 +373,7 @@ impl DurableObject for Pigeons {
       "/pigeon/demo/telemetry" => get_telemetry_latest_demo(self, req).await,
       "/pigeon/telemetry-endpoint/update" => update_telemetry_endpoint(self, req).await,
       "/pigeon/authz/check" => check_authorized(self, req).await,
+      "/pigeon/authz/owner" => check_owner(self, req).await,
       "/pigeon/device/logs" => report_logs_device(self, req).await,
       "/pigeon/logs/get" => get_logs(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
@@ -1201,7 +1202,7 @@ async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
 
 /// Holds this pigeon out of every alert evaluation, or releases it. This
 /// row is what the dashboard's badge reads; the Postgres mirror the gateway
-/// syncs afterwards is what the alert evaluator reads. Nothing the device
+/// keeps in step is what the alert evaluator reads. Nothing the device
 /// sees changes: it keeps reporting and is billed as usual. A repeated
 /// suspend keeps the first stamp, so the toggle is a safe retry.
 async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
@@ -2310,6 +2311,13 @@ async fn read_telemetry_endpoint_device(pigeons: &Pigeons, _req: Request) -> Res
 /// in this pigeon's local `pigeon_acl` table.
 async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
+  Response::ok("authorized")
+}
+
+/// Owner-level sibling of `check_authorized`, for a gateway write that has
+/// to land in Postgres before this DO is asked for the matching change.
+async fn check_owner(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
   Response::ok("authorized")
 }
 

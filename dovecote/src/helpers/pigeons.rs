@@ -539,19 +539,19 @@ pub async fn update_telemetry_endpoint_pg_db(
   Ok(())
 }
 
-/// PG sync for `PUT /pigeons/:pigeon_id/suspension`, single-column like
-/// `update_telemetry_endpoint_pg_db`. Unlike the other mirrors this write
-/// is load-bearing: both alert paths (`helpers/alerts.rs`) read the
-/// Postgres column, so a failed sync leaves alerts evaluating a pigeon the
-/// dashboard shows as suspended. The stamp is the DO's own, read back from
-/// its row, rather than a second `now()`. The general update routes never
-/// touch this column, so they cannot blank it.
+/// PG write for `PUT /pigeons/:pigeon_id/suspension`, single-column like
+/// `update_telemetry_endpoint_pg_db`. Unlike the other mirrors this one is
+/// load-bearing: both alert paths (`helpers/alerts.rs`) read the Postgres
+/// column, so the route fails the request when this fails instead of
+/// logging on. The stamp is the DO's own, read back from its row, rather
+/// than a second `now()`. The general update routes never touch this
+/// column, so they cannot blank it.
 pub async fn update_pigeon_suspension_pg_db(
-  client: Client,
+  client: &Client,
   pigeon_id: &str,
   suspended_at: Option<OffsetDateTime>,
 ) -> worker::Result<()> {
-  ensure_pigeons_suspended_column(&client).await?;
+  ensure_pigeons_suspended_column(client).await?;
 
   client
     .execute_typed(
