@@ -24,13 +24,13 @@ use crate::helpers::{
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
   raise_message_allowance_floor, readings_from_body, record_consent_event, remove_member,
-  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
-  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
-  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
-  update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
-  write_business_details,
+  reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
+  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state,
+  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
+  update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
+  verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -1860,8 +1860,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // The alert evaluator reads the Postgres copy, so this mirror is what
       // makes the hold take effect; a failed sync is logged and the toggle
       // is a safe retry, since every statement involved is idempotent.
+      // Only a suspend clears alert state: a resume starts a fresh episode.
       match get_db_client(&ctx.env).await {
         Ok(client) => {
+          if pigeon.suspended_at.is_some()
+            && let Err(e) = reset_pigeon_alert_state(&client, &pigeon.id).await
+          {
+            console_error!("Alert state reset failed for suspended pigeon {}: {e}", pigeon.id);
+          }
           if let Err(e) =
             update_pigeon_suspension_pg_db(client, &pigeon.id, pigeon.suspended_at).await
           {

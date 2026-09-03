@@ -220,4 +220,5 @@ pub use alerts::list_flock_alert_state;
 pub use alerts::list_flock_alerts;
 pub use alerts::list_pigeon_alert_state;
 pub use alerts::list_pigeon_alerts;
+pub use alerts::reset_pigeon_alert_state;
 pub use alerts::update_alert_definition;
