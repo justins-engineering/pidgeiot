@@ -1274,10 +1274,23 @@ log uploads and the WebSocket channel are all accepted as before), it is billed 
 it reports, the shadow still pushes config to it, and it still counts against the device cap.
 Suspension is an alerting hold, not a billing pause or a deprovisioning.
 
+Two copies, one answer: the dashboard (this response, the badge, every pigeon read) shows the
+pigeon's own Durable Object row, while both alert paths read the Postgres mirror, so the hold is
+in effect only once the mirror is written. The route answers 200 only when every write behind
+the toggle landed, and 500 with a message naming the action to repeat when one did not; every
+statement is idempotent, so repeating the same request completes it. The writes are ordered so
+that the only half-applied state a failure can leave is a pigeon shown as `Suspended` whose
+alerts still evaluate it: a suspend stamps the Durable Object first and mirrors after, a resume
+clears the mirror first and the Durable Object after. That split is visible (the dashboard says
+suspended, alert mail says otherwise) and the repeated toggle converges it; the opposite split,
+a pigeon shown as live that no alert watches, cannot come out of this route.
+
 Propagation: the ingest-time definition lookup is a Hyperdrive-cached read, so a report
-arriving within about a minute of a toggle can still be evaluated the old way; the sweep reads
-fresh. The dashboard's connection badge shows `Suspended` in place of the online/stale/offline
-classification.
+arriving within about a minute of a toggle can still be evaluated the old way; after a suspend
+that means a `Threshold`/`RateOfChange`/`DeviceState` condition still true can restart its
+episode against the reset state and send one more "firing" mail before the hold takes effect.
+The sweep, which decides `MissingReport`, reads fresh. The dashboard's connection badge shows
+`Suspended` in place of the online/stale/offline classification.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/suspension \
