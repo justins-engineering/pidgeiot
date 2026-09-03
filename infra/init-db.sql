@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- hours rather than once per message. Deliberately NOT the DO-owned
   -- updated_at, which also bumps on dashboard writes.
   last_billable_activity TIMESTAMPTZ,
+  -- Operator's hold on alert evaluation: while set, every alert definition
+  -- skips this pigeon on ingest and in the sweep, without pausing a
+  -- flock-scoped definition for the flock's other pigeons. Mirrors the
+  -- DO's own column (that copy is what the dashboard reads; this one is
+  -- what dovecote's helpers/alerts.rs reads). The device keeps reporting
+  -- and billing is unchanged.
+  suspended_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -85,6 +92,7 @@ CREATE TABLE IF NOT EXISTS pigeons (
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons

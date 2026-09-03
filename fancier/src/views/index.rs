@@ -39,7 +39,11 @@ struct MockFlock {
 
 impl MockFlock {
   fn pigeons(&self) -> usize {
-    self.stats.online + self.stats.stale + self.stats.offline + self.stats.unknown
+    self.stats.online
+      + self.stats.stale
+      + self.stats.offline
+      + self.stats.unknown
+      + self.stats.suspended
   }
 }
 
@@ -51,6 +55,7 @@ const FLOCKS: [MockFlock; 4] = [
       stale: 0,
       offline: 1,
       unknown: 0,
+      suspended: 0,
     },
   },
   MockFlock {
@@ -60,6 +65,7 @@ const FLOCKS: [MockFlock; 4] = [
       stale: 2,
       offline: 0,
       unknown: 0,
+      suspended: 0,
     },
   },
   MockFlock {
@@ -69,6 +75,7 @@ const FLOCKS: [MockFlock; 4] = [
       stale: 0,
       offline: 0,
       unknown: 0,
+      suspended: 0,
     },
   },
   MockFlock {
@@ -78,6 +85,7 @@ const FLOCKS: [MockFlock; 4] = [
       stale: 0,
       offline: 0,
       unknown: 2,
+      suspended: 0,
     },
   },
 ];

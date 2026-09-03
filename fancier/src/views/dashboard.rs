@@ -135,13 +135,14 @@ pub fn Dashboard() -> Element {
   let mut stale = 0usize;
   let mut offline = 0usize;
   let mut unknown = 0usize;
+  let mut suspended = 0usize;
   let mut per_flock: HashMap<Uuid, FlockConnStats> = HashMap::new();
 
   let mut classified: Vec<(Pigeon, ConnectionState, Option<OffsetDateTime>)> = scoped_pigeons
     .iter()
     .map(|pigeon| {
       let last = seen.get(&pigeon.id).copied();
-      let state = connection_state::classify(last, None, now);
+      let state = connection_state::classify(pigeon.suspended_at.is_some(), last, None, now);
       let bucket = per_flock.entry(pigeon.flock_id).or_default();
       match state {
         ConnectionState::Online => {
@@ -160,6 +161,10 @@ pub fn Dashboard() -> Element {
           unknown += 1;
           bucket.unknown += 1;
         }
+        ConnectionState::Suspended => {
+          suspended += 1;
+          bucket.suspended += 1;
+        }
       }
       (pigeon.clone(), state, last)
     })
@@ -168,12 +173,14 @@ pub fn Dashboard() -> Element {
 
   // Worst-first: a fleet dashboard's job is triage, so problem devices
   // float to the top of the (capped) grid rather than sorting
-  // alphabetically or by recency.
+  // alphabetically or by recency. A held pigeon sits above the healthy
+  // ones so a forgotten hold still gets seen.
   classified.sort_by_key(|(_, state, _)| match state {
     ConnectionState::Offline => 0,
     ConnectionState::Stale => 1,
     ConnectionState::Unknown => 2,
-    ConnectionState::Online => 3,
+    ConnectionState::Suspended => 3,
+    ConnectionState::Online => 4,
   });
 
   let needs_attention = stale + offline;
@@ -281,6 +288,10 @@ pub fn Dashboard() -> Element {
                     class: "h-full bg-base-content/20",
                     style: "width: {pct(unknown)}%",
                   }
+                  div {
+                    class: "h-full bg-base-content/10",
+                    style: "width: {pct(suspended)}%",
+                  }
                 }
                 div { class: "flex flex-wrap gap-x-6 gap-y-2 mt-4 text-sm",
                   div { class: "flex items-center gap-2",
@@ -302,6 +313,13 @@ pub fn Dashboard() -> Element {
                     span { class: "status" }
                     "Unknown "
                     span { class: "font-semibold", "{unknown}" }
+                  }
+                  if suspended > 0 {
+                    div { class: "flex items-center gap-2",
+                      span { class: "status" }
+                      "Suspended "
+                      span { class: "font-semibold", "{suspended}" }
+                    }
                   }
                 }
               }
@@ -462,20 +480,22 @@ fn NoFlocksState() -> Element {
 /// Per-flock rollup of the same classification the main fleet grid computes,
 /// used by the sidebar's `FlockNavItem` and by the landing page's depiction
 /// of this dashboard (`views::index`) -- kept separate from the fleet-wide
-/// `online`/`stale`/`offline`/`unknown` counters above since a glance at one
-/// flock's health shouldn't require re-deriving it from the full pigeon
-/// list.
+/// `online`/`stale`/`offline`/`unknown`/`suspended` counters above since a
+/// glance at one flock's health shouldn't require re-deriving it from the
+/// full pigeon list.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct FlockConnStats {
   pub(crate) online: usize,
   pub(crate) stale: usize,
   pub(crate) offline: usize,
   pub(crate) unknown: usize,
+  pub(crate) suspended: usize,
 }
 
 /// Picks the single most-informative status to show next to a flock in the
 /// sidebar: worst state present wins (offline, then stale, then unknown),
-/// falling back to an online count only once nothing worse is present.
+/// falling back to an online count only once nothing worse is present, and
+/// to a suspended count only for a flock with nothing else to say.
 /// Returns `None` when nothing has been classified for this flock yet (no
 /// pigeons, or the fleet-wide fetch hasn't resolved) so the caller can omit
 /// the indicator entirely rather than assert a state with no data behind
@@ -489,6 +509,8 @@ pub(crate) fn flock_status_summary(stats: FlockConnStats) -> Option<(&'static st
     Some(("status-success", format!("{} online", stats.online)))
   } else if stats.unknown > 0 {
     Some(("status", format!("{} unknown", stats.unknown)))
+  } else if stats.suspended > 0 {
+    Some(("status", format!("{} suspended", stats.suspended)))
   } else {
     None
   }
@@ -526,7 +548,9 @@ pub(crate) fn device_card_theme(state: ConnectionState) -> &'static str {
   match state {
     ConnectionState::Offline => "border-error/30 bg-error/5",
     ConnectionState::Stale => "border-warning/30 bg-warning/5",
-    ConnectionState::Unknown => "border-base-content/10 bg-base-200/40",
+    ConnectionState::Unknown | ConnectionState::Suspended => {
+      "border-base-content/10 bg-base-200/40"
+    }
     ConnectionState::Online => "border-base-content/10",
   }
 }
@@ -582,6 +606,7 @@ mod flock_status_summary_tests {
       stale: 1,
       offline: 1,
       unknown: 1,
+      suspended: 0,
     };
     let (class, label) = flock_status_summary(stats).unwrap();
     assert_eq!(class, "status-error");
@@ -595,6 +620,7 @@ mod flock_status_summary_tests {
       stale: 2,
       offline: 0,
       unknown: 1,
+      suspended: 0,
     };
     let (class, label) = flock_status_summary(stats).unwrap();
     assert_eq!(class, "status-warning");
@@ -608,6 +634,7 @@ mod flock_status_summary_tests {
       stale: 0,
       offline: 0,
       unknown: 0,
+      suspended: 0,
     };
     let (class, label) = flock_status_summary(stats).unwrap();
     assert_eq!(class, "status-success");
@@ -621,10 +648,29 @@ mod flock_status_summary_tests {
       stale: 0,
       offline: 0,
       unknown: 2,
+      suspended: 0,
     };
     let (class, label) = flock_status_summary(stats).unwrap();
     assert_eq!(class, "status");
     assert_eq!(label, "2 unknown");
+  }
+
+  #[test]
+  fn suspended_only_when_nothing_else_present() {
+    let stats = FlockConnStats {
+      suspended: 3,
+      ..FlockConnStats::default()
+    };
+    let (class, label) = flock_status_summary(stats).unwrap();
+    assert_eq!(class, "status");
+    assert_eq!(label, "3 suspended");
+
+    let stats = FlockConnStats {
+      unknown: 1,
+      suspended: 3,
+      ..FlockConnStats::default()
+    };
+    assert_eq!(flock_status_summary(stats).unwrap().1, "1 unknown");
   }
 
   #[test]

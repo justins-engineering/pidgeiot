@@ -87,6 +87,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 &pd.shadow.current_config,
             );
             let conn_state: ConnectionState = connection_state::classify(
+                pd.pigeon.suspended_at.is_some(),
                 last_seen,
                 interval_secs,
                 time::OffsetDateTime::now_utc(),
@@ -139,6 +140,17 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   MoveFlockControl {
                     pigeon_id: pigeon_id.clone(),
                     current_flock: pd.pigeon.flock_id,
+                  }
+                }
+                section { id: "pigeon-suspension",
+                  SuspendControl {
+                    pigeon_id: pigeon_id.clone(),
+                    suspended_at: pd.pigeon.suspended_at,
+                    on_changed: move |pigeon: Pigeon| {
+                        if let Some(detail) = pigeon_detail.write().as_mut() {
+                            detail.pigeon = pigeon;
+                        }
+                    },
                   }
                 }
                 section { id: "connectorInfo",
@@ -924,6 +936,90 @@ fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
         "Moves this pigeon into "
         strong { "{name}" }
         ". Its credentials and endpoint are unchanged, and the device carries on as it is."
+      }
+    }
+  }
+}
+
+/// Holds this pigeon out of every alert evaluation, or releases it. Both
+/// directions confirm: a suspend silences a firing alert with no resolved
+/// mail, and a resume of a still-silent pigeon fires on the next sweep, which
+/// reads as a fresh incident to whoever gets the mail.
+#[component]
+fn SuspendControl(
+  pigeon_id: String,
+  suspended_at: Option<time::OffsetDateTime>,
+  on_changed: EventHandler<Pigeon>,
+) -> Element {
+  let mut confirming = use_signal(|| false);
+  let mut error = use_signal(|| Option::<String>::None);
+  let suspended = suspended_at.is_some();
+  let (title, confirm_label) = if suspended {
+    ("Resume Pigeon", "Resume")
+  } else {
+    ("Suspend Pigeon", "Suspend")
+  };
+
+  let time_format = time::macros::format_description!(
+    "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
+  );
+  let since = suspended_at.map(|t| {
+    t.format(&time_format)
+      .unwrap_or_else(|_| "Invalid Format".to_string())
+  });
+
+  rsx! {
+    div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+        h2 { class: "text-3xl font-bold", "Suspension" }
+        button {
+          class: "btn btn-secondary md:min-w-36",
+          onclick: move |_| confirming.set(true),
+          if suspended {
+            "Resume"
+          } else {
+            "Suspend"
+          }
+        }
+      }
+      p { class: "text-sm text-base-content/70 md:px-4",
+        "A suspended pigeon is left out of every alert while its device keeps reporting. "
+        "Resuming one that is still silent fires its missing-report alert on the next sweep."
+      }
+      if let Some(since) = since {
+        p { class: "text-sm md:px-4",
+          "Suspended since "
+          span { class: "font-mono", "{since}" }
+        }
+      }
+      if let Some(message) = error.read().as_ref() {
+        p { class: "text-error text-sm", "⚠️ {message}" }
+      }
+    }
+    if confirming() {
+      ConfirmModal {
+        id: "pigeon_suspension_title",
+        title,
+        confirm_label,
+        on_close: move |_| confirming.set(false),
+        on_confirm: move |_| {
+            let pigeon_id = pigeon_id.clone();
+            confirming.set(false);
+            spawn(async move {
+                error.set(None);
+                match api::pigeons::set_suspension(&pigeon_id, !suspended).await {
+                    Ok(pigeon) => on_changed.call(pigeon),
+                    Err(message) => error.set(Some(message)),
+                }
+            });
+        },
+        if suspended {
+          "Alerts evaluate this pigeon again from the next sweep. "
+          "If it is still silent, its missing-report alert fires then."
+        } else {
+          "Every alert skips this pigeon until it is resumed, and one firing for it now "
+          "stops without a resolved mail. The device keeps reporting."
+        }
       }
     }
   }

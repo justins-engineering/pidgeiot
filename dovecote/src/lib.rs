@@ -24,10 +24,11 @@ use crate::helpers::{
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
   raise_message_allowance_floor, readings_from_body, record_consent_event, remove_member,
-  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
-  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
-  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
+  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state,
+  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
+  update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
   verify_webhook_signature, webhook_action, write_business_details,
 };
@@ -39,9 +40,9 @@ use capsules::{
   OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonShadow, TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint,
-  TelemetryHistoryBucket, TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label,
-  valid_scope_key,
+  PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
+  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use futures::future::join_all;
 use worker::{
@@ -183,6 +184,12 @@ async fn api_catalog(req: Request, ctx: RouteContext<()>) -> worker::Result<Resp
 /// `include_str!` matches how fancier already reads `docs/api.md` and
 /// dovecote's own license inventory.
 const SECURITY_TXT: &str = include_str!("../../fancier/public/.well-known/security.txt");
+
+/// Answer for a suspend whose Durable Object row was stamped but whose
+/// Postgres side was not: the dashboard already shows the hold, alerts do
+/// not honor it yet, and repeating the request completes it.
+const SUSPEND_UNAPPLIED: &str =
+  "The pigeon is marked suspended but alerts still evaluate it; suspend it again";
 
 /// `/.well-known/security.txt` handler, shared by the GET and HEAD
 /// registrations below. Unauthenticated by design: the document is public
@@ -1836,6 +1843,100 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
         console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+      }
+
+      Response::from_json(&pigeon)?.with_cors(&cors)
+    })
+    .put_async("/pigeons/:pigeon_id/suspension", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      // Peek the direction without consuming the body the DO's own handler
+      // parses below.
+      let Ok(mut peek_req) = req.clone() else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(payload) = peek_req.json::<PigeonSuspensionRequest>().await else {
+        return Response::error("Bad Request: Invalid JSON", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+      get_db!(ctx.env, client, &cors);
+
+      // The dashboard reads the DO's row and the alert evaluator reads the
+      // Postgres copy, so the order of the two writes decides how a
+      // half-applied toggle fails. Each direction is ordered so the only
+      // reachable split is a DO row that says suspended while Postgres
+      // still evaluates: a hold the dashboard shows and alert mail
+      // contradicts, which is what prompts the retry that converges it.
+      // A resume therefore clears Postgres first, behind the DO's owner
+      // check since the ACL lives only there; a suspend stamps the DO
+      // first and mirrors after.
+      if !payload.suspended {
+        let Ok(probe_req) = req.clone() else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let probe = proxy_to_pigeon_do(
+          probe_req,
+          &principal.user_id,
+          principal.org_roles_header(),
+          &obj_id,
+          "/authz/owner",
+        )
+        .await?;
+        if probe.status_code() >= 400 {
+          return probe.with_cors(&cors);
+        }
+        if let Err(e) = update_pigeon_suspension_pg_db(&client, &pigeon_id, None).await {
+          console_error!("Alert hold not released for pigeon {pigeon_id}: {e}");
+          return Response::error("Alert hold not released; resume again", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+      }
+
+      let do_response = proxy_to_pigeon_do(
+        req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        "/suspension",
+      )
+      .await?;
+      if do_response.status_code() >= 400 {
+        return do_response.with_cors(&cors);
+      }
+
+      let pigeon = parse_do_response::<Pigeon>(do_response).await?;
+
+      // The mirror lands before the state reset, so a failure between the
+      // two leaves a still-firing row (a no-op on its next evaluation)
+      // rather than a re-armed one.
+      if payload.suspended {
+        if let Err(e) =
+          update_pigeon_suspension_pg_db(&client, &pigeon.id, pigeon.suspended_at).await
+        {
+          console_error!("Alert hold not applied for pigeon {}: {e}", pigeon.id);
+          return Response::error(SUSPEND_UNAPPLIED, 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        if let Err(e) = reset_pigeon_alert_state(&client, &pigeon.id).await {
+          console_error!("Alert state reset failed for suspended pigeon {}: {e}", pigeon.id);
+          return Response::error(SUSPEND_UNAPPLIED, 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
       }
 
       Response::from_json(&pigeon)?.with_cors(&cors)

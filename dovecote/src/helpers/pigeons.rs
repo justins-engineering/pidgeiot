@@ -1,4 +1,5 @@
 use capsules::{Connector, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
+use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
 
@@ -325,6 +326,19 @@ pub async fn ensure_pigeons_board_column(client: &Client) -> worker::Result<()> 
     })
 }
 
+/// Idempotently ensures the `pigeons.suspended_at` column exists on the
+/// Postgres mirror table -- same no-migration-runner rationale as
+/// `ensure_pigeons_board_column` above.
+pub async fn ensure_pigeons_suspended_column(client: &Client) -> worker::Result<()> {
+  client
+    .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;")
+    .await
+    .map_err(|e| {
+      console_error!("pigeons.suspended_at column bootstrap error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })
+}
+
 pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
   ensure_pigeons_board_column(&client).await?;
 
@@ -519,6 +533,34 @@ pub async fn update_telemetry_endpoint_pg_db(
     .await
     .map_err(|e| {
       console_error!("Postgres telemetry_endpoint update sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
+}
+
+/// PG write for `PUT /pigeons/:pigeon_id/suspension`, single-column like
+/// `update_telemetry_endpoint_pg_db`. Unlike the other mirrors this one is
+/// load-bearing: both alert paths (`helpers/alerts.rs`) read the Postgres
+/// column, so the route fails the request when this fails instead of
+/// logging on. The stamp is the DO's own, read back from its row, rather
+/// than a second `now()`. The general update routes never touch this
+/// column, so they cannot blank it.
+pub async fn update_pigeon_suspension_pg_db(
+  client: &Client,
+  pigeon_id: &str,
+  suspended_at: Option<OffsetDateTime>,
+) -> worker::Result<()> {
+  ensure_pigeons_suspended_column(client).await?;
+
+  client
+    .execute_typed(
+      "UPDATE pigeons SET suspended_at = $2 WHERE id = $1;",
+      &[(&pigeon_id, Type::TEXT), (&suspended_at, Type::TIMESTAMPTZ)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres suspended_at update sync error: {e}");
       worker::Error::RustError("Internal Server Error".into())
     })?;
 

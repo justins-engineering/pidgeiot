@@ -317,6 +317,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                       {
                           let last_seen = last_seen_by_pigeon.read().get(&id).copied();
                           let state = connection_state::classify(
+                              pigeon.suspended_at.is_some(),
                               last_seen,
                               None,
                               time::OffsetDateTime::now_utc(),

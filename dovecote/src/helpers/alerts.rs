@@ -90,7 +90,8 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
       );
       ALTER TABLE alert_definitions ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
-      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;",
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;",
     )
     .await
     .map_err(|e| {
@@ -681,6 +682,10 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// than the earliest reading that satisfied the debounce. Nothing reads
 /// that column to decide whether to notify (there is no re-notify), so it
 /// costs an approximate timestamp and saves the round trips.
+///
+/// A suspended pigeon (`pigeons.suspended_at` set) matches no definition
+/// here, which covers every ingress path in one place since all three call
+/// this function.
 pub async fn check_telemetry_alerts_batch(
   env: &Env,
   pigeon_id: &str,
@@ -703,6 +708,7 @@ pub async fn check_telemetry_alerts_batch(
          FROM alert_definitions ad
          LEFT JOIN pigeons p ON p.id = $1
          WHERE ad.enabled = true
+           AND p.suspended_at IS NULL
            AND (ad.pigeon_id = $1 OR (ad.flock_id IS NOT NULL AND ad.flock_id = p.flock_id));"
       ),
       &[(&pigeon_id, Type::TEXT)],
@@ -906,6 +912,8 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
 
     for pigeon_id in pigeon_ids {
       let seen = match resolve_pigeon_last_seen(&client, &pigeon_id).await {
+        // An operator's hold: nothing is decided, so nothing fires or clears.
+        Ok(Some(seen)) if seen.suspended => continue,
         Ok(Some(seen)) => seen,
         // No pigeon_shadow row -- e.g. the pigeon was deleted between the
         // scope resolution above and this lookup. Nothing to evaluate.
@@ -984,13 +992,16 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
 /// (`create_flock_alert`/`create_pigeon_alert`, both take an
 /// already-checked `FlockAccess`/`PigeonAccess`), so re-deriving ownership
 /// here would just re-answer a question already settled at creation time.
+/// Suspended pigeons are left out of the flock list so the sweep spends no
+/// round trip on them; a pigeon-scoped definition on one is skipped on its
+/// `PigeonLastSeen` instead.
 async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result<Vec<String>> {
   match scope {
     AlertScope::Pigeon(pigeon_id) => Ok(vec![pigeon_id.clone()]),
     AlertScope::Flock(flock_id) => {
       let rows = client
         .query_typed(
-          "SELECT id FROM pigeons WHERE flock_id = $1;",
+          "SELECT id FROM pigeons WHERE flock_id = $1 AND suspended_at IS NULL;",
           &[(flock_id, Type::UUID)],
         )
         .await
@@ -1012,6 +1023,8 @@ async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result
 struct PigeonLastSeen {
   last_seen: Option<OffsetDateTime>,
   interval_secs: Option<i64>,
+  /// An operator holds this pigeon out of evaluation (`pigeons.suspended_at`).
+  suspended: bool,
 }
 
 /// Resolves one pigeon's shadow + telemetry-history state in a single
@@ -1032,7 +1045,8 @@ async fn resolve_pigeon_last_seen(
   let row = client
     .query_typed_opt(
       "SELECT s.current_version, s.current_config::text AS current_config,
-              s.updated_at AS shadow_updated_at, t.last_at, p.last_forwarded_at
+              s.updated_at AS shadow_updated_at, t.last_at, p.last_forwarded_at,
+              p.suspended_at
        FROM pigeon_shadow s
        LEFT JOIN pigeons p ON p.id = s.id
        LEFT JOIN (
@@ -1060,6 +1074,7 @@ async fn resolve_pigeon_last_seen(
   // A pigeon forwarding to its own `telemetry_endpoint` writes no history,
   // so this stamp is the only signal its reports leave behind.
   let last_forwarded_at: Option<OffsetDateTime> = row.get("last_forwarded_at");
+  let suspended_at: Option<OffsetDateTime> = row.get("suspended_at");
 
   let config = JsonString::new(current_config_raw).ok();
 
@@ -1079,7 +1094,30 @@ async fn resolve_pigeon_last_seen(
       last_forwarded_at,
     ]),
     interval_secs,
+    suspended: suspended_at.is_some(),
   }))
+}
+
+/// Puts every `alert_state` row for one pigeon back to `ok` with no
+/// transition: suspending is an operator's decision, not a recovery, so no
+/// email goes out and `last_notified_at` keeps recording the last mail that
+/// was actually sent. The first evaluation after resume starts a fresh
+/// episode, so a condition still true then fires again with a new mail.
+pub async fn reset_pigeon_alert_state(client: &Client, pigeon_id: &str) -> Result<()> {
+  ensure_alert_tables(client).await?;
+
+  client
+    .execute_typed(
+      "UPDATE alert_state SET status = 'ok', first_true_at = NULL WHERE pigeon_id = $1;",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Alert state reset failed for pigeon {pigeon_id}: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  Ok(())
 }
 
 /// Whether a condition that is currently true should fire on this
