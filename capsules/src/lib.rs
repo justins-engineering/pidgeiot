@@ -190,6 +190,9 @@ pub struct PigeonRow {
   // tags it -- see `objects/pigeons.rs::check_firmware_board_compat` in
   // dovecote for where this is enforced against a firmware image's board.
   pub board: Option<String>,
+  // Unix seconds while an operator holds this pigeon out of alert
+  // evaluation, NULL while live.
+  pub suspended_at: Option<f64>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -211,6 +214,9 @@ impl From<PigeonRow> for Pigeon {
         .telemetry_endpoint
         .and_then(|s| serde_json::from_str(&s).ok()),
       board: row.board,
+      suspended_at: row
+        .suspended_at
+        .and_then(|t| OffsetDateTime::from_unix_timestamp(t as i64).ok()),
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -234,6 +240,14 @@ pub struct Pigeon {
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub board: Option<String>,
+  /// Set while an operator holds this pigeon out of every alert evaluation;
+  /// the device keeps reporting. Absent while live.
+  #[serde(
+    default,
+    with = "time::serde::rfc3339::option",
+    skip_serializing_if = "Option::is_none"
+  )]
+  pub suspended_at: Option<OffsetDateTime>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -252,6 +266,7 @@ impl Default for Pigeon {
       token_expires_at: OffsetDateTime::UNIX_EPOCH,
       telemetry_endpoint: None,
       board: None,
+      suspended_at: None,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -327,6 +342,14 @@ pub struct PigeonUpdateRequest {
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct PigeonFlockUpdateRequest {
   pub flock_id: Uuid,
+}
+
+/// Body of `PUT /pigeons/:pigeon_id/suspension`. `true` holds the pigeon
+/// out of every alert evaluation (idempotent: an already-suspended pigeon
+/// keeps its first stamp), `false` releases it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct PigeonSuspensionRequest {
+  pub suspended: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -748,6 +771,42 @@ mod pigeon_update_request_tests {
 
     assert_eq!(request.name.as_deref(), Some("renamed"));
     assert!(!round_tripped.contains("connector"));
+  }
+}
+
+#[cfg(test)]
+mod pigeon_suspension_tests {
+  use super::*;
+
+  #[test]
+  fn the_request_round_trips() {
+    let request = serde_json::from_str::<PigeonSuspensionRequest>(r#"{"suspended":true}"#).unwrap();
+    assert!(request.suspended);
+    assert_eq!(
+      serde_json::to_string(&request).unwrap(),
+      r#"{"suspended":true}"#
+    );
+  }
+
+  #[test]
+  fn a_pigeon_without_the_key_is_live() {
+    // What a dovecote deployed before the column answers with, and what
+    // every cached row looks like: the key is omitted, not null.
+    let json = serde_json::to_string(&Pigeon::default()).unwrap();
+    assert!(!json.contains("suspended_at"));
+    let pigeon = serde_json::from_str::<Pigeon>(&json).unwrap();
+    assert_eq!(pigeon.suspended_at, None);
+  }
+
+  #[test]
+  fn a_suspended_pigeon_carries_an_rfc3339_stamp() {
+    let pigeon = Pigeon {
+      suspended_at: Some(OffsetDateTime::UNIX_EPOCH),
+      ..Pigeon::default()
+    };
+    let json = serde_json::to_string(&pigeon).unwrap();
+    assert!(json.contains(r#""suspended_at":"1970-01-01T00:00:00Z""#));
+    assert_eq!(serde_json::from_str::<Pigeon>(&json).unwrap(), pigeon);
   }
 }
 
