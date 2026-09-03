@@ -27,9 +27,10 @@ use crate::helpers::{
   resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
   send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
   sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
-  update_shadow_pg_db, update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
-  verify_webhook_signature, webhook_action, write_business_details,
+  update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
+  write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::{
@@ -1836,6 +1837,38 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
         console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+      }
+
+      Response::from_json(&pigeon)?.with_cors(&cors)
+    })
+    .put_async("/pigeons/:pigeon_id/suspension", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      let do_response = proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/suspension").await?;
+      if do_response.status_code() >= 400 {
+        return do_response.with_cors(&cors);
+      }
+
+      let pigeon = parse_do_response::<Pigeon>(do_response).await?;
+
+      // The alert evaluator reads the Postgres copy, so this mirror is what
+      // makes the hold take effect; a failed sync is logged and the toggle
+      // is a safe retry, since every statement involved is idempotent.
+      match get_db_client(&ctx.env).await {
+        Ok(client) => {
+          if let Err(e) =
+            update_pigeon_suspension_pg_db(client, &pigeon.id, pigeon.suspended_at).await
+          {
+            console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+          }
+        }
+        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
       Response::from_json(&pigeon)?.with_cors(&cors)

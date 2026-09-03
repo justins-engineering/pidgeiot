@@ -10,8 +10,8 @@ use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
   MqttConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail,
   PigeonFlockUpdateRequest, PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow,
-  PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
-  TelemetryEndpoint, unwrap_or_return_response,
+  PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest,
+  PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -25,7 +25,7 @@ use worker::{
 
 /// Shared by every `pigeons` read/RETURNING statement so a column can't
 /// silently go missing from one of the near-identical queries.
-const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, updated_at, created_at";
+const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, suspended_at, updated_at, created_at";
 
 // A missing DEVICE_API_HOST binding should degrade to prod's own host
 // rather than emit a garbage endpoint.
@@ -188,6 +188,7 @@ impl DurableObject for Pigeons {
           device_public_key TEXT NOT NULL DEFAULT '',
           telemetry_endpoint TEXT DEFAULT NULL,
           board TEXT DEFAULT NULL,
+          suspended_at INTEGER DEFAULT NULL,
           updated_at INTEGER DEFAULT (unixepoch()),
           created_at INTEGER DEFAULT (unixepoch())
         );
@@ -226,6 +227,13 @@ impl DurableObject for Pigeons {
     // provisioning time -- enforced in `check_firmware_board_compat`.
     let _ = sql.exec(
       "ALTER TABLE pigeons ADD COLUMN board TEXT DEFAULT NULL;",
+      None,
+    );
+
+    // And for `suspended_at`: unix seconds while an operator holds this
+    // pigeon out of alert evaluation, NULL while live.
+    let _ = sql.exec(
+      "ALTER TABLE pigeons ADD COLUMN suspended_at INTEGER DEFAULT NULL;",
       None,
     );
 
@@ -347,6 +355,7 @@ impl DurableObject for Pigeons {
       "/pigeon/create" => create(self, req).await,
       "/pigeon/update" => update(self, req).await,
       "/pigeon/flock/update" => update_flock(self, req).await,
+      "/pigeon/suspension" => update_suspension(self, req).await,
       "/pigeon/acl/get" => get_acl(self, req).await,
       "/pigeon/acl/list" => list_acl(self, req).await,
       "/pigeon/acl/update" => update_acl(self, req).await,
@@ -1185,6 +1194,40 @@ async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     Ok(_) => read_back_pigeon(pigeons),
     Err(e) => {
       console_error!("Pigeon flock update execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Holds this pigeon out of every alert evaluation, or releases it. This
+/// row is what the dashboard's badge reads; the Postgres mirror the gateway
+/// syncs afterwards is what the alert evaluator reads. Nothing the device
+/// sees changes: it keeps reporting and is billed as usual. A repeated
+/// suspend keeps the first stamp, so the toggle is a safe retry.
+async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_owner(pigeons, &req));
+
+  let body = match req.json::<PigeonSuspensionRequest>().await {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Pigeon suspension json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+
+  let statement = if body.suspended {
+    "UPDATE pigeons SET suspended_at = COALESCE(suspended_at, unixepoch()) WHERE id = ?;"
+  } else {
+    "UPDATE pigeons SET suspended_at = NULL WHERE id = ?;"
+  };
+
+  match pigeons
+    .sql
+    .exec(statement, vec![pigeons.state.id().to_string().into()])
+  {
+    Ok(_) => read_back_pigeon(pigeons),
+    Err(e) => {
+      console_error!("Pigeon suspension execution error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
