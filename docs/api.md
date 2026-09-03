@@ -53,6 +53,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /pigeons/:pigeon_id/detail`](#get-pigeonspigeon_iddetail) | member | Read one pigeon plus the caller's ACL row and shadow |
 | [`PUT /pigeons/:pigeon_id`](#put-pigeonspigeon_id) | member | Partially update a pigeon |
 | [`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock) | owner + destination flock: manage | Move a pigeon into another flock of the same owner |
+| [`PUT /pigeons/:pigeon_id/suspension`](#put-pigeonspigeon_idsuspension) | owner | Suspend or resume a pigeon's alert evaluation |
 | [`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id) | owner | Deprovision a pigeon and wipe its storage |
 | [`POST /pigeons/batch`](#post-pigeonsbatch) | member (per pigeon) | Fetch up to 48 pigeons by id in one request |
 | [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh) | owner | Mint a new keypair, revoking the current token |
@@ -1248,6 +1249,50 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/flock \
   -d '{"flock_id":"<destination_flock_id>"}'
 ```
 
+#### `PUT /pigeons/:pigeon_id/suspension`
+
+**Auth:** owner
+
+Suspends or resumes a pigeon's alert evaluation. Body: `capsules::PigeonSuspensionRequest`
+(`{"suspended": true|false}`). Returns the updated `capsules::Pigeon` with the connector
+token/PSK stripped; its `suspended_at` is an RFC 3339 stamp while suspended and absent
+otherwise. Idempotent: a second suspend keeps the first stamp, and a resume of a live pigeon
+changes nothing.
+
+This is the per-device counterpart of disabling an alert definition. While suspended, **every**
+alert definition skips this pigeon, at ingest and in the five-minute sweep, pigeon- and
+flock-scoped alike, without pausing a flock-scoped definition for the flock's other pigeons.
+Suspending also resets the pigeon's `alert_state` rows to `ok` with **no email**: it is
+an operator's decision, not a recovery, so a firing alert stops silently and no "resolved" mail
+ever follows for that episode. Resuming only clears the flag, so the next evaluation starts a
+fresh episode: a pigeon still silent past a `MissingReport` window fires on the first sweep
+after resume (within five minutes), and a still-true `Threshold`/`RateOfChange`/`DeviceState`
+condition fires again after its 60-second debounce, each with a new "firing" mail.
+
+What suspension does **not** do: the device keeps reporting (telemetry, shadow report-back,
+log uploads and the WebSocket channel are all accepted as before), it is billed as connected if
+it reports, the shadow still pushes config to it, and it still counts against the device cap.
+Suspension is an alerting hold, not a billing pause or a deprovisioning.
+
+Propagation: the ingest-time definition lookup is a Hyperdrive-cached read, so a report
+arriving within about a minute of a toggle can still be evaluated the old way; the sweep reads
+fresh. The dashboard's connection badge shows `Suspended` in place of the online/stale/offline
+classification.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/suspension \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"suspended":true}'
+```
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/suspension \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"suspended":false}'
+```
+
 #### `DELETE /pigeons/:pigeon_id`
 
 **Auth:** owner
@@ -1929,7 +1974,8 @@ pigeon's dashboard page and a link to the alerts section the definition is edite
 alert is scoped to exactly one **pigeon** or one **flock** — never
 both — chosen by which of the two create/list route pairs below you call; scope is never read
 from the request body. A flock-scoped alert evaluates independently per pigeon currently in that
-flock, not once for the flock as a whole.
+flock, not once for the flock as a whole. A pigeon whose alerts are
+[suspended](#put-pigeonspigeon_idsuspension) is left out of both scopes.
 
 `capsules::AlertCondition`/`AlertChannel`/`AlertScope` are plain Rust enums with no `#[serde(tag =
 ...)]` attribute, so they serialize the default serde way — **externally tagged, one key named
