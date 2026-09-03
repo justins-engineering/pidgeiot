@@ -3,7 +3,8 @@ use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
   Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail,
   PigeonFlockUpdateRequest, PigeonLogChunk, PigeonShadow, PigeonShadowUpdateRequest,
-  PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint,
+  PigeonSuspensionRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -190,6 +191,35 @@ pub async fn move_to_flock(pigeon_id: &str, flock_id: Uuid) -> Result<Pigeon, St
     }
   }
 
+  Ok(pigeon)
+}
+
+/// Holds a pigeon out of every alert evaluation, or releases it. The server's
+/// copy replaces the cached pigeon, so the badge follows this response rather
+/// than a refetch. `Err` carries the server's message, which for anyone but
+/// the owner is the refusal itself.
+pub async fn set_suspension(pigeon_id: &str, suspended: bool) -> Result<Pigeon, String> {
+  let mut path = String::with_capacity(84);
+  path.push_str("/pigeons/");
+  path.push_str(pigeon_id);
+  path.push_str("/suspension");
+
+  let Some(body) = to_body(&PigeonSuspensionRequest { suspended }) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("PUT", &path, Some(&body)).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  let Some(pigeon) = parse::<Pigeon>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
+
+  let mut pigeon_list = consume_context::<crate::LocalSession>().pigeons;
+  pigeon_list.insert(pigeon_id.to_string(), pigeon.clone());
+  pigeon_list.write();
   Ok(pigeon)
 }
 
