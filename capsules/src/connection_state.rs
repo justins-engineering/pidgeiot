@@ -51,6 +51,10 @@ pub enum ConnectionState {
   /// No telemetry, shadow report-back, or log chunk has ever been
   /// observed for this pigeon.
   Unknown,
+  /// An operator holds this pigeon out of every alert evaluation. `classify`
+  /// never returns it: it only reads silence, and the dashboard lays the hold
+  /// over that reading (`fancier::helpers::connection_state::classify`).
+  Suspended,
 }
 
 /// Pulls `telemetry_interval` out of a shadow's `current_config` (what

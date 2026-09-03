@@ -87,6 +87,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 &pd.shadow.current_config,
             );
             let conn_state: ConnectionState = connection_state::classify(
+                pd.pigeon.suspended_at.is_some(),
                 last_seen,
                 interval_secs,
                 time::OffsetDateTime::now_utc(),

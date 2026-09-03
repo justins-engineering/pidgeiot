@@ -1,7 +1,8 @@
 // Connection-state indicator. This module is a thin re-export of the
-// classify/threshold logic in `capsules::connection_state` plus the
-// DaisyUI-specific presentation (`ConnectionStateStyle` below) that has no
-// business living in a Worker/Dioxus-agnostic crate.
+// threshold logic in `capsules::connection_state`, a `classify` that lays an
+// operator's suspension over it, plus the DaisyUI-specific presentation
+// (`ConnectionStateStyle` below) that has no business living in a
+// Worker/Dioxus-agnostic crate.
 //
 // The logic itself lives in `capsules` because `dovecote`'s scheduled
 // missing-heartbeat/device-state alert evaluator
@@ -16,9 +17,26 @@
 // version, and `views::pigeons`/`views::dashboard` for the telemetry-only
 // version -- neither does a per-pigeon shadow/log fan-out).
 pub use capsules::connection_state::{
-  ConnectionState, classify, format_last_seen, has_never_reported, latest_of,
-  latest_seen_by_pigeon, telemetry_interval_secs,
+  ConnectionState, format_last_seen, has_never_reported, latest_of, latest_seen_by_pigeon,
+  telemetry_interval_secs,
 };
+use time::OffsetDateTime;
+
+/// `capsules::connection_state::classify` with an operator's hold laid over
+/// it: a suspended pigeon reads `Suspended` whatever its silence would say,
+/// since no alert is watching that silence. The hold is a dashboard concern
+/// only, so the shared threshold check stays free of it.
+pub fn classify(
+  suspended: bool,
+  last_seen: Option<OffsetDateTime>,
+  interval_secs: Option<i64>,
+  now: OffsetDateTime,
+) -> ConnectionState {
+  if suspended {
+    return ConnectionState::Suspended;
+  }
+  capsules::connection_state::classify(last_seen, interval_secs, now)
+}
 
 /// Floor and fallback for `poll_interval_ms` -- fancier-only (dovecote never
 /// polls itself), so unlike `classify`'s thresholds these don't need to live
@@ -62,6 +80,8 @@ pub fn poll_interval_ms(interval_secs: Option<i64>) -> i32 {
 /// invisible white-on-white (or barely-there black-on-black) text.
 /// `badge-ghost` and the unmodified `.status` class both derive from
 /// `--color-base-content` instead, which is always legible against the page.
+/// `Suspended` shares that ghost styling: the colour axis is device health,
+/// which an operator's hold says nothing about.
 pub trait ConnectionStateStyle {
   /// DaisyUI badge color token -- conventional online=success/stale=
   /// warning/offline=error semantics.
@@ -79,7 +99,7 @@ impl ConnectionStateStyle for ConnectionState {
       ConnectionState::Online => "badge-success",
       ConnectionState::Stale => "badge-warning",
       ConnectionState::Offline => "badge-error",
-      ConnectionState::Unknown => "badge-ghost",
+      ConnectionState::Unknown | ConnectionState::Suspended => "badge-ghost",
     }
   }
 
@@ -88,7 +108,7 @@ impl ConnectionStateStyle for ConnectionState {
       ConnectionState::Online => "status status-success",
       ConnectionState::Stale => "status status-warning",
       ConnectionState::Offline => "status status-error",
-      ConnectionState::Unknown => "status",
+      ConnectionState::Unknown | ConnectionState::Suspended => "status",
     }
   }
 
@@ -98,6 +118,43 @@ impl ConnectionStateStyle for ConnectionState {
       ConnectionState::Stale => "Stale",
       ConnectionState::Offline => "Offline",
       ConnectionState::Unknown => "Unknown",
+      ConnectionState::Suspended => "Suspended",
     }
+  }
+}
+
+#[cfg(test)]
+mod classify_tests {
+  use super::*;
+  use time::macros::datetime;
+
+  #[test]
+  fn suspended_wins_over_a_live_device() {
+    let now = datetime!(2026-09-02 12:00:00 UTC);
+    assert_eq!(
+      classify(true, Some(now), Some(60), now),
+      ConnectionState::Suspended
+    );
+  }
+
+  #[test]
+  fn suspended_wins_over_never_seen() {
+    let now = datetime!(2026-09-02 12:00:00 UTC);
+    assert_eq!(classify(true, None, None, now), ConnectionState::Suspended);
+  }
+
+  #[test]
+  fn a_live_pigeon_is_classified_by_its_silence() {
+    let now = datetime!(2026-09-02 12:00:00 UTC);
+    let silent = now - time::Duration::seconds(301);
+    assert_eq!(
+      classify(false, Some(now), Some(60), now),
+      ConnectionState::Online
+    );
+    assert_eq!(
+      classify(false, Some(silent), Some(60), now),
+      ConnectionState::Offline
+    );
+    assert_eq!(classify(false, None, None, now), ConnectionState::Unknown);
   }
 }
