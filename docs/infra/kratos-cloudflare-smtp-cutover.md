@@ -229,6 +229,13 @@ signup volume.
   courier row with a rising `send_count`, not an outage. Read the quota first.
 - **`/opt/kratos/kratos.yml` is not world-readable**, so every inspection of
   it here needs sudo.
+- **Delivery retries are Cloudflare's, and not tunable.** Email Service
+  retries a 4xx soft bounce on an undocumented exponential backoff (observed
+  against a greylisting MX: a second attempt after 64 s, delivery after
+  11 minutes), so the first message to a new recipient domain can land ten
+  minutes late, and the activity log shows each deferred attempt as a
+  delivery failure before the final delivered event. Hard bounces are added
+  to the account suppression list automatically.
 
 ## Rehearsing on the dev stack
 

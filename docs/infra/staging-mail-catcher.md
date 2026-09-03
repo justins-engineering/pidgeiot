@@ -62,13 +62,14 @@ Pulling a Kratos code out of a stored message:
 curl -s -H "Authorization: Bearer $TOKEN" $B/messages/<id> | grep -Eo '[0-9]{6}'
 ```
 
-## Pending: the routing rule
+## The routing rule
 
-**Not yet created — needs owner approval.** Email Routing is already
-enabled on the zone (`ready`, MX at `route[1-3].mx.cloudflare.net`, SPF
-`include:_spf.mx.cloudflare.net`), so this adds **no DNS record** and
-changes no existing rule; `support@` and `security@` keep forwarding to
-`ops@jes.contact`, and the catch-all stays disabled.
+Created 2026-09-01 as `staging mail catcher` (literal `to:staging-catch@pidgeiot.com`,
+action `worker:mailcatch`). Email Routing was already enabled on the zone
+(`ready`, MX at `route[1-3].mx.cloudflare.net`, SPF
+`include:_spf.mx.cloudflare.net`), so it added **no DNS record** and changed
+no existing rule; `support@`, `security@` and `dmarc@` forward to
+`ops@jes.contact`, and the catch-all is disabled. To recreate it:
 
 ```sh
 cd mailcatch && bunx wrangler email routing rules create pidgeiot.com \
@@ -80,10 +81,14 @@ cd mailcatch && bunx wrangler email routing rules create pidgeiot.com \
 
 Reverse with `wrangler email routing rules delete pidgeiot.com <rule-id>`.
 
-Literal matchers take one address each. A second test identity needs a
-second rule rather than plus-addressing; enabling the zone catch-all would
-also work but widens the blast radius to every unmatched address, so
-per-address rules are preferred.
+Literal matchers take one address each, but the zone's subaddressing
+setting (Email Routing settings, enabled 2026-09-02) makes
+`staging-catch+<tag>@pidgeiot.com` match the same rule with the tag
+preserved in `message.to`, so one rule covers every test identity. Before
+that setting was on, tagged mail matched nothing and the disabled catch-all
+dropped it silently, which the sending side reported as a delivery failure.
+The catch-all stays disabled: it would widen the blast radius to every
+unmatched address.
 
 ## Wiring staging senders at it
 
@@ -106,7 +111,7 @@ alongside them rather than repointing them.
 
 ## Acceptance test
 
-Run once the routing rule exists.
+Run after any change to the rule or to the zone's subaddressing setting.
 
 1. Note the current message count from `GET /messages`.
 2. Send a probe through the staging binding — the registration in the
