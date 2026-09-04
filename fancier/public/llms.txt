@@ -18,7 +18,8 @@ token as the CONNECT password or by a per-device TLS-PSK. There is no
 cleartext listener on any transport. The device library targets Zephyr
 RTOS (vendor-agnostic), with samples for ESP32-C6, Nordic nRF9160/nRF9151,
 and a native_sim target that runs the whole platform flow on a desktop
-with no hardware.
+with no hardware, the mqtt_init sample among them: it drives the whole
+device-to-platform MQTT path against a broker on the same machine.
 
 ## Docs
 
