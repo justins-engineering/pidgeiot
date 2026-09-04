@@ -63,7 +63,7 @@ config:
 ---
 flowchart TB
   accTitle: PidgeIoT platform architecture
-  accDescr: Users and IoT devices connect through Cloudflare's edge to the dovecote Worker, which routes to per-device Durable Objects and mirrors state to PostgreSQL; telemetry rides a queue to history storage or a user-defined forwarding endpoint.
+  accDescr: Users and IoT devices connect through Cloudflare's edge to the dovecote Worker, either directly over HTTPS and WebSocket or through the loft and pigeonhole transport terminators on our VPS; dovecote routes to per-device Durable Objects and mirrors state to PostgreSQL; telemetry rides a queue to history storage or a user-defined forwarding endpoint.
   classDef subTitle font-size:18px,font-weight: 500;
 
   subgraph Endpoints ["Endpoints"]
@@ -82,6 +82,8 @@ flowchart TB
 
   subgraph SelfHosted ["Off-Edge Services"]
     Kratos["Ory Kratos\n(Dashboard sessions, VPS via Cloudflare Tunnel)"]:::selfhosted
+    Loft["loft\n(CoAP terminator, DTLS/UDP + TLS/TCP :5684, VPS)"]:::selfhosted
+    Pigeonhole["pigeonhole\n(MQTT broker, TLS :8883, same VPS)"]:::selfhosted
     Postgres[("Managed PostgreSQL\n(Cross-device mirror, telemetry history, identities)")]:::storage
   end
 
@@ -94,7 +96,11 @@ flowchart TB
   %% Routing
   User <--> Fancier
   User -- "Kratos session cookie" --> Kratos
-  IoT -- "Ed25519-signed 69-byte token" --> Router
+  IoT -- "HTTPS / WebSocket, Ed25519-signed 69-byte token" --> Router
+  IoT -- "CoAP over DTLS/UDP or TLS/TCP" --> Loft
+  IoT -- "MQTT over TLS" --> Pigeonhole
+  Loft -- "device routes over HTTPS" --> Router
+  Pigeonhole -- "device routes over HTTPS" --> Router
   Router -- "proxy_to_pigeon_do" --> DO_Pigeon
   Router -- "X-User-Id" --> Kratos
   Router -- "firmware upload / Range download" --> R2
