@@ -82,15 +82,16 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
   }
 }
 
-/// A paid tier card's call to action. Signed-out visitors keep the
-/// disabled "Free in beta" chip -- checkout is only offered to a signed-in
-/// visitor, and even then only resolves for someone who manages exactly
-/// one org with no live subscription (an entitled org changes plan in the
-/// Billing Portal from its own page instead, since a second Checkout would
-/// create a second subscription). Someone with nothing to bill yet names
-/// an organization right here; someone managing several is sent to the
-/// Organizations page carrying the picked tier, since which one goes on
-/// the plan is a choice only they can make.
+/// A paid tier card's call to action. Until billing goes live, and for
+/// signed-out visitors after that, this is the disabled "Free in beta"
+/// chip -- checkout is only offered to a signed-in visitor, and even then
+/// only resolves for someone who manages exactly one org with no live
+/// subscription (an entitled org changes plan in the Billing Portal from
+/// its own page instead, since a second Checkout would create a second
+/// subscription). Someone with nothing to bill yet names an organization
+/// right here; someone managing several is sent to the Organizations page
+/// carrying the picked tier, since which one goes on the plan is a choice
+/// only they can make.
 #[component]
 fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let session = use_context::<Session>();
@@ -101,7 +102,7 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let mut cta_error = use_signal(|| Option::<String>::None);
   let mut naming_org = use_signal(|| false);
 
-  if !(session.state)().is_authenticated() {
+  if !crate::config::BILLING_LIVE || !(session.state)().is_authenticated() {
     return rsx! {
       div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
     };
