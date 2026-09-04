@@ -110,8 +110,9 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | Sent as | `Cookie` header (`credentials: include` in `fetch`) | `Authorization: Bearer <token>` header |
 | Identity granularity | One Kratos identity, scoped per-pigeon by an ACL | One keypair per pigeon; the token proves control of *that* pigeon and nothing else |
 
-(There is also exactly one [service-internal route](#service-internal-api) — the CoAP
-terminator's PSK lookup — authenticated by a shared service secret, fitting neither column.)
+(There are also two [service-internal routes](#service-internal-api) — the transport
+terminators' PSK lookup and Kratos's consent hook — authenticated by a shared service secret,
+fitting neither column.)
 
 ### Dashboard authentication (Kratos session cookie)
 
