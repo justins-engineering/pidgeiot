@@ -82,7 +82,7 @@ pub fn PrivacyPage() -> Element {
             StorageItem {
               name: "pidgeiot.graphs.v1.*",
               kind: "browser storage",
-              "The telemetry graphs you configure for a pigeon or a flock. This is your own content, it never leaves your browser, and it exists only behind the sign-in."
+              "The telemetry graphs you configure for a pigeon or a flock. They are saved to your account so they follow you between browsers, and kept here as a local copy so they load instantly. Either way they exist only behind the sign-in."
             }
             StorageItem {
               name: "pidgeiot.return_to.v1",
@@ -179,6 +179,10 @@ pub fn PrivacyPage() -> Element {
                 RetentionRow {
                   data: "Telemetry history",
                   period: "7 days on the free tier, 30 days on Builder, 90 days on Growth, 13 months on Scale and Fleet. Deleted automatically after that.",
+                }
+                RetentionRow {
+                  data: "Saved dashboard graphs",
+                  period: "While your account exists. Deleted when you delete the graph, and with the rest of your account when you ask us to delete it.",
                 }
                 RetentionRow {
                   data: "Firmware images",

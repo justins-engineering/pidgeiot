@@ -86,7 +86,7 @@ pub use dashboard_state::{
 /// record, and it lives in the shared crate because those are the two things
 /// that must never disagree: a stored consent naming a version the page no
 /// longer shows cannot be resolved back to the words the person was shown.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-08-27";
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-04";
 
 #[macro_export]
 macro_rules! unwrap_or_return_response {
