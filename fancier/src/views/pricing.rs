@@ -411,7 +411,7 @@ pub fn PricingPage() -> Element {
                 "45M pooled messages/mo".into(),
                 "13 months in our history store".into(),
                 "Unlimited seats, orgs and alerts".into(),
-                "SSO · priority support with SLA".into(),
+                "SSO and priority support, both planned".into(),
             ],
             featured: false,
             cta: rsx! {
