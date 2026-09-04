@@ -520,7 +520,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "What happens if I go over?",
-            body: "Nothing is billed in beta, and nothing is metered yet either. When paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts will pause ingestion instead, warned well before the cap. No surprise invoice, ever.",
+            body: "Nothing is billed in beta. Usage is already counted, so you can see exactly where you'd land: when paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts pause ingestion instead, warned at 80% of the cap. No surprise invoice, ever.",
           }
           Answer {
             question: "How long do you keep my data?",
