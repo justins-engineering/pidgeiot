@@ -507,7 +507,7 @@ pub fn Index() -> Element {
           Stop {
             number: "3",
             title: "You",
-            body: "The dashboard above: graphs, GPS tracks, firmware rollouts, remote logs and alerts by email. Or bypass it: the API the dashboard uses is the API you get.",
+            body: "The dashboard above: graphs, GPS tracks, firmware updates, remote logs and alerts by email. Or bypass it: the API the dashboard uses is the API you get.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/70 overflow-x-auto",
                 p { class: "whitespace-nowrap", "GET /pigeons/0417/telemetry" }

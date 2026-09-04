@@ -95,7 +95,7 @@ pub fn FeaturesPage() -> Element {
         FeatureRow {
           eyebrow: "03. Firmware",
           title: "OTA that refuses to brick the wrong board",
-          body: "Upload an image once and roll it out per device or per flock. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
+          body: "Upload an image once into the flock's catalog, then assign it to a device. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
           body_secondary: rsx! {
             "Images live content-addressed by their own SHA-256, and devices resume interrupted downloads with Range requests instead of starting the whole file again."
           },

@@ -158,7 +158,7 @@ pub fn UseCasesPage() -> Element {
           // forwarding decision is made. Only history is bypassed.
           body_secondary: "Regulated retention? Point telemetry at your own line-protocol endpoint and the history accumulates there instead of here: we hold only the latest value of each key, which is what the dashboard and alerts read.",
           keys: vec!["litres_total", "flow_lpm", "tamper"],
-          features_used: "Bring-your-own database · fleet OTA",
+          features_used: "Bring-your-own database · per-device OTA",
           divider: true,
           visual: rsx! {
             div { class: "rounded-2xl border border-base-300 bg-base-200 p-5 flex flex-col gap-3",
