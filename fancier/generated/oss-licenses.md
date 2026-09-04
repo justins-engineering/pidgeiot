@@ -1573,7 +1573,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.0](https://github.com/servo/rust-smallvec)
 
 
 ````text

@@ -1170,7 +1170,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.0](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -2167,7 +2167,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ````
 
-**Used by:** [tinyvec 1.12.0](https://github.com/Lokathor/tinyvec)
+**Used by:** [tinyvec 1.13.2](https://github.com/Lokathor/tinyvec)
 
 
 ````text

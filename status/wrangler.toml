@@ -21,7 +21,7 @@ main = "src/index.mjs"
 # needed and no build step appears: the bundler wrangler always runs does
 # it, and the source still uploads as-is.
 base_dir = ".."
-compatibility_date = "2026-09-02"
+compatibility_date = "2026-09-04"
 send_metrics = false
 workers_dev = false
 
