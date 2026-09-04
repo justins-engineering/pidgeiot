@@ -431,7 +431,7 @@ pub fn PricingPage() -> Element {
               }
             }
             p { class: "text-base-content/75 leading-relaxed",
-              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. MQTT and custom dashboards aren't here yet, and you should hear that from us before you sign."
+              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. Custom dashboards aren't here yet, and you should hear that from us before you sign."
             }
           }
           div { class: "lg:ml-auto lg:text-right shrink-0",
@@ -545,7 +545,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Will these prices hold?",
-            body: "These are planned prices, published early so you can budget, and deliberately introductory while MQTT and custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
+            body: "These are planned prices, published early so you can budget, and deliberately introductory while custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
           }
         }
       }
