@@ -82,15 +82,16 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
   }
 }
 
-/// A paid tier card's call to action. Signed-out visitors keep the
-/// disabled "Free in beta" chip -- checkout is only offered to a signed-in
-/// visitor, and even then only resolves for someone who manages exactly
-/// one org with no live subscription (an entitled org changes plan in the
-/// Billing Portal from its own page instead, since a second Checkout would
-/// create a second subscription). Someone with nothing to bill yet names
-/// an organization right here; someone managing several is sent to the
-/// Organizations page carrying the picked tier, since which one goes on
-/// the plan is a choice only they can make.
+/// A paid tier card's call to action. Until billing goes live, and for
+/// signed-out visitors after that, this is the disabled "Free in beta"
+/// chip -- checkout is only offered to a signed-in visitor, and even then
+/// only resolves for someone who manages exactly one org with no live
+/// subscription (an entitled org changes plan in the Billing Portal from
+/// its own page instead, since a second Checkout would create a second
+/// subscription). Someone with nothing to bill yet names an organization
+/// right here; someone managing several is sent to the Organizations page
+/// carrying the picked tier, since which one goes on the plan is a choice
+/// only they can make.
 #[component]
 fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let session = use_context::<Session>();
@@ -101,7 +102,7 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let mut cta_error = use_signal(|| Option::<String>::None);
   let mut naming_org = use_signal(|| false);
 
-  if !(session.state)().is_authenticated() {
+  if !crate::config::BILLING_LIVE || !(session.state)().is_authenticated() {
     return rsx! {
       div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
     };
@@ -410,7 +411,7 @@ pub fn PricingPage() -> Element {
                 "45M pooled messages/mo".into(),
                 "13 months in our history store".into(),
                 "Unlimited seats, orgs and alerts".into(),
-                "SSO · priority support with SLA".into(),
+                "SSO and priority support, both planned".into(),
             ],
             featured: false,
             cta: rsx! {
@@ -431,7 +432,7 @@ pub fn PricingPage() -> Element {
               }
             }
             p { class: "text-base-content/75 leading-relaxed",
-              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. MQTT and custom dashboards aren't here yet, and you should hear that from us before you sign."
+              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. Custom dashboards aren't here yet, and you should hear that from us before you sign."
             }
           }
           div { class: "lg:ml-auto lg:text-right shrink-0",
@@ -520,7 +521,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "What happens if I go over?",
-            body: "Nothing is billed in beta, and nothing is metered yet either. When paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts will pause ingestion instead, warned well before the cap. No surprise invoice, ever.",
+            body: "Nothing is billed in beta. Usage is already counted, so you can see exactly where you'd land: when paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts pause ingestion instead, warned at 80% of the cap. No surprise invoice, ever.",
           }
           Answer {
             question: "How long do you keep my data?",
@@ -545,7 +546,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Will these prices hold?",
-            body: "These are planned prices, published early so you can budget, and deliberately introductory while MQTT and custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
+            body: "These are planned prices, published early so you can budget, and deliberately introductory while custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
           }
         }
       }

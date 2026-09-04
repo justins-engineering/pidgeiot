@@ -82,7 +82,7 @@ pub fn PrivacyPage() -> Element {
             StorageItem {
               name: "pidgeiot.graphs.v1.*",
               kind: "browser storage",
-              "The telemetry graphs you configure for a pigeon or a flock. This is your own content, it never leaves your browser, and it exists only behind the sign-in."
+              "The telemetry graphs you configure for a pigeon or a flock. They are saved to your account so they follow you between browsers, and kept here as a local copy so they load instantly. Either way they exist only behind the sign-in."
             }
             StorageItem {
               name: "pidgeiot.return_to.v1",
@@ -120,7 +120,7 @@ pub fn PrivacyPage() -> Element {
               "Each device's own state (its configuration, its latest readings and its log buffer) lives in a Cloudflare Durable Object that is created near whoever first set the device up, and stays there. For a team in Europe that is usually a European data center, but we do not guarantee it."
             }
             li { "Our relational database and our identity database are hosted by Crunchy Bridge on AWS in Northern Virginia (us-east-1)." }
-            li { "Our identity server and our device-transport terminator run on a server in Vint Hill, Virginia." }
+            li { "Our identity server and our device-transport terminators run on a server in Vint Hill, Virginia." }
             li { "Our edge provider runs our code in whichever of its data centers receives a request, and its queues and caches have no fixed location." }
             li { "Billing is handled by Stripe in the United States. Transactional email is sent by a third-party email provider." }
           }
@@ -179,6 +179,10 @@ pub fn PrivacyPage() -> Element {
                 RetentionRow {
                   data: "Telemetry history",
                   period: "7 days on the free tier, 30 days on Builder, 90 days on Growth, 13 months on Scale and Fleet. Deleted automatically after that.",
+                }
+                RetentionRow {
+                  data: "Saved dashboard graphs",
+                  period: "While your account exists. Deleted when you delete the graph, and with the rest of your account when you ask us to delete it.",
                 }
                 RetentionRow {
                   data: "Firmware images",

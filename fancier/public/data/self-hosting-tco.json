@@ -64,7 +64,7 @@
       "status": "verified",
       "last_verified": "2026-08-23",
       "source": "https://thingsboard.io/pricing/",
-      "note": "Free software, and it ships MQTT and dashboards we do not. Everything below this line is yours: upgrades, backups, TLS renewal, and the pager."
+      "note": "Free software, and it ships custom dashboards we do not. Everything below this line is yours: upgrades, backups, TLS renewal, and the pager."
     },
     {
       "id": "thingsboard-pe",
@@ -123,7 +123,7 @@
     "source": "https://pidgeiot.com/pricing/",
     "last_verified": "2026-08-23"
   },
-  "concession": "If MQTT, your own dashboards, or owning the box matter more than those hours, self-host. We would rather you did that than pay us and resent it. Simplicity alone wins us nothing against software that is free and good.",
+  "concession": "If your own dashboards or owning the box matter more than those hours, self-host. We would rather you did that than pay us and resent it. Simplicity alone wins us nothing against software that is free and good.",
   "exit": {
     "heading": "The question worth asking instead",
     "body": "Self-hosting is usually bought as insurance against being trapped. Ask about leaving instead: the wire protocol and API are documented and open, telemetry forwards to any InfluxDB-compatible store you own, and every device's history is exportable through the documented API. You can leave, which is worth more than being able to self-host."

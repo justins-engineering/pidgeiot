@@ -13,7 +13,7 @@ pub fn Architecture() -> Element {
       }
 
       p { class: "text-base text-base-content/70 max-w-2xl text-center mb-8",
-        "A complete topology mapping the data flow from constrained edge devices, through Cloudflare's global compute network, down to managed PostgreSQL storage."
+        "The data flow from constrained edge devices, through our own transport terminators and Cloudflare's global compute network, down to managed PostgreSQL storage."
       }
 
       // 3. Diagram

@@ -55,7 +55,7 @@ pub fn DocumentationPage() -> Element {
           DocStep {
             number: "4",
             title: "Provision the device",
-            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). HTTPS, WebSocket, and CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) are all live, so pick whichever transport fits the hardware.",
+            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). HTTPS, WebSocket, CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) and MQTT over TLS on port 8883 (certificate or per-device pre-shared key) are all live, so pick whichever transport fits the hardware.",
           }
           DocStep {
             number: "5",
@@ -179,7 +179,7 @@ pub fn DocumentationPage() -> Element {
             li { "The flock and pigeon involved, by id." }
             li { "What you expected to happen, and what happened instead." }
             li { "When it happened, in UTC, and whether it is still happening." }
-            li { "The transport the device uses: HTTPS, WebSocket, or CoAP." }
+            li { "The transport the device uses: HTTPS, WebSocket, CoAP, or MQTT." }
           }
           p { class: "text-base-content/70 leading-relaxed mt-6",
             "Never send a device token, a pre-shared key, or any other credential. Nothing we need to diagnose a problem requires one, and a token pasted into an email should be treated as compromised and rotated."

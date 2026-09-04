@@ -12,10 +12,14 @@ bearer tokens (not JWTs); refreshing a token cryptographically revokes the
 previous one. Supported device transports today: HTTPS, WebSocket, and
 CoAP on port 5684, both CoAP-over-DTLS/UDP (the primary transport for
 constrained cellular devices) and RFC 8323 CoAP-over-TLS/TCP, each
-authenticated by a per-device TLS-PSK. The device library targets Zephyr
+authenticated by a per-device TLS-PSK, and MQTT 5 or 3.1.1 over TLS on
+port 8883, authenticated either by a certificate handshake with the device
+token as the CONNECT password or by a per-device TLS-PSK. There is no
+cleartext listener on any transport. The device library targets Zephyr
 RTOS (vendor-agnostic), with samples for ESP32-C6, Nordic nRF9160/nRF9151,
 and a native_sim target that runs the whole platform flow on a desktop
-with no hardware.
+with no hardware, the mqtt_init sample among them: it drives the whole
+device-to-platform MQTT path against a broker on the same machine.
 
 ## Docs
 

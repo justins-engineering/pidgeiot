@@ -116,7 +116,7 @@ pub fn AboutUs() -> Element {
             }
             h3 { class: "text-2xl font-bold mb-4", "Verified on Real Hardware" }
             p { class: "text-base-content/70 leading-relaxed",
-              "Provisioning, shadow sync, firmware updates, and WebSocket push have all been exercised on real boards -- ESP32-C6, and Nordic nRF9160 and nRF9151 -- not just in simulation."
+              "Provisioning, shadow sync and firmware updates have been exercised on real boards -- Nordic nRF9160 and nRF9151, and an ESP32-C6, which also carried the WebSocket push path -- not just in simulation."
             }
           }
 
