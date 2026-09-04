@@ -95,7 +95,7 @@ pub fn FeaturesPage() -> Element {
         FeatureRow {
           eyebrow: "03. Firmware",
           title: "OTA that refuses to brick the wrong board",
-          body: "Upload an image once into the flock's catalog, then assign it to a device. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
+          body: "Upload an image once into the flock's catalog, then assign it to a device; per-flock rollout is planned. Images and devices both carry a board tag, and a mismatched assignment is rejected outright.",
           body_secondary: rsx! {
             "Images live content-addressed by their own SHA-256, and devices resume interrupted downloads with Range requests instead of starting the whole file again."
           },
@@ -203,11 +203,12 @@ pub fn FeaturesPage() -> Element {
         div { class: "lg:col-span-7 flex flex-col gap-3",
           h2 { class: "text-2xl md:text-3xl font-bold", "What isn't here yet" }
           p { class: "text-lg leading-relaxed text-base-content/80",
-            "Two things are designed and not built: a user-authored rule engine (your own logic running against incoming telemetry at the edge) and per-flock storage, which would give a fleet a database of its own instead of a shared one. We'd rather list them here than imply they ship today. Everything else on this page is running now."
+            "Three things are designed and not built: a user-authored rule engine (your own logic running against incoming telemetry at the edge), per-flock firmware rollout, and per-flock storage, which would give a fleet a database of its own instead of a shared one. We'd rather list them here than imply they ship today. Everything else on this page is running now."
           }
         }
         div { class: "lg:col-span-5 flex flex-wrap gap-3",
           span { class: "badge badge-ghost font-mono", "rule engine · planned" }
+          span { class: "badge badge-ghost font-mono", "per-flock rollout · planned" }
           span { class: "badge badge-ghost font-mono", "per-flock storage · planned" }
           span { class: "badge badge-ghost font-mono", "beta · pre-revenue" }
         }
