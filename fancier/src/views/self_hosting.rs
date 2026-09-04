@@ -85,7 +85,7 @@ pub fn SelfHostingPage() -> Element {
       div { class: "max-w-4xl mx-auto rounded-3xl border border-neutral-content bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 p-10 text-center shadow-2xl",
         h2 { class: "text-2xl md:text-3xl font-bold mb-3", "Try it before you build it." }
         p { class: "text-lg mb-8 leading-relaxed",
-          "Ten devices are free, permanently. If it saves you the weekend, keep it; if it does not, you have lost an afternoon and learned what your own stack would have cost."
+          "Ten devices are free, and stay free when billing starts. If it saves you the weekend, keep it; if it does not, you have lost an afternoon and learned what your own stack would have cost."
         }
         div { class: "flex flex-col sm:flex-row justify-center gap-4",
           Link {
