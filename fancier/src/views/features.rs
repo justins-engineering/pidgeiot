@@ -26,7 +26,7 @@ pub fn FeaturesPage() -> Element {
         FeatureRow {
           eyebrow: "01. Identity",
           title: "A key per device, minted where its state lives",
-          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot; only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
+          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot; only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, presents it as an MQTT CONNECT password, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
           body_secondary: rsx! {
             "Refreshing a token overwrites the old public key, which means rotation "
             span { class: "italic", "is" }

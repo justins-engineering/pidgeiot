@@ -472,7 +472,7 @@ pub fn Index() -> Element {
           Stop {
             number: "1",
             title: "Your device",
-            body: "Flash the Zephyr library. Registering the device mints its keypair and hands back a 69-byte token; the private half signs that token and is discarded, so only the public key is ever stored. From there it speaks CoAP over DTLS or plain HTTPS, whatever the modem can afford.",
+            body: "Flash the Zephyr library. Registering the device mints its keypair and hands back a 69-byte token; the private half signs that token and is discarded, so only the public key is ever stored. From there it speaks MQTT over TLS, CoAP over DTLS, or plain HTTPS, whatever the modem can afford.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/70 overflow-x-auto",
                 p { class: "whitespace-nowrap", "dashboard → Register Pigeon" }
