@@ -120,7 +120,7 @@ pub fn PrivacyPage() -> Element {
               "Each device's own state (its configuration, its latest readings and its log buffer) lives in a Cloudflare Durable Object that is created near whoever first set the device up, and stays there. For a team in Europe that is usually a European data center, but we do not guarantee it."
             }
             li { "Our relational database and our identity database are hosted by Crunchy Bridge on AWS in Northern Virginia (us-east-1)." }
-            li { "Our identity server and our device-transport terminator run on a server in Vint Hill, Virginia." }
+            li { "Our identity server and our device-transport terminators run on a server in Vint Hill, Virginia." }
             li { "Our edge provider runs our code in whichever of its data centers receives a request, and its queues and caches have no fixed location." }
             li { "Billing is handled by Stripe in the United States. Transactional email is sent by a third-party email provider." }
           }
