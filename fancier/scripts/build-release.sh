@@ -38,6 +38,16 @@ security_txt_gate="$(cargo test -p dovecote \
 printf '%s\n' "$security_txt_gate"
 grep -E 'test result: ok\. [1-9]' <<<"$security_txt_gate" >/dev/null
 
+# The story pages are laid out from files only the tests check (an anchor
+# phrase that no longer matches, a sidecar that does not parse, a file
+# with no manifest line), and dx's prerender logs a page that panics and
+# exits 0, so the fancier suite runs here or a release ships the defect.
+# Same host-target and some-test-ran details as above.
+fancier_gate="$(cargo test -p fancier \
+  --target "$(rustc -vV | sed -n 's/^host: //p')" --quiet 2>&1)"
+printf '%s\n' "$fancier_gate"
+grep -E 'test result: ok\. [1-9]' <<<"$fancier_gate" >/dev/null
+
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 
 # Regenerates the /open-source page's crate-license inventory from the
