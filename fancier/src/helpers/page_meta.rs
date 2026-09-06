@@ -9,6 +9,7 @@
 // writes -- shipping them in the wasm bundle too would pay for them on every
 // page load and change nothing.
 use crate::Route;
+use crate::views::STORIES;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -73,6 +74,10 @@ pub fn page_title(route: &Route) -> String {
     Route::ServerError { .. } => Some("Something went wrong"),
     Route::Unauthorized {} => Some("Not authorized"),
     Route::PageNotFound { .. } => Some("Page not found"),
+    // A slug off the manifest renders the not-found page, so its tab says so.
+    Route::StoryPage { slug } if !STORIES.iter().any(|story| story.slug == slug) => {
+      Some("Page not found")
+    }
     _ => None,
   };
 
@@ -92,9 +97,8 @@ pub fn page_title(route: &Route) -> String {
 // JSON entry does the same.
 #[cfg(test)]
 mod page_meta_matches_the_router {
-  use super::{META, page_title};
+  use super::{META, STORIES, page_title};
   use crate::Route;
-  use crate::views::STORIES;
   use std::str::FromStr;
 
   /// Every public page, listed so that adding one to the router without a
@@ -176,7 +180,7 @@ mod page_meta_matches_the_router {
 
   // A post's route carries its slug, so it is keyed by the path it renders
   // to, like every other public page; an unknown slug is the 404 page and
-  // falls back to the brand title on purpose.
+  // is titled as one.
   #[test]
   fn a_story_resolves_to_its_own_title() {
     for story in STORIES {
@@ -192,6 +196,6 @@ mod page_meta_matches_the_router {
     let unknown = Route::StoryPage {
       slug: "no-such-post".to_string(),
     };
-    assert_eq!(page_title(&unknown), META.brand_title());
+    assert_eq!(page_title(&unknown), "Page not found | PidgeIoT");
   }
 }

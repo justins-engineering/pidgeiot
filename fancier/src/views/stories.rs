@@ -5,8 +5,9 @@
 //! plan. The headline is read from the prose's own H1, the reading time is
 //! counted from its words, and each figure follows the paragraph its anchor
 //! phrase is found in, so a revision is a file copy and a rebuild with no
-//! code edit. Adding a post is the two files, one line in `STORIES`, and one
-//! `page-meta.json` entry; the tests below fail on anything else it needs.
+//! code edit. Adding a post is the two files, one line in `STORIES`, one
+//! `page-meta.json` entry and one `llms.txt` line; the tests below fail on
+//! anything else it needs.
 //! The prose is plain paragraphs: a figure's cut is the blank line after its
 //! anchor, so a loose list, a multi-paragraph quote or a fenced block with a
 //! blank line inside would be split around the figure.
@@ -577,6 +578,15 @@ mod the_story_files_and_the_layout_agree {
       && month_year(date) != date
   }
 
+  /// Lowercase letters, digits and dashes: what a route segment, an element
+  /// id and the `!/stories/*.*` negation all accept.
+  fn is_slug(s: &str) -> bool {
+    !s.is_empty()
+      && s
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+  }
+
   fn served_file_exists(path: &str) -> bool {
     let base = concat!(env!("CARGO_MANIFEST_DIR"), "/public");
     let mut on_disk = String::with_capacity(base.len() + path.len());
@@ -648,6 +658,11 @@ mod the_story_files_and_the_layout_agree {
         .unwrap_or_else(|err| panic!("{}: sidecar does not parse: {err}", story.slug));
       let slug = story.slug;
       assert!(
+        is_slug(slug),
+        "{slug}: a slug is lowercase letters, digits and dashes; a dot would fall under the \
+         !/stories/*.* negation and never reach markdown negotiation"
+      );
+      assert!(
         !post.headline.is_empty(),
         "{slug}: the story must open with a '# ' headline"
       );
@@ -679,9 +694,24 @@ mod the_story_files_and_the_layout_agree {
       for figure in &post.meta.figures {
         let slot = &figure.slot;
         assert!(
-          post.body.contains(&figure.anchor),
-          "{slug}: no paragraph contains figure {slot}'s anchor phrase any more, so it would \
-           render at the end of the story instead of beside the passage it illustrates"
+          is_slug(slot),
+          "{slug}: figure {slot}'s slot is not lowercase letters, digits and dashes"
+        );
+        assert_eq!(
+          post
+            .meta
+            .figures
+            .iter()
+            .filter(|other| other.slot == *slot)
+            .count(),
+          1,
+          "{slug}: two figures use slot {slot}, so their ids would collide"
+        );
+        assert_eq!(
+          post.body.matches(figure.anchor.as_str()).count(),
+          1,
+          "{slug}: figure {slot}'s anchor phrase must match exactly one paragraph: none sends \
+           the figure to the end of the story, and a repeat places it after the first match"
         );
         let expected_files = match figure.kind {
           FigureKind::PhotoPair => 2,
@@ -731,11 +761,36 @@ mod the_story_files_and_the_layout_agree {
     }
   }
 
-  // A markdown-negotiable route lives in three files besides the router.
-  // The worker's path list and the header file take one glob for every
-  // post, so what a post itself needs is its page-meta entry; the globs
-  // are checked so nobody replaces them with per-post lines that the next
-  // post then forgets.
+  // The build copies every assets/stories/*.md by glob and ships everything
+  // under public/stories/, so a post's files reach the site whether or not
+  // its manifest line does; holding a post back means removing both.
+  #[test]
+  fn every_story_file_belongs_to_a_manifest_slug() {
+    for dir in ["/assets/stories", "/public/stories"] {
+      let mut path = String::with_capacity(env!("CARGO_MANIFEST_DIR").len() + dir.len());
+      path.push_str(env!("CARGO_MANIFEST_DIR"));
+      path.push_str(dir);
+      // No directory at all is what an empty manifest looks like.
+      let Ok(entries) = std::fs::read_dir(&path) else {
+        continue;
+      };
+      for entry in entries {
+        let name = entry.expect("story directory entry").file_name();
+        let name = name.to_str().expect("story file name is not UTF-8");
+        let slug = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        assert!(
+          STORIES.iter().any(|story| story.slug == slug),
+          "{dir}/{name} belongs to no manifest post, so it would ship with no page"
+        );
+      }
+    }
+  }
+
+  // A markdown-negotiable route lives in three files besides the router,
+  // and llms.txt advertises it. The worker's path list and the header file
+  // take one glob for every post, so what a post itself needs is its
+  // page-meta entry and its llms.txt line; the globs are checked so nobody
+  // replaces them with per-post lines that the next post then forgets.
   #[test]
   fn every_negotiable_route_place_knows_the_stories() {
     let meta: serde_json::Value = serde_json::from_str(include_str!("../../page-meta.json"))
@@ -761,6 +816,15 @@ mod the_story_files_and_the_layout_agree {
         wrangler.contains(entry),
         "wrangler.toml's run_worker_first lacks {entry}"
       );
+    }
+
+    let llms = include_str!("../../public/llms.txt");
+    for story in STORIES {
+      let mut url = String::with_capacity(30 + story.slug.len());
+      url.push_str("https://pidgeiot.com/stories/");
+      url.push_str(story.slug);
+      url.push('/');
+      assert!(llms.contains(&url), "llms.txt does not list {url}");
     }
 
     let headers = include_str!("../../public/_headers");
