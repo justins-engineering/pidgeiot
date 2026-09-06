@@ -94,29 +94,38 @@ pub fn page_title(route: &Route) -> String {
 mod page_meta_matches_the_router {
   use super::{META, page_title};
   use crate::Route;
+  use crate::views::STORIES;
   use std::str::FromStr;
 
   /// Every public page, listed so that adding one to the router without a
   /// title is a test failure rather than a silent fallback to the brand name.
-  const PUBLIC_ROUTES: [Route; 17] = [
-    Route::Index {},
-    Route::FeaturesPage {},
-    Route::HowItWorksPage {},
-    Route::UseCasesPage {},
-    Route::PricingPage {},
-    Route::ComparePage {},
-    Route::SelfHostingPage {},
-    Route::DocumentationPage {},
-    Route::ApiReferencePage {},
-    Route::Architecture {},
-    Route::GettingStartedPage {},
-    Route::DemoPage {},
-    Route::OpenSourcePage {},
-    Route::AboutUs {},
-    Route::ContactPage {},
-    Route::PrivacyPage {},
-    Route::TermsPage {},
-  ];
+  /// The story pages come from the manifest, one per published post.
+  fn public_routes() -> Vec<Route> {
+    let mut routes = vec![
+      Route::Index {},
+      Route::FeaturesPage {},
+      Route::HowItWorksPage {},
+      Route::UseCasesPage {},
+      Route::PricingPage {},
+      Route::ComparePage {},
+      Route::SelfHostingPage {},
+      Route::DocumentationPage {},
+      Route::ApiReferencePage {},
+      Route::Architecture {},
+      Route::GettingStartedPage {},
+      Route::DemoPage {},
+      Route::StoriesIndex {},
+      Route::OpenSourcePage {},
+      Route::AboutUs {},
+      Route::ContactPage {},
+      Route::PrivacyPage {},
+      Route::TermsPage {},
+    ];
+    routes.extend(STORIES.iter().map(|story| Route::StoryPage {
+      slug: story.slug.to_string(),
+    }));
+    routes
+  }
 
   #[test]
   fn every_json_key_is_a_route_that_renders_to_that_exact_path() {
@@ -133,7 +142,7 @@ mod page_meta_matches_the_router {
 
   #[test]
   fn every_public_route_has_its_own_title() {
-    for route in PUBLIC_ROUTES {
+    for route in public_routes() {
       assert!(
         META.pages.contains_key(&route.to_string()),
         "{route} has no page-meta.json entry, so its tab would read as the bare brand name"
@@ -145,7 +154,7 @@ mod page_meta_matches_the_router {
   fn public_and_app_routes_cover_the_same_ground_as_the_json() {
     assert_eq!(
       META.pages.len(),
-      PUBLIC_ROUTES.len(),
+      public_routes().len(),
       "page-meta.json and the public route list disagree on how many public pages there are"
     );
   }
@@ -163,5 +172,26 @@ mod page_meta_matches_the_router {
       page_title(&Route::PricingPage {}),
       "Pricing: Free During Early Access | PidgeIoT"
     );
+  }
+
+  // A post's route carries its slug, so it is keyed by the path it renders
+  // to, like every other public page; an unknown slug is the 404 page and
+  // falls back to the brand title on purpose.
+  #[test]
+  fn a_story_resolves_to_its_own_title() {
+    for story in STORIES {
+      let route = Route::StoryPage {
+        slug: story.slug.to_string(),
+      };
+      assert_ne!(
+        page_title(&route),
+        META.brand_title(),
+        "{route} has no title of its own"
+      );
+    }
+    let unknown = Route::StoryPage {
+      slug: "no-such-post".to_string(),
+    };
+    assert_eq!(page_title(&unknown), META.brand_title());
   }
 }

@@ -14,7 +14,7 @@ use views::{
   DocumentationPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept,
   LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage,
   PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo, SettingsFlow,
-  TermsPage, Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
+  StoriesIndex, StoryPage, TermsPage, Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -119,6 +119,10 @@ enum Route {
   DemoPage {},
   #[route("/api-reference/")]
   ApiReferencePage {},
+  #[route("/stories/")]
+  StoriesIndex {},
+  #[route("/stories/:slug/")]
+  StoryPage { slug: String },
   #[route("/privacy/")]
   PrivacyPage {},
   #[route("/open-source/")]
@@ -156,15 +160,22 @@ enum Route {
 // public marketing page plus the small number of statically-routable
 // AuthGuard'd pages (`/dashboard`, `/flocks`, `/session`, `/settings`) --
 // those prerender AuthGuard's logged-out redirect state, not real content
-// (harmless: no private data leaks into the prerendered HTML).
+// (harmless: no private data leaks into the prerendered HTML). The story
+// pages carry a slug segment, so that filter drops them; every published
+// post is appended from the manifest so it prerenders like any other page.
 #[server(endpoint = "static_routes", output = server_fn::codec::Json)]
 async fn static_routes() -> Result<Vec<String>, ServerFnError> {
-  Ok(
-    Route::static_routes()
-      .iter()
-      .map(ToString::to_string)
-      .collect(),
-  )
+  let mut routes: Vec<String> = Route::static_routes()
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+  routes.extend(views::STORIES.iter().map(|story| {
+    Route::StoryPage {
+      slug: story.slug.to_string(),
+    }
+    .to_string()
+  }));
+  Ok(routes)
 }
 
 #[component]
@@ -458,6 +469,7 @@ mod public_route_trailing_slash {
   both_forms!(self_hosting, "/self-hosting", SelfHostingPage);
   both_forms!(demo, "/demo", DemoPage);
   both_forms!(api_reference, "/api-reference", ApiReferencePage);
+  both_forms!(stories, "/stories", StoriesIndex);
   both_forms!(privacy, "/privacy", PrivacyPage);
   both_forms!(open_source, "/open-source", OpenSourcePage);
   both_forms!(terms, "/terms", TermsPage);
@@ -466,5 +478,23 @@ mod public_route_trailing_slash {
   fn root_unchanged() {
     assert!(matches!(Route::from_str("/").unwrap(), Route::Index {}));
     assert_eq!(Route::Index {}.to_string(), "/");
+  }
+
+  // The one public route with a dynamic segment: both forms parse to the
+  // same post, and the href the index writes is the trailing-slash form.
+  #[test]
+  fn story_slug_both_forms() {
+    for path in ["/stories/departure-board", "/stories/departure-board/"] {
+      let route = Route::from_str(path).unwrap();
+      assert!(
+        matches!(route, Route::StoryPage { ref slug } if slug == "departure-board"),
+        "got {}",
+        route
+      );
+    }
+    let route = Route::StoryPage {
+      slug: "departure-board".to_string(),
+    };
+    assert_eq!(route.to_string(), "/stories/departure-board/");
   }
 }

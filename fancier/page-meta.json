@@ -62,6 +62,10 @@
       "title": "Live Demo: Real Device Data, No Signup | PidgeIoT",
       "description": "Watch live telemetry from a real PidgeIoT device account right now: no signup, no mock data. Charts and latest values straight from the platform API."
     },
+    "/stories/": {
+      "title": "Stories: Field Notes From the Fleet | PidgeIoT",
+      "description": "Field notes from the devices PidgeIoT was built for: what the hardware taught us on the bench and in the field, what broke, and what the platform grew out of."
+    },
     "/open-source/": {
       "title": "Open Source: Licenses & Attribution | PidgeIoT",
       "description": "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license texts for every open-source component the platform ships, auto-generated."

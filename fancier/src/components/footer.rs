@@ -1,4 +1,5 @@
 use crate::components::FeedbackForm;
+use crate::views::STORIES;
 use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -104,6 +105,22 @@ pub fn Footer() -> Element {
                         title: "Chevron right",
                       }
                       "Use Cases"
+                    }
+                  }
+                  // Only once there is a story to read: an index that says
+                  // the first one is on its way is not worth a footer slot.
+                  if !STORIES.is_empty() {
+                    li {
+                      Link {
+                        class: "hover:text-primary transition-colors duration-300 flex items-center group",
+                        to: Route::StoriesIndex {},
+                        Icon {
+                          icon: LdChevronRight,
+                          class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
+                          title: "Chevron right",
+                        }
+                        "Stories"
+                      }
                     }
                   }
                   li {
