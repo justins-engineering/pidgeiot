@@ -35,7 +35,11 @@ not_found_handling = "single-page-application"
 # asset serving. Both slash forms are listed so a no-trailing-slash agent
 # request negotiates immediately instead of only after the 307 redirect.
 # KEEP IN SYNC with page-meta.json's `pages` map (which decides which
-# routes get an index.md variant + Link header advertisement).
+# routes get an index.md variant + Link header advertisement). The story
+# pages are one glob rather than a line per post, so publishing a post
+# touches no config; the negation keeps the photos and clips under
+# /stories/ on direct serving, since the worker would only pass them
+# through.
 run_worker_first = [
   "/",
   "/features",
@@ -60,6 +64,9 @@ run_worker_first = [
   "/getting-started/",
   "/demo",
   "/demo/",
+  "/stories",
+  "/stories/*",
+  "!/stories/*.*",
   "/open-source",
   "/open-source/",
   "/about",

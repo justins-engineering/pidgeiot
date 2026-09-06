@@ -717,6 +717,50 @@ mod the_story_files_and_the_layout_agree {
     }
   }
 
+  // A markdown-negotiable route lives in three files besides the router.
+  // The worker's path list and the header file take one glob for every
+  // post, so what a post itself needs is its page-meta entry; the globs
+  // are checked so nobody replaces them with per-post lines that the next
+  // post then forgets.
+  #[test]
+  fn every_negotiable_route_place_knows_the_stories() {
+    let meta: serde_json::Value = serde_json::from_str(include_str!("../../page-meta.json"))
+      .expect("page-meta.json is not valid JSON");
+    let pages = meta["pages"]
+      .as_object()
+      .expect("page-meta.json has no pages map");
+    assert!(
+      pages.contains_key("/stories/"),
+      "page-meta.json lacks the stories index"
+    );
+    for story in STORIES {
+      let mut key = String::with_capacity(10 + story.slug.len());
+      key.push_str("/stories/");
+      key.push_str(story.slug);
+      key.push('/');
+      assert!(pages.contains_key(&key), "page-meta.json lacks {key}");
+    }
+
+    let wrangler = include_str!("../../wrangler.toml");
+    for entry in ["\"/stories\",", "\"/stories/*\",", "\"!/stories/*.*\","] {
+      assert!(
+        wrangler.contains(entry),
+        "wrangler.toml's run_worker_first lacks {entry}"
+      );
+    }
+
+    let headers = include_str!("../../public/_headers");
+    for rule in [
+      "/stories/\n  Link: </stories/index.md>; rel=\"alternate\"; type=\"text/markdown\"",
+      "/stories/:slug/\n  Link: </stories/:slug/index.md>; rel=\"alternate\"; type=\"text/markdown\"",
+    ] {
+      assert!(
+        headers.contains(rule),
+        "public/_headers lacks the rule:\n{rule}"
+      );
+    }
+  }
+
   #[test]
   fn the_index_runs_newest_first() {
     assert!(
