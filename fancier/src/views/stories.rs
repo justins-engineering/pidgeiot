@@ -7,6 +7,9 @@
 //! phrase is found in, so a revision is a file copy and a rebuild with no
 //! code edit. Adding a post is the two files, one line in `STORIES`, and one
 //! `page-meta.json` entry; the tests below fail on anything else it needs.
+//! The prose is plain paragraphs: a figure's cut is the blank line after its
+//! anchor, so a loose list, a multi-paragraph quote or a fenced block with a
+//! blank line inside would be split around the figure.
 use crate::Route;
 use crate::views::PageNotFound;
 use dioxus::prelude::*;
@@ -84,6 +87,7 @@ struct Figure {
   poster: Option<String>,
 }
 
+/// The sidecar's `kind`, spelled in kebab-case there.
 #[derive(Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "kebab-case")]
 enum FigureKind {
@@ -101,6 +105,7 @@ struct Post {
 }
 
 impl Post {
+  /// Parses the sidecar and splits the headline from the prose.
   fn read(story: &Story) -> Result<Post, serde_json::Error> {
     let meta = serde_json::from_str(story.sidecar)?;
     let (headline, body) = split_headline(story.md);
@@ -157,12 +162,13 @@ static POSTS: LazyLock<Vec<Post>> = LazyLock::new(|| {
 // bitmap arrives, which collapses the figure to nothing while it is still
 // loading: no space is reserved, the layout shifts when it lands, and a
 // `loading=lazy` image sitting in a zero-height box may never come near
-// enough to the viewport to be fetched at all. Both were observed before
-// the widths below replaced the height caps.
+// enough to the viewport to be fetched at all.
 const STORY_PHOTO_CLASS: &str =
   "mx-auto block w-full max-w-md h-auto rounded-xl border border-base-300 shadow-sm";
+/// `STORY_PHOTO_CLASS` at the width two images share a row at.
 const STORY_PHOTO_PAIR_CLASS: &str =
   "mx-auto block w-full max-w-72 h-auto rounded-xl border border-base-300 shadow-sm";
+/// The caption under every figure, the hero included.
 const CAPTION_CLASS: &str = "mt-3 text-center text-sm text-base-content/70 leading-relaxed";
 
 // Scoped so it never leaks into the rest of the page, same convention as
@@ -215,8 +221,8 @@ fn cut_after(body: &str, anchor: &str) -> usize {
 
 /// The figures in the order their anchors fall in the prose, each with the
 /// offset its block ends at. Sorting here frees the sidecar from listing
-/// them in document order; the sort is stable, so two figures anchored to
-/// one paragraph keep the sidecar's order.
+/// them in document order; two figures on one paragraph are refused by the
+/// completeness test rather than ordered here.
 fn place_figures<'a>(body: &str, figures: &'a [Figure]) -> Vec<(usize, &'a Figure)> {
   let mut placed: Vec<(usize, &Figure)> = figures
     .iter()
@@ -245,6 +251,7 @@ fn reading_minutes(body: &str) -> usize {
   body.split_whitespace().count().div_ceil(200).max(1)
 }
 
+/// The prose as HTML; tables and strikethrough are on.
 fn render_markdown(src: &str) -> String {
   let mut options = Options::empty();
   options.insert(Options::ENABLE_TABLES);
@@ -255,6 +262,7 @@ fn render_markdown(src: &str) -> String {
   body
 }
 
+/// The English name of a 1-based month, or `None` past twelve.
 fn month_name(month: u8) -> Option<&'static str> {
   Some(match month {
     1 => "January",
@@ -297,6 +305,7 @@ fn size_at_800(width: u32, height: u32) -> (u32, u32) {
   (width * 800 / long, height * 800 / long)
 }
 
+/// One figure in the body: a photo, a pair side by side, or a clip.
 fn figure_element(figure: &Figure) -> Element {
   let file = figure.files.first().map(String::as_str).unwrap_or("");
   match figure.kind {
@@ -358,6 +367,7 @@ fn figure_element(figure: &Figure) -> Element {
   }
 }
 
+/// The index at `/stories/`: one card per post, newest first.
 #[component]
 pub fn StoriesIndex() -> Element {
   rsx! {
@@ -428,6 +438,7 @@ fn story_card(post: &Post, first: bool) -> Element {
   }
 }
 
+/// The post at `slug`, or the not-found page.
 #[component]
 pub fn StoryPage(slug: String) -> Element {
   let Some(post) = POSTS.iter().find(|post| post.slug == slug) else {
@@ -544,7 +555,8 @@ mod the_story_files_and_the_layout_agree {
                "width": 1205, "height": 1600, "alt": "a", "caption": "c"},
       "figures": [
         {"slot": "later", "kind": "photo", "anchor": "fleet complete",
-         "files": ["/stories/fixture/later.jpg"], "width": 1, "height": 1, "alt": "", "caption": ""},
+         "files": ["/stories/fixture/later.jpg"],
+         "width": 1, "height": 1, "alt": "", "caption": ""},
         {"slot": "earlier", "kind": "photo-pair", "anchor": "cap raised",
          "files": ["/a.jpg", "/b.jpg"], "width": 1, "height": 1, "alt": "", "caption": ""},
         {"slot": "lost", "kind": "video", "anchor": "nowhere in the story",
@@ -566,7 +578,9 @@ mod the_story_files_and_the_layout_agree {
   }
 
   fn served_file_exists(path: &str) -> bool {
-    let mut on_disk = String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/public"));
+    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/public");
+    let mut on_disk = String::with_capacity(base.len() + path.len());
+    on_disk.push_str(base);
     on_disk.push_str(path);
     std::fs::metadata(on_disk).is_ok()
   }
@@ -752,7 +766,8 @@ mod the_story_files_and_the_layout_agree {
     let headers = include_str!("../../public/_headers");
     for rule in [
       "/stories/\n  Link: </stories/index.md>; rel=\"alternate\"; type=\"text/markdown\"",
-      "/stories/:slug/\n  Link: </stories/:slug/index.md>; rel=\"alternate\"; type=\"text/markdown\"",
+      "/stories/:slug/\n  Link: </stories/:slug/index.md>; rel=\"alternate\"; \
+       type=\"text/markdown\"",
     ] {
       assert!(
         headers.contains(rule),
