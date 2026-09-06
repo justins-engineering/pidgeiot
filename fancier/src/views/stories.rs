@@ -28,8 +28,6 @@ pub struct Story {
 }
 
 /// One manifest entry, read from `assets/stories/<slug>.md` and `.json`.
-// Unused while the manifest is empty.
-#[allow(unused_macros)]
 macro_rules! story {
   ($slug:literal) => {
     Story {
@@ -42,7 +40,7 @@ macro_rules! story {
 
 /// Every published post. Array order is not publication order: the index
 /// sorts by the sidecar's date.
-pub const STORIES: &[Story] = &[];
+pub const STORIES: &[Story] = &[story!("departure-board")];
 
 /// The sidecar. `date` is ISO `YYYY-MM-DD`, which is what lets posts sort as
 /// strings; `source` is one markdown sentence for the box under the story,

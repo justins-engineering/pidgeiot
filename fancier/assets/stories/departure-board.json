@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-01",
+  "byline": "Justin, Justin's Engineering Services",
+  "blurb": "Rebuilding three solar bus departure signs for a Massachusetts transit agency: custom LED panels, LTE modems, dead batteries, and no way to check one remotely.",
+  "source": "The firmware and the platform in this story are both open source: [pigeon](https://github.com/justins-engineering/pigeon), the Zephyr RTOS module the signs run, and [the platform they report to](https://github.com/justins-engineering/pidgeiot).",
+  "hero": {
+    "src": "/stories/departure-board/hero.jpg",
+    "src_800": "/stories/departure-board/hero-800.jpg",
+    "width": 1205,
+    "height": 1600,
+    "alt": "Solar powered bus departure sign on a black pole under a blue sky with scattered clouds. Three rows read G1 30, G2 25 and X92 8 in green LED digits over a footer reading Mill-Locust STOP# 1670. A control box and solar panel sit above; a glass shelter, a Citgo sign and a red and white PVTA bus below.",
+    "caption": "Mill and Locust, stop 1670, Springfield, September 2, 2026. G1 departs in 30 minutes, G2 in 25, X92 in 8. The shelter and the Citgo behind the sign, bus 1655 crossing at the right."
+  },
+  "figures": [
+    {
+      "slot": "haigis-mall",
+      "kind": "photo",
+      "anchor": "at Haigis Mall with the new design",
+      "files": [
+        "/stories/departure-board/haigis.jpg"
+      ],
+      "width": 1247,
+      "height": 1400,
+      "alt": "Upward view of a bus departure sign against an overcast sky. Five of its six rows carry route badges 38, B43, B43, B43E and B79 beside their destinations; the top slot, once the R29's, is empty, and the countdown panels at right are unlit. Footer reads Haigis Mall STOP# 73. A ladder at lower left, a campus building at right.",
+      "caption": "Haigis Mall, stop 73, UMass Amherst, September 3, 2026, from below. Six slots, the top one empty: the frame grew from five in 2025 to add the B79, the R29 moved from the bottom slot to the top to keep the route numbers in order, and then the R29 stopped serving Haigis Mall. The countdowns are dark because the stop had no predicted departures when this was taken. A ladder at left, campus buildings behind."
+    },
+    {
+      "slot": "placard-pair",
+      "kind": "photo-pair",
+      "anchor": "I raised the cap to 8",
+      "files": [
+        "/stories/departure-board/placard-x90.jpg",
+        "/stories/departure-board/placard-r22.jpg"
+      ],
+      "width": 652,
+      "height": 1000,
+      "alt": "Close view of stop 414's bottom row on an October 2024 morning: first with a printed placard reading X90, then 24 minutes later with white tape over it reading R22 by hand.",
+      "caption": "Stop 414 on one October 2024 morning, 24 minutes apart. The bottom row's printed X90 placard, then the hand-lettered R22 taped over it. Route changes arrive faster than printed placards do."
+    },
+    {
+      "slot": "holyoke-414",
+      "kind": "photo",
+      "anchor": "By August 2025 the fleet was complete",
+      "files": [
+        "/stories/departure-board/holyoke.jpg"
+      ],
+      "width": 1400,
+      "height": 1322,
+      "alt": "Six row bus departure sign on a black pole under a heavy grey cloud bank. Each row has a green LED countdown at left and a route badge at right: P20 5, P21 20, P21E 30, B23 37, R24 27, R22 50. Footer reads Holyoke Public Library STOP# 414. Solar panel above, trees at right, brick rowhouses down the street at left.",
+      "caption": "Holyoke Public Library, stop 414, August 31, 2026. P20 departs in 5 minutes, P21 in 20, P21E in 30, B23 in 37, R24 in 27, R22 in 50. The R22 row that was taped on is a printed slat now."
+    },
+    {
+      "slot": "closing-loop",
+      "kind": "video",
+      "anchor": "The signs run on it now",
+      "files": [
+        "/stories/departure-board/closing.mp4"
+      ],
+      "width": 720,
+      "height": 1280,
+      "alt": "Muted looping video of a sidewalk bus stop under an overcast sky. A three row departure sign on a black pole beside a glass shelter; PVTA bus 1324, red and white, is already stopped at it when the loop opens. A hooded rider, back to the camera, steps in the front door, the door closes and the bus pulls away right.",
+      "caption": "Mill and Locust, stop 1670, September 2, 2026. Bus 1324 stopped at the sign; a rider boards, the doors close and it pulls out.",
+      "poster": "/stories/departure-board/closing-poster.jpg"
+    }
+  ]
+}

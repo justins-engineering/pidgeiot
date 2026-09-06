@@ -39,6 +39,10 @@ device-to-platform MQTT path against a broker on the same machine.
   the platform was built for (markdown variant:
   https://pidgeiot.com/stories/index.md; each post has its own at
   https://pidgeiot.com/stories/<slug>/index.md)
+- [Stop 73: How a Bus Sign Became a Platform](https://pidgeiot.com/stories/departure-board/):
+  three solar bus departure signs for a transit agency, and the platform
+  they became the first tenant of (markdown variant:
+  https://pidgeiot.com/stories/departure-board/index.md)
 
 ## Try it
 

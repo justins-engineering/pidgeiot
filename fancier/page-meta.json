@@ -66,6 +66,10 @@
       "title": "Stories: Field Notes From the Fleet | PidgeIoT",
       "description": "Field notes from the devices PidgeIoT was built for: what the hardware taught us on the bench and in the field, what broke, and what the platform grew out of."
     },
+    "/stories/departure-board/": {
+      "title": "Stop 73: How a Bus Sign Became a Platform | PidgeIoT",
+      "description": "Rebuilding three solar bus departure signs for a Massachusetts transit agency: custom LED panels, LTE modems, dead batteries, and no way to check one remotely."
+    },
     "/open-source/": {
       "title": "Open Source: Licenses & Attribution | PidgeIoT",
       "description": "PidgeIoT is AGPL-3.0 and developed in the open. Full attribution and license texts for every open-source component the platform ships, auto-generated."
