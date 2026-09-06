@@ -33,6 +33,13 @@ device-to-platform MQTT path against a broker on the same machine.
 - [Architecture](https://pidgeiot.com/architecture/): how the platform is
   built, edge to database
 
+## Stories
+
+- [Stories](https://pidgeiot.com/stories/): field notes from the devices
+  the platform was built for (markdown variant:
+  https://pidgeiot.com/stories/index.md; each post has its own at
+  https://pidgeiot.com/stories/<slug>/index.md)
+
 ## Try it
 
 - [Live Demo](https://pidgeiot.com/demo/): real device telemetry, no signup

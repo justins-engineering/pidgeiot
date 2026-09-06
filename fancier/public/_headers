@@ -70,6 +70,14 @@
   Link: </getting-started/index.md>; rel="alternate"; type="text/markdown"
 /demo/
   Link: </demo/index.md>; rel="alternate"; type="text/markdown"
+/stories/
+  Link: </stories/index.md>; rel="alternate"; type="text/markdown"
+# One placeholder rule for every post, so publishing one touches no
+# header config. It also fires for a slug that does not exist, whose
+# response is the SPA fallback page; that page is a 404 in all but status
+# and nothing follows the header from it.
+/stories/:slug/
+  Link: </stories/:slug/index.md>; rel="alternate"; type="text/markdown"
 /open-source/
   Link: </open-source/index.md>; rel="alternate"; type="text/markdown"
 /about/

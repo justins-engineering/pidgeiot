@@ -38,6 +38,16 @@ security_txt_gate="$(cargo test -p dovecote \
 printf '%s\n' "$security_txt_gate"
 grep -E 'test result: ok\. [1-9]' <<<"$security_txt_gate" >/dev/null
 
+# The story pages are laid out from files only the tests check (an anchor
+# phrase that no longer matches, a sidecar that does not parse, a file
+# with no manifest line), and dx's prerender logs a page that panics and
+# exits 0, so the fancier suite runs here or a release ships the defect.
+# Same host-target and some-test-ran details as above.
+fancier_gate="$(cargo test -p fancier \
+  --target "$(rustc -vV | sed -n 's/^host: //p')" --quiet 2>&1)"
+printf '%s\n' "$fancier_gate"
+grep -E 'test result: ok\. [1-9]' <<<"$fancier_gate" >/dev/null
+
 bunx @tailwindcss/cli -i ./assets/tailwind.css -o ./assets/styling/main.css -m
 
 # Regenerates the /open-source page's crate-license inventory from the
@@ -175,14 +185,25 @@ rm -f "$PUBLIC_DIR/.well-known/security.txt.unsigned"
 # also advertised via `Link: rel="alternate"; type="text/markdown"`
 # response headers (public/_headers) and llms.txt. Reuses existing prose
 # rather than authoring parallel copies that could drift: llms.txt IS the
-# site overview (-> /index.md), and docs/api.md IS the API reference --
-# the exact file /api-reference/ renders via pulldown-cmark (->
-# /api-reference/index.md). Every other PAGES route gets a minimal
-# generated variant (title/description/links, python block below) from
-# the same map that drives titles and the sitemap, so it can't drift.
+# site overview (-> /index.md), docs/api.md IS the API reference -- the
+# exact file /api-reference/ renders via pulldown-cmark (->
+# /api-reference/index.md) -- and each assets/stories/<slug>.md IS that
+# post, the file views/stories.rs renders (-> /stories/<slug>/index.md),
+# so an agent negotiating markdown gets the prose rather than a stub.
+# Every other PAGES route gets a minimal generated variant
+# (title/description/links, python block below) from the same map that
+# drives titles and the sitemap, so it can't drift.
 cp ./public/llms.txt "$PUBLIC_DIR/index.md"
 mkdir -p "$PUBLIC_DIR/api-reference"
 cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
+# nullglob so an empty manifest copies nothing instead of a literal "*.md".
+shopt -s nullglob
+for story in ./assets/stories/*.md; do
+  slug="$(basename "$story" .md)"
+  mkdir -p "$PUBLIC_DIR/stories/$slug"
+  cp "$story" "$PUBLIC_DIR/stories/$slug/index.md"
+done
+shopt -u nullglob
 
 # Build identity for error reports: dx already content-hashes the wasm
 # (fancier_bg-dxh<16 hex>.wasm), which is a perfect per-release id -- no
