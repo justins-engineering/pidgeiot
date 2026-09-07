@@ -1,6 +1,6 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-fancier-MIT) — 219 package(s)
+- [MIT License (MIT)](#license-fancier-MIT) — 220 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-fancier-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-fancier-Apache-2.0) — 8 package(s)
 - [zlib License (Zlib)](#license-fancier-Zlib) — 5 package(s)
@@ -377,7 +377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
-**Used by:** [encoding_rs 0.8.35](https://github.com/hsivonen/encoding_rs)
+**Used by:** [encoding_rs 0.8.40](https://github.com/hsivonen/encoding_rs)
 
 
 </details>
@@ -2154,7 +2154,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.35](https://github.com/hsivonen/encoding_rs), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.40](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 
 
 ````text
