@@ -7,8 +7,8 @@ rely on.
 
 This was built before there were users to backfill, which is the only time it is cheap.
 
-The wording itself, and the reasoning behind each string, is owner-facing and lives in
-`pidgeiot-business/24-eu-paperwork/consent-wording.md`. This file is the engineering half:
+The wording itself, and the reasoning behind each string, is owner-facing and kept outside
+this repo. This file is the engineering half:
 what exists, why it is shaped this way, and what the owner has to apply by hand.
 
 ## The split
@@ -354,8 +354,8 @@ authoritative in both directions.
 ## Relationship to the wording document
 
 Every string a person reads — the label, the helper line, the settings withdrawal text and the
-list of email that keeps arriving — is verbatim from
-`pidgeiot-business/24-eu-paperwork/consent-wording.md`, and the shape follows its
+list of email that keeps arriving — is verbatim from that owner-facing wording, and the
+shape follows its
 correction to `phases.md`: one flat boolean trait, `subscribed` replaced rather than kept
 alongside, and the evidence in a backend-write-only append-only table.
 

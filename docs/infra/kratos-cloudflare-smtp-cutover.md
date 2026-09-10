@@ -12,8 +12,7 @@ already published (see Preconditions) and authorizes both providers at once,
 which is what makes rollback a config revert rather than a DNS wait.
 
 Everything here is applied on the VPS (`debian@15.204.254.3`) by the owner.
-Background and the phase plan live in the #65 scoping report
-(`~/pidgeiot-business/65-mail-migration/scoping-report.md`).
+Background and the phase plan live in the #65 scoping report, kept outside this repo.
 
 ## Status: not yet run; rehearsed 2026-09-01
 
