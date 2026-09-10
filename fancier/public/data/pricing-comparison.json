@@ -19,7 +19,7 @@
     "all is status 'unpriced'. Never a guessed number in either case.",
     "build_your_own is raw infrastructure. It stays OUT of the table on purpose: a rate in",
     "cents sitting in a price column anchors a reader before any feature list reaches them.",
-    "Figures come from pidgeiot-business/pricing-analysis-2026-08.md sections 1.8 and 1.9.",
+    "Figures come from pidgeiot-business/22-pricing/pricing-analysis-2026-08.md sections 1.8 and 1.9.",
     "TWO pages render this file. /pricing/ shows each profile's summary_rows at its summary_columns and never shows build_your_own; /compare/ shows every row at full_columns plus the build_your_own citations. One figure, edited once, corrects both.",
     "A row may carry summary_note: the ONE sentence /pricing/ shows, where its full note is longer. Golioth has one because the sales page must still admit they are cheaper, in a line, while the full crossover arithmetic lives on /compare/.",
     "Every per-device figure is PER DEVICE per month. $1.499 is a thousandth of $1,499 and both are real ThingsBoard numbers, so write a qualifier rather than 'correcting' one into the other; the tests cross-check per-device x 1,000 against the monthly total and refuse a per-device rate above $1,000.",

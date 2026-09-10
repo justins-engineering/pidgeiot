@@ -13,10 +13,10 @@
     "is also the pidgeiot row's monthly total in pricing-comparison.json; all three must agree.",
     "ThingsBoard's are the self-managed licence tab of thingsboard.io/pricing/, each row's source.",
     "The analysis behind the page is outside this repo, in the pidgeiot-business directory beside",
-    "it: ../pidgeiot-business/pricing-analysis-2026-08.md section 4.4, 'Customers self-hosting",
+    "it: ../pidgeiot-business/22-pricing/pricing-analysis-2026-08.md section 4.4, 'Customers self-hosting",
     "instead of paying', for the three options and the $20 to $40 server band, and section 1.3",
     "(ThingsBoard, the primary competitor) for the $499 self-managed licence at 1,000 devices.",
-    "The $75 to $125 loaded hourly band is ../pidgeiot-business/payments-decision-2026-08.md",
+    "The $75 to $125 loaded hourly band is ../pidgeiot-business/09-payments/payments-decision-2026-08.md",
     "section 3a.5, 'Revised cost, with the engineering priced in'."
   ],
   "schema": 1,
