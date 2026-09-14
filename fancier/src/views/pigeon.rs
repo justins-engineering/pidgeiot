@@ -1581,19 +1581,13 @@ pub fn EditShadowModal(
                 },
               }
 
+              // Not a daisyUI .label: it is white-space: nowrap, so the sentence
+              // sets the modal's minimum width and runs off a phone screen.
               if let Some(err) = error_msg.read().as_ref() {
-                label { class: "label py-1",
-                  span { class: "label-text-alt text-error font-medium text-xs",
-                    "⚠️ {err}"
-                  }
-                }
+                p { class: "text-error text-sm mt-1", "⚠️ {err}" }
               }
               if let Some(err) = submit_error.read().as_ref() {
-                label { class: "label py-1",
-                  span { class: "label-text-alt text-error font-medium text-xs",
-                    "⚠️ {err}"
-                  }
-                }
+                p { class: "text-error text-sm mt-1", "⚠️ {err}" }
               }
             }
           }
