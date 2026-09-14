@@ -87,6 +87,8 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /dashboard-state/:scope_key`](#get-dashboard-statescope_key) | session | Read the caller's saved document for one scope |
 | [`PUT /dashboard-state/:scope_key`](#put-dashboard-statescope_key) | session | Replace the caller's document for one scope |
 | [`DELETE /dashboard-state/:scope_key`](#delete-dashboard-statescope_key) | session | Drop the caller's document for one scope |
+| [`GET /account/terms`](#get-accountterms) | session | Which Terms version the account has accepted |
+| [`POST /account/terms`](#post-accountterms) | session | Record assent to the published Terms |
 | [`GET /demo/pigeons/:pigeon_id/telemetry`](#get-demopigeonspigeon_idtelemetry) | none | Latest values for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/telemetry/history`](#get-demopigeonspigeon_idtelemetryhistory) | none | Telemetry history for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/alerts`](#get-demopigeonspigeon_idalerts) | none | The alert rules the demo page draws its lines from |
@@ -2455,6 +2457,51 @@ directly (`infra/migrations/2026-08-31-dashboard-state.sql`).
 
 ---
 
+### Terms assent
+
+The record that an account accepted a published version of the Terms of Service, kept before
+the liability cap, the forum clause, the jury waiver or the incorporated DPA is relied on. It
+is a row in `consent_events` under `purpose = 'terms_of_service'`, written only by the two
+surfaces below, and **version, time, address and user agent are all the server's** — a client
+supplies none of them, so no row can misdescribe what was accepted or when.
+
+`current_version` is `capsules::TERMS_VERSION`, the "Last updated" date the Terms page renders.
+It rides the wire rather than being read from the dashboard's own compiled copy because the two
+binaries deploy separately: a gate keyed on the client's constant would ask for assent to a
+version this API would not stamp. On a version bump the dashboard deploys first, then this API,
+so no row is ever written against text that is not yet published.
+
+**The read is exempt from Hyperdrive's ~60s query cache** — its statement carries `now()`, which
+Hyperdrive refuses to cache. It gates a screen the person has just cleared, so a cached answer
+would put that screen back in front of them for up to a minute after they accepted.
+
+Neither route answers **401** for anything but a session that no longer resolves: the dashboard
+reads 401 as "signed out" and clears its caches.
+
+#### `GET /account/terms`
+
+**Auth:** session
+
+Returns `capsules::consent::TermsAssentStatus` — `{ current_version, accepted_version,
+accepted_at }`. `accepted_version` and `accepted_at` are `null` when the account has never
+accepted any version; `accepted_at` is RFC 3339. A version other than `current_version` means a
+new one has been published since.
+
+#### `POST /account/terms`
+
+**Auth:** session
+
+Records assent to `current_version` and returns the same `TermsAssentStatus` the `GET` would now
+return, so a client never re-reads to confirm its own write. **The body is ignored and must be
+empty** — the surface is recorded as `gate`, and a client that could name its own surface could
+claim one whose wording we cannot produce.
+
+Accepting twice is not an error: a second call for a version already on file writes nothing and
+answers **200** with the same status. **500** if the row cannot be written, which is the one
+failure that must not look like success.
+
+---
+
 ## Public Demo API
 
 Three routes, all **read-only** and **unauthenticated** — no Kratos session, no device bearer
@@ -3234,6 +3281,9 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `MAX_CONSENT_CONTEXT_BYTES` — `capsules/src/consent.rs`, which also holds the transition
   rule (`consent_transition`) the `/internal/consent` route applies; the notice version it
   stamps is the crate-root `PRIVACY_NOTICE_VERSION`
+- `TermsAssentStatus` (the `/account/terms` response), `TERMS_OF_SERVICE_PURPOSE`,
+  `TERMS_ASSENT_LABEL`, `TERMS_ASSENT_CHECKOUT_NOTICE` — same module; the version an assent row
+  is stamped with is the crate-root `TERMS_VERSION`
 - `MQTT_TLS_PORT`, `MQTT_TOPIC_TELEMETRY`, `MQTT_TOPIC_SHADOW_REPORT`, `MQTT_TOPIC_LOGS`,
   `MQTT_TOPIC_SHADOW_TARGET` — the wire constants the broker mirrors
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,

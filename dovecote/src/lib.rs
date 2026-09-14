@@ -18,21 +18,22 @@ use crate::helpers::{
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
-  load_org_roles, mark_webhook_event_processed, mint_invite_token, notify_contact_submission,
-  org_role_of, pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do,
-  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
+  notify_contact_submission, org_role_of, pigeon_move_shares_owner, plan_business_details,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, readings_from_body, record_consent_event, remove_member,
-  reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
-  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state,
-  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
-  update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
+  raise_message_allowance_floor, readings_from_body, record_consent_event, record_terms_assent,
+  remove_member, reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url,
+  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
+  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
+  update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
   verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
+use capsules::consent::{ConsentSource, TermsAssentStatus};
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
@@ -41,7 +42,7 @@ use capsules::{
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
   PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket,
   TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use futures::future::join_all;
@@ -3877,6 +3878,99 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::empty()?.with_status(204).with_cors(&cors)
       },
     )
+    // --- Terms assent ---
+    // The record the liability cap, the forum clause and the incorporated
+    // DPA are relied on against: version, account and time, all stamped by
+    // the server. Neither route answers 401 for anything but a session that
+    // no longer resolves -- the dashboard reads 401 as "signed out".
+    .get_async("/account/terms", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let status = TermsAssentStatus {
+        current_version: TERMS_VERSION.to_string(),
+        accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
+        accepted_at: assent.map(|(_, at)| at),
+      };
+      let Ok(response) = Response::from_json(&status) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      response.with_cors(&cors)
+    })
+    // Empty body on purpose: a client that could name its own source could
+    // claim a surface whose wording we cannot produce. The gate is the only
+    // thing this route records.
+    .post_async("/account/terms", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let ip = req.headers().get("CF-Connecting-IP").ok().flatten();
+      let user_agent = req.headers().get("User-Agent").ok().flatten();
+
+      get_db!(ctx.env, client, &cors);
+      if record_terms_assent(
+        &client,
+        user_uuid,
+        ConsentSource::Gate,
+        None,
+        ip.as_deref(),
+        user_agent.as_deref(),
+      )
+      .await
+      .is_err()
+      {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      // Read back rather than assume: the row carries the database's clock,
+      // not this isolate's, and the statement is uncacheable, so it reflects
+      // the insert above. The client takes this body as the new state and
+      // never refetches.
+      let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let status = TermsAssentStatus {
+        current_version: TERMS_VERSION.to_string(),
+        accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
+        accepted_at: assent.map(|(_, at)| at),
+      };
+      let Ok(response) = Response::from_json(&status) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      response.with_cors(&cors)
+    })
     // --- Organization Routes ---
     // Shared-org access for teams: individual Kratos accounts, org-level
     // RBAC, membership-row revocation. Authorization funnels through
