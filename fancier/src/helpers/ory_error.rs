@@ -1,4 +1,5 @@
 use crate::components::ory_error::{ErrorContentJs, ErrorContentRsx};
+use dioxus::logger::tracing::error;
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::ResponseContent;
 use ory_kratos_client_wasm::apis::frontend_api::{
@@ -10,6 +11,21 @@ use ory_kratos_client_wasm::apis::frontend_api::{
 
 pub trait DisplayError {
   fn view_response_content(self) -> Element;
+}
+
+/// The alert for a Kratos call that never came back.
+///
+/// The error's `Debug` is a wasm stack trace, unreadable on a phone and
+/// useless to the person signing in, so it goes to the console and the page
+/// gets the one sentence they can act on.
+pub fn view_network_error(e: &impl core::fmt::Debug) -> Element {
+  error!("kratos request failed: {e:#?}");
+
+  rsx! {
+    div { class: "alert alert-error",
+      "Can't reach the account service. Check your connection and try again."
+    }
+  }
 }
 
 impl DisplayError for ResponseContent<CreateBrowserRegistrationFlowError> {

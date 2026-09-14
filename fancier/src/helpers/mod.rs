@@ -10,7 +10,7 @@ mod ory_webauthn;
 pub use ory_webauthn::invoke_webauthn_trigger;
 
 mod ory_error;
-pub use ory_error::DisplayError;
+pub use ory_error::{DisplayError, view_network_error};
 
 mod lang;
 pub use lang::set_lang;

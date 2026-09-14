@@ -1,5 +1,7 @@
 use crate::components::{Alert, FormBuilder};
-use crate::helpers::{DisplayError, extract_ui_messages, kratos_return_to, url_query_param};
+use crate::helpers::{
+  DisplayError, extract_ui_messages, kratos_return_to, url_query_param, view_network_error,
+};
 use crate::models::AlertVariant;
 use crate::{Configuration, Create, Route, Session};
 use dioxus::prelude::*;
@@ -42,9 +44,7 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
             return Err(res.view_response_content());
           }
           Err(e) => {
-            return Err(rsx! {
-              div { class: "alert alert-error", "Network Error: {e:#?}" }
-            });
+            return Err(view_network_error(&e));
           }
         }
       }
@@ -67,9 +67,7 @@ pub fn LoginFlow(flow: Option<String>) -> Element {
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
           Err(res.view_response_content())
         }
-        Err(e) => Err(rsx! {
-          div { class: "alert alert-error", "Network Error: {e:#?}" }
-        }),
+        Err(e) => Err(view_network_error(&e)),
       }
     }
   });

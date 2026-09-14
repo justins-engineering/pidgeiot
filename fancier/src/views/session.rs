@@ -1,4 +1,4 @@
-use crate::helpers::DisplayError;
+use crate::helpers::{DisplayError, view_network_error};
 use crate::{Configuration, Create};
 use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::to_session;
@@ -12,9 +12,7 @@ pub fn SessionInfo() -> Element {
       Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
         Err(res.view_response_content())
       }
-      Err(e) => Err(rsx! {
-        div { class: "alert alert-error", "Network Error: {e:#?}" }
-      }),
+      Err(e) => Err(view_network_error(&e)),
     }
   });
 
