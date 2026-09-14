@@ -1,4 +1,9 @@
-//! Marketing-consent wording, and the shape of the record that proves it.
+//! Consent wording, and the shape of the record that proves it.
+//!
+//! Two purposes share the table. Marketing consent is a choice the person
+//! owns and can withdraw; Terms assent is contract formation, recorded
+//! once per published version and superseded rather than withdrawn. The
+//! parts below say which purpose they belong to.
 //!
 //! Two things have to describe the same event: the words a person reads
 //! when they choose to receive marketing email, and the row we keep
@@ -32,6 +37,7 @@
 //! while dovecote (a wasm-only `cdylib`) cannot test its own routes.
 
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// The checkbox label, on both the registration and the settings form.
@@ -72,6 +78,31 @@ pub const MARKETING_CONSENT_NODE: &str = "traits.marketing_emails";
 /// value rather than a new table, and so a query for marketing consent
 /// never has to mean "every row".
 pub const MARKETING_EMAIL_PURPOSE: &str = "marketing_emails";
+
+/// The purpose a Terms assent row carries. Distinct from
+/// [`MARKETING_EMAIL_PURPOSE`] so neither query ever has to mean "every
+/// row": one is a choice the person can withdraw, the other is the record
+/// that a version of the Terms was accepted.
+pub const TERMS_OF_SERVICE_PURPOSE: &str = "terms_of_service";
+
+/// The label on the assent checkbox, at registration and on the gate.
+///
+/// It names the documents rather than "the terms", because the DPA is
+/// incorporated by the Terms and the Privacy Policy is what the account
+/// data is handled under; the page renders each name as a link beside it.
+pub const TERMS_ASSENT_LABEL: &str = "I have read and agree to the Terms of Service, the Privacy Policy, and the Data Processing Agreement the Terms incorporate";
+
+/// The line beside every purchase button, in four segments so the page can
+/// put a link and the version between them: lead, Terms link, segment,
+/// `TERMS_VERSION`, segment, DPA link, tail. One constant because three
+/// call sites show it and they must not drift; segmented because the two
+/// document names are links rather than text.
+pub const TERMS_ASSENT_CHECKOUT_NOTICE: [&str; 4] = [
+  "Subscribing accepts the ",
+  " dated ",
+  ", including the ",
+  " they incorporate.",
+];
 
 /// Which direction a consent event went.
 ///
@@ -123,15 +154,64 @@ pub enum ConsentSource {
   /// migrated in, those rows are distinguishable from ones a person
   /// gave us directly.
   Import,
+  /// The assent gate a signed-in browser meets before any dashboard
+  /// route. Terms assent only.
+  Gate,
+  /// The purchase itself, which records the organization being bound.
+  /// Terms assent only.
+  Checkout,
 }
 
 impl ConsentSource {
+  /// The wire and column spelling. The `source` CHECK in Postgres holds
+  /// the same five values.
   pub fn as_str(self) -> &'static str {
     match self {
       ConsentSource::Registration => "registration",
       ConsentSource::Settings => "settings",
       ConsentSource::Import => "import",
+      ConsentSource::Gate => "gate",
+      ConsentSource::Checkout => "checkout",
     }
+  }
+
+  /// Reads a stored value back. Unrecognised is `None` rather than a
+  /// default, for [`ConsentKind::parse`]'s reason: a guessed surface is a
+  /// provenance nobody can produce the wording for.
+  pub fn parse(value: &str) -> Option<Self> {
+    match value {
+      "registration" => Some(ConsentSource::Registration),
+      "settings" => Some(ConsentSource::Settings),
+      "import" => Some(ConsentSource::Import),
+      "gate" => Some(ConsentSource::Gate),
+      "checkout" => Some(ConsentSource::Checkout),
+      _ => None,
+    }
+  }
+}
+
+/// What `GET`/`POST /account/terms` answer: which version the account has
+/// accepted, and which one is current.
+///
+/// `current_version` rides the wire rather than being read from the
+/// dashboard's own compiled constant, because the two binaries deploy
+/// separately: a gate keyed on the client's constant would ask for assent
+/// to a version the server would not stamp.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TermsAssentStatus {
+  pub current_version: String,
+  /// `None` when the account has never accepted any version.
+  pub accepted_version: Option<String>,
+  #[serde(with = "time::serde::rfc3339::option")]
+  pub accepted_at: Option<OffsetDateTime>,
+}
+
+impl TermsAssentStatus {
+  /// Whether the account has accepted the version now published. Exact
+  /// match, not ordering: a row naming any other version was given against
+  /// text that is no longer on the page.
+  pub fn is_current(&self) -> bool {
+    self.accepted_version.as_deref() == Some(self.current_version.as_str())
   }
 }
 
@@ -330,6 +410,43 @@ mod tests {
       assert_eq!(ConsentKind::parse(kind.as_str()), Some(kind));
     }
     assert_eq!(ConsentKind::parse("maybe"), None);
+  }
+
+  #[test]
+  fn source_round_trips_through_its_column_spelling() {
+    for source in [
+      ConsentSource::Registration,
+      ConsentSource::Settings,
+      ConsentSource::Import,
+      ConsentSource::Gate,
+      ConsentSource::Checkout,
+    ] {
+      assert_eq!(ConsentSource::parse(source.as_str()), Some(source));
+    }
+    assert_eq!(ConsentSource::parse("dashboard"), None);
+  }
+
+  #[test]
+  fn the_two_purposes_are_distinct() {
+    assert_ne!(MARKETING_EMAIL_PURPOSE, TERMS_OF_SERVICE_PURPOSE);
+  }
+
+  fn assent(accepted: Option<&str>) -> TermsAssentStatus {
+    TermsAssentStatus {
+      current_version: "2026-09-14".to_string(),
+      accepted_version: accepted.map(str::to_string),
+      accepted_at: None,
+    }
+  }
+
+  /// The gate blocks on anything but an exact match, which is what makes a
+  /// version bump ask every account again.
+  #[test]
+  fn only_an_exact_version_match_is_current() {
+    assert!(assent(Some("2026-09-14")).is_current());
+    assert!(!assent(Some("2026-09-04")).is_current());
+    assert!(!assent(Some("2027-01-01")).is_current());
+    assert!(!assent(None).is_current());
   }
 
   #[test]
