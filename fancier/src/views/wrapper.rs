@@ -63,7 +63,10 @@ pub fn Wrapper() -> Element {
           aria_label: "Report a problem",
           onclick: move |_| problem_open.set(true),
           Icon { icon: LdCircleAlert, class: "size-4" }
-          "Report a problem"
+          // Icon only on a phone: the labelled pill is wide enough to float
+          // over the page's own text, and on an error page that is the error.
+          // aria-label above keeps the button named either way.
+          span { class: "hidden sm:inline", "Report a problem" }
         }
       }
     }
