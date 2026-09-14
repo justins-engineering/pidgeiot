@@ -476,25 +476,31 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations
 -- degrades on with "no recipient, log and skip".
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
--- Marketing-consent history. The Kratos identity trait is the current
--- state and the person owns it; these rows are the evidence, written only
--- by dovecote's `POST /internal/consent` and never updated or deleted
--- while the account exists. Column-by-column reasoning, plus the erasure
--- and subject-access statements, live in
--- infra/migrations/2026-08-27-consent-events.sql.
+-- Consent history, marketing and Terms assent alike. The Kratos identity
+-- trait is the current state of a marketing choice and the person owns it;
+-- these rows are the evidence, written only by dovecote and never updated
+-- or deleted while the account exists. Column-by-column reasoning, plus the
+-- erasure and subject-access statements, live in
+-- infra/migrations/2026-08-27-consent-events.sql and
+-- infra/migrations/2026-09-14-terms-assent.sql.
 CREATE TABLE IF NOT EXISTS consent_events (
   seq BIGSERIAL PRIMARY KEY,
   -- Kratos identity id. No FK: Kratos owns its own tables.
   identity_id UUID NOT NULL,
-  -- capsules::MARKETING_EMAIL_PURPOSE ('marketing_emails') today; a
-  -- second purpose is a new value here rather than a new table.
+  -- capsules::MARKETING_EMAIL_PURPOSE ('marketing_emails') or
+  -- capsules::TERMS_OF_SERVICE_PURPOSE ('terms_of_service'); a third
+  -- purpose is a new value here rather than a new table.
   purpose TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('granted', 'withdrawn')),
-  source TEXT NOT NULL CHECK (source IN ('registration', 'settings', 'import')),
-  -- The published privacy notice this consent was given against
-  -- (capsules::PRIVACY_NOTICE_VERSION), stamped server-side.
+  source TEXT NOT NULL CHECK (source IN ('registration', 'settings', 'import', 'gate', 'checkout')),
+  -- The published document this was given against, as its "Last updated"
+  -- date (capsules::PRIVACY_NOTICE_VERSION or capsules::TERMS_VERSION),
+  -- stamped server-side.
   notice_version TEXT NOT NULL,
   flow_id UUID,
+  -- The organisation a checkout assent bound, on those rows only: the one
+  -- fact the identity cannot reconstruct once a checkout is abandoned.
+  org_id UUID,
   -- The request context, both nullable and both unpopulated today. The
   -- privacy notice discloses addresses and user agents only as transient
   -- web logs kept for debugging and abuse prevention; keeping one against
@@ -507,6 +513,29 @@ CREATE TABLE IF NOT EXISTS consent_events (
   user_agent TEXT,
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- For a database created before Terms assent existed. Statement-equivalent
+-- with infra/migrations/2026-09-14-terms-assent.sql and with dovecote's
+-- `ensure_consent_tables`.
+ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS org_id UUID;
+
+-- Widens the source CHECK once. The loop finds nothing after the first run,
+-- so a warm isolate never takes the table's exclusive lock, and the real
+-- constraint name is discovered rather than assumed.
+DO $$
+DECLARE c record;
+BEGIN
+  FOR c IN
+    SELECT conname FROM pg_constraint
+     WHERE conrelid = 'consent_events'::regclass AND contype = 'c'
+       AND pg_get_constraintdef(oid) LIKE '%source%'
+       AND pg_get_constraintdef(oid) NOT LIKE '%gate%'
+  LOOP
+    EXECUTE format('ALTER TABLE consent_events DROP CONSTRAINT %I', c.conname);
+    EXECUTE 'ALTER TABLE consent_events ADD CONSTRAINT consent_events_source_check
+             CHECK (source IN (''registration'',''settings'',''import'',''gate'',''checkout''))';
+  END LOOP;
+END $$;
 
 -- Dashboard preferences, owned by the person rather than the browser.
 -- Column-by-column reasoning lives in
