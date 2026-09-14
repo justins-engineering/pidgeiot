@@ -978,6 +978,14 @@ Creates (and remembers) the org's Stripe customer on first use — a returning o
 checks out against the same Customer. `502` when Stripe itself is unreachable or the catalog
 is missing a price.
 
+**A current [Terms assent](#terms-assent) is required, and one is recorded.** Before any
+Stripe call, the route reads the caller's assent: no row for `capsules::TERMS_VERSION` is a
+`409` naming the version to accept, so no Customer or Session exists for a purchase that was
+refused. With one on file it appends its own assent row — `source = 'checkout'`, carrying the
+`org_id` of the entity being bound, which is the authority-to-bind representation the Terms
+extract and the one fact an abandoned checkout would otherwise leave nowhere. That write
+failing is a `500`: a paying customer with no record is the outcome this exists to prevent.
+
 **Tax is computed by Stripe Tax, and the session is built to let it.** Every session carries
 `automatic_tax[enabled]=true`, `billing_address_collection=required`,
 `customer_update[address]=auto` and `customer_update[name]=auto` (the session is always

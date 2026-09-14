@@ -4893,6 +4893,49 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
+        // A session that resolved but whose id will not parse is our bug,
+        // not the caller's.
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Both of these sit above every Stripe call: we do not take money
+        // against terms we cannot show were accepted, and a refusal must
+        // happen before any Customer or Session object exists. 409 rather
+        // than 401, which the dashboard reads as a lost session.
+        let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if assent.as_ref().map(|(version, _)| version.as_str()) != Some(TERMS_VERSION) {
+          let mut message = String::with_capacity(63 + TERMS_VERSION.len());
+          message.push_str("Conflict: accept the Terms of Service dated ");
+          message.push_str(TERMS_VERSION);
+          message.push_str(" before subscribing");
+          return Response::error(message, 409).unwrap().with_cors(&cors);
+        }
+        // The organization is the one fact this assent carries that the
+        // identity cannot reconstruct after an abandoned checkout: it is
+        // the entity the buyer represents they may bind.
+        if record_terms_assent(
+          &client,
+          user_uuid,
+          ConsentSource::Checkout,
+          Some(org_id),
+          req.headers().get("CF-Connecting-IP").ok().flatten().as_deref(),
+          req.headers().get("User-Agent").ok().flatten().as_deref(),
+        )
+        .await
+        .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
         // One uncacheable read for the customer id and the tax identity
         // (see load_org_billing_state): a registration saved a moment ago
         // decides the name a brand-new Customer is created under and what
