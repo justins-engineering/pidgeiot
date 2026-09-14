@@ -41,3 +41,26 @@ it.
 gate fires, and every row written in that window says an account accepted text it was not shown.
 The other order is harmless: the pages show the new text for a few minutes while `dovecote` still
 considers the old one current, so no gate fires and no row is written.
+
+## Shipping a change to these documents
+
+Nothing here is an agent action. The full reasoning is in
+`docs/design/terms-assent-and-legal-pages.md` section 12; this is the list.
+
+1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set
+   `TERMS_VERSION` (and `PRIVACY_NOTICE_VERSION` if the policy moved) to the deploy date.
+   Answer the open sub-processor question first: the useSend row states the position as the
+   deployed configuration stands, so removing the vendor, obtaining a DPA from it, or switching
+   the fallback rail is a decision taken before the page ships, and the row is edited to match.
+2. Apply `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, then deploy
+   fancier and dovecote to staging **in that order**.
+3. Sign in on staging: the gate appears, accepting clears it, and a reload within 30 seconds
+   does not bring it back. Inside that window is the only check that proves the read is
+   uncacheable; dev cannot reproduce it at all.
+4. `curl` each of `/terms/`, `/privacy/`, `/dpa/` and `/subprocessors/` with no JavaScript and
+   confirm the substituted date and no surviving `{{LAST_UPDATED}}`.
+5. Apply the migration to production, then deploy fancier and dovecote in the same order.
+
+**Rollback.** If the gate walls everyone out of the dashboard, redeploy the previous fancier
+version: the gate is client-side and dovecote needs no change, so the dashboard comes back
+without touching the database or the rows already written. Worth knowing before it is needed.

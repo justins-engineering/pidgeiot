@@ -1,9 +1,13 @@
-# Marketing consent: the trait, the record, and how they are wired
+# Consent: the trait, the record, and how they are wired
 
-Two things have to describe the same event: the words a person reads when they choose to
-receive marketing email, and the record that shows they chose it. GDPR Article 7(1) puts the
-burden of demonstrating consent on us, so a tick with nothing behind it is not consent we can
-rely on.
+Two things have to describe the same event: the words a person reads when they agree to
+something, and the record that shows they agreed. GDPR Article 7(1) puts the burden of
+demonstrating marketing consent on us, and contract formation asks the same question of a
+Terms of Service: a tick with nothing behind it is not something we can rely on.
+
+Most of this file is marketing consent, which came first and is the more configured of the
+two. **Terms assent has its own section at the end**; it shares the table and nothing else,
+and it involves no Kratos configuration at all.
 
 This was built before there were users to backfill, which is the only time it is cheap.
 
@@ -300,6 +304,91 @@ tightening a type under stored values, or adding a `required` entry nothing carr
 in sight. If one ever is, the answer is `user_v2` plus a per-identity `schema_id` **PATCH**,
 never an import.
 
+## Terms assent
+
+The second purpose on the same table, and a different kind of record: not a choice a person
+can withdraw, but evidence that an account accepted a published version of the Terms of
+Service. The attorney's memo asks for an affirmative act, reasonable notice, and a server-side
+record of version, account and time, kept before we rely on the liability cap, the forum
+clause, the jury waiver or the DPA the Terms incorporate. The design and its reasoning are in
+`docs/design/terms-assent-and-legal-pages.md`.
+
+**No Kratos configuration is involved.** No identity-schema change, no new trait, no jsonnet
+hook, no new Worker secret, nothing for the owner to apply on the VPS. There is no trait
+because there is nothing for the person to own: the record is the whole thing, and a trait
+would be evidence its subject could edit.
+
+### Two writing surfaces
+
+| Surface | `source` | `org_id` | Written by |
+|---|---|---|---|
+| The assent gate a signed-in browser meets before any dashboard route | `gate` | NULL | `POST /account/terms` |
+| The purchase itself | `checkout` | the organization being bound | `POST /orgs/:org_id/billing/checkout` |
+
+The registration checkbox writes nothing. There is no identity to key a row on at the moment
+it is ticked, and the row the product relies on is the gate's, written against an
+authenticated session with the server's own clock, address and user agent. Registration's job
+is notice and a first affirmative act; the gate is the enforcement, which is also what covers
+accounts that existed before any of this.
+
+A `checkout` row always appends, even when a `gate` row for the same version is already on
+file. It is a distinct act: it names an organization and carries the authority-to-bind
+representation the Terms extract, and an abandoned checkout leaves no Stripe object to
+recover that from.
+
+### The transition rule is not reused
+
+`capsules::consent::consent_transition` and the marketing writer's
+`WHERE $3 <> COALESCE(...)` predicate both suppress a second `granted` row for the same
+identity and purpose *regardless of version* — which is exactly the shape of assent to a new
+version. `record_terms_assent` uses its own predicate instead: append only when no `granted`
+row exists for this identity, purpose **and version**. The decision is inside the INSERT for
+the same reason the marketing one is: two tabs accepting at the same moment would otherwise
+both read "nothing on file" and both append.
+
+### Two schema changes, one of them dangerous
+
+`source` is CHECK-constrained in three places and `CREATE TABLE IF NOT EXISTS` is inert
+against a table that already exists, so without an explicit widening the first `gate` insert
+fails at runtime on every deployed database while passing every local test against a fresh
+one. `infra/migrations/2026-09-14-terms-assent.sql` widens it and adds the nullable `org_id`
+column; `ensure_consent_tables` carries the same statements so a database the migration was
+not run against heals itself on the next request. The widening is conditional: it discovers
+the constraint's real name rather than assuming it, and the loop finds nothing after the first
+run, so a warm isolate never takes the table's exclusive lock.
+
+### Retention differs from a marketing row
+
+A marketing row is deleted with the identity. A Terms assent is kept past deletion, minus its
+`ip` and `user_agent`, under Article 17(3)(e) — establishment, exercise or defence of legal
+claims — for the Massachusetts contract limitation period. That is the point of keeping it:
+the evidence matters exactly when a dispute makes it valuable. It needs its own row in the
+published retention table, and `ip`/`user_agent` are populated here where they are empty for
+marketing rows, because contract-formation evidence is a different purpose with a different
+retention from the transient web logs the notice describes.
+
+### Bumping the version
+
+`capsules::TERMS_VERSION` is both the "Last updated" line the Terms, DPA and sub-processor
+pages render and the version every assent row is stamped with. Bumping it asks every account
+to accept again on its next sign-in, so a wording fix that needs no fresh assent must not move
+it.
+
+1. Update the documents under `docs/legal/` and set `TERMS_VERSION` to the deploy date.
+2. Apply the migration to staging, deploy **fancier first, then dovecote**, and sign in: the
+   gate appears, accepting clears it, and a reload inside 30 seconds does not bring it back.
+   That window is the check that matters — the read is uncacheable by design, and a reload
+   after the Hyperdrive window has expired proves nothing.
+3. Apply the migration to production, then deploy in the same order.
+
+The order is not cosmetic. dovecote first means it answers the new version while the pages
+still render the old one, the gate fires, and every row written in that window says an account
+accepted text it was never shown. The other order writes no rows at all.
+
+If the gate ever walls everyone out, redeploying the previous fancier version brings the
+dashboard back: the gate is client-side and dovecote needs no change, so nothing touches the
+database or the rows already written.
+
 ## Reading the current state
 
 **The dashboard reads the trait, and there is no new route for it.** The settings page already
@@ -312,25 +401,34 @@ The `consent_events` table is deliberately not exposed to the dashboard. It is t
 its audience is us and a regulator, and putting it on a subject-editable surface invites
 exactly the confusion the split above exists to avoid.
 
-Subject access request — everything on file about one person's consent:
+Subject access request — everything on file about one person, both purposes. Project
+`purpose` or the answer runs marketing consent and Terms assent together:
 
 ```sql
-SELECT kind, source, notice_version, at
+SELECT purpose, kind, source, notice_version, at
   FROM consent_events WHERE identity_id = '<id>' ORDER BY seq;
 ```
 
-Account-deletion erasure — delete the rows rather than anonymise them (a consent event is
-*about* the identity and nothing else, so a row with the id removed means nothing), and only
-alongside deleting the identity itself:
+Account-deletion erasure — delete the marketing rows rather than anonymise them (a consent
+event is *about* the identity and nothing else, so a row with the id removed means nothing),
+and only alongside deleting the identity itself. Terms assent rows are kept under Article
+17(3)(e), stripped of their request context:
 
 ```sql
-DELETE FROM consent_events WHERE identity_id = '<id>';
+DELETE FROM consent_events
+ WHERE identity_id = '<id>' AND purpose <> 'terms_of_service';
+UPDATE consent_events SET ip = NULL, user_agent = NULL
+ WHERE identity_id = '<id>' AND purpose = 'terms_of_service';
 ```
 
-Both statements are repeated in the migration header, which is where the erasure runbook
+Both statements are repeated in the migration headers, which is where the erasure runbook
 already looks.
 
 ## Reconciling a lost row
+
+This section is about marketing consent only. A Terms assent has no trait to reconcile
+against: a missing row means the account is asked again on its next sign-in, which is the
+whole repair.
 
 Because the hooks ignore failures, a dovecote outage can leave a person whose trait says
 `granted: true` with no `granted` row, or no row at all. The trait and the table disagreeing is
