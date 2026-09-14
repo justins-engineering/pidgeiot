@@ -86,7 +86,38 @@ pub use dashboard_state::{
 /// record, and it lives in the shared crate because those are the two things
 /// that must never disagree: a stored consent naming a version the page no
 /// longer shows cannot be resolved back to the words the person was shown.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-04";
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-14";
+
+/// The date the published Terms of Service last changed, ISO 8601 so it sorts.
+///
+/// It feeds the Terms page's own "Last updated" line, the DPA and sub-processor
+/// list published with them, and every Terms assent we record. Bumping it is
+/// the decision that a version needs fresh assent: every account is asked again
+/// on its next sign-in, so a wording fix that needs no re-assent must not move
+/// it.
+pub const TERMS_VERSION: &str = "2026-09-14";
+
+#[cfg(test)]
+mod version_tests {
+  use super::{PRIVACY_NOTICE_VERSION, TERMS_VERSION};
+
+  /// Both constants are stamped into rows and rendered on a page, so a
+  /// malformed one would ship silently and sort wrongly against the rest.
+  #[test]
+  fn version_constants_are_iso_dates() {
+    for version in [PRIVACY_NOTICE_VERSION, TERMS_VERSION] {
+      let parts: Vec<&str> = version.split('-').collect();
+      assert_eq!(parts.len(), 3, "{version} is not YYYY-MM-DD");
+      assert!(
+        [4, 2, 2]
+          .iter()
+          .zip(&parts)
+          .all(|(len, part)| part.len() == *len && part.bytes().all(|b| b.is_ascii_digit())),
+        "{version} is not YYYY-MM-DD"
+      );
+    }
+  }
+}
 
 #[macro_export]
 macro_rules! unwrap_or_return_response {
