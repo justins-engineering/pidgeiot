@@ -1088,8 +1088,9 @@ async fn get_device_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Res
 /// Deletes this pigeon. Durable Objects have no explicit "delete yourself"
 /// API — an object becomes eligible for eviction once its storage is
 /// empty — so this wipes every row this DO owns instead. `pigeon_shadow`
-/// cascades via its foreign key; `pigeon_acl` has none (it's a flat table
-/// scoped to this DO's single pigeon, not keyed by pigeon id), so it's
+/// cascades via its foreign key; the tables scoped to this DO's single
+/// pigeon rather than keyed by pigeon id — `pigeon_acl`,
+/// `pigeon_telemetry_latest` and `pigeon_log_chunks` — have none, so each is
 /// cleared explicitly.
 async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
@@ -1107,6 +1108,13 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
     .exec("DELETE FROM pigeon_telemetry_latest;", None)
   {
     console_error!("Pigeon telemetry delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // No FK either, so the ring buffer outlives the pigeon unless it is wiped
+  // here; the privacy policy promises a deleted device's logs go with it.
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_log_chunks;", None) {
+    console_error!("Pigeon log delete execution error: {e}");
     return Response::error("Internal Server Error", 500);
   }
 
