@@ -825,10 +825,14 @@ call.
    only one an owner who never countersigns and never signs in will take.
 7. **Production database:** the same two applies against `DOVECOTE_PSQL_CONNECTION`.
 8. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
-9. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
-   client-side and dovecote needs no change, so the dashboard comes back without touching the
-   database or the rows already written. Note it before you need it at 2am.
-10. **Nothing on the Kratos VPS.**
+9. **Retire the useSend key**, once the deploy above is live: `bunx wrangler secret delete
+   RESEND_API_KEY` on `dovecote`, and the same with `--env staging` after the staging deploy. No
+   code reads it in any environment, but it stays a live third-party key until it is deleted, and
+   the sub-processor list now says we do not use that vendor.
+10. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
+    client-side and dovecote needs no change, so the dashboard comes back without touching the
+    database or the rows already written. Note it before you need it at 2am.
+11. **Nothing on the Kratos VPS.**
 
 ### Live verification, before this is called done
 
