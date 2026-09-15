@@ -196,6 +196,29 @@ rm -f "$PUBLIC_DIR/.well-known/security.txt.unsigned"
 cp ./public/llms.txt "$PUBLIC_DIR/index.md"
 mkdir -p "$PUBLIC_DIR/api-reference"
 cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
+
+# The four published legal documents, same real-prose treatment: each is
+# the file its page renders, with the date token substituted here the way
+# helpers/legal_doc.rs substitutes it there. The versions are read off the
+# constants both crates compile, so the markdown variant and the HTML can
+# never date the same document differently.
+read_const() {
+  local value
+  value="$(sed -n "s/^pub const $1: &str = \"\(.*\)\";\$/\1/p" ../capsules/src/lib.rs)"
+  [ -n "$value" ] || { echo "build-release: $1 not found in capsules/src/lib.rs" >&2; exit 1; }
+  printf '%s' "$value"
+}
+TERMS_DATE="$(read_const TERMS_VERSION)"
+PRIVACY_DATE="$(read_const PRIVACY_NOTICE_VERSION)"
+
+copy_legal() {  # $1 = route, $2 = source file name, $3 = published date
+  mkdir -p "$PUBLIC_DIR/$1"
+  sed "s/{{LAST_UPDATED}}/$3/" "../docs/legal/$2" > "$PUBLIC_DIR/$1/index.md"
+}
+copy_legal terms terms.md "$TERMS_DATE"
+copy_legal privacy privacy.md "$PRIVACY_DATE"
+copy_legal dpa dpa.md "$TERMS_DATE"
+copy_legal subprocessors subprocessors.md "$TERMS_DATE"
 # nullglob so an empty manifest copies nothing instead of a literal "*.md".
 shopt -s nullglob
 for story in ./assets/stories/*.md; do
@@ -427,9 +450,10 @@ urls = "".join(f"<url><loc>{BASE}{r if r != '/' else '/'}</loc></url>" for r in 
 
 # Markdown variants for `Accept: text/markdown` negotiation (see the shell
 # comment above the / and /api-reference/ copies): every PAGES route gets
-# a <route>/index.md. The two routes whose variants were already copied in
-# from real prose (/ <- llms.txt, /api-reference/ <- docs/api.md) are left
-# alone; the rest get a deliberately minimal generated representation --
+# a <route>/index.md. The routes whose variants were already copied in
+# from real prose (/ <- llms.txt, /api-reference/ <- docs/api.md, and the
+# four legal documents <- docs/legal/) are left alone; the rest get a
+# deliberately minimal generated representation --
 # title, description, canonical, and pointers to the full HTML and the
 # richer agent surfaces -- from this same map, never hand-authored prose
 # that would drift from the real pages.
@@ -450,3 +474,12 @@ for route, (title, desc) in PAGES.items():
 print(f"seo tags injected; sitemap regenerated with {len(PAGES)} urls; "
       f"{generated_md} markdown variants generated")
 PYEOF
+
+# A published document with its date token still on it says nothing about
+# when it took effect, and the token is the one thing in these files no
+# reader can resolve. Cheap, and the last chance to catch a substitution
+# that silently stopped happening.
+if grep -rl '{{' "$PUBLIC_DIR" --include='*.md'; then
+  echo "build-release: the markdown variants above still carry a template token" >&2
+  exit 1
+fi

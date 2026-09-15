@@ -163,6 +163,38 @@ mod tests {
       .collect()
   }
 
+  /// Which route publishes each document, and where the build copies it
+  /// from. The order is the one `build-release.sh` uses.
+  const PUBLISHED: [(&str, &str); 4] = [
+    ("/terms/", "copy_legal terms terms.md"),
+    ("/privacy/", "copy_legal privacy privacy.md"),
+    ("/dpa/", "copy_legal dpa dpa.md"),
+    (
+      "/subprocessors/",
+      "copy_legal subprocessors subprocessors.md",
+    ),
+  ];
+
+  /// An agent asked to check what it is agreeing to should be able to fetch
+  /// the document rather than scrape the page, so each one ships as its own
+  /// markdown variant and llms.txt says where.
+  #[test]
+  fn every_legal_document_is_published_as_markdown_too() {
+    let llms = include_str!("../../public/llms.txt");
+    let build = include_str!("../../scripts/build-release.sh");
+    for (route, copy) in PUBLISHED {
+      let mut variant = String::with_capacity(38 + route.len());
+      variant.push_str("https://pidgeiot.com");
+      variant.push_str(route);
+      variant.push_str("index.md");
+      assert!(llms.contains(&variant), "llms.txt does not list {variant}");
+      assert!(
+        build.contains(copy),
+        "scripts/build-release.sh does not copy the variant for {route}"
+      );
+    }
+  }
+
   /// The Terms incorporate the DPA by pointing at its published address, so
   /// a link that 404s is a defect in the contract rather than in the page.
   #[test]

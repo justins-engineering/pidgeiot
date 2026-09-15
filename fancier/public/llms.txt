@@ -60,6 +60,22 @@ device-to-platform MQTT path against a broker on the same machine.
   linkset for the API host (also mirrored at
   https://pidgeiot.com/.well-known/api-catalog)
 
+## Legal
+
+- [Terms of Service](https://pidgeiot.com/terms/): the agreement for using
+  the service (markdown variant:
+  https://pidgeiot.com/terms/index.md)
+- [Privacy Policy](https://pidgeiot.com/privacy/): what we collect, where
+  it is processed, and how long we keep it (markdown variant:
+  https://pidgeiot.com/privacy/index.md)
+- [Data Processing Agreement](https://pidgeiot.com/dpa/): the processor
+  terms the Terms incorporate, annexes included (markdown variant:
+  https://pidgeiot.com/dpa/index.md)
+- [Sub-processors](https://pidgeiot.com/subprocessors/): every third party
+  that processes customer data, what reaches it, where, and under which
+  transfer mechanism (markdown variant:
+  https://pidgeiot.com/subprocessors/index.md)
+
 ## Source
 
 - [pidgeiot](https://github.com/justins-engineering/pidgeiot): the platform

@@ -77,6 +77,10 @@ run_worker_first = [
   "/privacy/",
   "/terms",
   "/terms/",
+  "/dpa",
+  "/dpa/",
+  "/subprocessors",
+  "/subprocessors/",
 ]
 
 [build]
