@@ -78,7 +78,12 @@ Nothing here is an agent action. The full reasoning is in
    uncacheable; dev cannot reproduce it at all.
 4. `curl` each of `/terms/`, `/privacy/`, `/dpa/` and `/subprocessors/` with no JavaScript and
    confirm the substituted date and no surviving `{{LAST_UPDATED}}`.
-5. Apply both migrations to production, in the same order, then deploy fancier and dovecote.
+5. Email every organization owner on file that the Terms, the Privacy Policy, the DPA and the
+   sub-processor list are published, and keep the sent message with the signed legal records.
+   The DPA names notice followed by continued use as one of its two acceptance routes, and for
+   an owner who never countersigns and never reaches the dashboard gate that message is the
+   only evidence the notice was given.
+6. Apply both migrations to production, in the same order, then deploy fancier and dovecote.
 
 **Rollback.** If the gate walls everyone out of the dashboard, redeploy the previous fancier
 version: the gate is client-side and dovecote needs no change, so the dashboard comes back

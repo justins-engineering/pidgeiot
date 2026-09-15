@@ -337,6 +337,10 @@ accounts that existed before any of this.
 Both money-taking routes refuse without a current-version row and then write their own; a
 plan change is a fresh commitment at a new price, so the rule cannot stop at checkout.
 
+The DPA's own second acceptance route, notice followed by continued use, leaves no row at all:
+its evidence is the sent message, kept outside this database with the signed legal records, and
+`docs/legal/README.md` carries the step that sends it.
+
 A `checkout` row always appends, even when a `gate` row for the same version is already on
 file. It is a distinct act: it names an organization and carries the authority-to-bind
 representation the Terms extract, and an abandoned checkout leaves no Stripe object to

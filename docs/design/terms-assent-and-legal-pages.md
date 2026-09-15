@@ -478,7 +478,7 @@ one session. We may not lock an account out of its own fleet.
 | `inert` unsupported in some browser | The registration form is usable without the tick; the gate catches the account | This is the point of gate-first |
 | `KRATOS_HOOK_SECRET` unset in an environment | Irrelevant to this stream | Nothing here goes through a Kratos hook. It still matters for the marketing rows (section 9.3). |
 | dovecote deployed before fancier on a bump | The gate would ask for a version whose text is not published | Prevented by the deploy order, section 5.3 |
-| A bug in `is_current()` walls off every account | Redeploy the previous fancier version: the gate is client-side and dovecote needs no change | The kill switch, section 11 step 8 |
+| A bug in `is_current()` walls off every account | Redeploy the previous fancier version: the gate is client-side and dovecote needs no change | The kill switch, section 11 step 9 |
 
 The one thing that must never happen quietly is a row saying someone accepted a document they were
 not shown. Three controls prevent it: the version is stamped server-side and never accepted from a
@@ -807,12 +807,16 @@ call.
    window expires proves nothing, which is the whole point of the `now()` anchor. Then:
    `SELECT purpose, notice_version, source, org_id, at
       FROM consent_events ORDER BY seq DESC LIMIT 3;`
-6. **Production database:** the same two applies against `DOVECOTE_PSQL_CONNECTION`.
-7. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
-8. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
+6. **Notice to existing organization owners**, before production: email them that the four
+   documents are published, and keep the sent message with the signed legal records. The memo
+   asks for that record specifically, because the DPA's notice-and-continued-use route is the
+   only one an owner who never countersigns and never signs in will take.
+7. **Production database:** the same two applies against `DOVECOTE_PSQL_CONNECTION`.
+8. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
+9. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
    client-side and dovecote needs no change, so the dashboard comes back without touching the
    database or the rows already written. Note it before you need it at 2am.
-9. **Nothing on the Kratos VPS.**
+10. **Nothing on the Kratos VPS.**
 
 ### Live verification, before this is called done
 
