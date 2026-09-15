@@ -10,4 +10,5 @@ mod helpers;
 pub mod orgs;
 pub mod pigeons;
 pub mod telemetry;
+pub mod terms;
 pub use helpers::{fetch_bytes, fetch_json, fetch_json_any_status};
