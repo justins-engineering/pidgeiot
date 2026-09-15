@@ -162,7 +162,7 @@ and a breadcrumb should preserve that distinction.
   Content-Type checked, raw body capped before parsing, then each field capped,
   answering 202 without waiting on delivery.
 - `dovecote/src/helpers/feedback.rs` — fire-and-log send via
-  `send_via_usesend`, degrading to a logged no-op wherever `OPS_ALERT_EMAIL` is
+  `send_text_email`, degrading to a logged no-op wherever `OPS_ALERT_EMAIL` is
   unset (production `[vars]` only).
 - `fancier/src/components/feedback_modal.rs` + `api/feedback.rs` — remount-fresh
   modal, opened from a `FeedbackForm(Signal<bool>)` context provided by `Wrapper`
@@ -757,7 +757,7 @@ Whether the floating button also appears on marketing pages is an owner call
 ### 6.1 Email on a new signature, reusing the machinery that exists
 
 When the §3.3 upsert returns `is_new`, send one email to `OPS_ALERT_EMAIL` via
-`send_via_usesend`. Three existing precedents make this nearly free:
+`send_text_email`. Three existing precedents make this nearly free:
 
 - `ops_probe.rs` — notify on *transitions* only, so one outage is one email;
 - `alerts.rs::apply_alert_transition` — the fired/cleared state machine, same
@@ -896,7 +896,7 @@ exemplar, manual-report eviction exemption, junk-group aging, erasure hook).
   dovecote currently report into nothing at all. Highest value per unit of effort
   in this document, and independent of everything else.
 - **Reuse what exists**: `POST /feedback`'s optionally-authenticated capped-body
-  route shape, `send_via_usesend` for delivery, `ops_probe.rs`'s notify-on-
+  route shape, `send_text_email` for delivery, `ops_probe.rs`'s notify-on-
   transition discipline for new-signature alerts, the 5-minute cron for retention,
   `capsules`' pure-and-tested-logic convention for signatures and normalization,
   and `dispatch()` as the one place every API call already passes.
