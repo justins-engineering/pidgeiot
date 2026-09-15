@@ -57,6 +57,14 @@ what we publish have to be made to agree.
   retention row plus one collection sentence in the settled policy. Until those land, the code
   stays inside what the page says.
 
+- **The DPA offers Module Three where the Privacy Policy names Module Two only.** DPA 9.2 extends
+  the standard contractual clauses to Module Three where a customer is itself a processor for a
+  third-party controller; the Policy states Module Two, with the UK Addendum and the Swiss
+  adaptations, as the basis for customer data transferred to the United States. Both ship in the
+  same deployment, so as they stand the two pages disagree about what covers such a transfer. The
+  Policy is settled and cannot move here, so the call is whether the published DPA drops that
+  sentence for now or keeps it and lets counsel's version resolve it under Section 12.2.
+
 ## Shipping a change to these documents
 
 Nothing here is an agent action. The full reasoning is in
