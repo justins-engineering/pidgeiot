@@ -286,7 +286,6 @@ The Provider relies on the following published assurances, reviewed at onboardin
 - Database provider (Snowflake Inc., Crunchy Bridge): SOC 2 Type 2 report for Crunchy Bridge (available under NDA on request); AES-256 at rest; TLS 1.2+ required.
 - Payment processor (Stripe, LLC): PCI DSS Level 1; card data never reaches the Provider.
 - Hosting provider for the VPS (OVH US LLC): active participant in the EU-U.S. Data Privacy Framework, its UK Extension and the Swiss-U.S. framework; the Provider holds no audit report for the Vint Hill facility.
-- Email provider, fallback rail (useSend): no published certification or audit report. The primary transport is the edge provider's email service, covered by that provider's assurances above.
 
 ### I. Organisational measures
 

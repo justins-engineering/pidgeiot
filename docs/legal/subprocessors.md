@@ -13,7 +13,7 @@ Justin's Engineering Services LLC ("the Provider") uses the following third part
 | | |
 |---|---|
 | **Legal entity** | Cloudflare, Inc. (United States) |
-| **Service** | Edge application platform: Workers (the API router), Durable Objects (per-device authoritative storage), R2 (firmware images), Queues (telemetry in flight), Workers KV (status page state), Hyperdrive (database connection pooling and a short-lived query cache), Email Service (the primary transport for platform and identity mail), Cloudflare Access and Tunnel (administrative gating, identity-server ingress), rate limiting, DNS, CDN, TLS termination, Workers Logs |
+| **Service** | Edge application platform: Workers (the API router), Durable Objects (per-device authoritative storage), R2 (firmware images), Queues (telemetry in flight), Workers KV (status page state), Hyperdrive (database connection pooling and a short-lived query cache), Email Service (the transport for platform and identity mail), Cloudflare Access and Tunnel (administrative gating, identity-server ingress), rate limiting, DNS, CDN, TLS termination, Workers Logs |
 | **Data processed** | All request traffic to the API and dashboard; per-device shadow, latest telemetry, device logs, access lists and device public keys; telemetry history in flight; firmware binaries; recipient address and message content of outbound mail; request metadata in invocation logs (retained 7 days) |
 | **Processing location** | Cloudflare's global network. Worker code runs in whichever data centre receives a request. Each Durable Object is created near the first request that touches it and does not move; no jurisdiction restriction is set today. R2 has no jurisdiction set. Queues, KV and the Hyperdrive cache have no residency control on the Provider's plan. United States and European Union locations are both in normal use. |
 | **Transfer mechanism** | Cloudflare's Data Processing Addendum, Version 6.4 effective April 3, 2026, which incorporates the EU SCCs (Module Two where the customer is a controller, Module Three where a processor), the UK Addendum, and states that Cloudflare complies with the EU-U.S. Data Privacy Framework. Cloudflare's Trust Hub states the DPA "is incorporated by reference into our Self-Serve Subscription Agreement", which is the agreement the Provider's plan is on. |
@@ -51,20 +51,7 @@ Justin's Engineering Services LLC ("the Provider") uses the following third part
 | **Certifications** | No audit report has been obtained for the Vint Hill site. |
 | **Citations** | DPA: https://us.ovhcloud.com/legal/data-processing-agreement/ (fetched 2026-08-25). EU Privacy Notice: https://us.ovhcloud.com/legal/eu-privacy-notice/ (fetched 2026-08-25). |
 
-### 4. useSend (fallback email rail)
-
-| | |
-|---|---|
-| **Legal entity** | **Not verified.** Neither the privacy policy nor the terms of service at usesend.com names a legal entity, address or governing jurisdiction (both fetched 2026-08-25, both dated 8/23/2026; the terms say disputes go to "competent courts in your place of residence"). Public sources describe the founder as based in Sydney, Australia. |
-| **Service** | Outbound email, as the fallback rail behind the edge provider's Email Service. (a) Application mail from the backend over useSend's HTTP API: alert notifications, organisation invitations, free-tier usage warnings, and the operator's own contact-form, feedback, error-signature and probe notifications. (b) Identity-server transactional mail over useSend's SMTP relay: verification codes, recovery links and codes, login codes. |
-| **Data processed** | Recipient email addresses; subject and body of each message, which can include device names, alert conditions and telemetry values, invite links, one-time codes, and the full text of contact-form and feedback submissions sent to the operator |
-| **Processing location** | **Not verified.** useSend's privacy policy says the application is "hosted on Railway" and the marketing site "on Vercel", and its site and repository say it "uses Amazon SES under the hood to send emails". No region is stated anywhere found. Assume United States unless the vendor confirms otherwise. |
-| **Transfer mechanism** | **None found.** No DPA, no SCC statement, no sub-processor list. The privacy policy mentions "legitimate interests" and cross-border safeguards "where applicable (e.g., in the EEA/UK)" without naming a mechanism. |
-| **DPF** | Not applicable as far as known (no evidence the operator is a US entity). Not verified. |
-| **Vendor sub-processors** | Named in the privacy policy: Vercel, Railway, Simple Analytics; Amazon SES per the product site. No formal list. |
-| **Citations** | https://usesend.com/ (fetched 2026-08-25). https://usesend.com/privacy (fetched 2026-08-25). https://usesend.com/terms (fetched 2026-08-25). https://github.com/usesend/usesend (fetched 2026-08-25; AGPL-3.0, "uses Amazon SES under the hood"). https://docs.usesend.com/ (fetched 2026-08-25; no legal or security pages). |
-
-### 5. Stripe, LLC
+### 4. Stripe, LLC
 
 | | |
 |---|---|
@@ -78,7 +65,7 @@ Justin's Engineering Services LLC ("the Provider") uses the following third part
 | **Certifications** | PCI DSS Level 1 service provider (widely published; not separately fetched here) |
 | **Citations** | DPA: https://stripe.com/legal/dpa (fetched 2026-08-25). DPF policy: https://stripe.com/legal/data-privacy-framework (fetched 2026-08-25). Privacy centre entity table: https://stripe.com/privacy-center/legal (fetched 2026-08-25). |
 
-### 6. Resend (Plus Five Five, Inc.), not currently used
+### 5. Resend (Plus Five Five, Inc.), not currently used
 
 Listed for transparency only. **No data is sent to Resend today**, so it is not a sub-processor of the Service; the row records the alternative already assessed for the email rail.
 
@@ -94,7 +81,7 @@ Listed for transparency only. **No data is sent to Resend today**, so it is not 
 
 - **VIES (European Commission VAT Information Exchange System).** When an organisation saves an EU VAT number, the backend queries VIES to validate it and re-checks pending numbers hourly. The VAT number and the member-state code go to the Commission's public service. The Commission is not processing on the Provider's behalf; this is a lookup against a public register, disclosed in the privacy policy.
 - **Customer-configured telemetry endpoints.** Telemetry forwarded to an endpoint the customer configures goes to whoever the customer chose; that recipient is the customer's processor, not the Provider's.
-- **Amazon Web Services.** Reaches customer data only as a sub-processor of the database provider (hosting) and of the email providers (sending). Listed on their lists, not this one.
+- **Amazon Web Services.** Reaches customer data only as a sub-processor of the database provider (hosting). Listed on that list, not this one.
 - **Ory.** Kratos is self-hosted; no Ory-operated service receives data.
 - **GreptimeDB.** Retired from production and staging; only the local development stack uses it.
 
@@ -105,7 +92,6 @@ Listed for transparency only. **No data is sent to Resend today**, so it is not 
 | Cloudflare, Inc. | Edge platform, storage, queues, email, logs | Global network; US and EU in normal use; no jurisdiction pinning | Cloudflare DPA v6.4 (SCCs Module 2, UK Addendum); vendor states DPF | DPA yes; DPF list verified 2026-09-01 | https://www.cloudflare.com/cloudflare-customer-dpa/ | 2026-08-25 |
 | Snowflake Inc. (Crunchy Bridge) | Managed PostgreSQL | AWS us-east-1, N. Virginia, US (vendor-confirmed in writing, incl. WAL and base backups) | Crunchy Bridge DPA of June 27, 2025, incorporating the 2021/914 SCCs Modules Two and Three, deemed signed | DPA yes, read in full; DPF not claimed | https://www.snowflake.com/en/legal/other/crunchy-bridge/data-processing-addendum/ | 2026-09-01 |
 | OVH US LLC | VPS (identity server, device terminator) | Vint Hill, Virginia, US | OVHcloud US DPA (2021 SCCs, UK Addendum B1.0); vendor states DPF | DPA yes; DPF list verified 2026-09-01 | https://us.ovhcloud.com/legal/data-processing-agreement/ | 2026-08-25 |
-| useSend | Outbound email, fallback rail (API and SMTP) | Not stated; assume US (Railway, Amazon SES) | None found | No | https://usesend.com/privacy | 2026-08-25 |
 | Stripe, LLC | Billing and payments | US | Stripe DPA (SCCs Modules 1 and 2, UK Addendum); vendor states DPF | DPA yes; DPF list verified 2026-09-01 | https://stripe.com/legal/dpa | 2026-08-25 |
 | Plus Five Five, Inc. (Resend), no data sent | Outbound email (candidate) | US | Resend DPA (SCCs Modules 1 to 3, UK Addendum); vendor states DPF | DPA yes; DPF list no | https://resend.com/legal/dpa | 2026-08-25 |
 
