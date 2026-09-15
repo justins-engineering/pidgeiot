@@ -3390,9 +3390,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // deliberately existing-pattern-only: Content-Type must be JSON, body
     // and each field are size-capped (capsules::MAX_FEEDBACK_*), and
     // delivery reuses the prod-only OPS_ALERT_EMAIL var, so staging/dev
-    // degrade to a logged no-op. No per-IP rate limiter
-    // here -- that's platform-level (a Cloudflare WAF rule or Turnstile),
-    // not something to hand-roll in-route.
+    // degrade to a logged no-op. No per-IP rate limiter here -- that's
+    // platform-level (a Cloudflare WAF rule or Turnstile), not something
+    // to hand-roll in-route.
     .post_async("/feedback", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
 
