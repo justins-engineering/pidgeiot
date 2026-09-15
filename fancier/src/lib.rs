@@ -11,10 +11,11 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DemoPage,
-  DocumentationPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept,
-  LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage,
-  PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo, SettingsFlow,
-  StoriesIndex, StoryPage, TermsPage, Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
+  DocumentationPage, DpaPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index,
+  InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons,
+  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo,
+  SettingsFlow, StoriesIndex, StoryPage, SubprocessorsPage, TermsPage, Unauthorized, UseCasesPage,
+  VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -129,6 +130,10 @@ enum Route {
   OpenSourcePage {},
   #[route("/terms/")]
   TermsPage {},
+  #[route("/dpa/")]
+  DpaPage {},
+  #[route("/subprocessors/")]
+  SubprocessorsPage {},
   // Org invite landing page -- public (NOT AuthGuard'd, see
   // views/invite.rs's module comment) and non-trailing-slash like the
   // Kratos flow routes, since it carries a query-param prop with
@@ -473,6 +478,8 @@ mod public_route_trailing_slash {
   both_forms!(privacy, "/privacy", PrivacyPage);
   both_forms!(open_source, "/open-source", OpenSourcePage);
   both_forms!(terms, "/terms", TermsPage);
+  both_forms!(dpa, "/dpa", DpaPage);
+  both_forms!(subprocessors, "/subprocessors", SubprocessorsPage);
 
   #[test]
   fn root_unchanged() {

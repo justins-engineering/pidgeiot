@@ -124,6 +124,8 @@ mod page_meta_matches_the_router {
       Route::ContactPage {},
       Route::PrivacyPage {},
       Route::TermsPage {},
+      Route::DpaPage {},
+      Route::SubprocessorsPage {},
     ];
     routes.extend(STORIES.iter().map(|story| Route::StoryPage {
       slug: story.slug.to_string(),

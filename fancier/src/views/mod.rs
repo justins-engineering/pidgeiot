@@ -90,11 +90,8 @@ pub use api_reference::ApiReferencePage;
 mod stories;
 pub use stories::{STORIES, StoriesIndex, StoryPage};
 
-mod privacy;
-pub use privacy::PrivacyPage;
-
 mod open_source;
 pub use open_source::OpenSourcePage;
 
-mod terms;
-pub use terms::TermsPage;
+mod legal;
+pub use legal::{DpaPage, PrivacyPage, SubprocessorsPage, TermsPage};
