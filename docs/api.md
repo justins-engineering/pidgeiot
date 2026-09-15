@@ -3248,7 +3248,8 @@ Body is `capsules::ConsentHookPayload`:
  "flow_id": "<kratos_flow_uuid>"}
 ```
 
-`source` is one of `registration`, `settings`, `import`. `flow_id`, `ip` and `user_agent` are
+`source` is one of `registration`, `settings`, `import`; `gate` and `checkout` are Terms
+assent surfaces and are refused here with a `400`. `flow_id`, `ip` and `user_agent` are
 all optional; the shipped hooks send only `flow_id`, and the reason the other two are accepted
 but not sent is in `docs/consent.md`. `ip` and `user_agent` are truncated to
 `capsules::MAX_CONSENT_CONTEXT_BYTES`. Neither the notice version nor a timestamp is accepted

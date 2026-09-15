@@ -590,6 +590,19 @@ async fn internal_consent_record(
       .unwrap()
       .with_cors(&cors);
   };
+  // This route only ever writes marketing rows, and `gate` and `checkout`
+  // are Terms assent surfaces. The `source` CHECK used to reject the
+  // combination; it holds all five values table-wide now, so the refusal
+  // has to be here or a row could claim a surface with no marketing
+  // checkbox on it.
+  if matches!(
+    payload.source,
+    ConsentSource::Gate | ConsentSource::Checkout
+  ) {
+    return Response::error("Bad Request: Invalid consent hook payload", 400)
+      .unwrap()
+      .with_cors(&cors);
+  }
 
   get_db!(ctx.env, client, &cors);
 

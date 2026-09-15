@@ -351,6 +351,11 @@ row exists for this identity, purpose **and version**. The decision is inside th
 the same reason the marketing one is: two tabs accepting at the same moment would otherwise
 both read "nothing on file" and both append.
 
+The widened `source` CHECK covers the whole table, so it no longer rejects a marketing row
+claiming `gate` or `checkout`. `POST /internal/consent` refuses those two values itself, which
+is one line where a purpose-aware CHECK in three schema copies would be the same guarantee at
+several times the cost.
+
 ### Two schema changes, one of them dangerous
 
 `source` is CHECK-constrained in three places and `CREATE TABLE IF NOT EXISTS` is inert
