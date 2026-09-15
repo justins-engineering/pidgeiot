@@ -82,3 +82,6 @@ pub use danger_zone::{DangerAction, DangerZone};
 
 mod confirm_modal;
 pub use confirm_modal::ConfirmModal;
+
+mod terms_gate;
+pub use terms_gate::{TermsGate, blocks_dashboard};

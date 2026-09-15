@@ -1,7 +1,8 @@
-use crate::components::SetSessionCookie;
+use crate::components::{SetSessionCookie, TermsGate, blocks_dashboard};
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use crate::helpers::session_cookie_valid;
 use crate::models::AuthState;
+use capsules::consent::TermsAssentStatus;
 use capsules::{AlertDefinition, BillingPlan, Flock, OrganizationMembership, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
@@ -186,14 +187,34 @@ async fn static_routes() -> Result<Vec<String>, ServerFnError> {
 #[component]
 fn AuthGuard() -> Element {
   let session = use_context::<Session>();
-  // Hoisted above the match: a hook called from only one arm would shift
-  // this scope's hook indices as the auth state resolves.
+  // Hoisted above the match, both of them: a hook called from only one arm
+  // would shift this scope's hook indices as the auth state resolves.
   let nav = use_navigator();
+  // The whole client state of the Terms gate. It lives here rather than in
+  // the panel so it is fetched once per sign-in instead of once per route
+  // change, and nowhere else, since a cached answer to "what has this
+  // account accepted" is worth nothing.
+  let mut assent = use_signal(|| None::<TermsAssentStatus>);
+
+  use_resource(move || async move {
+    if (session.state)() == AuthState::Authenticated
+      && assent.read().is_none()
+      && let Some(status) = api::terms::status().await
+    {
+      assent.set(Some(status));
+    }
+  });
 
   match (session.state)() {
     AuthState::Authenticated => {
-      rsx! {
-        Outlet::<Route> {}
+      if blocks_dashboard(assent.read().as_ref()) {
+        rsx! {
+          TermsGate { assent }
+        }
+      } else {
+        rsx! {
+          Outlet::<Route> {}
+        }
       }
     }
     AuthState::Unauthenticated => {
