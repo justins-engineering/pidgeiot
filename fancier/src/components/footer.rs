@@ -299,7 +299,9 @@ pub fn Footer() -> Element {
               " (ISC)"
             }
           }
-          div { class: "flex flex-wrap items-center gap-x-6 gap-y-1",
+          // The footer grid sizes its column to this row's min-content, so a
+          // non-wrapping row here sets the whole page's minimum width.
+          div { class: "flex flex-wrap items-center justify-center gap-x-6 gap-y-1",
             // Opens the app-chrome feedback modal -- a button,
             // not a route, and present in both logged-in and logged-out
             // footers since this aside row is the one part shared by both.
