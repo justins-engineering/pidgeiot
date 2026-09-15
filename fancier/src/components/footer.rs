@@ -324,6 +324,18 @@ pub fn Footer() -> Element {
               to: Route::TermsPage {},
               "Terms of Service"
             }
+            // Both form part of the Terms by reference, so the footer is
+            // where someone looks for them.
+            Link {
+              class: "hover:text-primary transition-colors duration-300 text-sm",
+              to: Route::DpaPage {},
+              "Data Processing Agreement"
+            }
+            Link {
+              class: "hover:text-primary transition-colors duration-300 text-sm",
+              to: Route::SubprocessorsPage {},
+              "Sub-processors"
+            }
           }
         }
       }
