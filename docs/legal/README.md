@@ -82,7 +82,8 @@ Nothing here is an agent action. The full reasoning is in
 1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set
    `TERMS_VERSION` (and `PRIVACY_NOTICE_VERSION` if the policy moved) to the deploy date. The
    open sub-processor question is answered: the fallback email vendor was removed from the
-   Service, so the list names only vendors the deployed configuration uses.
+   Service, so the only vendor on the list that carries our mail is the edge provider. The
+   Resend row stays, and says on its face that no data reaches it.
 2. Apply `infra/migrations/2026-08-27-consent-events.sql` and then
    `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, in that order, then
    deploy fancier and dovecote to staging **in that order** too. The first file creates the table
