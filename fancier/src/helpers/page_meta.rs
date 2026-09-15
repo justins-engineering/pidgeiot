@@ -200,4 +200,61 @@ mod page_meta_matches_the_router {
     };
     assert_eq!(page_title(&unknown), "Page not found | PidgeIoT");
   }
+
+  /// A markdown-negotiable route lives in two config files besides the
+  /// route table: the worker's path list decides whether the request
+  /// reaches the negotiator at all, and the header file advertises the
+  /// variant. A route missing from either negotiates as HTML and nothing
+  /// says so, which is why this walks every page rather than the four this
+  /// module adds.
+  #[test]
+  fn every_negotiable_route_place_agrees() {
+    let meta: serde_json::Value = serde_json::from_str(include_str!("../../page-meta.json"))
+      .expect("page-meta.json is not valid JSON");
+    let pages = meta["pages"]
+      .as_object()
+      .expect("page-meta.json has no pages map");
+    let wrangler = include_str!("../../wrangler.toml");
+    let headers = include_str!("../../public/_headers");
+
+    for route in pages.keys() {
+      // A post is covered by one glob rather than a line apiece, so
+      // publishing one touches no config. views::stories checks the globs
+      // and each post's own entries.
+      let post = route.starts_with("/stories/") && route != "/stories/";
+      if !post {
+        let mut block = String::with_capacity(route.len() * 2 + 58);
+        block.push_str(route);
+        block.push_str("\n  Link: <");
+        block.push_str(route);
+        block.push_str("index.md>; rel=\"alternate\"; type=\"text/markdown\"");
+        assert!(
+          headers.contains(&block),
+          "public/_headers does not advertise the markdown variant of {route}"
+        );
+      }
+      if post || route == "/stories/" {
+        continue;
+      }
+
+      // Both slash forms, so an agent asking without the slash negotiates
+      // immediately rather than only after the redirect. The root has one.
+      let bare = route.trim_end_matches('/');
+      let forms = if bare.is_empty() {
+        ["/", "/"]
+      } else {
+        [bare, route.as_str()]
+      };
+      for form in forms {
+        let mut entry = String::with_capacity(form.len() + 3);
+        entry.push('"');
+        entry.push_str(form);
+        entry.push_str("\",");
+        assert!(
+          wrangler.contains(&entry),
+          "wrangler.toml's run_worker_first lacks {entry} so {route} never reaches the negotiator"
+        );
+      }
+    }
+  }
 }

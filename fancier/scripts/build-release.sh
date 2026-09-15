@@ -450,13 +450,13 @@ urls = "".join(f"<url><loc>{BASE}{r if r != '/' else '/'}</loc></url>" for r in 
 
 # Markdown variants for `Accept: text/markdown` negotiation (see the shell
 # comment above the / and /api-reference/ copies): every PAGES route gets
-# a <route>/index.md. The routes whose variants were already copied in
-# from real prose (/ <- llms.txt, /api-reference/ <- docs/api.md, and the
-# four legal documents <- docs/legal/) are left alone; the rest get a
-# deliberately minimal generated representation --
-# title, description, canonical, and pointers to the full HTML and the
-# richer agent surfaces -- from this same map, never hand-authored prose
-# that would drift from the real pages.
+# a <route>/index.md. The routes whose variants were already copied in from
+# real prose (/ <- llms.txt, /api-reference/ <- docs/api.md, and the four
+# legal documents <- docs/legal/) are left alone; the rest get a
+# deliberately minimal generated representation -- title, description,
+# canonical, and pointers to the full HTML and the richer agent surfaces --
+# from this same map, never hand-authored prose that would drift from the
+# real pages.
 generated_md = 0
 for route, (title, desc) in PAGES.items():
     md_path = root / route.lstrip("/") / "index.md"
