@@ -239,12 +239,17 @@ fn AuthGuard() -> Element {
   // only one arm would shift this scope's hook indices as the state resolves.
   let nav = use_navigator();
   let assent = use_signal(|| None::<TermsAssentStatus>);
+  // "Not read yet" and "read, unreadable" are different answers: the first
+  // holds the dashboard, the second renders it.
+  let assent_read = use_signal(|| false);
 
   use_resource(move || async move {
-    if (session.state)() == AuthState::Authenticated && assent.read().is_none() {
-      if let Some(status) = api::terms::status().await {
-        assent.set(Some(status));
+    if (session.state)() == AuthState::Authenticated && !assent_read() {
+      let status = api::terms::status().await;
+      if status.is_some() {
+        assent.set(status);
       }
+      assent_read.set(true);
     }
   });
 
@@ -253,24 +258,35 @@ fn AuthGuard() -> Element {
       // Unknown renders the app. A status we could not read must never be
       // the thing that locks an account out of its own fleet.
       let blocked = assent.read().as_ref().is_some_and(|s| !s.is_current());
-      if blocked { rsx! { TermsGate { assent } } } else { rsx! { Outlet::<Route> {} } }
+      if !assent_read() {
+        rsx! { div { "Verifying session..." } }
+      } else if blocked {
+        rsx! { TermsGate { assent } }
+      } else {
+        rsx! { Outlet::<Route> {} }
+      }
     }
     // the two existing arms unchanged
   }
 }
 ```
 
-That is the whole client state: one `Signal<Option<TermsAssentStatus>>` in the layout. Nothing in
-`LocalSession`, nothing in context, nothing in `localStorage`. The resource lives in the layout
-rather than in the gate component so it fires once per sign-in, not once per route change.
+That is the whole client state: one `Signal<Option<TermsAssentStatus>>` and one `Signal<bool>` in
+the layout. Nothing in `LocalSession`, nothing in context, nothing in `localStorage`. The resource
+lives in the layout rather than in the gate component so it fires once per sign-in, not once per
+route change.
 
-`TermsGate` is a full-screen panel, not a modal: what changed and why it is being asked; `Link`s to
+`TermsGate` is a full-screen panel, not a modal: the version it is taking assent to, named from the
+status rather than from this build's own constant, and the version it replaces if there is one;
+`Link`s to
 `/terms/`, `/privacy/`, `/dpa/` and `/subprocessors/`, all public routes outside `AuthGuard` and so
 reachable while gated; the required checkbox carrying `capsules::consent::TERMS_ASSENT_LABEL`; an
 "Agree and continue" button disabled until it is ticked; and `OryLogOut` so someone who declines can
 leave. Not dismissable, no "later". On a 2xx it sets `assent` from the response body and the guard
 renders the `Outlet` on the next render. On a failure it shows an inline error and stays up; nothing
-is cached, so a retry is a fresh POST.
+is cached, so a retry is a fresh POST. If the status names a version this build does not publish,
+the panel says the Terms are being published and offers no accept button: that is the fancier-first
+half of a deploy, and a row written then would name text this page is not showing.
 
 **No route is exempt, `/settings` included.** Accepting is one click and needs no password, so a
 completed account recovery landing on `/settings` through `kratos_settings_handoff`

@@ -121,13 +121,32 @@ pub fn TermsGate(assent: Signal<Option<TermsAssentStatus>>) -> Element {
     };
   }
 
+  // Both from the status rather than this build's constant: the version
+  // named on screen is then the version the row will carry, and the person
+  // can see whether they are being asked for the first time or again.
+  let version = assent
+    .read()
+    .as_ref()
+    .map_or_else(|| TERMS_VERSION.to_string(), |s| s.current_version.clone());
+  let previous = assent
+    .read()
+    .as_ref()
+    .and_then(|s| s.accepted_version.clone());
+
   rsx! {
     section { id: "terms-gate", class: "px-4 py-16",
       div { class: "mx-auto max-w-xl rounded-2xl border border-base-300 bg-base-100 p-6 md:p-8",
         h1 { class: "text-2xl font-bold tracking-tight", "Please accept the Terms of Service" }
         p { class: "mt-3 text-base-content/70",
-          "These are the terms your account runs under. We ask once for each published version,
-           so you will not see this again until they change."
+          "These are the terms your account runs under, dated "
+          span { class: "font-semibold", "{version}" }
+          ". We ask once for each published version, so you will not see this again until they
+           change."
+        }
+        if let Some(previous) = previous {
+          p { class: "mt-2 text-sm text-base-content/60",
+            "They replace the version dated {previous}, which you accepted earlier."
+          }
         }
         div { class: "mt-6",
           TermsNotice { accepted }
