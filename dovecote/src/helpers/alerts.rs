@@ -1486,13 +1486,19 @@ fn mail_from_address(env: &Env) -> String {
 /// the address itself is the only option available at this layer.
 fn redact_email(email: &str) -> String {
   match email.rsplit_once('@') {
-    Some((_, domain)) if !domain.is_empty() => format!("***@{domain}"),
+    Some((_, domain)) if !domain.is_empty() => {
+      let mut redacted = String::with_capacity(4 + domain.len());
+      redacted.push_str("***@");
+      redacted.push_str(domain);
+      redacted
+    }
     _ => "***@(unparseable)".to_string(),
   }
 }
 
-/// Plain-text only: what the ops-facing senders (feedback, contact, error
-/// digests, allowance warnings) need.
+/// Plain-text entry point: the operator notices (feedback, contact, error
+/// digests, the Kratos readiness probe) and the free-tier allowance
+/// warning, which is the one send on this path that goes to a customer.
 pub(crate) async fn send_text_email(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
   send_email(env, to, subject, text, None).await
 }
@@ -1581,8 +1587,8 @@ async fn send_via_binding(
 #[cfg(test)]
 mod tests {
   use super::{
-    ResolvedReading, evaluate_ingest_condition, no_email_binding, redact_email, should_fire_now,
-    transitions_to_apply,
+    EMAIL_BINDING, ResolvedReading, evaluate_ingest_condition, no_email_binding, redact_email,
+    should_fire_now, transitions_to_apply,
   };
   use crate::objects::pigeons::PreviousTelemetryValue;
   use capsules::{AlertCondition, AlertObservation, Comparator, ConnectionStateKind};
@@ -1764,7 +1770,9 @@ mod tests {
       message,
       "Email send failed: no EMAIL binding in this environment"
     );
-    assert_eq!(message.capacity(), message.len());
+    // Holds no_email_binding's with_capacity arithmetic to the string it builds;
+    // String promises only that the allocation is at least that large.
+    assert_eq!(50 + EMAIL_BINDING.len(), message.len());
   }
 
   fn at(unix_secs: i64) -> OffsetDateTime {
