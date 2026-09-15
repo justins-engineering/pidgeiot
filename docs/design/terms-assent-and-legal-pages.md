@@ -828,7 +828,9 @@ call.
 9. **Retire the useSend key**, once the deploy above is live: `bunx wrangler secret delete
    RESEND_API_KEY` on `dovecote`, and the same with `--env staging` after the staging deploy. No
    code reads it in any environment, but it stays a live third-party key until it is deleted, and
-   the sub-processor list now says we do not use that vendor.
+   the sub-processor list now says we do not use that vendor. Closing the vendor account is the
+   separate step that ends the relationship; it also ends the Kratos courier's rollback path in
+   `docs/infra/kratos-cloudflare-smtp-cutover.md`, so read that first.
 10. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
     client-side and dovecote needs no change, so the dashboard comes back without touching the
     database or the rows already written. Note it before you need it at 2am.
