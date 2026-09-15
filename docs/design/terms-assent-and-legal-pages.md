@@ -283,7 +283,7 @@ status rather than from this build's own constant, and the version it replaces i
 `Link`s to
 `/terms/`, `/privacy/`, `/dpa/` and `/subprocessors/`, all public routes outside `AuthGuard` and so
 reachable while gated; the required checkbox carrying `capsules::consent::TERMS_ASSENT_LABEL`; an
-"Agree and continue" button disabled until it is ticked; and `OryLogOut` so someone who declines can
+"Confirm" button disabled until it is ticked; and `OryLogOut` so someone who declines can
 leave. Not dismissable, no "later". On a 2xx it sets `assent` from the response body and the guard
 renders the `Outlet` on the next render. On a failure it shows an inline error and stays up; nothing
 is cached, so a retry is a fresh POST. If the status names a version this build does not publish,
@@ -766,6 +766,10 @@ Everything the implementation could settle for itself, it settled, and the reaso
 mechanism it belongs to. What is left is owner and counsel work, and none of it is an engineering
 call.
 
+- **Ruled by the owner on 2026-09-15: the deploy date, and how the gate asks.** The two constants
+  take the ISO date of the production deploy. The gate confirms rather than asking a second time,
+  because the box at registration records nothing and the row is written here; no `localStorage`
+  handoff carries that tick across, which would leave a row naming a surface the client chose.
 - **The useSend sub-processor row: settled, not blocking.** Of the three ways out -- remove the
   vendor from the deployed configuration, obtain a DPA from it, or switch the fallback rail -- the
   owner took the first. The Service sends on the edge provider's Email Service alone and the row is
