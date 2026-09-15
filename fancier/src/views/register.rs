@@ -1,4 +1,4 @@
-use crate::components::{Alert, FormBuilder};
+use crate::components::{Alert, FormBuilder, TermsNotice};
 use crate::helpers::{
   DisplayError, extract_ui_messages, kratos_return_to, url_query_param, view_network_error,
 };
@@ -10,6 +10,11 @@ use ory_kratos_client_wasm::apis::frontend_api::{
 
 #[component]
 pub fn RegisterFlow(flow: Option<String>) -> Element {
+  // Hoisted above the match below, which renders the form in only one of
+  // its arms: a hook called from one arm would shift this scope's hook
+  // indices as the flow resolves.
+  let terms_ok = use_signal(|| false);
+
   // 1. Fetch or initialize the flow natively
   let get_flow = use_resource(move || {
     let flow_param = flow.clone();
@@ -85,8 +90,19 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
               }
             }
 
-            // Pure HTML submission.
-            FormBuilder { ui: *res.ui.to_owned() }
+            div { class: "mb-6",
+              TermsNotice { accepted: terms_ok }
+            }
+
+            // Pure HTML submission. `inert` is the whole enforcement here,
+            // and it is allowed to be only a browser behaviour: an account
+            // created without the tick meets the gate on its first
+            // dashboard entry, which is where the record is written.
+            div {
+              "inert": (!terms_ok()).then_some(""),
+              class: if terms_ok() { "" } else { "opacity-60" },
+              FormBuilder { ui: *res.ui.to_owned() }
+            }
             p { class: "text-sm leading-6 mt-4",
               "Already have an account? "
               Link {
