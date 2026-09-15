@@ -449,6 +449,7 @@ one session. We may not lock an account out of its own fleet.
 
 | Failure | Behaviour | Why |
 | --- | --- | --- |
+| The API calls a version current that this build does not publish | The panel says the Terms are being published and offers no accept button | Half a deploy. Accepting would write a row naming text this page is not showing |
 | `GET /account/terms` has not answered yet | The guard shows its "Verifying session..." placeholder | A gate that appears over a dashboard already on screen is not a gate |
 | `GET /account/terms` fails (network, 500, table missing) | `assent` stays `None` but the read is marked done, the guard renders the `Outlet`, the dashboard works | An unreadable status is not evidence that assent is missing. The next sign-in asks again. |
 | `GET /account/terms` returns a stale `accepted_version` | Cannot happen: the statement carries `now()` and Hyperdrive will not cache it | The documented failure mode is the gate reappearing after a successful accept |

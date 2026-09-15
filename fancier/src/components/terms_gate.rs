@@ -27,6 +27,18 @@ pub fn blocks_dashboard(assent: Option<&TermsAssentStatus>) -> bool {
   assent.is_some_and(|status| !status.is_current())
 }
 
+/// Whether this dashboard's own copy of the Terms is the version the API
+/// would stamp a row with.
+///
+/// False for the minutes of a version deploy: fancier ships first, so the
+/// pages carry the new text while dovecote still calls the old one
+/// current. Accepting in that window would write a row naming a version
+/// the person was not shown, which is the one thing the deploy order
+/// exists to prevent.
+pub fn versions_agree(status: &TermsAssentStatus) -> bool {
+  status.current_version == TERMS_VERSION
+}
+
 /// The four published documents, and the box that accepts them when a
 /// signal is given. Without one it is notice alone, which is what the
 /// registration step that creates no account shows.
@@ -87,6 +99,27 @@ pub fn TermsGate(assent: Signal<Option<TermsAssentStatus>>) -> Element {
   let accepted = use_signal(|| false);
   let mut busy = use_signal(|| false);
   let mut error = use_signal(|| Option::<String>::None);
+
+  let deploying = assent
+    .read()
+    .as_ref()
+    .is_some_and(|status| !versions_agree(status));
+  if deploying {
+    return rsx! {
+      section { id: "terms-gate", class: "px-4 py-16",
+        div { class: "mx-auto max-w-xl rounded-2xl border border-base-300 bg-base-100 p-6 md:p-8",
+          h1 { class: "text-2xl font-bold tracking-tight", "The Terms are being published" }
+          p { class: "mt-3 text-base-content/70",
+            "A new version is going out right now, and this page is not yet showing the one
+             your acceptance would be recorded against. Reload in a minute."
+          }
+          div { class: "mt-6",
+            OryLogOut {}
+          }
+        }
+      }
+    };
+  }
 
   rsx! {
     section { id: "terms-gate", class: "px-4 py-16",
@@ -151,6 +184,22 @@ mod tests {
   #[test]
   fn an_unreadable_status_renders_the_app() {
     assert!(!blocks_dashboard(None));
+  }
+
+  #[test]
+  fn the_panel_asks_only_for_the_version_this_build_publishes() {
+    assert!(versions_agree(&TermsAssentStatus {
+      current_version: TERMS_VERSION.to_string(),
+      accepted_version: None,
+      accepted_at: None,
+    }));
+    // The API considers another version current: this build is one side of
+    // a deploy and its pages cannot be what a row would name.
+    assert!(!versions_agree(&TermsAssentStatus {
+      current_version: "2099-01-01".to_string(),
+      accepted_version: None,
+      accepted_at: None,
+    }));
   }
 
   #[test]
