@@ -624,6 +624,36 @@ async fn internal_consent_record(
   }
 }
 
+/// The Terms assent status both `/account/terms` routes answer with, read
+/// back from the row rather than assumed.
+///
+/// One copy because the two routes answered it identically: a field added
+/// to `TermsAssentStatus` would otherwise have to be written twice, and
+/// forgetting one would make `GET` and `POST` on the same path disagree
+/// with nothing to catch it.
+async fn terms_assent_response(
+  client: &tokio_postgres::Client,
+  user_uuid: &uuid::Uuid,
+  cors: &worker::Cors,
+) -> worker::Result<Response> {
+  let Ok(assent) = load_terms_assent(client, user_uuid).await else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(cors);
+  };
+  let status = TermsAssentStatus {
+    current_version: TERMS_VERSION.to_string(),
+    accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
+    accepted_at: assent.map(|(_, at)| at),
+  };
+  let Ok(response) = Response::from_json(&status) else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(cors);
+  };
+  response.with_cors(cors)
+}
+
 #[event(fetch, respond_with_errors)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
   // Used only by the catch-all panic guard below, after `env` is moved
@@ -3897,23 +3927,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       };
 
       get_db!(ctx.env, client, &cors);
-      let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
-        return Response::error("Internal Server Error", 500)
-          .unwrap()
-          .with_cors(&cors);
-      };
-
-      let status = TermsAssentStatus {
-        current_version: TERMS_VERSION.to_string(),
-        accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
-        accepted_at: assent.map(|(_, at)| at),
-      };
-      let Ok(response) = Response::from_json(&status) else {
-        return Response::error("Internal Server Error", 500)
-          .unwrap()
-          .with_cors(&cors);
-      };
-      response.with_cors(&cors)
+      terms_assent_response(&client, &user_uuid, &cors).await
     })
     // Empty body on purpose: a client that could name its own source could
     // claim a surface whose wording we cannot produce. The gate is the only
@@ -3945,22 +3959,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // not this isolate's, and the statement is uncacheable, so it reflects
       // the insert above. The client takes this body as the new state and
       // never refetches.
-      let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
-        return Response::error("Internal Server Error", 500)
-          .unwrap()
-          .with_cors(&cors);
-      };
-      let status = TermsAssentStatus {
-        current_version: TERMS_VERSION.to_string(),
-        accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
-        accepted_at: assent.map(|(_, at)| at),
-      };
-      let Ok(response) = Response::from_json(&status) else {
-        return Response::error("Internal Server Error", 500)
-          .unwrap()
-          .with_cors(&cors);
-      };
-      response.with_cors(&cors)
+      terms_assent_response(&client, &user_uuid, &cors).await
     })
     // --- Organization Routes ---
     // Shared-org access for teams: individual Kratos accounts, org-level
