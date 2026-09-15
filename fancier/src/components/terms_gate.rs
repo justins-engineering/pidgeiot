@@ -41,14 +41,16 @@ pub fn TermsNotice(accepted: Signal<bool>) -> Element {
         Link { class: "link link-secondary", to: Route::SubprocessorsPage {}, "sub-processor list" }
         "."
       }
-      label { class: "label mt-3 flex cursor-pointer items-start justify-start gap-3",
+      // Plain utilities rather than daisyUI's `label`, whose `white-space:
+      // nowrap` runs this sentence off the side of a phone.
+      label { class: "mt-3 flex cursor-pointer items-start gap-3",
         input {
           r#type: "checkbox",
-          class: "checkbox checkbox-sm mt-0.5",
+          class: "checkbox checkbox-sm mt-0.5 shrink-0",
           checked: accepted(),
           onchange: move |evt: Event<FormData>| accepted.set(evt.checked()),
         }
-        span { class: "label-text text-sm text-left", "{TERMS_ASSENT_LABEL}" }
+        span { class: "text-sm", "{TERMS_ASSENT_LABEL}" }
       }
     }
   }
