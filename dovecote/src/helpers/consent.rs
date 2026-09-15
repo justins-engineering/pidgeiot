@@ -6,7 +6,7 @@
 //! identity is the current state and the person owns it, and these rows
 //! are the history. For Terms assent there is no trait at all: the row is
 //! the entire record that a published version was accepted, which is why
-//! its version, time, address and user agent are all the server's.
+//! its version and its time are both the server's.
 //!
 //! The two writers stay separate on purpose. Each hard-codes its own
 //! purpose and its own version, so no caller can stamp a terms row with
@@ -200,6 +200,12 @@ pub async fn record_consent_event(
 /// second grant for the same identity and purpose regardless of version,
 /// which is exactly the shape of assent to a new version.
 ///
+/// No address and no user agent. The published notice describes both only
+/// as transient web logs, and this row is meant to outlive the account, so
+/// storing them here would keep a category of personal data the notice
+/// does not disclose. The memo asks for version, account and time, and all
+/// three are still here.
+///
 /// Returns the `seq` of the row written, or `None` when one was already on
 /// file.
 pub async fn record_terms_assent(
@@ -207,8 +213,6 @@ pub async fn record_terms_assent(
   identity_id: Uuid,
   source: ConsentSource,
   org_id: Option<Uuid>,
-  ip: Option<&str>,
-  user_agent: Option<&str>,
 ) -> Result<Option<i64>> {
   ensure_consent_tables_once(client).await?;
 
@@ -216,18 +220,16 @@ pub async fn record_terms_assent(
   let source = source.as_str();
   let purpose = TERMS_OF_SERVICE_PURPOSE;
   let notice_version = TERMS_VERSION;
-  let ip = clamp_context(ip);
-  let user_agent = clamp_context(user_agent);
 
   let sql = if source == ConsentSource::Checkout.as_str() {
     "INSERT INTO consent_events
-       (identity_id, purpose, kind, source, notice_version, org_id, ip, user_agent)
-     SELECT $1, $2, $3, $4, $5, $6, $7, $8
+       (identity_id, purpose, kind, source, notice_version, org_id)
+     SELECT $1, $2, $3, $4, $5, $6
      RETURNING seq;"
   } else {
     "INSERT INTO consent_events
-       (identity_id, purpose, kind, source, notice_version, org_id, ip, user_agent)
-     SELECT $1, $2, $3, $4, $5, $6, $7, $8
+       (identity_id, purpose, kind, source, notice_version, org_id)
+     SELECT $1, $2, $3, $4, $5, $6
      WHERE NOT EXISTS (
        SELECT 1 FROM consent_events e
         WHERE e.identity_id = $1 AND e.purpose = $2
@@ -245,8 +247,6 @@ pub async fn record_terms_assent(
         (&source, Type::TEXT),
         (&notice_version, Type::TEXT),
         (&org_id, Type::UUID),
-        (&ip, Type::TEXT),
-        (&user_agent, Type::TEXT),
       ],
     )
     .await

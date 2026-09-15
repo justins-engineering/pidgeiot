@@ -42,6 +42,18 @@ gate fires, and every row written in that window says an account accepted text i
 The other order is harmless: the pages show the new text for a few minutes while `dovecote` still
 considers the old one current, so no gate fires and no row is written.
 
+## Decisions counsel owns before the first deploy
+
+These are not agent actions and not engineering calls. Each is a place where what we deploy and
+what we publish have to be made to agree.
+
+- **The assent record is not in the Privacy Policy's retention table.** Every Terms assent row is
+  version, account and time, with no address and no user agent, and erasure deletes it with the
+  identity, because that is what the published policy promises. Keeping it past deletion under
+  Article 17(3)(e) for the contract limitation period is the record worth having and takes one new
+  retention row plus one collection sentence in the settled policy. Until those land, the code
+  stays inside what the page says.
+
 ## Shipping a change to these documents
 
 Nothing here is an agent action. The full reasoning is in

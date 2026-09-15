@@ -501,14 +501,13 @@ CREATE TABLE IF NOT EXISTS consent_events (
   -- The organisation a checkout assent bound, on those rows only: the one
   -- fact the identity cannot reconstruct once a checkout is abandoned.
   org_id UUID,
-  -- The request context, both nullable and both unpopulated today. The
-  -- privacy notice discloses addresses and user agents only as transient
-  -- web logs kept for debugging and abuse prevention; keeping one against
-  -- an identity as consent evidence is a different purpose with a
-  -- different retention, so it needs its own line in the notice before
-  -- the hook starts sending them. The columns exist so that switching
-  -- them on is a config change rather than a migration --
-  -- docs/consent.md has the two jsonnet lines it takes.
+  -- The request context, both nullable and unpopulated by every writer.
+  -- The privacy notice discloses addresses and user agents only as
+  -- transient web logs kept for debugging and abuse prevention; keeping
+  -- one against an identity as consent or contract evidence is a different
+  -- purpose with a different retention, so it needs its own line in the
+  -- notice first. The columns exist so that switching them on is a config
+  -- change rather than a migration -- docs/consent.md has what it takes.
   ip TEXT,
   user_agent TEXT,
   at TIMESTAMPTZ NOT NULL DEFAULT now()

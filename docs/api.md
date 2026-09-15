@@ -2470,8 +2470,9 @@ directly (`infra/migrations/2026-08-31-dashboard-state.sql`).
 The record that an account accepted a published version of the Terms of Service, kept before
 the liability cap, the forum clause, the jury waiver or the incorporated DPA is relied on. It
 is a row in `consent_events` under `purpose = 'terms_of_service'`, written only by the two
-surfaces below, and **version, time, address and user agent are all the server's** — a client
-supplies none of them, so no row can misdescribe what was accepted or when.
+surfaces below, and **both the version and the time are the server's** — a client supplies
+neither, so no row can misdescribe what was accepted or when. The row stores no address and no
+user agent: the privacy notice describes both only as transient web logs.
 
 `current_version` is `capsules::TERMS_VERSION`, the "Last updated" date the Terms page renders.
 It rides the wire rather than being read from the dashboard's own compiled copy because the two

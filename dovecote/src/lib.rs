@@ -3930,20 +3930,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .unwrap()
           .with_cors(&cors);
       };
-      let ip = req.headers().get("CF-Connecting-IP").ok().flatten();
-      let user_agent = req.headers().get("User-Agent").ok().flatten();
 
       get_db!(ctx.env, client, &cors);
-      if record_terms_assent(
-        &client,
-        user_uuid,
-        ConsentSource::Gate,
-        None,
-        ip.as_deref(),
-        user_agent.as_deref(),
-      )
-      .await
-      .is_err()
+      if record_terms_assent(&client, user_uuid, ConsentSource::Gate, None)
+        .await
+        .is_err()
       {
         return Response::error("Internal Server Error", 500)
           .unwrap()
@@ -4920,16 +4911,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         // The organization is the one fact this assent carries that the
         // identity cannot reconstruct after an abandoned checkout: it is
         // the entity the buyer represents they may bind.
-        if record_terms_assent(
-          &client,
-          user_uuid,
-          ConsentSource::Checkout,
-          Some(org_id),
-          req.headers().get("CF-Connecting-IP").ok().flatten().as_deref(),
-          req.headers().get("User-Agent").ok().flatten().as_deref(),
-        )
-        .await
-        .is_err()
+        if record_terms_assent(&client, user_uuid, ConsentSource::Checkout, Some(org_id))
+          .await
+          .is_err()
         {
           return Response::error("Internal Server Error", 500)
             .unwrap()

@@ -40,15 +40,17 @@ its "Last updated" line: the page and the rows can then never name different not
 
 `seq`, `identity_id`, `purpose` (`marketing_emails`, named after the trait so the two are
 obviously the same thing), `kind` (`granted`/`withdrawn`), `source`
-(`registration`/`settings`/`import`), `notice_version`, `flow_id`, and `at`.
+(`registration`/`settings`/`import`, plus `gate`/`checkout` on Terms assent rows only),
+`notice_version`, `flow_id`, `org_id` (a checkout assent's organisation, NULL everywhere
+else), and `at`.
 
-There are also `ip` and `user_agent` columns, and **they are left empty**. The privacy notice
-discloses addresses and user agents only as transient web logs kept "for debugging and abuse
-prevention"; keeping one against an identity as consent evidence is a different purpose with a
-different retention, so it needs its own line in the notice before the hook starts sending
-them. The columns exist so that switching them on is a config change rather than a migration:
-add two lines to each `.jsonnet` (they are written out in a comment there), and dovecote
-already stores and truncates what arrives.
+There are also `ip` and `user_agent` columns, and **they are left empty by every writer**. The
+privacy notice discloses addresses and user agents only as transient web logs kept "for
+debugging and abuse prevention"; keeping one against an identity as consent or contract
+evidence is a different purpose with a different retention, so it needs its own line in the
+notice first. The columns exist so that switching them on is a config change rather than a
+migration: add two lines to each `.jsonnet` (they are written out in a comment there), and
+dovecote already stores and truncates what arrives.
 
 ### Only transitions are recorded
 
@@ -359,13 +361,13 @@ run, so a warm isolate never takes the table's exclusive lock.
 
 ### Retention differs from a marketing row
 
-A marketing row is deleted with the identity. A Terms assent is kept past deletion, minus its
-`ip` and `user_agent`, under Article 17(3)(e) — establishment, exercise or defence of legal
-claims — for the Massachusetts contract limitation period. That is the point of keeping it:
-the evidence matters exactly when a dispute makes it valuable. It needs its own row in the
-published retention table, and `ip`/`user_agent` are populated here where they are empty for
-marketing rows, because contract-formation evidence is a different purpose with a different
-retention from the transient web logs the notice describes.
+A marketing row is deleted with the identity. A Terms assent is worth keeping past deletion
+under Article 17(3)(e) — establishment, exercise or defence of legal claims — for the
+Massachusetts contract limitation period, because the evidence matters exactly when a dispute
+makes it valuable. **That retention is not in force yet.** It needs its own row in the
+published retention table first: the policy as published promises that deleting an account
+deletes everything the table does not list, so until counsel adds the row, erasure takes the
+assent rows with it. The row carries no address and no user agent in either case.
 
 ### Bumping the version
 
@@ -409,16 +411,13 @@ SELECT purpose, kind, source, notice_version, at
   FROM consent_events WHERE identity_id = '<id>' ORDER BY seq;
 ```
 
-Account-deletion erasure — delete the marketing rows rather than anonymise them (a consent
-event is *about* the identity and nothing else, so a row with the id removed means nothing),
-and only alongside deleting the identity itself. Terms assent rows are kept under Article
-17(3)(e), stripped of their request context:
+Account-deletion erasure — delete the rows rather than anonymise them (a consent event is
+*about* the identity and nothing else, so a row with the id removed means nothing), and only
+alongside deleting the identity itself. Both purposes go, until the published retention table
+carries a row for the assent record:
 
 ```sql
-DELETE FROM consent_events
- WHERE identity_id = '<id>' AND purpose <> 'terms_of_service';
-UPDATE consent_events SET ip = NULL, user_agent = NULL
- WHERE identity_id = '<id>' AND purpose = 'terms_of_service';
+DELETE FROM consent_events WHERE identity_id = '<id>';
 ```
 
 Both statements are repeated in the migration headers, which is where the erasure runbook

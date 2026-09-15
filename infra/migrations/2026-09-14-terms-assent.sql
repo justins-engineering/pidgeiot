@@ -56,12 +56,14 @@ END $$;
 --   SELECT purpose, kind, source, notice_version, at
 --     FROM consent_events WHERE identity_id = '<id>' ORDER BY seq;
 --
--- Account-deletion erasure: marketing rows go with the identity. A Terms
--- assent is evidence of a contract and is kept under Article 17(3)(e), minus
--- its request context:
---   DELETE FROM consent_events
---    WHERE identity_id = '<id>' AND purpose <> 'terms_of_service';
---   UPDATE consent_events SET ip = NULL, user_agent = NULL
---    WHERE identity_id = '<id>' AND purpose = 'terms_of_service';
+-- Account-deletion erasure: every row for the identity goes, both purposes.
+--   DELETE FROM consent_events WHERE identity_id = '<id>';
+--
+-- Keeping a Terms assent past deletion under Article 17(3)(e) -- evidence of
+-- a contract, for the limitation period -- is the retention the design argues
+-- for, and it needs its own row in the published Privacy Policy first: the
+-- policy as published promises that deleting an account deletes everything
+-- the retention table does not list. Until that row exists, erasure takes the
+-- assent rows with it. No row carries an ip or a user agent either way.
 
 RESET ROLE;

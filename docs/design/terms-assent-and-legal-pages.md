@@ -55,7 +55,7 @@ notice_version = capsules::TERMS_VERSION (stamped server-side, never from the ca
 source         = 'gate' | 'checkout'     (two new ConsentSource variants)
 identity_id    = the Kratos identity resolved from the session cookie
 at             = the column default now()
-ip, user_agent = CF-Connecting-IP and User-Agent, clamped exactly as a marketing row would be
+ip, user_agent = NULL, as on a marketing row: the notice describes neither for this record
 org_id         = the organization being bound, on a checkout row only (new nullable column)
 flow_id        = always NULL (no Kratos flow stands behind either surface)
 ```
@@ -125,8 +125,6 @@ pub async fn record_terms_assent(
   identity_id: Uuid,
   source: ConsentSource,
   org_id: Option<Uuid>,
-  ip: Option<&str>,
-  user_agent: Option<&str>,
 ) -> Result<Option<i64>>
 ```
 
@@ -140,7 +138,7 @@ Two statements, picked by a `match` on `source`:
 
 ```sql
 INSERT INTO consent_events
-  (identity_id, purpose, kind, source, notice_version, org_id, ip, user_agent)
+  (identity_id, purpose, kind, source, notice_version, org_id)
 SELECT $1, $2, 'granted', $3, $4, $5, $6, $7
  WHERE NOT EXISTS (
    SELECT 1 FROM consent_events e
@@ -159,7 +157,8 @@ assent to a new version; threading a version-scoped bind through it would be a m
 marketing path.
 
 The `clamp` closure that bounds `ip` and `user_agent` is lifted out of `record_consent_event` into a
-private `clamp_context` used by both writers. One copy, no behaviour change.
+private `clamp_context`, so the marketing writer keeps one copy of the bound if the notice ever
+covers the columns for assent rows too.
 
 ### 2.4 The reader
 
@@ -304,7 +303,7 @@ div {
 No Kratos node, no trait, no schema change, no `checkbox_helper` arm, no jsonnet. The tick writes
 nothing: there is no identity to key a row on at the moment it is made, and the row the product
 relies on is the gate's, written against an authenticated session with the server's own clock,
-address and user agent. Registration's job here is notice at the moment of account creation and an
+address or user agent. Registration's job here is notice at the moment of account creation and an
 affirmative first act.
 
 SSG-safe for free: the arm renders only after `register.rs:12`'s `use_resource` resolves, and the
@@ -327,7 +326,7 @@ Customer or Session object exists.
    naming the version required. 409 because the caller is authorised and the state is wrong; never
    401, which would sign the tab out (graft from B, judge 1's preferred behaviour: we do not take
    money against terms we cannot show were accepted).
-2. Current: `record_terms_assent(..., ConsentSource::Checkout, Some(org_id), ip, ua)`, then
+2. Current: `record_terms_assent(..., ConsentSource::Checkout, Some(org_id))`, then
    continue. One INSERT on the open client, no extra round trip.
 3. `auth.user_id` that will not parse as a UUID is a 500, not a 400: a session that resolved and
    whose id will not parse is our bug, matching `dovecote/src/lib.rs:3738`.
@@ -767,7 +766,7 @@ scattered the same content across four sections). Nothing in it is an agent acti
    accept, and the dashboard renders without a refetch. **Reload within 30 seconds**, which is
    inside the Hyperdrive stale window, and confirm the gate does not return. A reload after the
    window expires proves nothing, which is the whole point of the `now()` anchor. Then:
-   `SELECT purpose, notice_version, source, org_id, ip IS NOT NULL, at
+   `SELECT purpose, notice_version, source, org_id, at
       FROM consent_events ORDER BY seq DESC LIMIT 3;`
 6. **Production database:** the same `psql` apply against `DOVECOTE_PSQL_CONNECTION`.
 7. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
@@ -784,7 +783,7 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
 
 1. Register a fresh account with the box unticked: the form is inert. Tick it, register, reach the
    dashboard, meet the gate, accept. Expect exactly one `terms_of_service` row, `source = gate`,
-   the current version, a non-null `ip`.
+   the current version, a NULL `ip` and `user_agent`.
 2. Accept again (reload, click again): no second row, 200 either way.
 3. **Bump `TERMS_VERSION` locally, restart, sign in.** Expect the gate again and a second row
    against the new version. This is the only check that exercises the version-scoped predicate, and
@@ -836,16 +835,16 @@ blocking.
 5. **The `org_id` column.** *Default:* yes. It is the one fact a checkout assent carries that an
    identity-only row cannot reconstruct, and it records which entity a person represented they had
    authority to bind.
-6. **Record `ip` and `user_agent` on assent rows.** *Default:* yes, with one drafted sentence sent
-   to counsel. The columns are deliberately empty for marketing consent because the notice discloses
-   addresses and user agents only as transient web logs; keeping one against an identity as
-   contract-formation evidence is a different purpose with a different retention.
-7. **Assent-row retention.** *Default:* keep past identity deletion, minus `ip` and `user_agent`,
-   under Article 17(3)(e) (establishment, exercise or defence of legal claims), for the
-   Massachusetts contract limitation period. This needs a new row in the settled Privacy Policy's
-   retention table, which is the largest item in this task outside the code: without it the record
-   we keep is not the record the policy describes. The alternative, deleting with the identity,
-   loses the evidence exactly when a dispute makes it valuable.
+6. **Record `ip` and `user_agent` on assent rows.** *Default:* no, and the code takes that
+   default: the columns stay NULL for both purposes. The notice discloses addresses and user
+   agents only as transient web logs, so storing one against an identity as contract-formation
+   evidence is a category of personal data the published policy does not describe. Switching them
+   on is two arguments at each call site, once counsel has the disclosure.
+7. **Assent-row retention.** *Default:* delete with the identity, like a marketing row, because
+   that is what the published policy promises. Keeping the row past deletion under Article
+   17(3)(e) (establishment, exercise or defence of legal claims) for the Massachusetts contract
+   limitation period is the better record and needs a new row in the settled Privacy Policy's
+   retention table first; without it the record we keep is not the record the policy describes.
 8. **Does the gate exempt `/settings`?** *Default:* no exemption. Accepting is one click and needs
    no password, so the post-recovery handoff continues straight after. The alternative exempts
    `SettingsFlow` and leaves one authenticated route reachable with no record.
@@ -917,9 +916,11 @@ blocking.
 - **Two deploys, one version.** The pages and the rows are stamped by two separately deployed
   binaries. The ordering rule holds only if whoever bumps the constant follows it, and nothing
   enforces it mechanically.
-- **The Privacy Policy does not yet describe this record.** Decisions 6 and 7 need one retention row
-  and one sentence in a document the attorney has just settled. Until they land, we are keeping a
-  record the published policy does not disclose.
+- **The Privacy Policy does not yet describe this record.** Decisions 6 and 7 take the defaults
+  that keep the deployment inside what the policy says: no address, no user agent, and erasure
+  with the identity. What that costs is the evidence in exactly the case it was kept for, a
+  dispute with someone who has since deleted their account, so one retention row in the settled
+  policy is still worth asking counsel for.
 - **The DPA we publish is ours, not counsel's.** Section 8's edits are engineering applying a
   content map to a legal document. The status line says the review is pending and the change clause
   covers replacement, but the interim text is text a customer can rely on from the day it deploys.
