@@ -771,10 +771,12 @@ call.
 
 1. **Set the constants**, one commit on the branch, once the decisions above are answered.
 2. **Prerequisite queries**, section 9.3.
-3. **Staging database.**
-   `psql "$DOVECOTE_PSQL_CONNECTION_STAGING" -f infra/migrations/2026-09-14-terms-assent.sql`
-   with its `SET ROLE` line edited to `dovecote_staging`, then `\d consent_events` to confirm the
-   widened CHECK and the `org_id` column.
+3. **Staging database.** `infra/migrations/2026-08-27-consent-events.sql` first, then
+   `infra/migrations/2026-09-14-terms-assent.sql`, each
+   `psql "$DOVECOTE_PSQL_CONNECTION_STAGING" -f ...` with its `SET ROLE` line edited to
+   `dovecote_staging`. The 2026-09-14 file alters a table the 2026-08-27 file creates, and section
+   9.3's first query is what says whether any deployed database ever received it; both are
+   idempotent. Then `\d consent_events` to confirm the widened CHECK and the `org_id` column.
 4. **Staging deploy, fancier first:** `cd fancier && bunx wrangler deploy --env staging`, then
    `cd dovecote && bunx wrangler deploy --env staging`.
 5. **Staging smoke, signed in.** Sign in with the existing staging test identity: the gate appears,
@@ -783,7 +785,7 @@ call.
    window expires proves nothing, which is the whole point of the `now()` anchor. Then:
    `SELECT purpose, notice_version, source, org_id, at
       FROM consent_events ORDER BY seq DESC LIMIT 3;`
-6. **Production database:** the same `psql` apply against `DOVECOTE_PSQL_CONNECTION`.
+6. **Production database:** the same two applies against `DOVECOTE_PSQL_CONNECTION`.
 7. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
 8. **Rollback, if the gate walls everyone off.** Redeploy the previous fancier version: the gate is
    client-side and dovecote needs no change, so the dashboard comes back without touching the

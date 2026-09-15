@@ -67,14 +67,18 @@ Nothing here is an agent action. The full reasoning is in
    Answer the open sub-processor question first: the useSend row states the position as the
    deployed configuration stands, so removing the vendor, obtaining a DPA from it, or switching
    the fallback rail is a decision taken before the page ships, and the row is edited to match.
-2. Apply `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, then deploy
-   fancier and dovecote to staging **in that order**.
+2. Apply `infra/migrations/2026-08-27-consent-events.sql` and then
+   `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, in that order, then
+   deploy fancier and dovecote to staging **in that order** too. The first file creates the table
+   the second one alters: it was only ever needed by the Kratos consent hook, so whether any
+   deployed database has it depends on whether that hook was ever wired. Both are idempotent, so
+   applying the earlier one where it already ran does nothing.
 3. Sign in on staging: the gate appears, accepting clears it, and a reload within 30 seconds
    does not bring it back. Inside that window is the only check that proves the read is
    uncacheable; dev cannot reproduce it at all.
 4. `curl` each of `/terms/`, `/privacy/`, `/dpa/` and `/subprocessors/` with no JavaScript and
    confirm the substituted date and no surviving `{{LAST_UPDATED}}`.
-5. Apply the migration to production, then deploy fancier and dovecote in the same order.
+5. Apply both migrations to production, in the same order, then deploy fancier and dovecote.
 
 **Rollback.** If the gate walls everyone out of the dashboard, redeploy the previous fancier
 version: the gate is client-side and dovecote needs no change, so the dashboard comes back
