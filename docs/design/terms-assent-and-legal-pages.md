@@ -146,8 +146,10 @@ SELECT $1, $2, 'granted', $3, $4, $5, $6, $7
 RETURNING seq;
 ```
 
-Decision and write are one statement, for the reason the existing writer gives: two tabs clicking
-Accept at the same moment would otherwise both read "nothing on file" and both append.
+Decision and write are one statement, for the reason the existing writer gives: a read and then a
+write is two round trips and a wider window. It narrows the double-accept case rather than
+excluding it -- under READ COMMITTED two tabs each read their own snapshot and both rows land --
+and the reader takes the newest row, so a duplicate changes no answer.
 
 `capsules::consent::consent_transition` is **not** reused and the existing
 `WHERE $3 <> COALESCE(...)` predicate is **not** touched. That predicate suppresses a second
@@ -470,7 +472,7 @@ one session. We may not lock an account out of its own fleet.
 | `GET /account/terms` fails (network, 500, table missing) | `assent` stays `None` but the read is marked done, the guard renders the `Outlet`, the dashboard works | An unreadable status is not evidence that assent is missing. The next sign-in asks again. |
 | `GET /account/terms` returns a stale `accepted_version` | Cannot happen: the statement carries `now()` and Hyperdrive will not cache it | The documented failure mode is the gate reappearing after a successful accept |
 | `POST /account/terms` fails | Panel stays up with an inline error, nothing cached, a retry is a fresh POST | The person is held out of the dashboard but not out of `/terms/`, `/privacy/` or sign-out |
-| Two tabs accept at once | One row: the `NOT EXISTS` predicate is inside the INSERT, not a read-then-write | Same reasoning as the existing marketing writer |
+| Two tabs accept at once | Usually one row, both rows under a real race; the reader takes the newest | The `NOT EXISTS` predicate narrows it in one statement; a partial unique index is more machinery than a harmless duplicate is worth |
 | An account reaches the dashboard with no row because the read failed | Product works, no row exists, we do not rely on the cap for that session | Exactly the trade the memo's "before relying on" language permits |
 | Checkout's assent write fails | 500 before any Stripe object exists: no subscription, no charge | The opposite call on purpose. Proceeding would create a paying customer with no record. |
 | Checkout with no current-version row | 409 naming the version, before any Stripe call | We do not take money against terms we cannot show were accepted |

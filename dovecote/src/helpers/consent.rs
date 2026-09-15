@@ -195,8 +195,12 @@ pub async fn record_consent_event(
 /// distinct act that an earlier gate row for the same version must not
 /// suppress. Every other source appends only when this identity has no
 /// grant on file for this version yet, and that decision is inside the
-/// INSERT rather than a read before it: two tabs clicking Accept at the
-/// same moment would otherwise both read "nothing on file" and both append.
+/// INSERT rather than a read before it, which narrows the common case to
+/// one statement. It is not a uniqueness guarantee: under READ COMMITTED
+/// two tabs clicking Accept at the same moment each read their own
+/// snapshot and both append. A duplicate is harmless -- the reader takes
+/// the newest row -- so the index and the ON CONFLICT it would take are
+/// not worth it.
 ///
 /// `consent_transition` is deliberately not reused. Its rule suppresses a
 /// second grant for the same identity and purpose regardless of version,

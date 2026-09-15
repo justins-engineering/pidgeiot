@@ -353,8 +353,10 @@ recover that from.
 identity and purpose *regardless of version* — which is exactly the shape of assent to a new
 version. `record_terms_assent` uses its own predicate instead: append only when no `granted`
 row exists for this identity, purpose **and version**. The decision is inside the INSERT for
-the same reason the marketing one is: two tabs accepting at the same moment would otherwise
-both read "nothing on file" and both append.
+the same reason the marketing one is: one statement instead of a read and then a write. It
+narrows the common case rather than guaranteeing uniqueness — two tabs accepting at the same
+moment each read their own snapshot under READ COMMITTED and both append, which the reader
+absorbs by taking the newest row, and which the checkout path does deliberately anyway.
 
 The widened `source` CHECK covers the whole table, so it no longer rejects a marketing row
 claiming `gate` or `checkout`. `POST /internal/consent` refuses those two values itself, which
