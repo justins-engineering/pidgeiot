@@ -5193,6 +5193,28 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
+        // Checkout's rule, on the other route that takes money: a
+        // reprice is a fresh commitment at a new price, so it refuses
+        // without an assent to the published Terms and records its own.
+        // A session that resolved but whose id will not parse is our bug.
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if assent.as_ref().map(|(version, _)| version.as_str()) != Some(TERMS_VERSION) {
+          let mut message = String::with_capacity(65 + TERMS_VERSION.len());
+          message.push_str("Conflict: accept the Terms of Service dated ");
+          message.push_str(TERMS_VERSION);
+          message.push_str(" before changing plan");
+          return Response::error(message, 409).unwrap().with_cors(&cors);
+        }
+
         // The allowance-floor write below wants the usage table; the
         // state read bootstraps its own columns.
         if ensure_billing_usage_tables(&client).await.is_err() {
@@ -5233,6 +5255,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           )
           .unwrap()
           .with_cors(&cors);
+        }
+
+        // Below every refusal and above every Stripe call: the row says a
+        // purchase was made under this version for this organization, so
+        // a request that turns out to change nothing must not write one.
+        if record_terms_assent(&client, user_uuid, ConsentSource::Checkout, Some(org_id))
+          .await
+          .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
         }
 
         let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {

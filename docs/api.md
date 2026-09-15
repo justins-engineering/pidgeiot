@@ -1037,6 +1037,12 @@ post-change `capsules::OrganizationBilling` (Stripe's own updated subscription s
 row itself is written moments later by the `customer.subscription.updated` webhook, same as
 every other subscription change.
 
+**A current [Terms assent](#terms-assent) is required, and one is recorded**, exactly as at
+checkout: a reprice is a fresh commitment at a new price. No row for `capsules::TERMS_VERSION`
+is a `409` naming the version to accept, before any Stripe call. The assent row is written
+after the plan and subscription checks and before the reprice, so a request that changes
+nothing does not leave a row saying a purchase was made.
+
 One Stripe Subscriptions Update call re-prices two items together, resolved by `lookup_key` at
 request time: the licensed tier item to the new tier's flat price, and the per-device overage
 item to `device-overage-<newtier>` (per-tier rates differ). The pooled `message-overage` item

@@ -157,8 +157,8 @@ pub enum ConsentSource {
   /// The assent gate a signed-in browser meets before any dashboard
   /// route. Terms assent only.
   Gate,
-  /// The purchase itself, which records the organization being bound.
-  /// Terms assent only.
+  /// The purchase itself, checkout or a paid plan change, which records
+  /// the organization being bound. Terms assent only.
   Checkout,
 }
 

@@ -325,13 +325,16 @@ would be evidence its subject could edit.
 | Surface | `source` | `org_id` | Written by |
 |---|---|---|---|
 | The assent gate a signed-in browser meets before any dashboard route | `gate` | NULL | `POST /account/terms` |
-| The purchase itself | `checkout` | the organization being bound | `POST /orgs/:org_id/billing/checkout` |
+| The purchase itself | `checkout` | the organization being bound | `POST /orgs/:org_id/billing/checkout` and `PUT /orgs/:org_id/billing/plan` |
 
 The registration checkbox writes nothing. There is no identity to key a row on at the moment
 it is ticked, and the row the product relies on is the gate's, written against an
 authenticated session with the server's own clock, address and user agent. Registration's job
 is notice and a first affirmative act; the gate is the enforcement, which is also what covers
 accounts that existed before any of this.
+
+Both money-taking routes refuse without a current-version row and then write their own; a
+plan change is a fresh commitment at a new price, so the rule cannot stop at checkout.
 
 A `checkout` row always appends, even when a `gate` row for the same version is already on
 file. It is a distinct act: it names an organization and carries the authority-to-bind
