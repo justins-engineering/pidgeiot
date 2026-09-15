@@ -90,7 +90,26 @@ pub fn PurchaseTermsNotice() -> Element {
   }
 }
 
-/// The full-screen panel an account meets when it has not accepted the
+/// The panel's own words. A confirmation rather than a second demand: the
+/// box at registration records nothing, so this step is where the row is
+/// written, and one sentence has to be true for an account that ticked
+/// that box a minute ago, one whose signup predates the notice, and one
+/// that accepted an earlier version.
+const GATE_HEADING: &str = "Confirm the Terms of Service";
+
+/// Two segments because the version sits between them as its own element,
+/// the shape and the reason of [`TERMS_ASSENT_CHECKOUT_NOTICE`].
+const GATE_BODY: [&str; 2] = [
+  "Your account runs under the Terms of Service dated ",
+  ". Confirming here is what puts your acceptance on record. We ask once for each published \
+   version, so you will not see this again until they change.",
+];
+
+/// The button. What it confirms is the tick above it, which is the
+/// affirmative act the row is evidence of.
+const GATE_CONFIRM: &str = "Confirm";
+
+/// The full-screen panel an account meets when no row on file names the
 /// published Terms. Not dismissable and not a modal: the dashboard behind
 /// it is what the record is kept for. The legal pages are public routes,
 /// so every link on it is reachable from here, and signing out works.
@@ -123,7 +142,7 @@ pub fn TermsGate(assent: Signal<Option<TermsAssentStatus>>) -> Element {
 
   // Both from the status rather than this build's constant: the version
   // named on screen is then the version the row will carry, and the person
-  // can see whether they are being asked for the first time or again.
+  // can see whether it replaces one they accepted before.
   let version = assent
     .read()
     .as_ref()
@@ -136,12 +155,11 @@ pub fn TermsGate(assent: Signal<Option<TermsAssentStatus>>) -> Element {
   rsx! {
     section { id: "terms-gate", class: "px-4 py-16",
       div { class: "mx-auto max-w-xl rounded-2xl border border-base-300 bg-base-100 p-6 md:p-8",
-        h1 { class: "text-2xl font-bold tracking-tight", "Please accept the Terms of Service" }
+        h1 { class: "text-2xl font-bold tracking-tight", "{GATE_HEADING}" }
         p { class: "mt-3 text-base-content/70",
-          "These are the terms your account runs under, dated "
+          "{GATE_BODY[0]}"
           span { class: "font-semibold", "{version}" }
-          ". We ask once for each published version, so you will not see this again until they
-           change."
+          "{GATE_BODY[1]}"
         }
         if let Some(previous) = previous {
           p { class: "mt-2 text-sm text-base-content/60",
@@ -178,7 +196,7 @@ pub fn TermsGate(assent: Signal<Option<TermsAssentStatus>>) -> Element {
             if busy() {
               span { class: "loading loading-spinner loading-sm" }
             } else {
-              "Agree and continue"
+              "{GATE_CONFIRM}"
             }
           }
           OryLogOut {}
@@ -219,6 +237,20 @@ mod tests {
       accepted_version: None,
       accepted_at: None,
     }));
+  }
+
+  #[test]
+  fn the_copy_names_the_version_it_confirms() {
+    let mut body =
+      String::with_capacity(GATE_BODY[0].len() + TERMS_VERSION.len() + GATE_BODY[1].len());
+    body.push_str(GATE_BODY[0]);
+    body.push_str(TERMS_VERSION);
+    body.push_str(GATE_BODY[1]);
+    assert!(body.contains(TERMS_VERSION));
+    // The version is its own element between the segments, so a reword
+    // that drops it would leave the sentence with a gap here.
+    assert!(GATE_BODY[0].ends_with(' '));
+    assert!(GATE_BODY[1].starts_with('.'));
   }
 
   #[test]
