@@ -20,7 +20,9 @@ use dioxus::prelude::*;
 ///
 /// A status we could not read renders the app: an unreadable status is not
 /// evidence that assent is missing, and a database blip must never lock an
-/// account out of its own fleet. The next sign-in asks again.
+/// account out of its own fleet. The next sign-in asks again. A status not
+/// read *yet* is a different state and `AuthGuard` holds it separately;
+/// this answer is only ever asked for a read that finished.
 pub fn blocks_dashboard(assent: Option<&TermsAssentStatus>) -> bool {
   assent.is_some_and(|status| !status.is_current())
 }

@@ -195,19 +195,31 @@ fn AuthGuard() -> Element {
   // change, and nowhere else, since a cached answer to "what has this
   // account accepted" is worth nothing.
   let mut assent = use_signal(|| None::<TermsAssentStatus>);
+  // Whether the status above has been read at all. `None` cannot carry
+  // both "not fetched yet" and "fetched, unreadable": the first has to
+  // hold the dashboard, because rendering it and replacing it a moment
+  // later shows the person the fleet the gate exists to stand in front
+  // of, and the second has to render it, because a database blip must
+  // never lock an account out of its own devices.
+  let mut assent_read = use_signal(|| false);
 
   use_resource(move || async move {
-    if (session.state)() == AuthState::Authenticated
-      && assent.read().is_none()
-      && let Some(status) = api::terms::status().await
-    {
-      assent.set(Some(status));
+    if (session.state)() == AuthState::Authenticated && !assent_read() {
+      let status = api::terms::status().await;
+      if status.is_some() {
+        assent.set(status);
+      }
+      assent_read.set(true);
     }
   });
 
   match (session.state)() {
     AuthState::Authenticated => {
-      if blocks_dashboard(assent.read().as_ref()) {
+      if !assent_read() {
+        rsx! {
+          div { "Verifying session..." }
+        }
+      } else if blocks_dashboard(assent.read().as_ref()) {
         rsx! {
           TermsGate { assent }
         }

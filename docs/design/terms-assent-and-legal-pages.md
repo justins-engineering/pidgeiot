@@ -449,7 +449,8 @@ one session. We may not lock an account out of its own fleet.
 
 | Failure | Behaviour | Why |
 | --- | --- | --- |
-| `GET /account/terms` fails (network, 500, table missing) | `assent` stays `None`, the guard renders the `Outlet`, the dashboard works | An unreadable status is not evidence that assent is missing. The next sign-in asks again. |
+| `GET /account/terms` has not answered yet | The guard shows its "Verifying session..." placeholder | A gate that appears over a dashboard already on screen is not a gate |
+| `GET /account/terms` fails (network, 500, table missing) | `assent` stays `None` but the read is marked done, the guard renders the `Outlet`, the dashboard works | An unreadable status is not evidence that assent is missing. The next sign-in asks again. |
 | `GET /account/terms` returns a stale `accepted_version` | Cannot happen: the statement carries `now()` and Hyperdrive will not cache it | The documented failure mode is the gate reappearing after a successful accept |
 | `POST /account/terms` fails | Panel stays up with an inline error, nothing cached, a retry is a fresh POST | The person is held out of the dashboard but not out of `/terms/`, `/privacy/` or sign-out |
 | Two tabs accept at once | One row: the `NOT EXISTS` predicate is inside the INSERT, not a read-then-write | Same reasoning as the existing marketing writer |
