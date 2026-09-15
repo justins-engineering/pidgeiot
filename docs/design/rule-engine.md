@@ -32,7 +32,7 @@ generalization of both." Confirmed by re-reading the current code: that "hook po
 branch:~1530) — the exact three call sites `check_telemetry_alerts` already runs from today.
 Nothing here proposes replacing that machinery; §1 below adds a **parallel, best-effort
 branch at the same seam**, and §3 reuses (not duplicates) its Postgres conventions,
-Resend-email plumbing, and per-pigeon-vs-per-flock scoping model wherever the shape matches.
+alert-email plumbing, and per-pigeon-vs-per-flock scoping model wherever the shape matches.
 
 ## TL;DR
 
@@ -125,7 +125,7 @@ subrequest (this is what makes `subRequests: 0` viable for MVP, §4.2):
 | Capability | MVP (Phase 1) | Later |
 |---|---|---|
 | **Derived telemetry** (`derived`) | Written to `pigeon_telemetry_history` only (Postgres), tagged `source='rule'` (new nullable column, default `'device'`) — reuses `write_telemetry_history`'s insert shape verbatim, just a second caller. **Not** upserted into the DO's own live `pigeon_telemetry` table in MVP (see the punt list, §8) — avoids a DO schema change and a new DO-internal route for v1, at the cost of "latest telemetry" dashboard views not showing rule-derived values yet, only history/graphs (which already read `pigeon_telemetry_history`, unmodified). | DO-mirrored, so derived keys show up identically to device-reported ones everywhere, including the live shadow-adjacent "latest telemetry" view. |
-| **Emit alerts** (`alert`) | Fire-and-forget: call the *same* Resend-send + `resolve_alert_recipient` helpers `helpers/alerts.rs` already has (shared **function**, not a shared **table** — no `alert_definitions` row is synthesized for a rule's alert output) — no debounce/hysteresis state. Acceptable for MVP because, unlike `AlertCondition`'s closed set, a rule has full code and can implement its own debounce inline if the author cares to. | A `rule_alert_state` table, structurally identical to `alert_state`, if unmoderated repeat-fire turns out to be a real problem in practice — don't build ahead of that evidence. |
+| **Emit alerts** (`alert`) | Fire-and-forget: call the *same* mail-send + `resolve_alert_recipient` helpers `helpers/alerts.rs` already has (shared **function**, not a shared **table** — no `alert_definitions` row is synthesized for a rule's alert output) — no debounce/hysteresis state. Acceptable for MVP because, unlike `AlertCondition`'s closed set, a rule has full code and can implement its own debounce inline if the author cares to. | A `rule_alert_state` table, structurally identical to `alert_state`, if unmoderated repeat-fire turns out to be a real problem in practice — don't build ahead of that evidence. |
 | **Forward to a user endpoint** | Redundant with what `telemetry_endpoint` line-protocol forwarding already does, and with what a rule could do itself once it has `fetch()` (Phase 2, §8) — not a separate capability to design; note the overlap so nobody builds it twice. | A rule with egress *is* the general form of today's `telemetry_endpoint` forward — could eventually be reimplemented as a "default" platform-authored rule, but that's a migration to consider later, not now. |
 | **Write back shadow values** | **Not allowed.** See §1.3.1. | Phase 3, heavily guarded. |
 

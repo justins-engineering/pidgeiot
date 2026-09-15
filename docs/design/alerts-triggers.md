@@ -5,6 +5,10 @@ Status: design doc, no code changes. Scope: let a dashboard user define a condit
 2 hours") and get notified — email first, delivery kept pluggable so other channels
 (webhook, SMS, push) are additive later, not a rewrite.
 
+Overtaken on the provider question: alerts shipped, and they send on Cloudflare's
+Email Service binding, not the Resend HTTP API and `RESEND_API_KEY` secret §3
+recommends. The comparison is still the reasoning behind that seam.
+
 This is the concrete answer to the "alarms+notifications" gap in PidgeIoT's
 ThingsBoard-parity list (product-strategy notes, 2026-07-20) — see §5 for how it
 relates to the also-planned Workers-for-Platforms rule engine (referred to
