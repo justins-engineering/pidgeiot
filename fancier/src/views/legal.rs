@@ -51,7 +51,16 @@ const MARKDOWN_STYLE: &str = r#"<style>
 /// dated by `version`, so the page shell prints no second one.
 #[component]
 fn LegalDocument(section_id: &'static str, version: &'static str, source: &'static str) -> Element {
-  let body = use_memo(move || legal_doc::render(source, version));
+  // Style and document concatenated once here rather than in the
+  // attribute, which would rebuild the whole document through std::fmt on
+  // every render of the component.
+  let body = use_memo(move || {
+    let rendered = legal_doc::render(source, version);
+    let mut html = String::with_capacity(MARKDOWN_STYLE.len() + rendered.len());
+    html.push_str(MARKDOWN_STYLE);
+    html.push_str(&rendered);
+    html
+  });
 
   rsx! {
     section { id: section_id, class: "py-16 md:py-24",
@@ -59,7 +68,7 @@ fn LegalDocument(section_id: &'static str, version: &'static str, source: &'stat
         p { class: "text-sm uppercase tracking-wide text-base-content/50 mb-2",
           "Rendered directly from docs/legal/ in the repository"
         }
-        div { id: "legal-md", dangerous_inner_html: "{MARKDOWN_STYLE}{body}" }
+        div { id: "legal-md", dangerous_inner_html: "{body}" }
       }
     }
   }
@@ -185,7 +194,7 @@ mod tests {
       // and each post's own entries.
       let post = route.starts_with("/stories/") && route != "/stories/";
       if !post {
-        let mut block = String::with_capacity(route.len() * 2 + 56);
+        let mut block = String::with_capacity(route.len() * 2 + 58);
         block.push_str(route);
         block.push_str("\n  Link: <");
         block.push_str(route);
@@ -240,7 +249,7 @@ mod tests {
     let llms = include_str!("../../public/llms.txt");
     let build = include_str!("../../scripts/build-release.sh");
     for (route, copy) in PUBLISHED {
-      let mut variant = String::with_capacity(38 + route.len());
+      let mut variant = String::with_capacity(28 + route.len());
       variant.push_str("https://pidgeiot.com");
       variant.push_str(route);
       variant.push_str("index.md");

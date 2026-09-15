@@ -54,7 +54,7 @@ pub fn render(src: &str, version: &str) -> String {
           continue;
         };
         let slug = slugger.unique(&inline_text(&inner));
-        let mut open = String::with_capacity(9 + slug.len());
+        let mut open = String::with_capacity(10 + slug.len());
         open.push_str("<h");
         open.push(digit);
         open.push_str(" id=\"");
