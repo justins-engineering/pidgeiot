@@ -290,13 +290,14 @@ the form is made non-interactive until the box is ticked:
 ```rust
 let terms_ok = use_signal(|| false);
 // inside the Some(Ok(res)) arm:
-TermsNotice { accepted: terms_ok }
+let credential_step = creates_the_identity(res.ui.nodes.iter().map(|node| node.group));
+TermsNotice { accepted: credential_step.then_some(terms_ok) }
 div {
   // `inert` is the whole enforcement, and it is allowed to be only a
   // browser behaviour: the account meets the gate on its first dashboard
   // entry either way.
-  "inert": (!terms_ok()).then_some(""),
-  class: if terms_ok() { "" } else { "opacity-60" },
+  "inert": (credential_step && !terms_ok()).then_some(""),
+  class: if credential_step && !terms_ok() { "opacity-60" } else { "" },
   FormBuilder { ui: *res.ui.to_owned() }
 }
 ```
@@ -311,8 +312,11 @@ SSG-safe for free: the arm renders only after `register.rs:12`'s `use_resource` 
 prerendered page is the `None` arm ("Loading registration flow..."). No query param is read, so
 neither hydration trap applies.
 
-Known and deliberate: registration is two-step (`schemas/kratos/kratos.yml:139-152`), so the notice
-renders on both steps, and a person who registers then meets the gate once on first dashboard entry.
+Registration is two-step (`schemas/kratos/kratos.yml:139-152`) and the step transition is a full
+page load, so a tick on the first step is gone by the second. The notice renders on both steps and
+the box appears on the credential step only, which is the step that creates the account and the one
+whose nodes fall outside the `default` and `profile` groups. A new account is therefore asked once
+here and once at the gate.
 A `localStorage` handoff that posted the assent once the session was adopted would remove that
 second ask; it is not built, because it adds a key, a TTL, a failure branch and a client-claimed
 source to save one click, and the gate copy reads as confirmation rather than as a repeat.
@@ -798,7 +802,8 @@ Green builds are not evidence. Dev stack via `docker-compose -f infra/docker-com
 the main checkout, dovecote on 8787, the built artifact served by `wrangler dev` on port 8790 (not
 `dx serve`, which does not hydrate; do not touch 4455).
 
-1. Register a fresh account with the box unticked: the form is inert. Tick it, register, reach the
+1. Register a fresh account. The first step shows the notice with no box and submits normally; the
+   password step shows the box and is inert until it is ticked. Tick it, register, reach the
    dashboard, meet the gate, accept. Expect exactly one `terms_of_service` row, `source = gate`,
    the current version, a NULL `ip` and `user_agent`.
 2. Accept again (reload, click again): no second row, 200 either way.

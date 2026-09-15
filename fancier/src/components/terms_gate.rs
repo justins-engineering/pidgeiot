@@ -25,9 +25,11 @@ pub fn blocks_dashboard(assent: Option<&TermsAssentStatus>) -> bool {
   assent.is_some_and(|status| !status.is_current())
 }
 
-/// The four published documents and the box that accepts them.
+/// The four published documents, and the box that accepts them when a
+/// signal is given. Without one it is notice alone, which is what the
+/// registration step that creates no account shows.
 #[component]
-pub fn TermsNotice(accepted: Signal<bool>) -> Element {
+pub fn TermsNotice(accepted: Option<Signal<bool>>) -> Element {
   rsx! {
     div { class: "rounded-box border border-base-300 bg-base-200/40 p-4",
       p { class: "text-sm text-base-content/70",
@@ -43,14 +45,16 @@ pub fn TermsNotice(accepted: Signal<bool>) -> Element {
       }
       // Plain utilities rather than daisyUI's `label`, whose `white-space:
       // nowrap` runs this sentence off the side of a phone.
-      label { class: "mt-3 flex cursor-pointer items-start gap-3",
-        input {
-          r#type: "checkbox",
-          class: "checkbox checkbox-sm mt-0.5 shrink-0",
-          checked: accepted(),
-          onchange: move |evt: Event<FormData>| accepted.set(evt.checked()),
+      if let Some(mut accepted) = accepted {
+        label { class: "mt-3 flex cursor-pointer items-start gap-3",
+          input {
+            r#type: "checkbox",
+            class: "checkbox checkbox-sm mt-0.5 shrink-0",
+            checked: accepted(),
+            onchange: move |evt: Event<FormData>| accepted.set(evt.checked()),
+          }
+          span { class: "text-sm", "{TERMS_ASSENT_LABEL}" }
         }
-        span { class: "text-sm", "{TERMS_ASSENT_LABEL}" }
       }
     }
   }
