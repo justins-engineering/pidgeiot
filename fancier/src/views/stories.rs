@@ -786,11 +786,12 @@ mod the_story_files_and_the_layout_agree {
     }
   }
 
-  // A markdown-negotiable route lives in three files besides the router,
-  // and llms.txt advertises it. The worker's path list and the header file
-  // take one glob for every post, so what a post itself needs is its
-  // page-meta entry and its llms.txt line; the globs are checked so nobody
-  // replaces them with per-post lines that the next post then forgets.
+  // Every negotiable route's own config is checked in views::legal; what
+  // is left here is what that pass cannot see from page-meta.json alone.
+  // A post needs its page-meta entry and its llms.txt line, and the
+  // worker's path list and the header file take one glob for every post,
+  // so the globs are checked too: nobody may replace them with per-post
+  // lines that the next post then forgets.
   #[test]
   fn every_negotiable_route_place_knows_the_stories() {
     let meta: serde_json::Value = serde_json::from_str(include_str!("../../page-meta.json"))
@@ -798,10 +799,6 @@ mod the_story_files_and_the_layout_agree {
     let pages = meta["pages"]
       .as_object()
       .expect("page-meta.json has no pages map");
-    assert!(
-      pages.contains_key("/stories/"),
-      "page-meta.json lacks the stories index"
-    );
     for story in STORIES {
       let mut key = String::with_capacity(10 + story.slug.len());
       key.push_str("/stories/");
@@ -828,16 +825,12 @@ mod the_story_files_and_the_layout_agree {
     }
 
     let headers = include_str!("../../public/_headers");
-    for rule in [
-      "/stories/\n  Link: </stories/index.md>; rel=\"alternate\"; type=\"text/markdown\"",
-      "/stories/:slug/\n  Link: </stories/:slug/index.md>; rel=\"alternate\"; \
-       type=\"text/markdown\"",
-    ] {
-      assert!(
-        headers.contains(rule),
-        "public/_headers lacks the rule:\n{rule}"
-      );
-    }
+    let rule = "/stories/:slug/\n  Link: </stories/:slug/index.md>; rel=\"alternate\"; \
+                type=\"text/markdown\"";
+    assert!(
+      headers.contains(rule),
+      "public/_headers lacks the rule:\n{rule}"
+    );
   }
 
   #[test]
