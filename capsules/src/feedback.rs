@@ -99,8 +99,8 @@ pub struct FeedbackSubmitter {
 }
 
 /// Formats the ops notification email for one feedback submission.
-/// Returns `(subject, plain_text_body)` for `send_via_resend`-style
-/// transports. Pure function of its inputs so the exact output is
+/// Returns `(subject, plain_text_body)` for the platform's plain-text
+/// senders. Pure function of its inputs so the exact output is
 /// unit-testable below.
 pub fn format_feedback_email(
   req: &FeedbackRequest,
@@ -113,7 +113,7 @@ pub fn format_feedback_email(
     .unwrap_or(FeedbackCategory::General.label());
 
   // `[FEEDBACK]` prefix matches the `[OPS]`/`[SEVERITY]` subject convention
-  // the existing Resend senders use, so inbox filters can key on one shape.
+  // the other ops senders use, so inbox filters can key on one shape.
   let subject = format!("[FEEDBACK] {category_label} via the PidgeIoT dashboard");
 
   let submitted_at_str = submitted_at

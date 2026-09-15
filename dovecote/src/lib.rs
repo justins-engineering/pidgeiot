@@ -473,8 +473,8 @@ fn resolve_serve_range(range: &Range, total: u64) -> (u64, u64) {
 /// terminators themselves, gated by two independent layers -- a
 /// source-address allowlist (COAP_SERVICE_ALLOWED_IPS, their egress
 /// addresses) and the COAP_SERVICE_SECRET Worker secret (set via `wrangler
-/// secret put` per env, never [vars] -- same convention as RESEND_API_KEY;
-/// local dev reads it from dovecote/.dev.vars). The var and secret keep
+/// secret put` per env, never [vars], like every credential here; local
+/// dev reads it from dovecote/.dev.vars). The var and secret keep
 /// their CoAP-era names: one gate, one shared value, and renaming a
 /// deployed secret buys nothing. The `:pigeon_id` path param IS the PSK
 /// identity -- `create`/`refresh_token` mint `tls_psk_identity` as the
@@ -3389,8 +3389,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // email (never trusted from the body). Abuse protection is
     // deliberately existing-pattern-only: Content-Type must be JSON, body
     // and each field are size-capped (capsules::MAX_FEEDBACK_*), and
-    // delivery reuses the prod-only OPS_ALERT_EMAIL + RESEND_API_KEY pair,
-    // so staging/dev degrade to a logged no-op. No per-IP rate limiter
+    // delivery reuses the prod-only OPS_ALERT_EMAIL var, so staging/dev
+    // degrade to a logged no-op. No per-IP rate limiter
     // here -- that's platform-level (a Cloudflare WAF rule or Turnstile),
     // not something to hand-roll in-route.
     .post_async("/feedback", |mut req, ctx: RouteContext<()>| async move {
@@ -4505,8 +4505,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let invite_url = build_invite_url(&ctx.env, &token);
 
-        // Best-effort delivery through the existing Resend transport; in
-        // dev (no RESEND_API_KEY) this logs the link instead. Either way
+        // Best-effort delivery through Cloudflare Email Service; an
+        // environment without the binding logs the link instead. Either way
         // the response below carries the token/URL once -- write-once,
         // same convention as device connector tokens.
         send_invite_email(

@@ -533,7 +533,7 @@ async fn send_allowance_warning(
     tally.billable_messages, allowance
   );
 
-  if let Err(e) = super::alerts::send_via_usesend(env, &recipient, subject, &text).await {
+  if let Err(e) = super::alerts::send_text_email(env, &recipient, subject, &text).await {
     console_error!(
       "Perch warning email send failed for {} {}: {e}",
       tally.owner_kind,

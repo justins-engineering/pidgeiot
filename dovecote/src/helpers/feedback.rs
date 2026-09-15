@@ -1,15 +1,15 @@
 use worker::{Env, console_error, console_log};
 
-use super::alerts::send_via_usesend;
+use super::alerts::send_text_email;
 use super::ops_probe::ops_alert_email;
 
 /// Best-effort delivery of one formatted feedback email -- subject/body
 /// come from `capsules::format_feedback_email`. Reuses the existing
 /// notification plumbing rather than adding a new provider or secret:
 /// recipient is the `OPS_ALERT_EMAIL` var (`ops_probe::ops_alert_email` --
-/// production-only by design, one knob), transport is `send_via_usesend`
-/// (`RESEND_API_KEY` secret). Staging/dev degrade to a logged no-op, and
-/// even in production a Resend failure is fire-and-log -- the submitter's
+/// production-only by design, one knob), transport is `send_text_email`
+/// (the `EMAIL` binding). Staging/dev degrade to a logged no-op, and even
+/// in production a send failure is fire-and-log -- the submitter's
 /// 202 never depends on delivery, matching every other notification path
 /// in this codebase.
 pub async fn send_feedback_email(env: &Env, subject: &str, text: &str) {
@@ -26,7 +26,7 @@ pub async fn send_feedback_email(env: &Env, subject: &str, text: &str) {
     return;
   };
 
-  if let Err(e) = send_via_usesend(env, &recipient, subject, text).await {
+  if let Err(e) = send_text_email(env, &recipient, subject, text).await {
     console_error!("feedback: email send failed: {e}");
   }
 }

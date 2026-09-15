@@ -85,7 +85,7 @@ head_sampling_rate = 1
 # Companion Worker SECRET (never here): COAP_SERVICE_SECRET -- the shared
 # secret a terminator presents on GET /internal/device-psk/:pigeon_id
 # (and its older /internal/coap-psk/:pigeon_id name)
-# (same never-[vars] convention as RESEND_API_KEY; `wrangler secret put
+# (never [vars], like every credential here; `wrangler secret put
 # COAP_SERVICE_SECRET` per env, dovecote/.dev.vars for local dev). The
 # route fails closed while it's unset.
 #
@@ -107,9 +107,10 @@ COAP_DEVICE_HOST = "coap.pidgeiot.com"
 MQTT_DEVICE_HOST = "mqtt.pidgeiot.com"
 # Recipient for platform-ops notifications (helpers/ops_probe.rs -- the
 # 5-minute cron's Kratos readiness probe emails state TRANSITIONS here via
-# Resend). Doubles as the probe's only enable switch: set in production
-# alone, deliberately absent from [env.staging.vars]/[env.dev.vars] so
-# their identical cron handlers never probe or email.
+# Cloudflare Email Service). Doubles as the probe's only enable switch:
+# set in production alone, deliberately absent from
+# [env.staging.vars]/[env.dev.vars] so their identical cron handlers never
+# probe or email.
 OPS_ALERT_EMAIL = "code@jes.contact"
 # Production demo pigeon (see the DEMO_PIGEON_IDS note above).
 DEMO_PIGEON_IDS = "44e81fc18f5beddf8cabf57c3decd16ad1b7d24dd629213c2c4ac9038e50b03f"
@@ -131,10 +132,11 @@ COAP_SERVICE_ALLOWED_IPS = "15.204.254.3,2604:2dc0:121::5be"
 binding = "YugabyteDB"
 id = "f2c59dfa75114889815fd453ac0db62a"
 
-# Cloudflare Email Service. The binding's presence selects it over the
-# useSend HTTP path (helpers/alerts.rs), which stays as the fallback rail.
-# No MAIL_FROM_ADDRESS var here: the code's default From is already the
-# production address on the onboarded noreply.pidgeiot.com domain.
+# Cloudflare Email Service -- the only mail rail there is
+# (helpers/alerts.rs), so an environment that omits this block cannot send
+# and every send from it fails. No MAIL_FROM_ADDRESS var here: the code's
+# default From is already the production address on the onboarded
+# noreply.pidgeiot.com domain.
 [[send_email]]
 name = "EMAIL"
 
@@ -362,12 +364,12 @@ COAP_SERVICE_ALLOWED_IPS = ""
 # domain is onboarded per environment and Cloudflare Email Service signs
 # only what it is authoritative for, so staging must not claim production's
 # noreply.pidgeiot.com. Unset elsewhere -- the code's default is that
-# production address, which both rails send from.
+# production address.
 MAIL_FROM_ADDRESS = "alerts@noreply-staging.pidgeiot.com"
 
-# Cloudflare Email Service. The binding's presence is what selects it over
-# the useSend HTTP path (helpers/alerts.rs), so only environments whose
-# sending domain is onboarded declare it.
+# Cloudflare Email Service -- see the production block above. Staging
+# sends from its own onboarded domain (MAIL_FROM_ADDRESS, up in
+# [env.staging.vars]).
 [[env.staging.send_email]]
 name = "EMAIL"
 
@@ -471,10 +473,9 @@ COAP_SERVICE_ALLOWED_IPS = "127.0.0.1,::1"
 # needed here.
 GREPTIMEDB_ENDPOINT = "http://127.0.0.1:4000"
 
-# Cloudflare Email Service -- see the staging block above for why the
-# binding's presence is the transport switch. `wrangler dev` binds it
-# locally and nothing leaves the machine, so dev needs no onboarded
-# sending domain and keeps the default `From:`.
+# Cloudflare Email Service. `wrangler dev` binds it locally and nothing
+# leaves the machine, so dev needs no onboarded sending domain and keeps
+# the default `From:`.
 [[env.dev.send_email]]
 name = "EMAIL"
 
