@@ -2227,7 +2227,7 @@ curl -s -X POST https://api.pidgeiot.com/feedback \
 
 Returns `202` with an empty JSON object. `202`, not `200`/`201`, because nothing is persisted —
 the submission is formatted (`capsules::format_feedback_email`) and delivered best-effort as one
-email to the `OPS_ALERT_EMAIL` var via the existing Resend transport
+email to the `OPS_ALERT_EMAIL` var through Cloudflare Email Service
 (`helpers/feedback.rs::send_feedback_email`). `OPS_ALERT_EMAIL` is set in production's `[vars]`
 block only (same single-knob convention as the ops health probe), so staging/dev accept the
 request and log the formatted email instead of sending — the `202` never depends on delivery.
@@ -2293,7 +2293,7 @@ Returns `202` with an empty JSON object once the enquiry is **stored**. Unlike
 `POST /feedback`, this route persists before it notifies: the row in `contact_submissions`
 (`infra/migrations/2026-08-24-contact-submissions.sql`) is what keeps an enquiry from being
 lost to a mail-transport outage, so a storage failure is a real `500`. The notification email
-is then best-effort through the same `OPS_ALERT_EMAIL` + Resend transport every other ops mail
+is then best-effort through the same `OPS_ALERT_EMAIL` + Email Service path every other ops mail
 uses (`helpers/contact.rs`), stamping `notified_at` only once a send succeeds — `OPS_ALERT_EMAIL`
 is set in production's `[vars]` block only, so staging and dev store the row and log the
 formatted email instead of sending it.
