@@ -658,11 +658,12 @@ each other, which is the class of defect memo item I.2 is about.
 
 ### 8.2 Not mechanical
 
-One item blocks `/subprocessors/` on substance: the useSend row has no stated processing location
+One item blocked `/subprocessors/` on substance: the useSend row had no stated processing location
 and no transfer mechanism, while DPA 6.4 warrants flow-down and 9.5 says the published list states
 each vendor's mechanism. Publishing a contractual annex that names a live vendor with neither
-publishes the gap to every customer and to any supervisory authority. It is the one decision that
-blocks the page, and it is the owner's; the deploy checklist carries it.
+publishes the gap to every customer and to any supervisory authority. The owner settled it by
+removing the vendor rather than the disclosure: the Service sends on the edge provider's Email
+Service alone, and the row is out of the list and out of Annex II.H.
 
 One more is separated out in the deploy checklist: Module Three, which the settled Privacy Policy
 does not name, so the two documents disagree about what covers a transfer from a customer who is
@@ -765,12 +766,12 @@ Everything the implementation could settle for itself, it settled, and the reaso
 mechanism it belongs to. What is left is owner and counsel work, and none of it is an engineering
 call.
 
-- **The useSend sub-processor row. BLOCKING.** The in-repo copy states that row as the deployed
-  configuration stands, so the published list is accurate to what runs; what it states is a vendor
-  with no stated processing location and no transfer mechanism, against the DPA's own 6.4 and 9.5.
-  Each way out is an owner action taken before deploy -- remove useSend from the deployed
-  configuration (the edge provider's Email Service is already the primary transport), obtain a DPA
-  from the vendor, or switch the fallback rail -- and the row is then edited to match what was done.
+- **The useSend sub-processor row: settled, not blocking.** Of the three ways out -- remove the
+  vendor from the deployed configuration, obtain a DPA from it, or switch the fallback rail -- the
+  owner took the first. The Service sends on the edge provider's Email Service alone and the row is
+  out of both the list and Annex II.H, so the published annex names no vendor without a stated
+  location and mechanism. The Privacy Policy's own fallback sentence is the half counsel still
+  owns; `docs/legal/README.md` carries it.
 - **The two constants' values.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date,
   one commit on the branch. The privacy constant is `2026-09-04` in the code while the settled
   policy is dated later, so leaving it would make the page and the existing rows disagree.
