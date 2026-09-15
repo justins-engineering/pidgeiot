@@ -7,7 +7,9 @@
 //! Stripe-hosted URL the caller immediately navigates the whole tab to --
 //! there is nothing to cache. `Err` carries the server's own message so
 //! the panel can show why a mint was refused (non-manager, no billing
-//! account yet, Stripe unreachable).
+//! account yet, no current-version Terms assent on file, Stripe
+//! unreachable). Every call site renders that message beside the button it
+//! came from, which is what makes the 409 readable rather than generic.
 
 use crate::api::orgs::{error_text, parse, to_body};
 use crate::api::{fetch_json, fetch_json_any_status};

@@ -1,5 +1,6 @@
-//! Notice of the published legal documents, the box that accepts them, and
-//! the panel that holds the dashboard until it is ticked.
+//! Notice of the published legal documents: the box that accepts them, the
+//! panel that holds the dashboard until it is ticked, and the line that
+//! names them where a subscription is bought.
 //!
 //! One component carries the notice because the registration form and the
 //! gate ask the same thing: the words a person ticks and the row we keep
@@ -11,7 +12,8 @@
 
 use crate::components::OryLogOut;
 use crate::{Route, api};
-use capsules::consent::{TERMS_ASSENT_LABEL, TermsAssentStatus};
+use capsules::TERMS_VERSION;
+use capsules::consent::{TERMS_ASSENT_CHECKOUT_NOTICE, TERMS_ASSENT_LABEL, TermsAssentStatus};
 use dioxus::prelude::*;
 
 /// Whether the dashboard is held behind the gate.
@@ -48,6 +50,22 @@ pub fn TermsNotice(accepted: Signal<bool>) -> Element {
         }
         span { class: "label-text text-sm text-left", "{TERMS_ASSENT_LABEL}" }
       }
+    }
+  }
+}
+
+/// The line beside a purchase button. Subscribing is itself the act, and
+/// the gate already holds the tick, so this names what is being accepted
+/// rather than asking for it a second time.
+#[component]
+pub fn PurchaseTermsNotice() -> Element {
+  rsx! {
+    p { class: "text-xs text-base-content/60",
+      "{TERMS_ASSENT_CHECKOUT_NOTICE[0]}"
+      Link { class: "link link-secondary", to: Route::TermsPage {}, "Terms of Service" }
+      "{TERMS_ASSENT_CHECKOUT_NOTICE[1]}{TERMS_VERSION}{TERMS_ASSENT_CHECKOUT_NOTICE[2]}"
+      Link { class: "link link-secondary", to: Route::DpaPage {}, "Data Processing Agreement" }
+      "{TERMS_ASSENT_CHECKOUT_NOTICE[3]}"
     }
   }
 }

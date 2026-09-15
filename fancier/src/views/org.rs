@@ -10,7 +10,7 @@
 //! refetching: a refetch right after a save comes back from Hyperdrive's
 //! query cache with the rows from before it.
 
-use crate::components::{ConfirmModal, DangerAction, DangerZone};
+use crate::components::{ConfirmModal, DangerAction, DangerZone, PurchaseTermsNotice};
 use crate::helpers::org_detail;
 use crate::helpers::timezone::{suggested_zone, zone_options};
 use crate::{Create, Route, api};
@@ -697,6 +697,9 @@ fn BillingPanel(
       }
 
       if caller_role.is_manager() {
+        if !o.entitled {
+          PurchaseTermsNotice {}
+        }
         div { class: "flex flex-wrap gap-2 items-center",
           if o.entitled {
             for plan in [BillingPlan::Builder, BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
