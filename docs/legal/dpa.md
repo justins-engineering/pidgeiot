@@ -145,7 +145,7 @@ This DPA takes effect when the Customer accepts it (by countersignature or by co
 
 12.2. The Provider may update this DPA to reflect changes in law, in the Service, or in its Sub-processors, on at least thirty (30) days' notice by email to the Customer's organisation owners or, if the account is not associated with an organisation, to the email address on the account, and a note on the published version. A change that materially reduces the protection of Customer Personal Data gives the Customer the termination right in Section 6.3.
 
-12.3. This DPA is governed by the law that governs the Agreement (the Commonwealth of Massachusetts), except that the EU SCCs, the UK Addendum and the Swiss adaptations are governed by the law they each state.
+12.3. This DPA is governed by the law of the Commonwealth of Massachusetts, except that the EU SCCs, the UK Addendum and the Swiss adaptations are governed by the law they each state.
 
 12.4. The contact for all notices under this DPA is **info@jes.contact** for Justin's Engineering Services LLC, and the organisation owners' email addresses on the account for the Customer or, if the account is not associated with an organisation, the email address on the account.
 
