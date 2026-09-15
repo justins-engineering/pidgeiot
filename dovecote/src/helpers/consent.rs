@@ -43,7 +43,9 @@ static TABLE_READY: AtomicBool = AtomicBool::new(false);
 /// EXISTS` is inert against a table that already exists, so without it the
 /// first `gate` insert fails against every deployed database; a blind
 /// DROP/ADD instead would take the table's exclusive lock on every isolate
-/// boot. The loop finds nothing after the first run.
+/// boot. The loop finds nothing after the first run, and the drop is
+/// `IF EXISTS` because two isolates can read the same constraint name
+/// before either takes the lock.
 pub async fn ensure_consent_tables(client: &Client) -> Result<()> {
   client
     .batch_execute(
@@ -73,7 +75,7 @@ pub async fn ensure_consent_tables(client: &Client) -> Result<()> {
              AND pg_get_constraintdef(oid) LIKE '%source%'
              AND pg_get_constraintdef(oid) NOT LIKE '%gate%'
         LOOP
-          EXECUTE format('ALTER TABLE consent_events DROP CONSTRAINT %I', c.conname);
+          EXECUTE format('ALTER TABLE consent_events DROP CONSTRAINT IF EXISTS %I', c.conname);
           EXECUTE 'ALTER TABLE consent_events ADD CONSTRAINT consent_events_source_check
                    CHECK (source IN (''registration'',''settings'',''import'',''gate'',''checkout''))';
         END LOOP;

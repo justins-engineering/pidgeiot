@@ -34,8 +34,9 @@ SET ROLE dovecote;
 ALTER TABLE consent_events ADD COLUMN IF NOT EXISTS org_id UUID;
 
 -- Widens the source CHECK once. The loop finds nothing after the first run,
--- so a warm isolate never takes the table's exclusive lock, and the real
--- constraint name is discovered rather than assumed.
+-- so a re-run does not relock the table, and the real constraint name is
+-- discovered rather than assumed. IF EXISTS because two sessions can read
+-- the same name before either takes the lock.
 DO $$
 DECLARE c record;
 BEGIN
@@ -45,7 +46,7 @@ BEGIN
        AND pg_get_constraintdef(oid) LIKE '%source%'
        AND pg_get_constraintdef(oid) NOT LIKE '%gate%'
   LOOP
-    EXECUTE format('ALTER TABLE consent_events DROP CONSTRAINT %I', c.conname);
+    EXECUTE format('ALTER TABLE consent_events DROP CONSTRAINT IF EXISTS %I', c.conname);
     EXECUTE 'ALTER TABLE consent_events ADD CONSTRAINT consent_events_source_check
              CHECK (source IN (''registration'',''settings'',''import'',''gate'',''checkout''))';
   END LOOP;
