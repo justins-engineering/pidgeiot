@@ -14,6 +14,9 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 `archive/` holds superseded published text, named for the version it was published as, so a consent
 row stamped with an older version can still be resolved back to the words that were on screen.
 
+The `/privacy/#privacy-*` anchors the hand-written page shipped before 2026-09-14 do not survive:
+heading ids now come from the heading text, the way `/api-reference/` has always produced them.
+
 ## The copy is one way
 
 Business folder to repository, never back. The business copies are counsel's working drafts and are
@@ -57,7 +60,7 @@ what we publish have to be made to agree.
 ## Shipping a change to these documents
 
 Nothing here is an agent action. The full reasoning is in
-`docs/design/terms-assent-and-legal-pages.md` section 12; this is the list.
+`docs/design/terms-assent-and-legal-pages.md` section 11; this is the list.
 
 1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set
    `TERMS_VERSION` (and `PRIVACY_NOTICE_VERSION` if the policy moved) to the deploy date.

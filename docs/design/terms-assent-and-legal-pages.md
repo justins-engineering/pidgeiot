@@ -1,8 +1,7 @@
 # Versioned Terms assent, and the four published legal pages
 
-Task #91 plus the assent flow the attorney's memo (F/memo-0911.txt, section I) requires before
-billing goes live. Repo read at `main` (062ce2f). This is the agreed design: design C's mechanism,
-with the pieces the three judges preferred from A and B grafted in and marked where they came from.
+The assent flow the attorney's memo requires before billing goes live, and the four legal pages the
+Terms and the Privacy Policy contractually point at.
 
 **Mechanism in one line.** A signed-in browser cannot reach any dashboard route until dovecote says
 the account has a `consent_events` row for `purpose = 'terms_of_service'` stamped with the current
@@ -64,10 +63,10 @@ Version, account and time, which is what the memo asks for, are all written by t
 client supplies no version, no timestamp and no source, so no row can misdescribe the surface it
 came from.
 
-`org_id` is kept (judge 1). The settled Terms extract a representation that an identity-only row
+`org_id` is kept. The settled Terms extract a representation that an identity-only row
 cannot reconstruct: "If you subscribe on behalf of a separate business or public body, you confirm
 that you are authorized to bind it" (terms-of-service-final-2026-09-11.md:13). An abandoned checkout
-leaves no Stripe object to recover it from. Decision 5 keeps the alternative open.
+leaves no Stripe object to recover it from.
 
 ### 2.2 Two schema changes, both idempotent, one of them dangerous
 
@@ -273,12 +272,14 @@ leave. Not dismissable, no "later". On a 2xx it sets `assent` from the response 
 renders the `Outlet` on the next render. On a failure it shows an inline error and stays up; nothing
 is cached, so a retry is a fresh POST.
 
-**No route is exempt, `/settings` included** (grafted from A and B; judge 1 counted C's exemption
-against it). Accepting is one click and needs no password, so a completed account recovery landing
-on `/settings` through `kratos_settings_handoff`
+**No route is exempt, `/settings` included.** Accepting is one click and needs no password, so a
+completed account recovery landing on `/settings` through `kratos_settings_handoff`
 (`fancier/src/helpers/session_start.rs:84-101`) meets the gate, accepts, and continues to the
-password form with the URL unchanged. Decision 8 keeps the exemption available if the owner would
-rather never put a screen in front of a recovery.
+password form with the URL unchanged. The clock to watch is Kratos's `privileged_session_max_age`,
+15 minutes: the gate's own copy asks the person to read four documents, and every link leaves the
+gate, so someone who reads them all meets a re-authentication prompt on the password form. Exempting
+the settings handoff specifically is the escape hatch, on the condition `is_settings_handoff`
+already computes.
 
 ### 4.2 Registration: notice plus a first affirmative act
 
@@ -312,8 +313,9 @@ neither hydration trap applies.
 
 Known and deliberate: registration is two-step (`schemas/kratos/kratos.yml:139-152`), so the notice
 renders on both steps, and a person who registers then meets the gate once on first dashboard entry.
-Decision 4 offers the `localStorage` handoff that removes the second ask; the default is not to
-build it, and the gate copy is written to read as confirmation rather than as a repeat.
+A `localStorage` handoff that posted the assent once the session was adopted would remove that
+second ask; it is not built, because it adds a key, a TTL, a failure branch and a client-claimed
+source to save one click, and the gate copy reads as confirmation rather than as a repeat.
 
 ### 4.3 Checkout: refuse without a record, then record the entity
 
@@ -322,18 +324,19 @@ manager check and before `load_org_billing_state`, on the Postgres client the ha
 open. Placing it there keeps every Stripe call downstream, so a refusal happens before any Stripe
 Customer or Session object exists.
 
-1. `load_terms_assent` for `auth.user_id`. Not current, or unreadable: refuse **409** with a body
-   naming the version required. 409 because the caller is authorised and the state is wrong; never
-   401, which would sign the tab out (graft from B, judge 1's preferred behaviour: we do not take
-   money against terms we cannot show were accepted).
+1. `load_terms_assent` for `auth.user_id`. Resolved and not current: refuse **409** with a body
+   naming the version required, because the caller is authorised and the state is wrong; never 401,
+   which would sign the tab out. A read that failed is a **500**: "your state is wrong" is a claim
+   we cannot make when we could not read the state. We do not take money against terms we cannot
+   show were accepted.
 2. Current: `record_terms_assent(..., ConsentSource::Checkout, Some(org_id))`, then
    continue. One INSERT on the open client, no extra round trip.
 3. `auth.user_id` that will not parse as a UUID is a 500, not a 400: a session that resolved and
    whose id will not parse is our bug, matching `dovecote/src/lib.rs:3738`.
 
-Client side, **a notice line beside the purchase button and no second checkbox** (graft from A,
-preferred by judge 2 over design C's client-supplied `accepted_terms` bool). One line above each of
-the three call sites, rendered from one capsules constant:
+Client side, **a notice line beside the purchase button and no second checkbox**, rather than a
+client-supplied `accepted_terms` bool the server would have to trust. One line above each of the
+three call sites, rendered from one capsules constant:
 
 > Subscribing accepts the [Terms of Service](/terms/) dated {TERMS_VERSION}, including the
 > [Data Processing Agreement](/dpa/) they incorporate.
@@ -350,7 +353,7 @@ status with no new plumbing: it renders the server's message inline beside the b
 person to reload to review the new Terms. Reloading brings the gate up, because the gate's resource
 refetches on a fresh sign-in state. No shared signal, no new state.
 
-Stripe's own `consent_collection[terms_of_service]` is not added (decision 14): it records on
+Stripe's own `consent_collection[terms_of_service]` is not added: it records on
 Stripe's session object rather than in our database, reaches us only through the webhook after
 completion, and would change the test-pinned parameter set
 (`dovecote/src/helpers/stripe_api.rs:630-655`).
@@ -377,9 +380,9 @@ depend on, so the two cannot name different documents. **No wrangler var**: a Wo
 dovecote only, and the page could then disagree with the rows, which is the exact failure the
 constant exists to prevent.
 
-One constant covers Terms, DPA and sub-processor list (graft from A). The DPA forms part of the
-Terms and the sub-processor list forms part of the DPA, and all three ship in one deployment. The
-Privacy Policy renders `PRIVACY_NOTICE_VERSION`, bumped to the same deploy date (decision 1). If the
+One constant covers Terms, DPA and sub-processor list. The DPA forms part of the Terms and the
+sub-processor list forms part of the DPA, and all three ship in one deployment. The Privacy Policy
+renders `PRIVACY_NOTICE_VERSION`, bumped to the same deploy date. If the
 DPA ever changes on its own under its Section 12.2 while the Terms stand still, split then: a
 `DPA_VERSION` constant and nothing else moves. Adding it now gives the owner two dates to keep in
 step at every deploy and buys nothing.
@@ -390,9 +393,9 @@ and a malformed value would ship silently into every row.
 ### 5.2 One token, two substituters
 
 Each of the four in-repo documents carries the literal token `{{LAST_UPDATED}}` on the line the
-settled documents spell `Last updated: [the date these terms deploy]` (graft from A and B; judge 2
-and judge 3 both preferred it to design C's split of rendered constant for two documents and hand
-literals for the other two, which left the DPA's date as an unchecked hand edit at every deploy).
+settled documents spell `Last updated: [the date these terms deploy]`. One token in all four beats
+rendering a constant into two and hand-editing the other two, which would leave the DPA's date as an
+unchecked hand edit at every deploy.
 
 - **HTML page.** `helpers/legal_doc.rs::render(src, version)` does one `str::replace` before
   parsing, inside the `use_memo` that already runs once per mount. Terms, DPA and sub-processors
@@ -453,7 +456,7 @@ one session. We may not lock an account out of its own fleet.
 | `inert` unsupported in some browser | The registration form is usable without the tick; the gate catches the account | This is the point of gate-first |
 | `KRATOS_HOOK_SECRET` unset in an environment | Irrelevant to this stream | Nothing here goes through a Kratos hook. It still matters for the marketing rows (section 9.3). |
 | dovecote deployed before fancier on a bump | The gate would ask for a version whose text is not published | Prevented by the deploy order, section 5.3 |
-| A bug in `is_current()` walls off every account | Redeploy the previous fancier version: the gate is client-side and dovecote needs no change | The kill switch, section 12 step 8 |
+| A bug in `is_current()` walls off every account | Redeploy the previous fancier version: the gate is client-side and dovecote needs no change | The kill switch, section 11 step 8 |
 
 The one thing that must never happen quietly is a row saying someone accepted a document they were
 not shown. Three controls prevent it: the version is stamped server-side and never accepted from a
@@ -517,7 +520,8 @@ Section ids: the outer `<section>` ids stay page-prefixed kebab-case per the con
 (`terms-of-service`, `privacy-policy`, `data-processing-agreement`, `subprocessors-list`). Heading
 ids inside the body now come from the slug rule, so the seventeen hand-written `privacy-*` ids
 become their GitHub slugs. Nothing in the repo links to them (grep returns zero inbound hits) and no
-alias map is built (decision 18). The Annex I/II/III H1s in the DPA are demoted to H2 so each page
+alias map is built; `docs/legal/README.md` records that those anchors retire. The Annex I/II/III
+H1s in the DPA are demoted to H2 so each page
 has one `<h1>`; no clause text and no section number moves.
 
 ### 7.2 The places that must stay in sync
@@ -562,9 +566,8 @@ In `fancier/src/views/legal.rs`, modelled on `every_negotiable_route_place_knows
   sentences point at `/dpa/` and `/subprocessors/`; this is what stops the Terms' own contractual
   pointers shipping as 404s, and incorporation by reference depends on it.
 - `every_negotiable_route_place_agrees`: generalised from the stories test to **every key in
-  `page-meta.json`** (graft from B; judge 3: four new routes at once is exactly when that gap bites,
-  and it covers the existing fifteen routes for free). It keeps the stories globs as the one
-  documented exception.
+  `page-meta.json`**: four new routes at once is when that gap bites, and it covers the existing
+  fifteen routes for free. It keeps the stories globs as the one documented exception.
 - In capsules: `version_constants_are_iso_dates`, and `is_current()`'s unit test.
 
 All fancier tests run under `cargo test -p fancier --target x86_64-unknown-linux-gnu`; the crate's
@@ -634,10 +637,11 @@ each other, which is the class of defect memo item I.2 is about.
 One item blocks `/subprocessors/` on substance: the useSend row has no stated processing location
 and no transfer mechanism, while DPA 6.4 warrants flow-down and 9.5 says the published list states
 each vendor's mechanism. Publishing a contractual annex that names a live vendor with neither
-publishes the gap to every customer and to any supervisory authority. Decision 20, the one blocking
-decision in this design.
+publishes the gap to every customer and to any supervisory authority. It is the one decision that
+blocks the page, and it is the owner's; the deploy checklist carries it.
 
-The other eight are decision 21, with a publish-the-conservative-reading default.
+The other eight open content questions publish under the conservative reading already in the draft,
+and counsel's version replaces them under the DPA's own Section 12.2.
 
 ---
 
@@ -652,7 +656,7 @@ jsonnet hook body, no new Worker secret, nothing for the owner to hand-apply on 
 it is taken deliberately: the registration checkbox is fancier's own markup and the record is
 written by an authenticated dovecote route.
 
-### 9.2 What decision 3 costs if it goes the other way
+### 9.2 What Kratos-side enforcement would cost
 
 If the owner wants Kratos to enforce the tick server-side:
 
@@ -682,8 +686,8 @@ loop against `127.0.0.1:4434` over loopback. That is the work this design exists
 
 ### 9.3 Prerequisite queries, inherited rather than created
 
-Three answers the owner should collect before the branch lands (graft from A). None blocks this
-design; the third decides whether the privacy archive is worth writing.
+Three answers the owner should collect before the branch lands. None blocks this design; the third
+decides whether the privacy archive is worth writing.
 
 ```sh
 # On the VPS: has production Kratos ever received the consent hook and the trait?
@@ -721,45 +725,56 @@ and subject-access statements gain `purpose` in their projection so they stay me
 purposes.
 
 **`docs/legal/README.md`** (new): where each document came from, the one-way copy rule, the two
-constants, the deploy order, the owner runbook of section 12 and the rollback.
-
-**`docs/design/terms-assent-and-legal-pages.md`**: this document, committed first.
+constants, the deploy order, the owner runbook of section 11 and the rollback.
 
 ---
 
-## 11. Commits
+## 11. The owner's runbook
 
-Fifteen, ordered, each compiling on its own. Files, per-commit gates and acceptance checks are in
-`plan.md` beside this file; the split is seven backend commits (capsules, dovecote,
-infra/migrations, docs) after the design commit, and seven frontend commits (fancier pages, flows,
-tests, negotiation plumbing). Land order interleaves them so the four pages are live before any
-assent code: design, documents, version constant, the three page commits, then the assent record,
-migration, routes, checkout, the four fancier assent commits, then the documentation commit.
+Consolidated here because the owner is the person executing it. Nothing in it is an agent action.
 
-Gates on every commit: `cargo fmt` (never `dx fmt`, which collapses rsx comments across the repo),
-`cargo check -p capsules -p dovecote -p fancier` as applicable, `cargo test -p capsules`,
-`cargo test -p dovecote`, `cargo test -p fancier --target x86_64-unknown-linux-gnu`.
+### Deploy checklist: what the owner decides first
 
----
+Everything the implementation could settle for itself, it settled, and the reasoning sits with the
+mechanism it belongs to. What is left is owner and counsel work, and none of it is an engineering
+call.
 
-## 12. The owner's runbook
+- **The useSend sub-processor row. BLOCKING.** The in-repo copy states that row as the deployed
+  configuration stands, so the published list is accurate to what runs; what it states is a vendor
+  with no stated processing location and no transfer mechanism, against the DPA's own 6.4 and 9.5.
+  Each way out is an owner action taken before deploy -- remove useSend from the deployed
+  configuration (the edge provider's Email Service is already the primary transport), obtain a DPA
+  from the vendor, or switch the fallback rail -- and the row is then edited to match what was done.
+- **The two constants' values.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date,
+  one commit on the branch. The privacy constant is `2026-09-04` in the code while the settled
+  policy is dated later, so leaving it would make the page and the existing rows disagree.
+- **Whether the superseded privacy text is archived.** `docs/legal/archive/privacy-2026-09-04.md`
+  exists so a row stamped with the old version can still be resolved back to the words on screen;
+  the row-count query in section 9.3 decides whether production holds any such row.
+- **The retention row for the assent record**, in the settled Privacy Policy, plus the sentence
+  that we keep one. Until counsel adds them, every assent row is deleted with the identity and
+  carries no address or user agent, which is what the published policy describes.
+- **The eight open DPA content questions.** They publish under the conservative reading already in
+  the draft, with the status line saying counsel's review is pending, and her version replaces
+  them under the DPA's own Section 12.2. `map-dpa-content.md` sets each out.
+- **Blocking existing accounts on day one, rather than 30 days' notice first.** The revised Terms
+  promise 30 days' email notice for material changes to existing customers; a clause cannot govern
+  its own adoption, and the superseded Terms promise only notice via the site, which publishing the
+  page satisfies. There is no paying customer and the only thing blocked is the dashboard. A future
+  bump should use an effective-date constant and a banner during the notice window rather than a
+  wall on day one.
+- **`BILLING_LIVE`.** Unchanged at `false` unless the owner says otherwise. It gates only the
+  pricing CTA: the org page is already a live route to checkout, so the checkout notice and the 409
+  ship regardless.
 
-Consolidated here because the owner is the person executing it (graft from B; judge 3 noted design C
-scattered the same content across four sections). Nothing in it is an agent action.
+### The steps
 
-1. **Set the constants.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date, one
-   commit on the branch. Answer decisions 1 to 3 first.
-   Decision 20, the useSend sub-processor row, is answered here too, before `/subprocessors/`
-   ships. The in-repo copy states that row as the deployed configuration stands, so the published
-   list is accurate to what runs; what it states is a vendor with no stated processing location
-   and no transfer mechanism, against the DPA's own 6.4 and 9.5. Each way out is an owner action
-   taken before deploy (remove useSend from the deployed configuration, obtain a DPA from the
-   vendor, or switch the fallback rail), and the row is then edited to match what was done.
-2. **Prerequisite queries**, section 9.3. The row-count query decides decision 2's archive.
+1. **Set the constants**, one commit on the branch, once the decisions above are answered.
+2. **Prerequisite queries**, section 9.3.
 3. **Staging database.**
    `psql "$DOVECOTE_PSQL_CONNECTION_STAGING" -f infra/migrations/2026-09-14-terms-assent.sql`
-   with the staging `SET ROLE` line uncommented, then `\d consent_events` to confirm the widened
-   CHECK and the `org_id` column.
+   with its `SET ROLE` line edited to `dovecote_staging`, then `\d consent_events` to confirm the
+   widened CHECK and the `org_id` column.
 4. **Staging deploy, fancier first:** `cd fancier && bunx wrangler deploy --env staging`, then
    `cd dovecote && bunx wrangler deploy --env staging`.
 5. **Staging smoke, signed in.** Sign in with the existing staging test identity: the gate appears,
@@ -787,11 +802,11 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
 2. Accept again (reload, click again): no second row, 200 either way.
 3. **Bump `TERMS_VERSION` locally, restart, sign in.** Expect the gate again and a second row
    against the new version. This is the only check that exercises the version-scoped predicate, and
-   every design in this family fails silently if that scoping is wrong (graft from A).
+   the whole mechanism fails silently if that scoping is wrong.
 4. **Stop Postgres. Sign in.** Expect the dashboard to render (fail open) and checkout to refuse
    (fail closed). **Stop dovecote. Register.** Expect the signup to complete and the gate on first
-   sign-in (graft from A: this is the only check that proves the fail-open branch, which is the only
-   thing between a database blip and a total dashboard lockout).
+   sign-in. This is the only check that proves the fail-open branch, which is the only thing
+   between a database blip and a total dashboard lockout.
 5. Checkout end to end against the Stripe sandbox: the 409 with no row, the session and the
    `checkout` row carrying `org_id` with one.
 6. `curl` each of `/terms/`, `/privacy/`, `/dpa/`, `/subprocessors/` with no JS: real prose in the
@@ -812,95 +827,7 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
 
 ---
 
-## 13. Owner decisions
-
-Twenty-two. Each carries the default the implementation takes if nothing is said. Exactly one is
-blocking.
-
-1. **`TERMS_VERSION`'s value, and whether `PRIVACY_NOTICE_VERSION` bumps with it.** *Default:* both
-   set to the ISO date of the production deploy. The privacy constant is `2026-09-04` today while
-   the settled policy is dated 2026-09-11, so leaving it would make the page and the existing rows
-   disagree.
-2. **Archive the superseded privacy text.** *Default:* yes,
-   `docs/legal/archive/privacy-2026-09-04.md`, plus a `legal-<version>` tag on each deploy commit,
-   so every marketing-consent row already written can still be resolved back to the words it names.
-   Skip the archive if the row-count query in section 9.3 shows production holds no marketing rows.
-3. **Registration enforcement.** *Default:* fancier-owned, `inert` on the form until the box is
-   ticked (section 4.2). Alternatives: the Kratos `user_v2` identity-schema route (section 9.2), or
-   notice prose with no checkbox and the gate as the single clickwrap.
-4. **Remove the second ask right after registration** with a `localStorage` handoff that posts the
-   assent once the session is adopted. *Default:* no. It adds a key, a TTL, a failure branch and a
-   client-claimed source to save one click for new accounts only, and it is the one place a row
-   could misdescribe its surface.
-5. **The `org_id` column.** *Default:* yes. It is the one fact a checkout assent carries that an
-   identity-only row cannot reconstruct, and it records which entity a person represented they had
-   authority to bind.
-6. **Record `ip` and `user_agent` on assent rows.** *Default:* no, and the code takes that
-   default: the columns stay NULL for both purposes. The notice discloses addresses and user
-   agents only as transient web logs, so storing one against an identity as contract-formation
-   evidence is a category of personal data the published policy does not describe. Switching them
-   on is two arguments at each call site, once counsel has the disclosure.
-7. **Assent-row retention.** *Default:* delete with the identity, like a marketing row, because
-   that is what the published policy promises. Keeping the row past deletion under Article
-   17(3)(e) (establishment, exercise or defence of legal claims) for the Massachusetts contract
-   limitation period is the better record and needs a new row in the settled Privacy Policy's
-   retention table first; without it the record we keep is not the record the policy describes.
-8. **Does the gate exempt `/settings`?** *Default:* no exemption. Accepting is one click and needs
-   no password, so the post-recovery handoff continues straight after. The alternative exempts
-   `SettingsFlow` and leaves one authenticated route reachable with no record.
-9. **What declining does.** *Default:* the person stays on the gate with a working sign-out link and
-   reachable legal pages. Not signed out automatically, not given read-only access; devices, ingest
-   and billing are untouched, since the gate is dashboard-only.
-10. **Block existing accounts at go-live, or notify first and block after 30 days?** The Terms
-    themselves promise 30 days' email notice for material changes to existing customers. *Default:*
-    block immediately. There is no paying customer yet, the only thing blocked is the dashboard, and
-    continued use binds under the change clause. A future bump should use an effective-date constant
-    and a banner during the notice window rather than a wall on day one.
-11. **Checkout refuses with 409 when no current-version row is on file.** *Default:* yes, and it
-    records its own row afterwards. The alternative, recording if absent and never refusing, makes
-    checkout a collection surface rather than a gate.
-12. **Checkout surface.** *Default:* a notice line beside the purchase button at all three call
-    sites and no second checkbox. The gate already holds the tick, and `pricing.rs:179-186` records
-    the deliberate decision that a form between the buyer and the purchase is wrong.
-13. **Reroute the direct pricing CTA to `/orgs/:id`.** *Default:* no. It is product churn beyond the
-    ask now that checkout carries no checkbox.
-14. **Stripe `consent_collection[terms_of_service]` as well.** *Default:* no.
-15. **`BILLING_LIVE` at go-live.** *Default:* unchanged at `false`. Note it gates only the pricing
-    CTA: the org page is already a live route to checkout, so the checkout notice and the 409 ship
-    regardless.
-16. **One version constant for Terms, DPA and sub-processor list, with the Privacy Policy on its
-    own.** *Default:* two constants, `{{LAST_UPDATED}}` in all four documents. Split a `DPA_VERSION`
-    out later if the DPA ever changes on its own under its Section 12.2.
-17. **Where the in-repo copies live and how drift is controlled.** *Default:* `docs/legal/`, a
-    documented one-way copy, no comparison test.
-18. **Preserve the seventeen `privacy-*` heading ids with an alias map.** *Default:* no. Nothing
-    in-repo links to them and the renderer's slugs are what a markdown-sourced page produces.
-19. **Are `/dpa/` and `/subprocessors/` indexable?** *Default:* yes. A `page-meta.json` entry is
-    what gives them a title, a canonical, a sitemap row and a markdown variant, and a document a
-    customer is contractually pointed at should be findable.
-20. **The useSend sub-processor row. BLOCKING.** The row names a live vendor with no stated
-    processing location and no transfer mechanism, against the DPA's own flow-down warranty in 6.4
-    and its promise in 9.5 that the published list states each mechanism. There is no default an
-    engineer can take: publishing the gap discloses it to every customer and to any supervisory
-    authority, and each way out is an owner action, either removing useSend from the deployed
-    configuration (the edge provider's Email Service is already the primary transport), obtaining a
-    DPA from the vendor, or switching the fallback rail to Resend. *Recommendation:* remove useSend
-    and delete the row before publishing.
-21. **The eight open DPA content questions** (controller/processor boundary at the margins; whether
-    firmware images are personal data; whether assistance is charged and against what rate card;
-    whether the 48-hour breach commitment is operationally true; whether the FDPIC adaptation list
-    is verified; whether the MFA statement joins Annex II A.4; whether Module Three stays; the
-    backup-retention window). *Default:* publish the conservative reading already in the draft under
-    the "counsel's review pending" status line, and let her version replace it under Section 12.2.
-    map-dpa-content.md sets each out with line numbers.
-22. **The DPA's signature block and the Annex I Part C fill-in fields on a web page.** *Default:*
-    keep the signature block, since it is one of the two acceptance routes the Terms name, and
-    replace the empty Part C fields with the stated rule plus "a countersigned copy on request",
-    which both settled documents already offer.
-
----
-
-## 14. Risks
+## 12. Risks
 
 - **The Hyperdrive cache is the failure a green local run cannot catch.** The `now()` anchor on
   `load_terms_assent` is the only thing between this design and a gate that reappears for a minute
@@ -916,16 +843,17 @@ blocking.
 - **Two deploys, one version.** The pages and the rows are stamped by two separately deployed
   binaries. The ordering rule holds only if whoever bumps the constant follows it, and nothing
   enforces it mechanically.
-- **The Privacy Policy does not yet describe this record.** Decisions 6 and 7 take the defaults
-  that keep the deployment inside what the policy says: no address, no user agent, and erasure
+- **The Privacy Policy does not yet describe this record.** The code takes the defaults that keep
+  the deployment inside what the policy says: no address, no user agent, and erasure
   with the identity. What that costs is the evidence in exactly the case it was kept for, a
   dispute with someone who has since deleted their account, so one retention row in the settled
   policy is still worth asking counsel for.
 - **The DPA we publish is ours, not counsel's.** Section 8's edits are engineering applying a
   content map to a legal document. The status line says the review is pending and the change clause
   covers replacement, but the interim text is text a customer can rely on from the day it deploys.
-- **The second ask after registration** reads as a bug to a user who has just ticked a box. Decision
-  4 is the escape hatch, and the gate copy has to do real work to explain itself.
+- **The second ask after registration** reads as a bug to a user who has just ticked a box. The
+  `localStorage` handoff in section 4.2 is the escape hatch, and until it exists the gate copy has
+  to do real work to explain itself.
 - **Bundle size.** The four documents add roughly 108 KB of markdown `include_str!`'d into the wasm,
   against 455 KB already baked in; deleting the `terms.rs` and `privacy.rs` rsx recovers some of it.
   `/dpa/` prerenders to a large HTML file. Worth measuring once.
