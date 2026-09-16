@@ -10,6 +10,9 @@ use dioxus::prelude::*;
 /// `rect_start`/`rect_len` are the SVG root's bounding box on this axis and
 /// `canvas_len` its viewBox length, so their ratio is whatever scale the
 /// browser rendered it at; `margin` is the plot's offset inside the viewBox.
+/// Scaling the axes independently is right only while the viewBox fills the
+/// box -- both charts keep `width`/`height` in its ratio; a letterboxed one
+/// would need a single uniform scale and a centring offset instead.
 /// A box with no length (a chart that has not been laid out) has no position
 /// to report and maps to the plot origin.
 pub fn plot_axis(client: f64, rect_start: f64, rect_len: f64, canvas_len: f64, margin: f64) -> f64 {
