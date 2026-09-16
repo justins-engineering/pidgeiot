@@ -68,7 +68,7 @@ pub fn OrgView(org_id: Uuid) -> Element {
 
   rsx! {
     section { id: "org", class: "max-w-5xl mx-auto w-full",
-      header { class: "flex items-center gap-4 mb-8",
+      header { class: "flex flex-wrap items-center gap-4 mb-8",
         Link {
           to: Route::Orgs {},
           class: "btn btn-ghost btn-sm text-base-content/80",

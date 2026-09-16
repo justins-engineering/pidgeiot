@@ -109,7 +109,10 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 .as_ref()
                 .map(|e| e.url.clone());
             rsx! {
-              header { class: "w-full flex flex-row items-center justify-between",
+              // A title, badge and two buttons need more room than a card header:
+              // one row only from md, and wrapping there rather than clipping.
+              header {
+                class: "w-full flex flex-col items-start gap-y-2 md:flex-row md:flex-wrap md:items-center md:justify-between",
                 Link {
                   to: Route::Pigeons { flock_id },
                   class: "btn btn-ghost btn-sm text-base-content/80",
@@ -299,6 +302,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
 
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      // "Info" and one button fit a 320px line, so this header keeps the row it had.
       div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Info" }
         button {
@@ -316,7 +320,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "ID" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.id}"
                 }
               }
@@ -336,7 +340,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Flock ID" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.flock_id}"
                 }
               }
@@ -359,7 +363,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Serial" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
                 }
               }
@@ -383,7 +387,10 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
               th { "Board" }
               td {
                 if let Some(board) = pigeon.board.as_deref() {
-                  div { class: "font-mono bg-base-200 rounded px-2 w-fit text-xs", "{board}" }
+                  div {
+                    class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere text-xs sm:break-normal",
+                    "{board}"
+                  }
                 } else {
                   span { class: "text-base-content/50 italic text-sm", "untagged, set via Edit" }
                 }
@@ -393,7 +400,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Name" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.name.as_deref().unwrap_or(\"--\")}"
                 }
               }
@@ -416,7 +423,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Last Updated" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{updated_at}"
                 }
               }
@@ -436,7 +443,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Created" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{created_at}"
                 }
               }
@@ -485,6 +492,7 @@ fn ConnectorInfo(
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
+      // A heading and a small badge fit a 320px line, so this header keeps the row it had.
       div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Connector" }
         ConnectorBadge { connector: connector.clone() }
@@ -495,7 +503,7 @@ fn ConnectorInfo(
       }
 
       div { class: "overflow-x-auto",
-        table { class: "table",
+        table { class: "table table-sm sm:table-md",
           tbody {
             match connector {
                 Connector::Https(config) => {
@@ -509,7 +517,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
@@ -538,7 +549,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
@@ -557,7 +571,10 @@ fn ConnectorInfo(
                         tr {
                           th { "TLS Identity" }
                           td {
-                            div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{identity}" }
+                            div {
+                              class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                              "{identity}"
+                            }
                           }
                           td {
                             button {
@@ -599,7 +616,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
@@ -617,7 +637,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Username" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                             "{username}"
                           }
                           div { class: "text-xs text-base-content/60 mt-1",
@@ -641,7 +661,7 @@ fn ConnectorInfo(
                         tr {
                           th { "TLS Identity" }
                           td {
-                            div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                            div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                               "{identity}"
                             }
                           }
@@ -662,7 +682,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Publish" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 py-1 w-fit break-all text-xs",
+                          div { class: "font-mono bg-base-200 rounded px-2 py-1 w-fit wrap-anywhere text-xs",
                             "{sample}"
                           }
                         }
@@ -690,7 +710,7 @@ fn ConnectorInfo(
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
                       "Copy this token now; it will not be shown again"
                     }
-                    div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{token}"
                     }
                   }
@@ -734,7 +754,7 @@ fn ConnectorInfo(
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
                       "Copy this secret now; it will not be shown again"
                     }
-                    div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{secret}"
                     }
                   }
@@ -757,7 +777,7 @@ fn ConnectorInfo(
               th { "Token Expiry" }
               td {
                 div {
-                  class: "font-mono bg-base-200 rounded px-2 w-fit",
+                  class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   class: if token_expires_at < now { "bg-error" } else { "bg-base-200" },
                   "{expires_at}"
                 }
@@ -871,7 +891,7 @@ fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Flock" }
       }
       if let Some(message) = empty_message {
@@ -970,7 +990,7 @@ fn SuspendControl(
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Suspension" }
         button {
           class: "btn btn-secondary md:min-w-36",
@@ -1032,7 +1052,7 @@ fn TelemetryEndpointInfo(
 ) -> Element {
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Telemetry Endpoint" }
         button {
           class: "btn btn-secondary",
@@ -1053,7 +1073,7 @@ fn TelemetryEndpointInfo(
                 tr {
                   th { "URL" }
                   td {
-                    div { class: "font-mono bg-base-200 rounded px-2 w-fit break-all",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{endpoint.url}"
                     }
                   }
@@ -1061,7 +1081,7 @@ fn TelemetryEndpointInfo(
                 tr {
                   th { "Database" }
                   td {
-                    div { class: "font-mono bg-base-200 rounded px-2 w-fit",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                       "{endpoint.db.as_deref().unwrap_or(\"--\")}"
                     }
                   }
@@ -1307,7 +1327,7 @@ fn DiagnosticShell(pigeon_id: String) -> Element {
 fn AclInfo(acl: PigeonAcl) -> Element {
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold ", "Access Control List" }
         button { class: "btn btn-disabled", "Edit" }
       }
@@ -1322,7 +1342,9 @@ fn AclInfo(acl: PigeonAcl) -> Element {
           }
           tbody {
             tr {
-              td {
+              // Gecko ignores the id's hyphens when it sizes this column, which
+              // pushes the role badge out of the card; above sm there is room.
+              td { class: "wrap-anywhere sm:break-normal",
                 span { class: "mr-1 badge badge-outline badge-sm", "You" }
                 "{acl.entity_id}"
               }
