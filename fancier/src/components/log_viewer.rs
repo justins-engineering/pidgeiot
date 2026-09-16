@@ -459,7 +459,7 @@ pub fn LogViewer(
             {
                 match event {
                     LogEvent::Message(m) if m.level == 0 => rsx! {
-                      pre { key: "{i}", class: "whitespace-pre-wrap break-all", "{m.text}" }
+                      pre { key: "{i}", class: "whitespace-pre-wrap break-words", "{m.text}" }
                     },
                     LogEvent::Message(m) => rsx! {
                       div { key: "{i}", class: "flex flex-col gap-x-2 gap-y-0.5 sm:flex-row sm:items-baseline py-0.5",
