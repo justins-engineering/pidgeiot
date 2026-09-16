@@ -828,6 +828,10 @@ call.
    only one an owner who never countersigns and never signs in will take.
 7. **Production database:** the same two applies against `DOVECOTE_PSQL_CONNECTION`.
 8. **Production deploy, fancier first, then dovecote.** Never the other order, section 5.3.
+   Between the two the published Policy is ahead of the service, naming the edge provider's
+   email service as the only path for transactional mail while production dovecote is still
+   main's build and carries the second rail, and the order stays fancier first regardless
+   because the assent constant forces it.
 9. **Retire the useSend key**, once the deploy above is live: `bunx wrangler secret delete
    RESEND_API_KEY` on `dovecote`, and the same with `--env staging` after the staging deploy. No
    code reads it in any environment, but it stays a live third-party key until it is deleted, and
