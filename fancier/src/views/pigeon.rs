@@ -383,7 +383,10 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
               th { "Board" }
               td {
                 if let Some(board) = pigeon.board.as_deref() {
-                  div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere text-xs sm:break-normal", "{board}" }
+                  div {
+                    class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere text-xs sm:break-normal",
+                    "{board}"
+                  }
                 } else {
                   span { class: "text-base-content/50 italic text-sm", "untagged, set via Edit" }
                 }
@@ -509,7 +512,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
@@ -538,7 +544,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
@@ -557,7 +566,10 @@ fn ConnectorInfo(
                         tr {
                           th { "TLS Identity" }
                           td {
-                            div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{identity}" }
+                            div {
+                              class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                              "{identity}"
+                            }
                           }
                           td {
                             button {
@@ -599,7 +611,10 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
                         }
                         td {
                           button {
