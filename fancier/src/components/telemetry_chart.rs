@@ -949,11 +949,6 @@ pub fn TelemetryChart(
                 ontouchmove: move |evt: Event<TouchData>| {
                     hover_time.set(touch_sample_time(&evt, &drag_times, t_of));
                 },
-                onpointercancel: move |_| {
-                    // The browser took the gesture for a scroll, so the press
-                    // that opened this reading was never a request to read.
-                    hover_time.set(None);
-                },
                 onpointerleave: move |evt: Event<PointerData>| {
                     // A finger's pointerleave arrives with the lift, and would
                     // erase the reading the tap just asked for.

@@ -283,12 +283,6 @@ pub fn TrackWidget(
                     ontouchmove: move |evt: Event<TouchData>| {
                         hover_index.set(touch_nearest_fix(&evt, &drag_points));
                     },
-                    onpointercancel: move |_| {
-                        // The browser took the gesture for a scroll, so the
-                        // press that opened this reading was never a request
-                        // to read.
-                        hover_index.set(None);
-                    },
                     onpointerleave: move |evt: Event<PointerData>| {
                         // A finger's pointerleave arrives with the lift, and
                         // would erase the reading the tap just asked for.
