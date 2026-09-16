@@ -130,7 +130,8 @@ pub fn SessionInfo() -> Element {
         div { class: "mx-auto w-full max-w-lg",
           div { class: "mt-10",
             label { class: "text-lg", "Devices" }
-            div { class: "overflow-x-auto",
+            // Wider than its column: main clips the spill below lg, above it the page has room.
+            div { class: "overflow-x-auto lg:overflow-visible",
               table { class: "table",
                 thead {
                   tr {
