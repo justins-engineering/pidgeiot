@@ -27,7 +27,12 @@ pub fn pointer_plot_point(
   margin: (f64, f64),
 ) -> Option<(f64, f64)> {
   let client = evt.data().client_coordinates();
-  plot_point((client.x, client.y), pointer_svg_box(evt)?, canvas, margin)
+  Some(plot_point(
+    (client.x, client.y),
+    pointer_svg_box(evt)?,
+    canvas,
+    margin,
+  ))
 }
 
 /// The same for the finger that moved. A browser cancels the pointer stream
@@ -39,7 +44,12 @@ pub fn touch_plot_point(
   margin: (f64, f64),
 ) -> Option<(f64, f64)> {
   let client = evt.data().touches_changed().first()?.client_coordinates();
-  plot_point((client.x, client.y), touch_svg_box(evt)?, canvas, margin)
+  Some(plot_point(
+    (client.x, client.y),
+    touch_svg_box(evt)?,
+    canvas,
+    margin,
+  ))
 }
 
 fn plot_point(
@@ -47,12 +57,12 @@ fn plot_point(
   svg_box: (f64, f64, f64, f64),
   canvas: (f64, f64),
   margin: (f64, f64),
-) -> Option<(f64, f64)> {
+) -> (f64, f64) {
   let (left, top, width, height) = svg_box;
-  Some((
+  (
     plot_axis(client.0, left, width, canvas.0, margin.0),
     plot_axis(client.1, top, height, canvas.1, margin.1),
-  ))
+  )
 }
 
 /// Where a tooltip sits beside a crosshair, as an inline style. A percentage
