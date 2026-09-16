@@ -109,7 +109,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 .as_ref()
                 .map(|e| e.url.clone());
             rsx! {
-              header { class: "w-full flex flex-row items-center justify-between",
+              header { class: "w-full flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between",
                 Link {
                   to: Route::Pigeons { flock_id },
                   class: "btn btn-ghost btn-sm text-base-content/80",
