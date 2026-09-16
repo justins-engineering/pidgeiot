@@ -486,7 +486,7 @@ pub fn PigeonGraphs(
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Telemetry" }
         button {
           class: "btn btn-secondary",
@@ -608,7 +608,7 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Flock Telemetry" }
         button {
           class: "btn btn-secondary",

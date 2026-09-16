@@ -262,7 +262,7 @@ fn AlertsSection(scope: AlertScope, available_keys: Vec<String>) -> Element {
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         div { class: "flex items-center gap-2",
           Icon { width: 22, height: 22, icon: LdBellRing }
           h2 { class: "text-3xl font-bold", "Alerts" }

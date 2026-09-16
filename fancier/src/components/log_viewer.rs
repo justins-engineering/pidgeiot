@@ -313,14 +313,14 @@ pub fn LogViewer(
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         div {
           h2 { class: "text-3xl font-bold", "Device Logs" }
           p { class: "text-xs text-base-content/50",
             "Up to the 200 most recently received chunks, oldest first."
           }
         }
-        div { class: "flex flex-row gap-2",
+        div { class: "flex flex-row flex-wrap gap-2",
           button {
             class: "btn btn-outline btn-sm",
             r#type: "button",

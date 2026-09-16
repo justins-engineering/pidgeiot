@@ -299,7 +299,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
 
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Info" }
         button {
           class: "btn btn-secondary",
@@ -485,7 +485,7 @@ fn ConnectorInfo(
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Connector" }
         ConnectorBadge { connector: connector.clone() }
       }
@@ -871,7 +871,7 @@ fn MoveFlockControl(pigeon_id: String, current_flock: Uuid) -> Element {
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Flock" }
       }
       if let Some(message) = empty_message {
@@ -970,7 +970,7 @@ fn SuspendControl(
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Suspension" }
         button {
           class: "btn btn-secondary md:min-w-36",
@@ -1032,7 +1032,7 @@ fn TelemetryEndpointInfo(
 ) -> Element {
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Telemetry Endpoint" }
         button {
           class: "btn btn-secondary",
@@ -1307,7 +1307,7 @@ fn DiagnosticShell(pigeon_id: String) -> Element {
 fn AclInfo(acl: PigeonAcl) -> Element {
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold ", "Access Control List" }
         button { class: "btn btn-disabled", "Edit" }
       }
