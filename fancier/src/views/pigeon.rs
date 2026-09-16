@@ -109,7 +109,10 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 .as_ref()
                 .map(|e| e.url.clone());
             rsx! {
-              header { class: "w-full flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between",
+              // A title, badge and two buttons need more room than a card header:
+              // one row only from md, and wrapping there rather than clipping.
+              header {
+                class: "w-full flex flex-col items-start gap-y-2 md:flex-row md:flex-wrap md:items-center md:justify-between",
                 Link {
                   to: Route::Pigeons { flock_id },
                   class: "btn btn-ghost btn-sm text-base-content/80",
