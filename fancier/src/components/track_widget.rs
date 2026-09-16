@@ -37,8 +37,8 @@ const MARGIN: f64 = 16.0;
 const PAD_FRAC: f64 = 0.15;
 /// What a tooltip is allowed to be, for choosing the side of the hovered
 /// fix it fits on. Measured in CSS px, which is a user unit only while the
-/// canvas renders 1:1.
-const TOOLTIP_WIDTH: f64 = 190.0;
+/// canvas renders 1:1, and held to it by the tooltip's own `max-w-48`.
+const TOOLTIP_WIDTH: f64 = 192.0;
 
 fn now() -> OffsetDateTime {
   OffsetDateTime::now_utc()
@@ -296,7 +296,7 @@ pub fn TrackWidget(
 
               if let Some((hx, _hy, time_label, coord_label, speed_label)) = tooltip {
                 div {
-                  class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs",
+                  class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs max-w-48",
                   style: "{svg_hover::tooltip_style(hx + MARGIN, CANVAS_W, TOOLTIP_WIDTH)}",
                   div { class: "text-base-content/60 font-mono mb-1", "{time_label}" }
                   div { class: "font-semibold text-base-content", "{coord_label}" }

@@ -37,8 +37,9 @@ const MAX_BAR_WIDTH: f64 = 24.0;
 const MAX_BUCKETS: usize = 32;
 /// What a tooltip is allowed to be, for choosing the side of the crosshair
 /// it fits on. Measured in CSS px, which is a user unit only while the
-/// canvas renders 1:1.
-const TOOLTIP_WIDTH: f64 = 160.0;
+/// canvas renders 1:1, and held to it by the tooltip's own `max-w-56`: a
+/// long key name wraps rather than pushing the box past the chart's edge.
+const TOOLTIP_WIDTH: f64 = 224.0;
 
 /// The palette's eight validated slots. A ninth series folds into a "+N
 /// more" note rather than generating a hue.
@@ -956,7 +957,7 @@ pub fn TelemetryChart(
             // (Strong), series name secondary — per interaction.md.
             if let Some(t) = hover_time() {
               div {
-                class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs",
+                class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs max-w-56",
                 style: "{svg_hover::tooltip_style(x_of(t), CANVAS_W, TOOLTIP_WIDTH)}",
                 div { class: "text-base-content/60 font-mono mb-1", "{format_time(t)}" }
                 for (i , s) in drawn.iter().enumerate() {
