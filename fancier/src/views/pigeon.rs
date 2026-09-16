@@ -316,7 +316,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "ID" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.id}"
                 }
               }
@@ -336,7 +336,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Flock ID" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.flock_id}"
                 }
               }
@@ -359,7 +359,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Serial" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
                 }
               }
@@ -383,7 +383,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
               th { "Board" }
               td {
                 if let Some(board) = pigeon.board.as_deref() {
-                  div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal text-xs", "{board}" }
+                  div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere text-xs sm:break-normal", "{board}" }
                 } else {
                   span { class: "text-base-content/50 italic text-sm", "untagged, set via Edit" }
                 }
@@ -393,7 +393,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Name" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{pigeon.name.as_deref().unwrap_or(\"--\")}"
                 }
               }
@@ -416,7 +416,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Last Updated" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{updated_at}"
                 }
               }
@@ -436,7 +436,7 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
             tr {
               th { "Created" }
               td {
-                div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   "{created_at}"
                 }
               }
@@ -509,7 +509,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal", "{endpoint}" }
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
                         }
                         td {
                           button {
@@ -538,7 +538,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal", "{endpoint}" }
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
                         }
                         td {
                           button {
@@ -557,7 +557,7 @@ fn ConnectorInfo(
                         tr {
                           th { "TLS Identity" }
                           td {
-                            div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal", "{identity}" }
+                            div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{identity}" }
                           }
                           td {
                             button {
@@ -599,7 +599,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Endpoint" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal", "{endpoint}" }
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal", "{endpoint}" }
                         }
                         td {
                           button {
@@ -617,7 +617,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Username" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit",
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                             "{username}"
                           }
                           div { class: "text-xs text-base-content/60 mt-1",
@@ -641,7 +641,7 @@ fn ConnectorInfo(
                         tr {
                           th { "TLS Identity" }
                           td {
-                            div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit",
+                            div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                               "{identity}"
                             }
                           }
@@ -662,7 +662,7 @@ fn ConnectorInfo(
                       tr {
                         th { "Publish" }
                         td {
-                          div { class: "font-mono bg-base-200 rounded px-2 py-1 w-full break-all sm:w-fit text-xs",
+                          div { class: "font-mono bg-base-200 rounded px-2 py-1 w-fit wrap-anywhere text-xs",
                             "{sample}"
                           }
                         }
@@ -690,7 +690,7 @@ fn ConnectorInfo(
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
                       "Copy this token now; it will not be shown again"
                     }
-                    div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{token}"
                     }
                   }
@@ -734,7 +734,7 @@ fn ConnectorInfo(
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
                       "Copy this secret now; it will not be shown again"
                     }
-                    div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{secret}"
                     }
                   }
@@ -757,7 +757,7 @@ fn ConnectorInfo(
               th { "Token Expiry" }
               td {
                 div {
-                  class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                  class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                   class: if token_expires_at < now { "bg-error" } else { "bg-base-200" },
                   "{expires_at}"
                 }
@@ -1053,7 +1053,7 @@ fn TelemetryEndpointInfo(
                 tr {
                   th { "URL" }
                   td {
-                    div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{endpoint.url}"
                     }
                   }
@@ -1061,7 +1061,7 @@ fn TelemetryEndpointInfo(
                 tr {
                   th { "Database" }
                   td {
-                    div { class: "font-mono bg-base-200 rounded px-2 w-full break-all sm:w-fit sm:break-normal",
+                    div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
                       "{endpoint.db.as_deref().unwrap_or(\"--\")}"
                     }
                   }
