@@ -59,7 +59,7 @@ We are a United States company, and the platform runs on infrastructure in the U
 - Our identity server and our device-transport terminators run on a server in Vint Hill, Virginia.
 - Our edge provider runs our code in whichever of its data centers receives a request, and its queues and caches have no fixed location.
 - Billing is handled by Stripe in the United States. Stripe collects payment details on its own checkout pages and processes them as an independent controller under its own privacy notice; we do not receive your card number.
-- Transactional email is sent through our edge provider's email service, with a second email provider as the fallback.
+- Transactional email is sent through our edge provider's email service.
 
 If you are in the European Economic Area, the United Kingdom or Switzerland, personal data processed through the United States-hosted parts of the platform is currently transferred to the United States. For personal data we process on behalf of our customers and transfer to the United States, we rely on the European Commission's Standard Contractual Clauses (Commission Implementing Decision (EU) 2021/914 of 4 June 2021, Module Two), together with the UK International Data Transfer Addendum for UK data and the Swiss adaptations for Swiss data, as applicable, as the legal basis for those transfers. Those clauses are part of our Data Processing Agreement. We are not certified under the EU-U.S. Data Privacy Framework; some of our service providers are, and we rely on their certification for the part of the processing they do.
 
@@ -136,7 +136,7 @@ There is no automated account-deletion flow yet. To delete your account, email [
 
 ## Automated decisions
 
-We do not make decisions about you by automated means that have legal or similarly significant effects. Two automated checks exist and you should know about them: when an organization saves an EU VAT number we validate it against the European Commission's VIES register and will not accept a number the register says is invalid; and when a free-tier account exceeds its monthly message allowance, its devices' uploads are paused until the next period. Neither is a decision about you as a person: the VAT check concerns an organization's VAT number, and the free-tier pause applies to an account's device uploads based on its usage allowance. Either can be raised with us by email.
+We do not make decisions about you by automated means that have legal or similarly significant effects. Two automated checks exist and you should know about them: when an organization saves an EU VAT number we validate it against the European Commission's VIES register and will not accept a number the register says is invalid; and when an account being served at free-tier limits exceeds its monthly message allowance, its devices' uploads are paused until the next period. Neither is a decision about you as a person: the VAT check concerns an organization's VAT number, and the free-tier pause applies to an account's device uploads based on its usage allowance. Either can be raised with us by email.
 
 ## Telemetry forwarding you configure
 
@@ -144,7 +144,7 @@ PidgeIoT lets you configure a forwarding endpoint for a pigeon's telemetry. If y
 
 ## Email
 
-We send transactional email only: verification and recovery codes, organization invitations, the alert notifications you configure, a warning when a free-tier account reaches 80% of its monthly message allowance, and, on paid plans, the receipts and invoices our payment processor sends. Delivery goes through our edge provider's email service, with a second email provider as the fallback; whichever delivers a message necessarily processes the recipient address and its content in order to do so.
+We send transactional email only: verification and recovery codes, organization invitations, the alert notifications you configure, a warning when a free-tier account reaches 80% of its monthly message allowance, and, on paid plans, the receipts and invoices our payment processor sends. Delivery goes through our edge provider's email service, which necessarily processes the recipient address and the content of a message in order to deliver it.
 
 We do not send marketing email today.
 

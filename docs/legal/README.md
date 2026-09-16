@@ -6,8 +6,8 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 
 | File | Route | Source it was copied from |
 | --- | --- | --- |
-| `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-11.md` |
-| `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-11.md` |
+| `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-15.md` |
+| `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-15.md` |
 | `dpa.md` | `/dpa/` | `24-eu-paperwork/dpa.md`, with the edits in `docs/design/terms-assent-and-legal-pages.md` section 8 applied |
 | `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, same section |
 
