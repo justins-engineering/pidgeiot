@@ -469,6 +469,21 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
   }
 }
 
+/// The chart's x scale: a sample time to its x inside the plot, the left
+/// margin not included.
+fn plot_x_of(t: i64, t_min: i64, t_span: f64, x_inset: f64, x_span_px: f64) -> f64 {
+  x_inset + ((t - t_min) as f64 / t_span) * x_span_px
+}
+
+/// `plot_x_of` read backwards, the kind's inset included. A single bucket
+/// leaves no span to divide by and reads back as its own time.
+fn plot_t_of(x: f64, t_min: i64, t_span: f64, x_inset: f64, x_span_px: f64) -> i64 {
+  if x_span_px <= 0.0 {
+    return t_min;
+  }
+  t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
+}
+
 /// The sample time nearest a pointer, or `None` when the event carries no
 /// rendered chart to measure against. `t_of` is the chart's own x scale
 /// read backwards.
@@ -603,17 +618,8 @@ pub fn TelemetryChart(
   let bucket_slot = prepared.slots.map(|n| plot_w / n as f64).unwrap_or(0.0);
   let x_inset = bucket_slot / 2.0;
   let x_span_px = plot_w - 2.0 * x_inset;
-  let x_of = move |t: i64| MARGIN_LEFT + x_inset + ((t - t_min) as f64 / t_span) * x_span_px;
-  // `x_of` read backwards, from a plot-relative x: the inset and all, since a
-  // bucketed scale draws its first and last mark half a slot in from the plot
-  // edge. One bucket leaves no span to divide by.
-  let t_of = move |x: f64| {
-    if x_span_px > 0.0 {
-      t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
-    } else {
-      t_min
-    }
-  };
+  let x_of = move |t: i64| MARGIN_LEFT + plot_x_of(t, t_min, t_span, x_inset, x_span_px);
+  let t_of = move |x: f64| plot_t_of(x, t_min, t_span, x_inset, x_span_px);
   let y_of = move |v: f64| MARGIN_TOP + (1.0 - (v - v_min) / v_span) * plot_h;
   let y_zero = y_of(0.0);
 
@@ -1028,13 +1034,40 @@ pub fn TelemetryChart(
 
 #[cfg(test)]
 mod tests {
-  use super::{ChartKind, ChartSeries, bucket_count, bucket_series, prepare, step_geometry};
+  use super::{
+    ChartKind, ChartSeries, bucket_count, bucket_series, plot_t_of, plot_x_of, prepare,
+    step_geometry,
+  };
 
   fn series(key: &str, points: &[(i64, f64)]) -> ChartSeries {
     ChartSeries {
       key: key.to_string(),
       points: points.to_vec(),
     }
+  }
+
+  /// A hover reads a pointer back through `plot_t_of` and then snaps to the
+  /// nearest sample, which hides a small inset error inside the snap. The
+  /// bucketed inset is the half-slot the two have to agree on.
+  #[test]
+  fn the_x_scale_reads_back_the_time_it_drew() {
+    let (t_min, t_span, plot_w) = (1_000i64, 600.0, 580.0);
+    for inset in [0.0, plot_w / 64.0] {
+      let span_px = plot_w - 2.0 * inset;
+      for t in [1_000i64, 1_150, 1_600] {
+        let x = plot_x_of(t, t_min, t_span, inset, span_px);
+        assert_eq!(
+          plot_t_of(x, t_min, t_span, inset, span_px),
+          t,
+          "inset {inset}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_single_bucket_reads_back_as_its_own_time() {
+    assert_eq!(plot_t_of(290.0, 1_000, 600.0, 290.0, 0.0), 1_000);
   }
 
   #[test]
