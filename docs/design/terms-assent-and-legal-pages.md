@@ -648,9 +648,9 @@ later under the DPA's own Section 12.2.
 - Sub-processor list: the status line, the verification methodology paragraph, the Worker secret
   name and its contents, the local filesystem paths and evidence hashes, the repo path citations,
   all 14 flags, the two "for a lawyer's eye" analyses and the editorial instruction in the Resend
-  row all come out. The useSend row is corrected: the edge provider's Email Service is the primary
-  transport and useSend the fallback, which is what the code does and what the settled Policy says.
-  The log-retention figure resolves to the 7 days the settled Policy publishes.
+  row all come out. The useSend row is corrected to name the edge provider's Email Service as the
+  transport; 8.2 records the owner then removing the vendor and the row with it. The log-retention
+  figure resolves to the 7 days the settled Policy publishes.
 
 The DPA-versus-Privacy-Policy reconciliation above (error reports, device credentials, MQTT,
 retention, notice fallback) is what keeps the two documents in one deployment from contradicting
