@@ -5,11 +5,10 @@
 // a crosshair + one-tooltip-for-every-series hover layer, and a table-view
 // fallback so every value is reachable without hovering.
 //
-// The canvas is a FIXED pixel size (not a percentage-scaled viewBox) so
-// mouse `element_coordinates()` map 1:1 onto SVG user-space units without
-// needing a JS/getBoundingClientRect round trip to recover a scale factor;
-// the wrapping div scrolls horizontally on narrow viewports instead of
-// distorting that mapping.
+// Hover position is the pointer's client coordinates mapped through the SVG
+// root's bounding box and the viewBox scale (`helpers::svg_hover`), so a
+// mouse and a finger land on the same sample whatever width the canvas is
+// drawn at. The wrapping div scrolls horizontally on narrow viewports.
 //
 // `ChartKind` is where most of the judgment in this file lives. Telemetry
 // history is an irregular, unaggregated event log -- devices report when
@@ -18,8 +17,10 @@
 // and only some of those assertions are ones this data can support, so the
 // kinds that would otherwise lie (area, bar) carry the transform that
 // makes them true rather than being drawn naively over raw samples.
+use crate::helpers::svg_hover;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 const CANVAS_W: f64 = 640.0;
 const CANVAS_H: f64 = 220.0;
@@ -34,6 +35,11 @@ const SURFACE_GAP: f64 = 2.0;
 /// Bars are capped rather than filling their slot -- the leftover is air.
 const MAX_BAR_WIDTH: f64 = 24.0;
 const MAX_BUCKETS: usize = 32;
+/// What a tooltip is allowed to be, for choosing the side of the crosshair
+/// it fits on. Measured in CSS px, which is a user unit only while the
+/// canvas renders 1:1, and held to it by the tooltip's own `max-w-56`: a
+/// long key name wraps rather than pushing the box past the chart's edge.
+const TOOLTIP_WIDTH: f64 = 224.0;
 
 /// The palette's eight validated slots. A ninth series folds into a "+N
 /// more" note rather than generating a hue.
@@ -463,6 +469,51 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
   }
 }
 
+/// The chart's x scale: a sample time to its x inside the plot, the left
+/// margin not included.
+fn plot_x_of(t: i64, t_min: i64, t_span: f64, x_inset: f64, x_span_px: f64) -> f64 {
+  x_inset + ((t - t_min) as f64 / t_span) * x_span_px
+}
+
+/// `plot_x_of` read backwards, the kind's inset included. A single bucket
+/// leaves no span to divide by and reads back as its own time.
+fn plot_t_of(x: f64, t_min: i64, t_span: f64, x_inset: f64, x_span_px: f64) -> i64 {
+  if x_span_px <= 0.0 {
+    return t_min;
+  }
+  t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
+}
+
+/// The sample time nearest a pointer, or `None` when the event carries no
+/// rendered chart to measure against. `t_of` is the chart's own x scale
+/// read backwards.
+fn pointer_sample_time(
+  evt: &Event<PointerData>,
+  times: &[i64],
+  t_of: impl Fn(f64) -> i64,
+) -> Option<i64> {
+  let (x, _) = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
+  sample_time_at(x, times, t_of)
+}
+
+/// The same for a finger drag, which is the only input a browser keeps
+/// delivering once it has taken the gesture for a scroll.
+fn touch_sample_time(
+  evt: &Event<TouchData>,
+  times: &[i64],
+  t_of: impl Fn(f64) -> i64,
+) -> Option<i64> {
+  let (x, _) = svg_hover::touch_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
+  sample_time_at(x, times, t_of)
+}
+
+/// The sample time nearest a plot-relative x, so a finger and a mouse read
+/// the same sample.
+fn sample_time_at(x: f64, times: &[i64], t_of: impl Fn(f64) -> i64) -> Option<i64> {
+  let t = t_of(x);
+  times.iter().copied().min_by_key(|c| (c - t).abs())
+}
+
 #[component]
 pub fn TelemetryChart(
   series: Vec<ChartSeries>,
@@ -567,7 +618,8 @@ pub fn TelemetryChart(
   let bucket_slot = prepared.slots.map(|n| plot_w / n as f64).unwrap_or(0.0);
   let x_inset = bucket_slot / 2.0;
   let x_span_px = plot_w - 2.0 * x_inset;
-  let x_of = move |t: i64| MARGIN_LEFT + x_inset + ((t - t_min) as f64 / t_span) * x_span_px;
+  let x_of = move |t: i64| MARGIN_LEFT + plot_x_of(t, t_min, t_span, x_inset, x_span_px);
+  let t_of = move |x: f64| plot_t_of(x, t_min, t_span, x_inset, x_span_px);
   let y_of = move |v: f64| MARGIN_TOP + (1.0 - (v - v_min) / v_span) * plot_h;
   let y_zero = y_of(0.0);
 
@@ -590,7 +642,16 @@ pub fn TelemetryChart(
   let bar_w = ((band - SURFACE_GAP * (drawn.len().saturating_sub(1)) as f64) / drawn.len() as f64)
     .clamp(0.5, MAX_BAR_WIDTH);
 
-  let hover_series = drawn.clone();
+  // The handlers want only the sample times, and share one list: a pointer
+  // move re-renders the chart, so a copy per closure would be a copy of every
+  // sample per frame.
+  let sample_times: Rc<[i64]> = drawn
+    .iter()
+    .flat_map(|s| s.points.iter().map(|p| p.0))
+    .collect();
+  let press_times = sample_times.clone();
+  let drag_times = sample_times.clone();
+  let move_times = sample_times;
   let hover_x = hover_time().map(x_of);
 
   rsx! {
@@ -636,273 +697,288 @@ pub fn TelemetryChart(
           }
         }
       } else {
-        div { class: "relative w-full overflow-x-auto",
-          svg {
-            width: "{CANVAS_W}",
-            height: "{CANVAS_H}",
-            view_box: "0 0 {CANVAS_W} {CANVAS_H}",
-            class: "min-w-[{CANVAS_W}px]",
+        div { class: "w-full overflow-x-auto",
+          // A percentage places the tooltip, so its containing block has
+          // to be the chart's own box, not the scroll area around it.
+          div { class: "relative w-fit",
+            svg {
+              // The width attribute is what holds the canvas at its own
+              // size, so a box narrower than it scrolls rather than
+              // squashing it.
+              width: "{CANVAS_W}",
+              height: "{CANVAS_H}",
+              view_box: "0 0 {CANVAS_W} {CANVAS_H}",
 
-            // Gridlines + y ticks
-            for v in y_ticks.iter() {
-              g { key: "{v}",
-                line {
-                  x1: "{MARGIN_LEFT}",
-                  x2: "{CANVAS_W - MARGIN_RIGHT}",
-                  y1: "{y_of(*v)}",
-                  y2: "{y_of(*v)}",
-                  stroke: "var(--chart-grid)",
-                  stroke_width: "1",
-                }
-                text {
-                  x: "{MARGIN_LEFT - 6.0}",
-                  y: "{y_of(*v) + 3.0}",
-                  text_anchor: "end",
-                  font_size: "9",
-                  fill: "var(--chart-ink-secondary)",
-                  "{format_value(*v)}"
-                }
-              }
-            }
-
-            // Baseline
-            line {
-              x1: "{MARGIN_LEFT}",
-              x2: "{CANVAS_W - MARGIN_RIGHT}",
-              y1: "{CANVAS_H - MARGIN_BOTTOM}",
-              y2: "{CANVAS_H - MARGIN_BOTTOM}",
-              stroke: "var(--chart-axis)",
-              stroke_width: "1",
-            }
-
-            // The zero line a bar's length or an area's fill is measured
-            // against -- drawn only when it isn't already the axis, so the
-            // reader can see where the measurement starts.
-            if zero_baseline && y_zero < CANVAS_H - MARGIN_BOTTOM - 1.0 {
-              line {
-                x1: "{MARGIN_LEFT}",
-                x2: "{CANVAS_W - MARGIN_RIGHT}",
-                y1: "{y_zero}",
-                y2: "{y_zero}",
-                stroke: "var(--chart-axis)",
-                stroke_width: "1",
-              }
-            }
-
-            // Alert thresholds. Dashed, so they read as a boundary rather
-            // than as more chrome, and drawn under the series so data is
-            // never hidden behind its own threshold.
-            for (i , r) in drawn_refs.iter().enumerate() {
-              g { key: "threshold-{i}",
-                line {
-                  x1: "{MARGIN_LEFT}",
-                  x2: "{CANVAS_W - MARGIN_RIGHT}",
-                  y1: "{y_of(r.value)}",
-                  y2: "{y_of(r.value)}",
-                  stroke: if r.firing { "var(--chart-status-critical)" } else { "var(--chart-ink-secondary)" },
-                  stroke_width: "1.5",
-                  stroke_dasharray: "5 4",
-                }
-                // Left-anchored: the right edge belongs to the series' own
-                // end marker and direct label, and on a narrow viewport the
-                // right edge is the part scrolled out of sight.
-                text {
-                  x: "{MARGIN_LEFT + 4.0}",
-                  y: "{(y_of(r.value) - 4.0).max(MARGIN_TOP + 8.0)}",
-                  text_anchor: "start",
-                  font_size: "9",
-                  fill: "var(--chart-ink-secondary)",
-                  "{r.label}"
-                }
-              }
-            }
-
-            // X ticks: start and end timestamps only, to stay uncluttered.
-            text {
-              x: "{MARGIN_LEFT}",
-              y: "{CANVAS_H - 8.0}",
-              text_anchor: "start",
-              font_size: "9",
-              fill: "var(--chart-ink-secondary)",
-              "{format_time(t_min)}"
-            }
-            text {
-              x: "{CANVAS_W - MARGIN_RIGHT}",
-              y: "{CANVAS_H - 8.0}",
-              text_anchor: "end",
-              font_size: "9",
-              fill: "var(--chart-ink-secondary)",
-              "{format_time(t_max)}"
-            }
-
-            for (i , s) in drawn.iter().enumerate() {
-              g { key: "{s.key}", class: "{series_color_class(i)}",
-                match kind {
-                    ChartKind::Bar => rsx! {
-                      for (t , v) in s.points.iter() {
-                        path {
-                          key: "{t}",
-                          d: bar_path(
-                              x_of(*t) - band / 2.0 + i as f64 * (bar_w + SURFACE_GAP),
-                              bar_w,
-                              y_zero,
-                              y_of(*v),
-                          ),
-                          fill: "currentColor",
-                        }
-                      }
-                    },
-                    ChartKind::Scatter => rsx! {
-                      for (t , v) in s.points.iter() {
-                        path {
-                          key: "{t}",
-                          d: marker_path(i, x_of(*t), y_of(*v), 3.5),
-                          fill: "currentColor",
-                          stroke: "var(--chart-surface)",
-                          stroke_width: "{SURFACE_GAP}",
-                        }
-                      }
-                    },
-                    _ => {
-                        let geometry = if kind == ChartKind::Step {
-                            step_geometry(&s.points)
-                        } else {
-                            s.points.clone()
-                        };
-                        let line_points = geometry
-                            .iter()
-                            .map(|(t, v)| format!("{},{}", x_of(*t), y_of(*v)))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        let area_points = geometry
-                            .first()
-                            .zip(geometry.last())
-                            .map(|(first, last)| {
-                                format!(
-                                    "{},{} {} {},{}",
-                                    x_of(first.0),
-                                    y_zero,
-                                    line_points,
-                                    x_of(last.0),
-                                    y_zero,
-                                )
-                            });
-                        rsx! {
-                          if kind == ChartKind::Area {
-                            if let Some(points) = area_points {
-                              polygon {
-                                points: "{points}",
-                                fill: "currentColor",
-                                fill_opacity: "0.1",
-                                stroke: "none",
-                              }
-                            }
-                          }
-                          polyline {
-                            points: "{line_points}",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "2",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                          }
-                          if let Some((t , v)) = s.points.last() {
-                            circle {
-                              cx: "{x_of(*t)}",
-                              cy: "{y_of(*v)}",
-                              r: "6",
-                              fill: "var(--chart-surface)",
-                            }
-                            circle {
-                              cx: "{x_of(*t)}",
-                              cy: "{y_of(*v)}",
-                              r: "4",
-                              fill: "currentColor",
-                            }
-                          }
-                        }
-                    }
-                }
-                // Single series carries no legend, so its identity and its
-                // latest value ride the mark itself instead.
-                if !show_legend {
-                  if let Some((t , v)) = s.points.last() {
-                    {
-                        let label = format!("{}: {}", s.key, format_value(*v));
-                        let (x, anchor) = end_label_position(&label, x_of(*t));
-                        let y = (y_of(*v) - 8.0).clamp(
-                            MARGIN_TOP + 9.0,
-                            CANVAS_H - MARGIN_BOTTOM - 4.0,
-                        );
-                        rsx! {
-                          text {
-                            x: "{x}",
-                            y: "{y}",
-                            text_anchor: "{anchor}",
-                            font_size: "10",
-                            fill: "var(--chart-ink-secondary)",
-                            "{label}"
-                          }
-                        }
-                    }
+              // Gridlines + y ticks
+              for v in y_ticks.iter() {
+                g { key: "{v}",
+                  line {
+                    x1: "{MARGIN_LEFT}",
+                    x2: "{CANVAS_W - MARGIN_RIGHT}",
+                    y1: "{y_of(*v)}",
+                    y2: "{y_of(*v)}",
+                    stroke: "var(--chart-grid)",
+                    stroke_width: "1",
+                  }
+                  text {
+                    x: "{MARGIN_LEFT - 6.0}",
+                    y: "{y_of(*v) + 3.0}",
+                    text_anchor: "end",
+                    font_size: "9",
+                    fill: "var(--chart-ink-secondary)",
+                    "{format_value(*v)}"
                   }
                 }
               }
-            }
 
-            // Crosshair
-            if let Some(x) = hover_x {
+              // Baseline
               line {
-                x1: "{x}",
-                x2: "{x}",
-                y1: "{MARGIN_TOP}",
+                x1: "{MARGIN_LEFT}",
+                x2: "{CANVAS_W - MARGIN_RIGHT}",
+                y1: "{CANVAS_H - MARGIN_BOTTOM}",
                 y2: "{CANVAS_H - MARGIN_BOTTOM}",
                 stroke: "var(--chart-axis)",
                 stroke_width: "1",
               }
-            }
 
-            // Hover hit area — sized to the plot area, in the same
-            // viewBox units as everything above (see module doc comment).
-            rect {
-              x: "{MARGIN_LEFT}",
-              y: "{MARGIN_TOP}",
-              width: "{plot_w}",
-              height: "{plot_h}",
-              fill: "transparent",
-              onmousemove: move |evt: Event<MouseData>| {
-                  let point = evt.data().element_coordinates();
-                  let rel_x = point.x.clamp(0.0, plot_w);
-                  let t = t_min + ((rel_x / plot_w) * t_span) as i64;
-                  let nearest = hover_series
-                      .iter()
-                      .flat_map(|s| s.points.iter().map(|p| p.0))
-                      .min_by_key(|candidate| (candidate - t).abs());
-                  hover_time.set(nearest);
-              },
-              onmouseleave: move |_| hover_time.set(None),
-            }
-          }
+              // The zero line a bar's length or an area's fill is measured
+              // against -- drawn only when it isn't already the axis, so the
+              // reader can see where the measurement starts.
+              if zero_baseline && y_zero < CANVAS_H - MARGIN_BOTTOM - 1.0 {
+                line {
+                  x1: "{MARGIN_LEFT}",
+                  x2: "{CANVAS_W - MARGIN_RIGHT}",
+                  y1: "{y_zero}",
+                  y2: "{y_zero}",
+                  stroke: "var(--chart-axis)",
+                  stroke_width: "1",
+                }
+              }
 
-          // Tooltip: one row per series at the hovered time, values leading
-          // (Strong), series name secondary — per interaction.md.
-          if let Some(t) = hover_time() {
-            div {
-              class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs",
-              style: "left: {(x_of(t) + 12.0).min(CANVAS_W - 160.0)}px;",
-              div { class: "text-base-content/60 font-mono mb-1", "{format_time(t)}" }
+              // Alert thresholds. Dashed, so they read as a boundary rather
+              // than as more chrome, and drawn under the series so data is
+              // never hidden behind its own threshold.
+              for (i , r) in drawn_refs.iter().enumerate() {
+                g { key: "threshold-{i}",
+                  line {
+                    x1: "{MARGIN_LEFT}",
+                    x2: "{CANVAS_W - MARGIN_RIGHT}",
+                    y1: "{y_of(r.value)}",
+                    y2: "{y_of(r.value)}",
+                    stroke: if r.firing { "var(--chart-status-critical)" } else { "var(--chart-ink-secondary)" },
+                    stroke_width: "1.5",
+                    stroke_dasharray: "5 4",
+                  }
+                  // Left-anchored: the right edge belongs to the series' own
+                  // end marker and direct label, and on a narrow viewport the
+                  // right edge is the part scrolled out of sight.
+                  text {
+                    x: "{MARGIN_LEFT + 4.0}",
+                    y: "{(y_of(r.value) - 4.0).max(MARGIN_TOP + 8.0)}",
+                    text_anchor: "start",
+                    font_size: "9",
+                    fill: "var(--chart-ink-secondary)",
+                    "{r.label}"
+                  }
+                }
+              }
+
+              // X ticks: start and end timestamps only, to stay uncluttered.
+              text {
+                x: "{MARGIN_LEFT}",
+                y: "{CANVAS_H - 8.0}",
+                text_anchor: "start",
+                font_size: "9",
+                fill: "var(--chart-ink-secondary)",
+                "{format_time(t_min)}"
+              }
+              text {
+                x: "{CANVAS_W - MARGIN_RIGHT}",
+                y: "{CANVAS_H - 8.0}",
+                text_anchor: "end",
+                font_size: "9",
+                fill: "var(--chart-ink-secondary)",
+                "{format_time(t_max)}"
+              }
+
               for (i , s) in drawn.iter().enumerate() {
-                {
-                    let nearest = s.points.iter().min_by_key(|p| (p.0 - t).abs());
-                    rsx! {
-                      div { key: "{s.key}", class: "flex items-center gap-2",
-                        span { class: "inline-block w-3 h-0.5 {series_color_class(i)} bg-current" }
-                        span { class: "font-semibold text-base-content",
-                          {nearest.map(|p| format_value(p.1)).unwrap_or_else(|| "--".to_string())}
+                g { key: "{s.key}", class: "{series_color_class(i)}",
+                  match kind {
+                      ChartKind::Bar => rsx! {
+                        for (t , v) in s.points.iter() {
+                          path {
+                            key: "{t}",
+                            d: bar_path(
+                                x_of(*t) - band / 2.0 + i as f64 * (bar_w + SURFACE_GAP),
+                                bar_w,
+                                y_zero,
+                                y_of(*v),
+                            ),
+                            fill: "currentColor",
+                          }
                         }
-                        span { class: "text-base-content/60", "{s.key}" }
+                      },
+                      ChartKind::Scatter => rsx! {
+                        for (t , v) in s.points.iter() {
+                          path {
+                            key: "{t}",
+                            d: marker_path(i, x_of(*t), y_of(*v), 3.5),
+                            fill: "currentColor",
+                            stroke: "var(--chart-surface)",
+                            stroke_width: "{SURFACE_GAP}",
+                          }
+                        }
+                      },
+                      _ => {
+                          let geometry = if kind == ChartKind::Step {
+                              step_geometry(&s.points)
+                          } else {
+                              s.points.clone()
+                          };
+                          let line_points = geometry
+                              .iter()
+                              .map(|(t, v)| format!("{},{}", x_of(*t), y_of(*v)))
+                              .collect::<Vec<_>>()
+                              .join(" ");
+                          let area_points = geometry
+                              .first()
+                              .zip(geometry.last())
+                              .map(|(first, last)| {
+                                  format!(
+                                      "{},{} {} {},{}",
+                                      x_of(first.0),
+                                      y_zero,
+                                      line_points,
+                                      x_of(last.0),
+                                      y_zero,
+                                  )
+                              });
+                          rsx! {
+                            if kind == ChartKind::Area {
+                              if let Some(points) = area_points {
+                                polygon {
+                                  points: "{points}",
+                                  fill: "currentColor",
+                                  fill_opacity: "0.1",
+                                  stroke: "none",
+                                }
+                              }
+                            }
+                            polyline {
+                              points: "{line_points}",
+                              fill: "none",
+                              stroke: "currentColor",
+                              stroke_width: "2",
+                              stroke_linecap: "round",
+                              stroke_linejoin: "round",
+                            }
+                            if let Some((t , v)) = s.points.last() {
+                              circle {
+                                cx: "{x_of(*t)}",
+                                cy: "{y_of(*v)}",
+                                r: "6",
+                                fill: "var(--chart-surface)",
+                              }
+                              circle {
+                                cx: "{x_of(*t)}",
+                                cy: "{y_of(*v)}",
+                                r: "4",
+                                fill: "currentColor",
+                              }
+                            }
+                          }
+                      }
+                  }
+                  // Single series carries no legend, so its identity and its
+                  // latest value ride the mark itself instead.
+                  if !show_legend {
+                    if let Some((t , v)) = s.points.last() {
+                      {
+                          let label = format!("{}: {}", s.key, format_value(*v));
+                          let (x, anchor) = end_label_position(&label, x_of(*t));
+                          let y = (y_of(*v) - 8.0).clamp(
+                              MARGIN_TOP + 9.0,
+                              CANVAS_H - MARGIN_BOTTOM - 4.0,
+                          );
+                          rsx! {
+                            text {
+                              x: "{x}",
+                              y: "{y}",
+                              text_anchor: "{anchor}",
+                              font_size: "10",
+                              fill: "var(--chart-ink-secondary)",
+                              "{label}"
+                            }
+                          }
                       }
                     }
+                  }
+                }
+              }
+
+              // Crosshair
+              if let Some(x) = hover_x {
+                line {
+                  x1: "{x}",
+                  x2: "{x}",
+                  y1: "{MARGIN_TOP}",
+                  y2: "{CANVAS_H - MARGIN_BOTTOM}",
+                  stroke: "var(--chart-axis)",
+                  stroke_width: "1",
+                }
+              }
+
+              // Hover hit area — sized to the plot area, in the same
+              // viewBox units as everything above (see module doc comment).
+              rect {
+                x: "{MARGIN_LEFT}",
+                y: "{MARGIN_TOP}",
+                width: "{plot_w}",
+                height: "{plot_h}",
+                fill: "transparent",
+                // No touch-action: suppressing the pan would cost a phone the
+                // only way to reach a canvas wider than its box, and the drag
+                // is read from ontouchmove either way.
+                // A tap moves nothing, so the press is what it reads with.
+                onpointerdown: move |evt: Event<PointerData>| {
+                    hover_time.set(pointer_sample_time(&evt, &press_times, t_of));
+                },
+                onpointermove: move |evt: Event<PointerData>| {
+                    hover_time.set(pointer_sample_time(&evt, &move_times, t_of));
+                },
+                ontouchmove: move |evt: Event<TouchData>| {
+                    hover_time.set(touch_sample_time(&evt, &drag_times, t_of));
+                },
+                onpointerleave: move |evt: Event<PointerData>| {
+                    // A finger's pointerleave arrives with the lift, and would
+                    // erase the reading the tap just asked for.
+                    if evt.data().pointer_type() == "mouse" {
+                        hover_time.set(None);
+                    }
+                },
+              }
+            }
+
+            // Tooltip: one row per series at the hovered time, values leading
+            // (Strong), series name secondary — per interaction.md.
+            if let Some(t) = hover_time() {
+              div {
+                class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs max-w-56",
+                style: "{svg_hover::tooltip_style(x_of(t), CANVAS_W, TOOLTIP_WIDTH)}",
+                div { class: "text-base-content/60 font-mono mb-1", "{format_time(t)}" }
+                for (i , s) in drawn.iter().enumerate() {
+                  {
+                      let nearest = s.points.iter().min_by_key(|p| (p.0 - t).abs());
+                      rsx! {
+                        div { key: "{s.key}", class: "flex items-center gap-2",
+                          span { class: "inline-block w-3 h-0.5 {series_color_class(i)} bg-current" }
+                          span { class: "font-semibold text-base-content",
+                            {nearest.map(|p| format_value(p.1)).unwrap_or_else(|| "--".to_string())}
+                          }
+                          span { class: "text-base-content/60", "{s.key}" }
+                        }
+                      }
+                  }
                 }
               }
             }
@@ -958,13 +1034,40 @@ pub fn TelemetryChart(
 
 #[cfg(test)]
 mod tests {
-  use super::{ChartKind, ChartSeries, bucket_count, bucket_series, prepare, step_geometry};
+  use super::{
+    ChartKind, ChartSeries, bucket_count, bucket_series, plot_t_of, plot_x_of, prepare,
+    step_geometry,
+  };
 
   fn series(key: &str, points: &[(i64, f64)]) -> ChartSeries {
     ChartSeries {
       key: key.to_string(),
       points: points.to_vec(),
     }
+  }
+
+  /// A hover reads a pointer back through `plot_t_of` and then snaps to the
+  /// nearest sample, which hides a small inset error inside the snap. The
+  /// bucketed inset is the half-slot the two have to agree on.
+  #[test]
+  fn the_x_scale_reads_back_the_time_it_drew() {
+    let (t_min, t_span, plot_w) = (1_000i64, 600.0, 580.0);
+    for inset in [0.0, plot_w / 64.0] {
+      let span_px = plot_w - 2.0 * inset;
+      for t in [1_000i64, 1_150, 1_600] {
+        let x = plot_x_of(t, t_min, t_span, inset, span_px);
+        assert_eq!(
+          plot_t_of(x, t_min, t_span, inset, span_px),
+          t,
+          "inset {inset}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_single_bucket_reads_back_as_its_own_time() {
+    assert_eq!(plot_t_of(290.0, 1_000, 600.0, 290.0, 0.0), 1_000);
   }
 
   #[test]

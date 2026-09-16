@@ -21,8 +21,10 @@ use crate::components::ChartKind;
 use crate::components::graph_widget::{GraphDef, TimeRange};
 use crate::components::telemetry_chart::format_time;
 use crate::helpers::gps_track::{self, Bounds, GpsFix, TrackProjector, current_position_line};
+use crate::helpers::svg_hover;
 use capsules::TelemetryLatest;
 use dioxus::prelude::*;
+use std::rc::Rc;
 use time::OffsetDateTime;
 
 const CANVAS_W: f64 = 480.0;
@@ -33,9 +35,28 @@ const MARGIN: f64 = 16.0;
 // `TelemetryChart`'s y-axis padding, just fractional here since the two
 // axes share one scale (`TrackProjector`).
 const PAD_FRAC: f64 = 0.15;
+/// What a tooltip is allowed to be, for choosing the side of the hovered
+/// fix it fits on. Measured in CSS px, which is a user unit only while the
+/// canvas renders 1:1, and held to it by the tooltip's own `max-w-48`.
+const TOOLTIP_WIDTH: f64 = 192.0;
 
 fn now() -> OffsetDateTime {
   OffsetDateTime::now_utc()
+}
+
+/// The track fix nearest a pointer, or `None` when the event carries no
+/// rendered track to measure against. The plot sits one margin in on both
+/// axes, which is where the projected points are measured from.
+fn pointer_nearest_fix(evt: &Event<PointerData>, projected: &[(f64, f64)]) -> Option<usize> {
+  let point = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN, MARGIN))?;
+  gps_track::nearest_point_index(projected, point)
+}
+
+/// The same for a finger drag, which is the only input a browser keeps
+/// delivering once it has taken the gesture for a scroll.
+fn touch_nearest_fix(evt: &Event<TouchData>, projected: &[(f64, f64)]) -> Option<usize> {
+  let point = svg_hover::touch_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN, MARGIN))?;
+  gps_track::nearest_point_index(projected, point)
 }
 
 #[component]
@@ -125,7 +146,6 @@ pub fn TrackWidget(
               width: "{CANVAS_W}",
               height: "{CANVAS_H * 0.55}",
               view_box: "0 0 {CANVAS_W} {CANVAS_H * 0.55}",
-              class: "min-w-[{CANVAS_W}px]",
               rect {
                 x: "0",
                 y: "0",
@@ -161,7 +181,9 @@ pub fn TrackWidget(
         }
       } else {
         let projector = TrackProjector::new(&bounds, plot_w, plot_h, PAD_FRAC);
-        let projected: Vec<(f64, f64)> =
+        // Shared with the three handlers below: a pointer move re-renders, so
+        // a copy per closure would be a copy of the whole track per frame.
+        let projected: Rc<[(f64, f64)]> =
           fx.iter().map(|f| projector.project(f.lat, f.lon)).collect();
         let path_points = projected
           .iter()
@@ -171,6 +193,9 @@ pub fn TrackWidget(
         let (start_x, start_y) = projected[0];
         let (end_x, end_y) = *projected.last().expect("checked non-empty above");
 
+        let press_points = projected.clone();
+        let move_points = projected.clone();
+        let drag_points = projected.clone();
         let hover_i = hover_index();
         let hovered = hover_i.and_then(|i| fx.get(i).zip(projected.get(i).copied()));
         let tooltip = hovered.map(|(fix, (hx, hy))| {
@@ -181,87 +206,103 @@ pub fn TrackWidget(
         });
 
         rsx! {
-          div { class: "relative w-full overflow-x-auto",
-            svg {
-              width: "{CANVAS_W}",
-              height: "{CANVAS_H}",
-              view_box: "0 0 {CANVAS_W} {CANVAS_H}",
-              class: "min-w-[{CANVAS_W}px]",
-              rect {
-                x: "0",
-                y: "0",
+          div { class: "w-full overflow-x-auto",
+            // A percentage places the tooltip, so its containing block has
+            // to be the map's own box, not the scroll area around it.
+            div { class: "relative w-fit",
+              svg {
                 width: "{CANVAS_W}",
                 height: "{CANVAS_H}",
-                fill: "var(--chart-surface)",
-                rx: "8",
-              }
-              g { transform: "translate({MARGIN}, {MARGIN})",
-                polyline {
-                  points: "{path_points}",
-                  fill: "none",
-                  stroke: "var(--color-primary)",
-                  stroke_width: "2",
-                  stroke_linecap: "round",
-                  stroke_linejoin: "round",
-                }
-                // Start marker: hollow -- the track's beginning.
-                circle {
-                  cx: "{start_x}",
-                  cy: "{start_y}",
-                  r: "6",
-                  fill: "var(--chart-surface)",
-                  stroke: "var(--color-primary)",
-                  stroke_width: "2",
-                }
-                // Latest marker: solid + pulsing, same "live" convention
-                // as `ConnectionBadge`'s online status dot.
-                circle {
-                  cx: "{end_x}",
-                  cy: "{end_y}",
-                  r: "8",
-                  fill: "var(--color-primary)",
-                  opacity: "0.35",
-                  class: "animate-pulse",
-                }
-                circle {
-                  cx: "{end_x}",
-                  cy: "{end_y}",
-                  r: "4",
-                  fill: "var(--color-primary)",
-                }
-                if let Some((hx, hy, ..)) = tooltip.as_ref() {
-                  circle {
-                    cx: "{hx}",
-                    cy: "{hy}",
-                    r: "6",
-                    fill: "none",
-                    stroke: "var(--chart-ink-primary)",
-                    stroke_width: "1.5",
-                  }
-                }
+                view_box: "0 0 {CANVAS_W} {CANVAS_H}",
                 rect {
                   x: "0",
                   y: "0",
-                  width: "{plot_w}",
-                  height: "{plot_h}",
-                  fill: "transparent",
-                  onmousemove: move |evt: Event<MouseData>| {
-                      let point = evt.data().element_coordinates();
-                      hover_index.set(gps_track::nearest_point_index(&projected, (point.x, point.y)));
-                  },
-                  onmouseleave: move |_| hover_index.set(None),
+                  width: "{CANVAS_W}",
+                  height: "{CANVAS_H}",
+                  fill: "var(--chart-surface)",
+                  rx: "8",
+                }
+                g { transform: "translate({MARGIN}, {MARGIN})",
+                  polyline {
+                    points: "{path_points}",
+                    fill: "none",
+                    stroke: "var(--color-primary)",
+                    stroke_width: "2",
+                    stroke_linecap: "round",
+                    stroke_linejoin: "round",
+                  }
+                  // Start marker: hollow -- the track's beginning.
+                  circle {
+                    cx: "{start_x}",
+                    cy: "{start_y}",
+                    r: "6",
+                    fill: "var(--chart-surface)",
+                    stroke: "var(--color-primary)",
+                    stroke_width: "2",
+                  }
+                  // Latest marker: solid + pulsing, same "live" convention
+                  // as `ConnectionBadge`'s online status dot.
+                  circle {
+                    cx: "{end_x}",
+                    cy: "{end_y}",
+                    r: "8",
+                    fill: "var(--color-primary)",
+                    opacity: "0.35",
+                    class: "animate-pulse",
+                  }
+                  circle {
+                    cx: "{end_x}",
+                    cy: "{end_y}",
+                    r: "4",
+                    fill: "var(--color-primary)",
+                  }
+                  if let Some((hx, hy, ..)) = tooltip.as_ref() {
+                    circle {
+                      cx: "{hx}",
+                      cy: "{hy}",
+                      r: "6",
+                      fill: "none",
+                      stroke: "var(--chart-ink-primary)",
+                      stroke_width: "1.5",
+                    }
+                  }
+                  rect {
+                    x: "0",
+                    y: "0",
+                    width: "{plot_w}",
+                    height: "{plot_h}",
+                    fill: "transparent",
+                    // No touch-action, for the reason `telemetry_chart` gives.
+                    // A tap moves nothing, so the press is what it reads with.
+                    onpointerdown: move |evt: Event<PointerData>| {
+                        hover_index.set(pointer_nearest_fix(&evt, &press_points));
+                    },
+                    onpointermove: move |evt: Event<PointerData>| {
+                        hover_index.set(pointer_nearest_fix(&evt, &move_points));
+                    },
+                    ontouchmove: move |evt: Event<TouchData>| {
+                        hover_index.set(touch_nearest_fix(&evt, &drag_points));
+                    },
+                    onpointerleave: move |evt: Event<PointerData>| {
+                        // A finger's pointerleave arrives with the lift, and
+                        // would erase the reading the tap just asked for.
+                        if evt.data().pointer_type() == "mouse" {
+                            hover_index.set(None);
+                        }
+                    },
+                  }
                 }
               }
-            }
 
-            if let Some((hx, _hy, time_label, coord_label, speed_label)) = tooltip {
-              div {
-                class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs",
-                style: "left: {(hx + MARGIN + 12.0).min(CANVAS_W - 190.0)}px;",
-                div { class: "text-base-content/60 font-mono mb-1", "{time_label}" }
-                div { class: "font-semibold text-base-content", "{coord_label}" }
-                if let Some(speed) = speed_label {
-                  div { class: "text-base-content/70", "{speed}" }
+              if let Some((hx, _hy, time_label, coord_label, speed_label)) = tooltip {
+                div {
+                  class: "absolute top-2 pointer-events-none bg-base-100 border border-base-content/10 rounded-box shadow-lg px-3 py-2 text-xs max-w-48",
+                  style: "{svg_hover::tooltip_style(hx + MARGIN, CANVAS_W, TOOLTIP_WIDTH)}",
+                  div { class: "text-base-content/60 font-mono mb-1", "{time_label}" }
+                  div { class: "font-semibold text-base-content", "{coord_label}" }
+                  if let Some(speed) = speed_label {
+                    div { class: "text-base-content/70", "{speed}" }
+                  }
                 }
               }
             }
