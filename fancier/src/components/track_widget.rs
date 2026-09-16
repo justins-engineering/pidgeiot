@@ -314,7 +314,7 @@ pub fn TrackWidget(
 
   rsx! {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
+      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between md:px-4",
         div {
           h2 { class: "text-3xl font-bold", "GPS Track" }
           if let Some(line) = position_line.as_ref() {
