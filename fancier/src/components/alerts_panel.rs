@@ -281,8 +281,8 @@ fn AlertsSection(scope: AlertScope, available_keys: Vec<String>) -> Element {
         }
       } else {
         div { class: "overflow-x-auto rounded-box border border-base-content/10",
-          table { class: "table table-zebra w-full",
-            thead {
+          table { class: "table table-zebra w-full max-sm:block",
+            thead { class: "max-sm:hidden",
               tr { class: "bg-base-200/50 text-base-content",
                 th { "Name" }
                 th { "Condition" }
@@ -291,7 +291,7 @@ fn AlertsSection(scope: AlertScope, available_keys: Vec<String>) -> Element {
                 th { class: "text-right", "Actions" }
               }
             }
-            tbody {
+            tbody { class: "max-sm:block max-sm:divide-y max-sm:divide-base-content/10",
               for alert in alerts.iter().cloned() {
                 AlertRow {
                   key: "{alert.id}",
@@ -347,9 +347,15 @@ fn AlertRow(
   let enabled = alert.enabled;
 
   rsx! {
-    tr { class: "hover",
-      td { class: "font-semibold text-primary", "{alert.name}" }
-      td { class: "font-mono text-xs text-base-content/80",
+    // Stacked below sm. `order` moves the condition past the badges that follow it
+    // in the desktop columns, and the cells give up daisyUI's own padding and
+    // bottom border, which would otherwise draw a line under every stacked cell.
+    tr { class: "hover max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-2 max-sm:p-4",
+      td { class: "font-semibold text-primary max-sm:flex-1 max-sm:border-b-0 max-sm:p-0",
+        "{alert.name}"
+      }
+      td {
+        class: "font-mono text-xs text-base-content/80 max-sm:basis-full max-sm:order-1 max-sm:border-b-0 max-sm:p-0",
         div { "{condition_summary(&alert.condition)}" }
         div { class: "font-sans text-base-content/60",
           "notifies {recipient_summary(&alert.channel)}"
@@ -358,13 +364,13 @@ fn AlertRow(
           div { class: "font-sans text-base-content/70 mt-1 whitespace-pre-line", "{notes}" }
         }
       }
-      td {
+      td { class: "max-sm:border-b-0 max-sm:p-0",
         span {
           class: "badge badge-sm {severity_badge_class(alert.severity)}",
           "{alert.severity.as_str()}"
         }
       }
-      td {
+      td { class: "max-sm:border-b-0 max-sm:p-0",
         input {
           r#type: "checkbox",
           class: "toggle toggle-sm toggle-success",
@@ -384,7 +390,7 @@ fn AlertRow(
           },
         }
       }
-      td { class: "text-right",
+      td { class: "text-right max-sm:basis-full max-sm:order-2 max-sm:border-b-0 max-sm:p-0",
         div { class: "flex justify-end gap-1",
           button {
             class: "btn btn-ghost btn-xs",
