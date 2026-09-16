@@ -153,8 +153,8 @@ mod tests {
     assert_eq!(tooltip_style(100.0, 640.0, 160.0), "left: 17.5%;");
   }
 
-  /// The old clamp pinned the tooltip and let the crosshair walk away from
-  /// it; flipping keeps the two together at both ends.
+  /// A tooltip that would overflow the right edge belongs on the crosshair's
+  /// left, not pinned at the edge with the crosshair walking away from it.
   #[test]
   fn a_tooltip_near_the_right_edge_flips_instead_of_detaching() {
     assert_eq!(
