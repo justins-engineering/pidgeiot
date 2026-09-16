@@ -46,14 +46,14 @@ fn now() -> OffsetDateTime {
 /// The track fix nearest a pointer, or `None` when the event carries no
 /// rendered track to measure against. The plot sits one margin in on both
 /// axes, which is where the projected points are measured from.
-fn nearest_fix(evt: &Event<PointerData>, projected: &[(f64, f64)]) -> Option<usize> {
+fn pointer_nearest_fix(evt: &Event<PointerData>, projected: &[(f64, f64)]) -> Option<usize> {
   let point = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN, MARGIN))?;
   gps_track::nearest_point_index(projected, point)
 }
 
 /// The same for a finger drag, which is the only input a browser keeps
 /// delivering once it has taken the gesture for a scroll.
-fn nearest_fix_touched(evt: &Event<TouchData>, projected: &[(f64, f64)]) -> Option<usize> {
+fn touch_nearest_fix(evt: &Event<TouchData>, projected: &[(f64, f64)]) -> Option<usize> {
   let point = svg_hover::touch_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN, MARGIN))?;
   gps_track::nearest_point_index(projected, point)
 }
@@ -274,13 +274,13 @@ pub fn TrackWidget(
                     // No touch-action, for the reason `telemetry_chart` gives.
                     // A tap moves nothing, so the press is what it reads with.
                     onpointerdown: move |evt: Event<PointerData>| {
-                        hover_index.set(nearest_fix(&evt, &press_points));
+                        hover_index.set(pointer_nearest_fix(&evt, &press_points));
                     },
                     onpointermove: move |evt: Event<PointerData>| {
-                        hover_index.set(nearest_fix(&evt, &move_points));
+                        hover_index.set(pointer_nearest_fix(&evt, &move_points));
                     },
                     ontouchmove: move |evt: Event<TouchData>| {
-                        hover_index.set(nearest_fix_touched(&evt, &drag_points));
+                        hover_index.set(touch_nearest_fix(&evt, &drag_points));
                     },
                     onpointerleave: move |evt: Event<PointerData>| {
                         // A finger's pointerleave arrives with the lift, and
