@@ -66,6 +66,8 @@ pub mod timezone;
 
 pub mod gps_track;
 
+pub mod svg_hover;
+
 pub mod graph_store;
 
 mod page_meta;
