@@ -774,8 +774,7 @@ call.
   vendor from the deployed configuration, obtain a DPA from it, or switch the fallback rail -- the
   owner took the first. The Service sends on the edge provider's Email Service alone and the row is
   out of both the list and Annex II.H, so the published annex names no vendor without a stated
-  location and mechanism. The Privacy Policy's own fallback sentence is the half counsel still
-  owns; `docs/legal/README.md` carries it.
+  location and mechanism. The settled Privacy Policy names no fallback either.
 - **The two constants' values.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date,
   one commit on the branch. The privacy constant is `2026-09-04` in the code while the settled
   policy is dated later, so leaving it would make the page and the existing rows disagree.

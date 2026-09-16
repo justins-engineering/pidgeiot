@@ -65,15 +65,6 @@ what we publish have to be made to agree.
   Policy is settled and cannot move here, so the call is whether the published DPA drops that
   sentence for now or keeps it and lets counsel's version resolve it under Section 12.2.
 
-- **The Privacy Policy still promises a fallback email provider.** Two sentences say transactional
-  mail goes through the edge provider's email service "with a second email provider as the
-  fallback" (the location summary and the Email section). The Service has one transport and no
-  fallback rail, so both are false as they stand. The Policy is settled text and the copy is one
-  way, so this is counsel's edit to the business final, a re-copy, and a `PRIVACY_NOTICE_VERSION`
-  bump. Until it lands the two published pages disagree, because the sub-processor list names one
-  sender plus a Resend row that states no data reaches it, and a reader reconciling them takes
-  Resend for the fallback. The wording of that row follows the same edit.
-
 ## Shipping a change to these documents
 
 Nothing here is an agent action. The full reasoning is in
