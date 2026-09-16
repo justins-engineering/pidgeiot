@@ -262,10 +262,10 @@ pub fn TrackWidget(
                     width: "{plot_w}",
                     height: "{plot_h}",
                     fill: "transparent",
-                    // A drag across the track reads it instead of panning it;
-                    // the page still scrolls vertically.
-                    style: "touch-action: pan-y",
-                    // A tap moves nothing, so the press is what a phone reads with.
+                    // No touch-action, for the reason `telemetry_chart` gives:
+                    // a phone scrolls a canvas wider than its box with a
+                    // drag, and reads with a tap.
+                    // A tap moves nothing, so the press is what it reads with.
                     onpointerdown: move |evt: Event<PointerData>| {
                         hover_index.set(nearest_fix(&evt, &tap_points));
                     },

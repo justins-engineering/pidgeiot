@@ -903,10 +903,10 @@ pub fn TelemetryChart(
                 width: "{plot_w}",
                 height: "{plot_h}",
                 fill: "transparent",
-                // A drag across the plot reads the chart instead of panning
-                // it; the page still scrolls vertically.
-                style: "touch-action: pan-y",
-                // A tap moves nothing, so the press is what a phone reads with.
+                // No touch-action: below 640px the canvas is wider than its
+                // box and a drag is the only way to reach the rest of it, so
+                // a phone scrolls with a drag and reads with a tap.
+                // A tap moves nothing, so the press is what it reads with.
                 onpointerdown: move |evt: Event<PointerData>| {
                     let t = pointer_sample_time(&evt, &tap_series, t_min, t_span, x_inset, x_span_px);
                     hover_time.set(t);
