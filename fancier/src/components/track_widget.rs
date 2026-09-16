@@ -146,7 +146,6 @@ pub fn TrackWidget(
               width: "{CANVAS_W}",
               height: "{CANVAS_H * 0.55}",
               view_box: "0 0 {CANVAS_W} {CANVAS_H * 0.55}",
-              class: "min-w-[{CANVAS_W}px]",
               rect {
                 x: "0",
                 y: "0",
@@ -215,7 +214,6 @@ pub fn TrackWidget(
                 width: "{CANVAS_W}",
                 height: "{CANVAS_H}",
                 view_box: "0 0 {CANVAS_W} {CANVAS_H}",
-                class: "min-w-[{CANVAS_W}px]",
                 rect {
                   x: "0",
                   y: "0",

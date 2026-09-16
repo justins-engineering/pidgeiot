@@ -695,10 +695,12 @@ pub fn TelemetryChart(
           // to be the chart's own box, not the scroll area around it.
           div { class: "relative w-fit",
             svg {
+              // The width attribute is what holds the canvas at its own
+              // size, so a box narrower than it scrolls rather than
+              // squashing it.
               width: "{CANVAS_W}",
               height: "{CANVAS_H}",
               view_box: "0 0 {CANVAS_W} {CANVAS_H}",
-              class: "min-w-[{CANVAS_W}px]",
 
               // Gridlines + y ticks
               for v in y_ticks.iter() {
