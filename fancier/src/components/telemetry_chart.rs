@@ -471,10 +471,18 @@ fn pointer_sample_time(
   series: &[ChartSeries],
   t_min: i64,
   t_span: f64,
-  plot_w: f64,
+  x_inset: f64,
+  x_span_px: f64,
 ) -> Option<i64> {
   let (x, _) = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
-  let t = t_min + ((x.clamp(0.0, plot_w) / plot_w) * t_span) as i64;
+  // The inverse of `x_of`, inset and all: a bucketed scale draws its first
+  // and last mark half a slot in from the plot edge, and one bucket leaves no
+  // span to divide by.
+  let t = if x_span_px > 0.0 {
+    t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
+  } else {
+    t_min
+  };
   series
     .iter()
     .flat_map(|s| s.points.iter().map(|p| p.0))
@@ -894,10 +902,10 @@ pub fn TelemetryChart(
               style: "touch-action: pan-y",
               // A tap moves nothing, so the press is what a phone reads with.
               onpointerdown: move |evt: Event<PointerData>| {
-                  hover_time.set(pointer_sample_time(&evt, &tap_series, t_min, t_span, plot_w));
+                  hover_time.set(pointer_sample_time(&evt, &tap_series, t_min, t_span, x_inset, x_span_px));
               },
               onpointermove: move |evt: Event<PointerData>| {
-                  hover_time.set(pointer_sample_time(&evt, &move_series, t_min, t_span, plot_w));
+                  hover_time.set(pointer_sample_time(&evt, &move_series, t_min, t_span, x_inset, x_span_px));
               },
               onpointerleave: move |evt: Event<PointerData>| {
                   // A finger's pointerleave arrives with the lift, and would
