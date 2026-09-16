@@ -74,7 +74,8 @@ pub fn SessionInfo() -> Element {
         div { class: "mx-auto w-full max-w-lg",
           div { class: "mt-10",
             label { class: "text-lg", "Authentication Methods" }
-            div { class: "overflow-x-auto",
+            // Gecko sizes this table past its column; below sm the spill would leave the page.
+            div { class: "overflow-x-auto sm:overflow-visible",
               table { class: "table",
                 thead {
                   tr {
@@ -130,7 +131,7 @@ pub fn SessionInfo() -> Element {
         div { class: "mx-auto w-full max-w-lg",
           div { class: "mt-10",
             label { class: "text-lg", "Devices" }
-            // Wider than its column: main clips the spill below lg, above it the page has room.
+            // Wider than its column: below lg the spill leaves the page in Gecko, the wider engine.
             div { class: "overflow-x-auto lg:overflow-visible",
               table { class: "table",
                 thead {
