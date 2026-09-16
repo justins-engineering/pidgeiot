@@ -1322,9 +1322,9 @@ fn AclInfo(acl: PigeonAcl) -> Element {
           }
           tbody {
             tr {
-              // Gecko sizes the table from this cell's min-content, so an
-              // unbroken UUID pushes the role badge out of the card.
-              td { class: "break-all sm:break-normal",
+              // Gecko ignores the id's hyphens when it sizes this column, which
+              // pushes the role badge out of the card; above sm there is room.
+              td { class: "wrap-anywhere sm:break-normal",
                 span { class: "mr-1 badge badge-outline badge-sm", "You" }
                 "{acl.entity_id}"
               }
