@@ -35,7 +35,8 @@ const SURFACE_GAP: f64 = 2.0;
 const MAX_BAR_WIDTH: f64 = 24.0;
 const MAX_BUCKETS: usize = 32;
 /// What a tooltip is allowed to be, for choosing the side of the crosshair
-/// it fits on.
+/// it fits on. Measured in CSS px, which is a user unit only while the
+/// canvas renders 1:1.
 const TOOLTIP_WIDTH: f64 = 160.0;
 
 /// The palette's eight validated slots. A ninth series folds into a "+N

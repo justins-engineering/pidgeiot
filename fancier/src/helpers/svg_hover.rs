@@ -57,9 +57,9 @@ fn plot_point(
 
 /// Where a tooltip sits beside a crosshair, as an inline style. A percentage
 /// of the chart's own width, so it tracks at whatever scale the SVG rendered;
-/// `tooltip_w` is what the tooltip is allowed to be, in user units, and near
-/// the right edge it flips to the crosshair's left rather than detaching from
-/// it to stay inside the box.
+/// `tooltip_w` is what the tooltip is allowed to be, in the canvas's own
+/// units, and near the right edge it flips to the crosshair's left rather
+/// than detaching from it to stay inside the box.
 pub fn tooltip_style(x: f64, canvas_w: f64, tooltip_w: f64) -> String {
   const GAP: f64 = 12.0;
 

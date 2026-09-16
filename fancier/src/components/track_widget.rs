@@ -35,7 +35,8 @@ const MARGIN: f64 = 16.0;
 // axes share one scale (`TrackProjector`).
 const PAD_FRAC: f64 = 0.15;
 /// What a tooltip is allowed to be, for choosing the side of the hovered
-/// fix it fits on.
+/// fix it fits on. Measured in CSS px, which is a user unit only while the
+/// canvas renders 1:1.
 const TOOLTIP_WIDTH: f64 = 190.0;
 
 fn now() -> OffsetDateTime {
