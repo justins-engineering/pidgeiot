@@ -462,14 +462,18 @@ pub fn LogViewer(
                       pre { key: "{i}", class: "whitespace-pre-wrap break-all", "{m.text}" }
                     },
                     LogEvent::Message(m) => rsx! {
-                      div { key: "{i}", class: "flex flex-row gap-2 items-baseline py-0.5",
-                        span { class: "text-base-content/40 shrink-0 w-24 text-right", "{m.timestamp}" }
-                        span { class: "badge badge-xs {level_badge(m.level)} shrink-0", "{level_str(m.level)}" }
-                        span { class: "text-base-content/60 shrink-0", "{m.source}:" }
-                        span { class: "whitespace-pre-wrap break-all", "{m.text}" }
+                      div { key: "{i}", class: "flex flex-col gap-x-2 gap-y-0.5 sm:flex-row sm:items-baseline py-0.5",
+                        // A phone can't spare the width for four columns, so the header cells take
+                        // their own line; `contents` hands them back to the row's flex layout at sm.
+                        div { class: "flex flex-row flex-wrap gap-2 items-baseline sm:contents",
+                          span { class: "text-base-content/40 shrink-0 sm:w-24 sm:text-right", "{m.timestamp}" }
+                          span { class: "badge badge-xs {level_badge(m.level)} shrink-0", "{level_str(m.level)}" }
+                          span { class: "text-base-content/60 shrink-0", "{m.source}:" }
+                        }
+                        span { class: "whitespace-pre-wrap break-words sm:break-all", "{m.text}" }
                       }
                       if !m.hexdump.is_empty() {
-                        pre { class: "pl-28 text-base-content/70 whitespace-pre",
+                        pre { class: "text-base-content/70 whitespace-pre sm:pl-28",
                           {render_hexdump(&m.hexdump, 0)}
                         }
                       }
