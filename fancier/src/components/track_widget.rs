@@ -24,6 +24,7 @@ use crate::helpers::gps_track::{self, Bounds, GpsFix, TrackProjector, current_po
 use crate::helpers::svg_hover;
 use capsules::TelemetryLatest;
 use dioxus::prelude::*;
+use std::rc::Rc;
 use time::OffsetDateTime;
 
 const CANVAS_W: f64 = 480.0;
@@ -181,7 +182,9 @@ pub fn TrackWidget(
         }
       } else {
         let projector = TrackProjector::new(&bounds, plot_w, plot_h, PAD_FRAC);
-        let projected: Vec<(f64, f64)> =
+        // Shared with the three handlers below: a pointer move re-renders, so
+        // a copy per closure would be a copy of the whole track per frame.
+        let projected: Rc<[(f64, f64)]> =
           fx.iter().map(|f| projector.project(f.lat, f.lon)).collect();
         let path_points = projected
           .iter()

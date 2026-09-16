@@ -20,6 +20,7 @@
 use crate::helpers::svg_hover;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 const CANVAS_W: f64 = 640.0;
 const CANVAS_H: f64 = 220.0;
@@ -634,9 +635,10 @@ pub fn TelemetryChart(
   let bar_w = ((band - SURFACE_GAP * (drawn.len().saturating_sub(1)) as f64) / drawn.len() as f64)
     .clamp(0.5, MAX_BAR_WIDTH);
 
-  // The handlers want only the sample times, and each closure needs its own
-  // copy of them.
-  let sample_times: Vec<i64> = drawn
+  // The handlers want only the sample times, and share one list: a pointer
+  // move re-renders the chart, so a copy per closure would be a copy of every
+  // sample per frame.
+  let sample_times: Rc<[i64]> = drawn
     .iter()
     .flat_map(|s| s.points.iter().map(|p| p.0))
     .collect();
