@@ -34,6 +34,27 @@ pub fn pointer_plot_point(
   ))
 }
 
+/// Where a tooltip sits beside a crosshair, as an inline style. A percentage
+/// of the chart's own width, so it tracks at whatever scale the SVG rendered;
+/// `tooltip_w` is what the tooltip is allowed to be, in user units, and near
+/// the right edge it flips to the crosshair's left rather than detaching from
+/// it to stay inside the box.
+pub fn tooltip_style(x: f64, canvas_w: f64, tooltip_w: f64) -> String {
+  const GAP: f64 = 12.0;
+
+  let flip = x + GAP + tooltip_w > canvas_w;
+  let left = if flip { x - GAP } else { x + GAP };
+  let percent = ((left / canvas_w * 10000.0).round() / 100.0).clamp(0.0, 100.0);
+  let mut style = String::with_capacity(48);
+  style.push_str("left: ");
+  style.push_str(&percent.to_string());
+  style.push_str("%;");
+  if flip {
+    style.push_str(" transform: translateX(-100%);");
+  }
+  style
+}
+
 /// The SVG root's bounding box in client pixels, as `(left, top, width, height)`.
 #[cfg(feature = "web")]
 fn svg_client_box(evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
@@ -59,7 +80,7 @@ fn svg_client_box(_evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
 
 #[cfg(test)]
 mod tests {
-  use super::plot_axis;
+  use super::{plot_axis, tooltip_style};
 
   /// The scale the chart happens to render at cannot change which sample a
   /// pointer is over, which is the whole point of going through the box.
@@ -85,5 +106,20 @@ mod tests {
   #[test]
   fn an_unlaid_out_chart_maps_to_its_origin() {
     assert_eq!(plot_axis(260.0, 100.0, 0.0, 640.0, 48.0), 0.0);
+  }
+
+  #[test]
+  fn a_tooltip_sits_beside_the_crosshair_in_percent_of_the_chart() {
+    assert_eq!(tooltip_style(100.0, 640.0, 160.0), "left: 17.5%;");
+  }
+
+  /// The old clamp pinned the tooltip and let the crosshair walk away from
+  /// it; flipping keeps the two together at both ends.
+  #[test]
+  fn a_tooltip_near_the_right_edge_flips_instead_of_detaching() {
+    assert_eq!(
+      tooltip_style(600.0, 640.0, 160.0),
+      "left: 91.88%; transform: translateX(-100%);"
+    );
   }
 }
