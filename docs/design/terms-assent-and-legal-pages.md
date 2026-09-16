@@ -776,8 +776,8 @@ call.
   out of both the list and Annex II.H, so the published annex names no vendor without a stated
   location and mechanism. The settled Privacy Policy names no fallback either.
 - **The two constants' values.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date,
-  one commit on the branch. The privacy constant is `2026-09-04` in the code while the settled
-  policy is dated later, so leaving it would make the page and the existing rows disagree.
+  one commit on the branch. Both constants read `2026-09-14` in the code while the settled text
+  deploys later, so leaving them would make the page and the existing rows disagree.
 - **Whether the superseded privacy text is archived.** `docs/legal/archive/privacy-2026-09-04.md`
   exists so a row stamped with the old version can still be resolved back to the words on screen;
   the row-count query in section 9.3 decides whether production holds any such row.
