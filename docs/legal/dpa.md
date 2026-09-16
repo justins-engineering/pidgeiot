@@ -194,7 +194,7 @@ Completes Annex I of the EU SCCs and Tables 1 and 3 of the UK Addendum.
 | **Alerts** | Alert definitions (condition, severity, notification channel including recipient email addresses) and per-device fired state | PostgreSQL |
 | **Forwarding endpoints** | URL and bearer token of any telemetry endpoint the Customer configures | PostgreSQL (token never returned on reads) |
 | **Billing** | Organisation name, billing email and organisation identifier sent to the payment processor; subscription and customer identifiers; per-period message and device counts; webhook event identifiers. Payment card and bank details are collected by the payment processor's hosted checkout and are never received by the Provider | PostgreSQL and Stripe |
-| **Support and diagnostics** | Contact-form submissions (name, email, company, fleet size, message, and the user identifier if signed in); feedback submissions (emailed, not stored); dashboard error reports, which are de-identified by design and carry no direct account identifier unless the user attaches a note, in which case the user identifier and note are stored for 90 days | PostgreSQL; the operator's mailbox via the email provider |
+| **Support and diagnostics** | Contact-form submissions (name, email, company, fleet size, message, and the user identifier if signed in); feedback submissions (emailed, not stored); dashboard error reports, which are de-identified by design and carry no direct account identifier unless the user attaches a note, in which case the user identifier and note are stored for 90 days | PostgreSQL; the operator's mailbox via Cloudflare Email Service |
 | **Infrastructure logs** | Request metadata retained by the edge provider's Workers Logs (7 days); system journal on the VPS | Cloudflare; the VPS |
 
 #### Sensitive data
@@ -282,7 +282,7 @@ Completes Annex II of the EU SCCs. Written from the deployed architecture. Where
 
 The Provider relies on the following published assurances, reviewed at onboarding and at least annually:
 
-- Edge provider (Cloudflare, Inc.): ISO 27001, ISO 27701, ISO 27018, SOC 2 Type II, PCI DSS Level 1, EU Cloud Code of Conduct.
+- Edge and email provider (Cloudflare, Inc.): ISO 27001, ISO 27701, ISO 27018, SOC 2 Type II, PCI DSS Level 1, EU Cloud Code of Conduct.
 - Database provider (Snowflake Inc., Crunchy Bridge): SOC 2 Type 2 report for Crunchy Bridge (available under NDA on request); AES-256 at rest; TLS 1.2+ required.
 - Payment processor (Stripe, LLC): PCI DSS Level 1; card data never reaches the Provider.
 - Hosting provider for the VPS (OVH US LLC): active participant in the EU-U.S. Data Privacy Framework, its UK Extension and the Swiss-U.S. framework; the Provider holds no audit report for the Vint Hill facility.
