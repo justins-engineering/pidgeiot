@@ -299,7 +299,7 @@ pub fn Footer() -> Element {
               " (ISC)"
             }
           }
-          div { class: "flex items-center space-x-6",
+          div { class: "flex flex-wrap items-center gap-x-6 gap-y-1",
             // Opens the app-chrome feedback modal -- a button,
             // not a route, and present in both logged-in and logged-out
             // footers since this aside row is the one part shared by both.
