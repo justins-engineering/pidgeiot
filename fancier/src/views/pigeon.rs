@@ -302,7 +302,8 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
 
   rsx! {
     div { class: "flex flex-col justify-between items-stretch gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
+      // "Info" and one button fit a 320px line, so this header keeps the row it had.
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Info" }
         button {
           class: "btn btn-secondary",
@@ -491,7 +492,8 @@ fn ConnectorInfo(
 
   rsx! {
     div { class: "w-full flex flex-col justify-between gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
-      div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
+      // A heading and a small badge fit a 320px line, so this header keeps the row it had.
+      div { class: "flex flex-row gap-4 items-center justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Connector" }
         ConnectorBadge { connector: connector.clone() }
       }
