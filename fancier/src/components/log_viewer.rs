@@ -470,6 +470,8 @@ pub fn LogViewer(
                           span { class: "badge badge-xs {level_badge(m.level)} shrink-0", "{level_str(m.level)}" }
                           span { class: "text-base-content/60 shrink-0", "{m.source}:" }
                         }
+                        // At sm the message is the row's only shrinking cell, and `break-all` is
+                        // what lets it shrink below its longest word instead of scrolling the row.
                         span { class: "whitespace-pre-wrap break-words sm:break-all", "{m.text}" }
                       }
                       if !m.hexdump.is_empty() {
