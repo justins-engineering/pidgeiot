@@ -468,17 +468,15 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
 }
 
 /// The sample time nearest a pointer, or `None` when the event carries no
-/// rendered chart to measure against.
+/// rendered chart to measure against. `t_of` is the chart's own x scale
+/// read backwards.
 fn pointer_sample_time(
   evt: &Event<PointerData>,
   times: &[i64],
-  t_min: i64,
-  t_span: f64,
-  x_inset: f64,
-  x_span_px: f64,
+  t_of: impl Fn(f64) -> i64,
 ) -> Option<i64> {
   let (x, _) = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
-  sample_time_at(x, times, t_min, t_span, x_inset, x_span_px)
+  sample_time_at(x, times, t_of)
 }
 
 /// The same for a finger drag, which is the only input a browser keeps
@@ -486,33 +484,16 @@ fn pointer_sample_time(
 fn touch_sample_time(
   evt: &Event<TouchData>,
   times: &[i64],
-  t_min: i64,
-  t_span: f64,
-  x_inset: f64,
-  x_span_px: f64,
+  t_of: impl Fn(f64) -> i64,
 ) -> Option<i64> {
   let (x, _) = svg_hover::touch_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
-  sample_time_at(x, times, t_min, t_span, x_inset, x_span_px)
+  sample_time_at(x, times, t_of)
 }
 
 /// The sample time nearest a plot-relative x, so a finger and a mouse read
 /// the same sample.
-fn sample_time_at(
-  x: f64,
-  times: &[i64],
-  t_min: i64,
-  t_span: f64,
-  x_inset: f64,
-  x_span_px: f64,
-) -> Option<i64> {
-  // The inverse of `x_of`, inset and all: a bucketed scale draws its first
-  // and last mark half a slot in from the plot edge, and one bucket leaves no
-  // span to divide by.
-  let t = if x_span_px > 0.0 {
-    t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
-  } else {
-    t_min
-  };
+fn sample_time_at(x: f64, times: &[i64], t_of: impl Fn(f64) -> i64) -> Option<i64> {
+  let t = t_of(x);
   times.iter().copied().min_by_key(|c| (c - t).abs())
 }
 
@@ -621,6 +602,16 @@ pub fn TelemetryChart(
   let x_inset = bucket_slot / 2.0;
   let x_span_px = plot_w - 2.0 * x_inset;
   let x_of = move |t: i64| MARGIN_LEFT + x_inset + ((t - t_min) as f64 / t_span) * x_span_px;
+  // `x_of` read backwards, from a plot-relative x: the inset and all, since a
+  // bucketed scale draws its first and last mark half a slot in from the plot
+  // edge. One bucket leaves no span to divide by.
+  let t_of = move |x: f64| {
+    if x_span_px > 0.0 {
+      t_min + (((x - x_inset).clamp(0.0, x_span_px) / x_span_px) * t_span) as i64
+    } else {
+      t_min
+    }
+  };
   let y_of = move |v: f64| MARGIN_TOP + (1.0 - (v - v_min) / v_span) * plot_h;
   let y_zero = y_of(0.0);
 
@@ -939,16 +930,13 @@ pub fn TelemetryChart(
                 // is read from ontouchmove either way.
                 // A tap moves nothing, so the press is what it reads with.
                 onpointerdown: move |evt: Event<PointerData>| {
-                    let t = pointer_sample_time(&evt, &press_times, t_min, t_span, x_inset, x_span_px);
-                    hover_time.set(t);
+                    hover_time.set(pointer_sample_time(&evt, &press_times, t_of));
                 },
                 onpointermove: move |evt: Event<PointerData>| {
-                    let t = pointer_sample_time(&evt, &move_times, t_min, t_span, x_inset, x_span_px);
-                    hover_time.set(t);
+                    hover_time.set(pointer_sample_time(&evt, &move_times, t_of));
                 },
                 ontouchmove: move |evt: Event<TouchData>| {
-                    let t = touch_sample_time(&evt, &drag_times, t_min, t_span, x_inset, x_span_px);
-                    hover_time.set(t);
+                    hover_time.set(touch_sample_time(&evt, &drag_times, t_of));
                 },
                 onpointerleave: move |evt: Event<PointerData>| {
                     // A finger's pointerleave arrives with the lift, and would
