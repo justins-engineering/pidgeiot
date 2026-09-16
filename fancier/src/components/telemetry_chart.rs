@@ -5,11 +5,10 @@
 // a crosshair + one-tooltip-for-every-series hover layer, and a table-view
 // fallback so every value is reachable without hovering.
 //
-// The canvas is a FIXED pixel size (not a percentage-scaled viewBox) so
-// mouse `element_coordinates()` map 1:1 onto SVG user-space units without
-// needing a JS/getBoundingClientRect round trip to recover a scale factor;
-// the wrapping div scrolls horizontally on narrow viewports instead of
-// distorting that mapping.
+// Hover position is the pointer's client coordinates mapped through the SVG
+// root's bounding box and the viewBox scale (`helpers::svg_hover`), so a
+// mouse and a finger land on the same sample whatever width the canvas is
+// drawn at. The wrapping div scrolls horizontally on narrow viewports.
 //
 // `ChartKind` is where most of the judgment in this file lives. Telemetry
 // history is an irregular, unaggregated event log -- devices report when
@@ -18,6 +17,7 @@
 // and only some of those assertions are ones this data can support, so the
 // kinds that would otherwise lie (area, bar) carry the transform that
 // makes them true rather than being drawn naively over raw samples.
+use crate::helpers::svg_hover;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -463,6 +463,24 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
   }
 }
 
+/// The sample time nearest a pointer, or `None` when the event carries no
+/// rendered chart to measure against. Shared by the press and the move so a
+/// finger and a mouse read the same sample.
+fn pointer_sample_time(
+  evt: &Event<PointerData>,
+  series: &[ChartSeries],
+  t_min: i64,
+  t_span: f64,
+  plot_w: f64,
+) -> Option<i64> {
+  let (x, _) = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
+  let t = t_min + ((x.clamp(0.0, plot_w) / plot_w) * t_span) as i64;
+  series
+    .iter()
+    .flat_map(|s| s.points.iter().map(|p| p.0))
+    .min_by_key(|candidate| (candidate - t).abs())
+}
+
 #[component]
 pub fn TelemetryChart(
   series: Vec<ChartSeries>,
@@ -590,7 +608,8 @@ pub fn TelemetryChart(
   let bar_w = ((band - SURFACE_GAP * (drawn.len().saturating_sub(1)) as f64) / drawn.len() as f64)
     .clamp(0.5, MAX_BAR_WIDTH);
 
-  let hover_series = drawn.clone();
+  let move_series = drawn.clone();
+  let tap_series = drawn.clone();
   let hover_x = hover_time().map(x_of);
 
   rsx! {
@@ -870,17 +889,23 @@ pub fn TelemetryChart(
               width: "{plot_w}",
               height: "{plot_h}",
               fill: "transparent",
-              onmousemove: move |evt: Event<MouseData>| {
-                  let point = evt.data().element_coordinates();
-                  let rel_x = point.x.clamp(0.0, plot_w);
-                  let t = t_min + ((rel_x / plot_w) * t_span) as i64;
-                  let nearest = hover_series
-                      .iter()
-                      .flat_map(|s| s.points.iter().map(|p| p.0))
-                      .min_by_key(|candidate| (candidate - t).abs());
-                  hover_time.set(nearest);
+              // A drag across the plot reads the chart instead of panning
+              // it; the page still scrolls vertically.
+              style: "touch-action: pan-y",
+              // A tap moves nothing, so the press is what a phone reads with.
+              onpointerdown: move |evt: Event<PointerData>| {
+                  hover_time.set(pointer_sample_time(&evt, &tap_series, t_min, t_span, plot_w));
               },
-              onmouseleave: move |_| hover_time.set(None),
+              onpointermove: move |evt: Event<PointerData>| {
+                  hover_time.set(pointer_sample_time(&evt, &move_series, t_min, t_span, plot_w));
+              },
+              onpointerleave: move |evt: Event<PointerData>| {
+                  // A finger's pointerleave arrives with the lift, and would
+                  // erase the reading the tap just asked for.
+                  if evt.data().pointer_type() == "mouse" {
+                      hover_time.set(None);
+                  }
+              },
             }
           }
 
