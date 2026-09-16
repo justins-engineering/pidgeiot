@@ -65,7 +65,7 @@ came from.
 
 `org_id` is kept. The settled Terms extract a representation that an identity-only row
 cannot reconstruct: "If you subscribe on behalf of a separate business or public body, you confirm
-that you are authorized to bind it" (terms-of-service-final-2026-09-11.md:13). An abandoned checkout
+that you are authorized to bind it" (terms-of-service-final-2026-09-15.md:13). An abandoned checkout
 leaves no Stripe object to recover it from.
 
 ### 2.2 Two schema changes, both idempotent, one of them dangerous
