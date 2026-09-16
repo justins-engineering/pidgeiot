@@ -1322,7 +1322,7 @@ fn AclInfo(acl: PigeonAcl) -> Element {
           }
           tbody {
             tr {
-              td {
+              td { class: "break-all sm:break-normal",
                 span { class: "mr-1 badge badge-outline badge-sm", "You" }
                 "{acl.entity_id}"
               }
