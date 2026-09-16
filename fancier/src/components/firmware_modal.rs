@@ -155,7 +155,7 @@ pub fn FirmwareModal(
             tbody {
               tr {
                 th { "Current (device-reported)" }
-                td { class: "font-mono text-sm",
+                td { class: "font-mono text-sm wrap-anywhere sm:break-normal",
                   match &current_target {
                     Some(t) => rsx! {
                       "{t.version}"
@@ -168,7 +168,7 @@ pub fn FirmwareModal(
               }
               tr {
                 th { "Target (assigned)" }
-                td { class: "font-mono text-sm",
+                td { class: "font-mono text-sm wrap-anywhere sm:break-normal",
                   match &target_target {
                     Some(t) => rsx! {
                       "{t.version}"
@@ -181,7 +181,7 @@ pub fn FirmwareModal(
               }
               tr {
                 th { "This pigeon's board" }
-                td { class: "font-mono text-sm",
+                td { class: "font-mono text-sm wrap-anywhere sm:break-normal",
                   match pigeon_board.as_deref() {
                     Some(board) => rsx! {
                       "{board}"
@@ -409,8 +409,11 @@ pub fn FirmwareModal(
                         let short_sha = image.sha256.chars().take(12).collect::<String>();
                         rsx! {
                           tr {
-                            td { class: "font-mono text-xs", "{image.version}" }
-                            td { class: "font-mono text-xs",
+                            td {
+                              class: "font-mono text-xs wrap-anywhere sm:break-normal",
+                              "{image.version}"
+                            }
+                            td { class: "font-mono text-xs wrap-anywhere sm:break-normal",
                               match image.board.as_deref() {
                                 Some(board) => rsx! {
                                   "{board}"
@@ -420,8 +423,14 @@ pub fn FirmwareModal(
                                 },
                               }
                             }
-                            td { class: "font-mono text-xs", "{format_bytes(image.size)}" }
-                            td { class: "font-mono text-xs", "{short_sha}…" }
+                            td {
+                              class: "font-mono text-xs wrap-anywhere sm:break-normal",
+                              "{format_bytes(image.size)}"
+                            }
+                            td {
+                              class: "font-mono text-xs wrap-anywhere sm:break-normal",
+                              "{short_sha}…"
+                            }
                             td {
                               div { class: "flex flex-col items-end gap-1",
                                 button {
