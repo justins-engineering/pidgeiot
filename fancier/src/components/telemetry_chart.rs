@@ -467,17 +467,43 @@ fn prepare(kind: ChartKind, series: &[ChartSeries], plot_w: f64) -> Prepared {
 }
 
 /// The sample time nearest a pointer, or `None` when the event carries no
-/// rendered chart to measure against. Shared by the press and the move so a
-/// finger and a mouse read the same sample.
+/// rendered chart to measure against.
 fn pointer_sample_time(
   evt: &Event<PointerData>,
-  series: &[ChartSeries],
+  times: &[i64],
   t_min: i64,
   t_span: f64,
   x_inset: f64,
   x_span_px: f64,
 ) -> Option<i64> {
   let (x, _) = svg_hover::pointer_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
+  sample_time_at(x, times, t_min, t_span, x_inset, x_span_px)
+}
+
+/// The same for a finger drag, which is the only input a browser keeps
+/// delivering once it has taken the gesture for a scroll.
+fn touch_sample_time(
+  evt: &Event<TouchData>,
+  times: &[i64],
+  t_min: i64,
+  t_span: f64,
+  x_inset: f64,
+  x_span_px: f64,
+) -> Option<i64> {
+  let (x, _) = svg_hover::touch_plot_point(evt, (CANVAS_W, CANVAS_H), (MARGIN_LEFT, MARGIN_TOP))?;
+  sample_time_at(x, times, t_min, t_span, x_inset, x_span_px)
+}
+
+/// The sample time nearest a plot-relative x, so a finger and a mouse read
+/// the same sample.
+fn sample_time_at(
+  x: f64,
+  times: &[i64],
+  t_min: i64,
+  t_span: f64,
+  x_inset: f64,
+  x_span_px: f64,
+) -> Option<i64> {
   // The inverse of `x_of`, inset and all: a bucketed scale draws its first
   // and last mark half a slot in from the plot edge, and one bucket leaves no
   // span to divide by.
@@ -486,10 +512,7 @@ fn pointer_sample_time(
   } else {
     t_min
   };
-  series
-    .iter()
-    .flat_map(|s| s.points.iter().map(|p| p.0))
-    .min_by_key(|candidate| (candidate - t).abs())
+  times.iter().copied().min_by_key(|c| (c - t).abs())
 }
 
 #[component]
@@ -619,8 +642,15 @@ pub fn TelemetryChart(
   let bar_w = ((band - SURFACE_GAP * (drawn.len().saturating_sub(1)) as f64) / drawn.len() as f64)
     .clamp(0.5, MAX_BAR_WIDTH);
 
-  let move_series = drawn.clone();
-  let tap_series = drawn.clone();
+  // The handlers want only the sample times, and each closure needs its own
+  // copy of them.
+  let sample_times: Vec<i64> = drawn
+    .iter()
+    .flat_map(|s| s.points.iter().map(|p| p.0))
+    .collect();
+  let press_times = sample_times.clone();
+  let drag_times = sample_times.clone();
+  let move_times = sample_times;
   let hover_x = hover_time().map(x_of);
 
   rsx! {
@@ -903,16 +933,20 @@ pub fn TelemetryChart(
                 width: "{plot_w}",
                 height: "{plot_h}",
                 fill: "transparent",
-                // No touch-action: below 640px the canvas is wider than its
-                // box and a drag is the only way to reach the rest of it, so
-                // a phone scrolls with a drag and reads with a tap.
+                // No touch-action: suppressing the pan would cost a phone the
+                // only way to reach a canvas wider than its box, and the drag
+                // is read from ontouchmove either way.
                 // A tap moves nothing, so the press is what it reads with.
                 onpointerdown: move |evt: Event<PointerData>| {
-                    let t = pointer_sample_time(&evt, &tap_series, t_min, t_span, x_inset, x_span_px);
+                    let t = pointer_sample_time(&evt, &press_times, t_min, t_span, x_inset, x_span_px);
                     hover_time.set(t);
                 },
                 onpointermove: move |evt: Event<PointerData>| {
-                    let t = pointer_sample_time(&evt, &move_series, t_min, t_span, x_inset, x_span_px);
+                    let t = pointer_sample_time(&evt, &move_times, t_min, t_span, x_inset, x_span_px);
+                    hover_time.set(t);
+                },
+                ontouchmove: move |evt: Event<TouchData>| {
+                    let t = touch_sample_time(&evt, &drag_times, t_min, t_span, x_inset, x_span_px);
                     hover_time.set(t);
                 },
                 onpointerleave: move |evt: Event<PointerData>| {

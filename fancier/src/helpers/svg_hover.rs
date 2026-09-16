@@ -26,11 +26,32 @@ pub fn pointer_plot_point(
   canvas: (f64, f64),
   margin: (f64, f64),
 ) -> Option<(f64, f64)> {
-  let (left, top, width, height) = svg_client_box(evt)?;
   let client = evt.data().client_coordinates();
+  plot_point((client.x, client.y), pointer_svg_box(evt)?, canvas, margin)
+}
+
+/// The same for the finger that moved. A browser cancels the pointer stream
+/// the moment it takes a drag for a scroll, so a drag across the plot is only
+/// ever seen as touch events.
+pub fn touch_plot_point(
+  evt: &Event<TouchData>,
+  canvas: (f64, f64),
+  margin: (f64, f64),
+) -> Option<(f64, f64)> {
+  let client = evt.data().touches_changed().first()?.client_coordinates();
+  plot_point((client.x, client.y), touch_svg_box(evt)?, canvas, margin)
+}
+
+fn plot_point(
+  client: (f64, f64),
+  svg_box: (f64, f64, f64, f64),
+  canvas: (f64, f64),
+  margin: (f64, f64),
+) -> Option<(f64, f64)> {
+  let (left, top, width, height) = svg_box;
   Some((
-    plot_axis(client.x, left, width, canvas.0, margin.0),
-    plot_axis(client.y, top, height, canvas.1, margin.1),
+    plot_axis(client.0, left, width, canvas.0, margin.0),
+    plot_axis(client.1, top, height, canvas.1, margin.1),
   ))
 }
 
@@ -55,16 +76,29 @@ pub fn tooltip_style(x: f64, canvas_w: f64, tooltip_w: f64) -> String {
   style
 }
 
-/// The SVG root's bounding box in client pixels, as `(left, top, width, height)`.
 #[cfg(feature = "web")]
-fn svg_client_box(evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
+fn pointer_svg_box(evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
   use dioxus::web::WebEventExt;
+
+  svg_client_box(evt.data().try_as_web_event()?.target())
+}
+
+#[cfg(feature = "web")]
+fn touch_svg_box(evt: &Event<TouchData>) -> Option<(f64, f64, f64, f64)> {
+  use dioxus::web::WebEventExt;
+
+  svg_client_box(evt.data().try_as_web_event()?.target())
+}
+
+/// The bounding box, in client pixels, of the SVG root the event landed in:
+/// `(left, top, width, height)`.
+#[cfg(feature = "web")]
+fn svg_client_box(target: Option<web_sys::EventTarget>) -> Option<(f64, f64, f64, f64)> {
   use wasm_bindgen::JsCast;
 
-  // `target`, not `currentTarget`: a touch is captured by the element it
+  // The target, not the currentTarget: a touch keeps reporting the element it
   // started on, and dispatch is over by the time this reads the event.
-  let target = evt.data().try_as_web_event()?.target()?;
-  let svg = target
+  let svg = target?
     .dyn_ref::<web_sys::Element>()?
     .closest("svg")
     .ok()??;
@@ -74,7 +108,13 @@ fn svg_client_box(evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
 
 /// The server build prerenders without a DOM, so there is nothing to measure.
 #[cfg(not(feature = "web"))]
-fn svg_client_box(_evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
+fn pointer_svg_box(_evt: &Event<PointerData>) -> Option<(f64, f64, f64, f64)> {
+  None
+}
+
+/// The server build prerenders without a DOM, so there is nothing to measure.
+#[cfg(not(feature = "web"))]
+fn touch_svg_box(_evt: &Event<TouchData>) -> Option<(f64, f64, f64, f64)> {
   None
 }
 

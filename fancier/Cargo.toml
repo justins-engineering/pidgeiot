@@ -41,6 +41,7 @@ web-sys = { version = "0.3", features = [
   "Element",
   "DomRect",
   "PointerEvent",
+  "TouchEvent",
   "HtmlElement",
   "HtmlHeadElement",
   "HtmlAnchorElement",
