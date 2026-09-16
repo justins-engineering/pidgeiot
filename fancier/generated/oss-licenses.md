@@ -377,7 +377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
-**Used by:** [encoding_rs 0.8.40](https://github.com/hsivonen/encoding_rs)
+**Used by:** [encoding_rs 0.8.41](https://github.com/hsivonen/encoding_rs)
 
 
 </details>
@@ -839,7 +839,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [bitflags 2.13.1](https://github.com/bitflags/bitflags), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
+**Used by:** [bitflags 2.13.2](https://github.com/bitflags/bitflags), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
 
 
 ````text
@@ -872,7 +872,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.26.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.26.1](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -985,7 +985,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [serde_with 3.22.0](https://github.com/jonasbb/serde_with/)
+**Used by:** [serde_with 3.23.0](https://github.com/jonasbb/serde_with/)
 
 
 ````text
@@ -1573,7 +1573,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.0](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.1](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -2063,7 +2063,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ````
 
-**Used by:** [synstructure 0.13.2](https://github.com/mystor/synstructure)
+**Used by:** [synstructure 0.14.0](https://github.com/mystor/synstructure)
 
 
 ````text
@@ -2122,7 +2122,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [zerocopy-derive 0.8.56](https://github.com/google/zerocopy), [zerocopy 0.8.56](https://github.com/google/zerocopy)
+**Used by:** [zerocopy-derive 0.8.57](https://github.com/google/zerocopy), [zerocopy 0.8.57](https://github.com/google/zerocopy)
 
 
 ````text
@@ -2154,7 +2154,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.40](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.41](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 
 
 ````text
@@ -3038,7 +3038,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ````
 
-**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.2](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.7](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.3](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
 
 
 </details>

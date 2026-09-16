@@ -1,6 +1,6 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-dovecote-MIT) — 137 package(s)
+- [MIT License (MIT)](#license-dovecote-MIT) — 136 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-dovecote-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-dovecote-Apache-2.0) — 5 package(s)
 - [BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)](#license-dovecote-BSD-3-Clause) — 5 package(s)
@@ -297,7 +297,7 @@ limitations under the License.
 
 ````
 
-**Used by:** [ryu 1.0.23](https://github.com/dtolnay/ryu), [worker-macros 0.8.5](https://github.com/cloudflare/workers-rs/tree/main/worker-macros), [worker-sys 0.8.5](https://github.com/cloudflare/workers-rs/tree/main/worker-sys), [worker 0.8.5](https://github.com/cloudflare/workers-rs)
+**Used by:** [ryu 1.0.23](https://github.com/dtolnay/ryu), [worker-macros 0.8.6](https://github.com/cloudflare/workers-rs/tree/main/worker-macros), [worker-sys 0.8.6](https://github.com/cloudflare/workers-rs/tree/main/worker-sys), [worker 0.8.6](https://github.com/cloudflare/workers-rs)
 
 
 </details>
@@ -666,7 +666,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.26.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.26.1](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -698,7 +698,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [serde_with 3.22.0](https://github.com/jonasbb/serde_with/)
+**Used by:** [serde_with 3.23.0](https://github.com/jonasbb/serde_with/)
 
 
 ````text
@@ -1170,7 +1170,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.0](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.1](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -1652,7 +1652,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [cmov 0.5.4](https://github.com/RustCrypto/utils), [hybrid-array 0.4.14](https://github.com/RustCrypto/hybrid-array)
+**Used by:** [cmov 0.5.4](https://github.com/RustCrypto/utils), [hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
 
 
 ````text
@@ -1834,7 +1834,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ````
 
-**Used by:** [synstructure 0.13.2](https://github.com/mystor/synstructure)
+**Used by:** [synstructure 0.14.0](https://github.com/mystor/synstructure)
 
 
 ````text
@@ -1900,7 +1900,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [zerocopy-derive 0.8.56](https://github.com/google/zerocopy), [zerocopy 0.8.56](https://github.com/google/zerocopy)
+**Used by:** [zerocopy-derive 0.8.57](https://github.com/google/zerocopy), [zerocopy 0.8.57](https://github.com/google/zerocopy)
 
 
 ````text
@@ -1988,35 +1988,7 @@ SOFTWARE.
 
 ````
 
-**Used by:** [strum 0.27.2](https://github.com/Peternator7/strum), [strum_macros 0.27.2](https://github.com/Peternator7/strum)
-
-
-````text
-MIT License
-
-Copyright (c) 2020 Soveu
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-````
-
-**Used by:** [tinyvec_macros 0.1.1](https://github.com/Soveu/tinyvec_macros)
+**Used by:** [strum 0.28.0](https://github.com/Peternator7/strum), [strum_macros 0.28.0](https://github.com/Peternator7/strum)
 
 
 ````text
@@ -2167,7 +2139,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ````
 
-**Used by:** [tinyvec 1.13.2](https://github.com/Lokathor/tinyvec)
+**Used by:** [tinyvec 1.13.3](https://github.com/Lokathor/tinyvec)
 
 
 ````text
@@ -2495,7 +2467,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ````
 
-**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.2](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.7](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.3](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
 
 
 </details>
