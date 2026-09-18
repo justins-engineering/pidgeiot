@@ -2,7 +2,7 @@
 
 Last updated: {{LAST_UPDATED}}
 
-These terms govern your use of PidgeIoT, operated by Justin's Engineering Services LLC, a Montana limited liability company (Montana Secretary of State registration C1275614), registered as a foreign limited liability company in Massachusetts (Massachusetts identification number 001678120), with its principal office at 30 Virginia Ave, West Springfield, MA 01089 ("we", "us"). By creating an account or connecting a device, you agree to them. "You" means the person using the service and, where that person uses the service on behalf of a separate business or public body, that entity too. PidgeIoT is intended primarily for business, professional, developer and public-sector use. If consumer protection law applies to your use of the service, nothing in these terms limits any right or remedy that cannot lawfully be waived or limited. Questions: [info@jes.contact](mailto:info@jes.contact).
+These terms govern your use of PidgeIoT, operated by Justin's Engineering Services LLC, a Montana limited liability company (Montana Secretary of State registration C1275614), registered as a foreign limited liability company in Massachusetts (Massachusetts identification number 001678120), with its principal office at 30 Virginia Ave, West Springfield, MA 01089 ("we", "us"). By creating an account or connecting a device, you agree to them. "You" means the person using the service and, where that person uses the service on behalf of a separate business or public body, that entity too. PidgeIoT is intended primarily for business, professional, developer and public-sector use. If consumer protection law applies to your use of the service, nothing in these terms limits any right or remedy that cannot lawfully be waived or limited. Questions: [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com).
 
 ## The service, as provided
 
@@ -61,7 +61,7 @@ We keep your data confidential and otherwise use it only to provide the service 
 
 ## Data processing and order of precedence
 
-If you use PidgeIoT to process personal data that is covered by the GDPR, the UK GDPR or the Swiss FADP, our Data Processing Agreement covers that processing and forms part of these terms. It is published at [https://pidgeiot.com/dpa/](https://pidgeiot.com/dpa/). It applies from the moment you accept it, whether you countersign a copy or keep using the service after we have given you notice of it. In it you are the controller and we are the processor (or, where you act for another controller, you are the processor and we are your sub-processor). It sets out the security measures we run, points at the current list of our sub-processors, and includes the standard contractual clauses that cover transfers of personal data out of the EEA, the UK and Switzerland. Email [info@jes.contact](mailto:info@jes.contact) if you need a countersigned copy for your own records.
+If you use PidgeIoT to process personal data that is covered by the GDPR, the UK GDPR or the Swiss FADP, our Data Processing Agreement covers that processing and forms part of these terms. It is published at [https://pidgeiot.com/dpa/](https://pidgeiot.com/dpa/). It applies from the moment you accept it, whether you countersign a copy or keep using the service after we have given you notice of it. In it you are the controller and we are the processor (or, where you act for another controller, you are the processor and we are your sub-processor). It sets out the security measures we run, points at the current list of our sub-processors, and includes the standard contractual clauses that cover transfers of personal data out of the EEA, the UK and Switzerland. Email [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com) if you need a countersigned copy for your own records.
 
 If these documents disagree with each other, this order decides, highest first:
 
@@ -85,11 +85,11 @@ Those limits do not apply to fees you owe us, to either party's gross negligence
 
 ## Ending your account
 
-You can stop using PidgeIoT whenever you like, and you can delete devices, empty fleets and empty organizations yourself in the dashboard, where devices are called pigeons and fleets are called flocks. To close an account entirely, email [info@jes.contact](mailto:info@jes.contact); the Privacy Policy describes what we delete and when. We may suspend or close an account for the reasons in "Acceptable use". If we stop offering the service, or close an account for a reason other than ongoing abuse, we will give you notice and a reasonable period to get your data out first. What happens to personal data after an account ends is set out in the Privacy Policy and, where it applies, in Section 8 of the Data Processing Agreement.
+You can stop using PidgeIoT whenever you like, and you can delete devices, empty fleets and empty organizations yourself in the dashboard, where devices are called pigeons and fleets are called flocks. To close an account entirely, email [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com); the Privacy Policy describes what we delete and when. We may suspend or close an account for the reasons in "Acceptable use". If we stop offering the service, or close an account for a reason other than ongoing abuse, we will give you notice and a reasonable period to get your data out first. What happens to personal data after an account ends is set out in the Privacy Policy and, where it applies, in Section 8 of the Data Processing Agreement.
 
 ## Notices
 
-We give you notice by email to your organization's owners or, if your account is not associated with an organization, to the email address on your account. You give us notice at [info@jes.contact](mailto:info@jes.contact).
+We give you notice by email to your organization's owners or, if your account is not associated with an organization, to the email address on your account. You give us notice at [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com).
 
 ## Assignment
 
