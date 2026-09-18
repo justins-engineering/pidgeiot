@@ -4,13 +4,13 @@ Last updated: {{LAST_UPDATED}}
 
 This policy describes what the PidgeIoT platform collects, where it lives, how long we keep it, and what we do (and deliberately don't do) with it.
 
-Questions about anything here: [info@jes.contact](mailto:info@jes.contact).
+Questions about anything here: [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com).
 
 ## Who is responsible for your data
 
 PidgeIoT is operated by Justin's Engineering Services LLC, a Montana limited liability company (Montana Secretary of State registration C1275614), registered as a foreign limited liability company in Massachusetts (Massachusetts identification number 001678120), with its principal office at 30 Virginia Ave, West Springfield, MA 01089. For the account you create, the messages you send us, and the diagnostics your browser sends us, we are the controller of your personal data.
 
-For the data your devices and your team put into the platform, you (or the organization you belong to) are the controller and we process it on your instructions. Where the GDPR, the UK GDPR or the Swiss FADP applies, that processing is governed by our Data Processing Agreement, which is published at [https://pidgeiot.com/dpa/](https://pidgeiot.com/dpa/) and forms part of our Terms of Service. Email [info@jes.contact](mailto:info@jes.contact) if you need a countersigned copy for your own records.
+For the data your devices and your team put into the platform, you (or the organization you belong to) are the controller and we process it on your instructions. Where the GDPR, the UK GDPR or the Swiss FADP applies, that processing is governed by our Data Processing Agreement, which is published at [https://pidgeiot.com/dpa/](https://pidgeiot.com/dpa/) and forms part of our Terms of Service. Email [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com) if you need a countersigned copy for your own records.
 
 ## What we collect
 
@@ -61,7 +61,7 @@ We are a United States company, and the platform runs on infrastructure in the U
 - Billing is handled by Stripe in the United States. Stripe collects payment details on its own checkout pages and processes them as an independent controller under its own privacy notice; we do not receive your card number.
 - Transactional email is sent through our edge provider's email service.
 
-If you are in the European Economic Area, the United Kingdom or Switzerland, personal data processed through the United States-hosted parts of the platform is currently transferred to the United States. For personal data we process on behalf of our customers and transfer to the United States, we rely on the European Commission's Standard Contractual Clauses (Commission Implementing Decision (EU) 2021/914 of 4 June 2021, Module Two), together with the UK International Data Transfer Addendum for UK data and the Swiss adaptations for Swiss data, as applicable, as the legal basis for those transfers. Those clauses are part of our Data Processing Agreement. We are not certified under the EU-U.S. Data Privacy Framework; some of our service providers are, and we rely on their certification for the part of the processing they do.
+If you are in the European Economic Area, the United Kingdom or Switzerland, personal data processed through the United States-hosted parts of the platform is currently transferred to the United States. For personal data we process on behalf of our customers and transfer to the United States, we rely on the European Commission's Standard Contractual Clauses (Commission Implementing Decision (EU) 2021/914 of 4 June 2021, Module Two, or Module Three where you are yourself a processor for a third-party controller), together with the UK International Data Transfer Addendum for UK data and the Swiss adaptations for Swiss data, as applicable, as the legal basis for those transfers. Those clauses are part of our Data Processing Agreement. We are not certified under the EU-U.S. Data Privacy Framework; some of our service providers are, and we rely on their certification for the part of the processing they do.
 
 Those clauses are a contract between us and a customer, so they cover the personal data our customers transfer to us under the Data Processing Agreement. They do not cover personal data you provide directly to us in our own role as controller, such as your account information, messages you send us and identified diagnostics. Under current European Data Protection Board guidance, that direct disclosure by an individual to a controller outside the EEA is not itself treated as a transfer under Chapter V of the GDPR. We nevertheless apply the technical and organizational measures described in our Data Processing Agreement to protect that data.
 
@@ -124,7 +124,7 @@ Much of this you can do yourself:
 - **Delete** devices, empty fleets and empty organizations in the dashboard, and your own identified error reports through the API.
 - **Take your data with you**: every fleet, device, configuration and telemetry history you can see in the dashboard is available as JSON through the API documented on our [API reference](https://pidgeiot.com/api-reference/) page, and you can configure a forwarding endpoint to receive your telemetry continuously.
 
-For anything else, email [info@jes.contact](mailto:info@jes.contact) from the address on your account. We will confirm receipt within five business days and answer within one month; if a request is complex we may take up to two further months and will tell you why. Deleting your account is the exception: it is completed within 30 days, as described under "Deleting your data". We do not charge for this unless a request is clearly unfounded or excessive.
+For anything else, email [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com) from the address on your account. We will confirm receipt within five business days and answer within one month; if a request is complex we may take up to two further months and will tell you why. Deleting your account is the exception: it is completed within 30 days, as described under "Deleting your data". We do not charge for this unless a request is clearly unfounded or excessive.
 
 If your data reached us as part of a customer's use of the platform, for example through a device your employer operates or other data your organization puts into the service, that customer is the controller and we will pass your request to them.
 
@@ -132,7 +132,7 @@ If your data reached us as part of a customer's use of the platform, for example
 
 You can delete your pigeons in the dashboard at any time, a flock once it holds no pigeons, and an organization once it holds no flocks; deleting a pigeon removes its stored shadow, telemetry, and logs from the platform.
 
-There is no automated account-deletion flow yet. To delete your account, email [info@jes.contact](mailto:info@jes.contact) from your account's address and we will remove it within 30 days, together with the data the retention table says is deleted with your account. Data that the retention table says is retained separately, including records we must keep for legal, tax or accounting purposes, is handled as that table describes.
+There is no automated account-deletion flow yet. To delete your account, email [privacy@pidgeiot.com](mailto:privacy@pidgeiot.com) from your account's address and we will remove it within 30 days, together with the data the retention table says is deleted with your account. Data that the retention table says is retained separately, including records we must keep for legal, tax or accounting purposes, is handled as that table describes.
 
 ## Automated decisions
 
