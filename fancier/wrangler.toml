@@ -107,6 +107,11 @@ routes = [
   { pattern = "staging.pidgeiot.com", custom_domain = true, zone_name = "pidgeiot.com" },
 ]
 
+# Keeps crawlers from indexing staging's copies of the public pages; the
+# worker adds X-Robots-Tag: noindex whenever this var is present.
+[env.staging.vars]
+ROBOTS_NOINDEX = "true"
+
 # FANCIER_ENV selects .env.staging (build.rs). Without this override the
 # inherited command would bake production's API host into the bundle that
 # is then uploaded as staging.
