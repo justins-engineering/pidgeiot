@@ -53,7 +53,7 @@ what we publish have to be made to agree.
 - **The assent record is now in the Privacy Policy's retention table, and that closes the
   Article 17(3)(e) question against us.** Every Terms assent row is version, account, time and
   source, with no address and no user agent, and the policy says it is deleted with the account.
-  The DPA's Annex II G.5 states the same as a fact and keys any exception to what the policy
+  The DPA's Annex II G.3 states the same as a fact and keys any exception to what the policy
   permits, so keeping a row past deletion for the contract limitation period would now make a
   published clause false. Moving that line is a decision about the DPA as well as the policy.
 
