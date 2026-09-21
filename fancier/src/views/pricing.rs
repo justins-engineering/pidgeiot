@@ -8,9 +8,9 @@ use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdCheck, LdPlay};
 use uuid::Uuid;
 
-/// One rung of the ladder. Every paid tier carries a "planned" badge and a
-/// price note saying it is not billing, because publishing numbers we do not
-/// charge yet is only honest if that is impossible to miss.
+/// One rung of the ladder. The badge and the price note are the card's
+/// only editorial slots, so a rate that is not yet charged is said there
+/// where it cannot be missed.
 #[component]
 fn TierCard(
   name: String,
@@ -82,9 +82,10 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
   }
 }
 
-/// A paid tier card's call to action. Until billing goes live, and for
-/// signed-out visitors after that, this is the disabled "Free in beta"
-/// chip -- checkout is only offered to a signed-in visitor, and even then
+/// A paid tier card's call to action. Until billing goes live it is a
+/// disabled "Free in beta" chip, and for signed-out visitors after that a
+/// disabled "Sign in to upgrade" chip -- checkout is only offered to a
+/// signed-in visitor, and even then
 /// only resolves for someone who manages exactly one org with no live
 /// subscription (an entitled org changes plan in the Billing Portal from
 /// its own page instead, since a second Checkout would create a second
@@ -103,8 +104,13 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let mut naming_org = use_signal(|| false);
 
   if !crate::config::BILLING_LIVE || !(session.state)().is_authenticated() {
+    let label = if crate::config::BILLING_LIVE {
+      "Sign in to upgrade"
+    } else {
+      "Free in beta"
+    };
     return rsx! {
-      div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+      div { class: "btn btn-outline w-full font-bold btn-disabled", "{label}" }
     };
   }
 
@@ -331,10 +337,10 @@ pub fn PricingPage() -> Element {
       div { class: "max-w-6xl mx-auto",
         p { class: "font-mono text-sm tracking-widest uppercase text-primary mb-4", "Pricing" }
         h1 { class: "text-4xl md:text-6xl font-extrabold tracking-tight max-w-4xl text-pretty",
-          "Free while we're in beta. Here's what we plan to charge after."
+          "Ten devices free for good. Paid tiers priced by what you connect."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
-          "We're pre-revenue and won't pretend otherwise: nothing below is billing today. One ladder, no editions, no feature paywall, and device count is the only number you'd have to forecast."
+          "One ladder, no editions, no feature paywall, and device count is the only number you have to forecast."
         }
       }
     }
@@ -345,11 +351,11 @@ pub fn PricingPage() -> Element {
 
           TierCard {
             name: "Perch",
-            badge: "not billing yet",
+            badge: "free",
             tagline: "A real pilot, not a teaser.",
             price: "$0",
             cadence: "",
-            price_note: "free in beta, and after · no card",
+            price_note: "free · no card",
             features: vec![
                 "10 devices".into(),
                 "300K pooled messages/mo".into(),
@@ -368,11 +374,11 @@ pub fn PricingPage() -> Element {
 
           TierCard {
             name: "Builder",
-            badge: "planned",
+            badge: "",
             tagline: "First hardware out the door.",
             price: "$29",
             cadence: "/mo",
-            price_note: "$0.55 per extra device · not billing yet",
+            price_note: "$0.55 per extra device",
             features: vec![
                 "50 devices".into(),
                 "1.5M pooled messages/mo".into(),
@@ -387,11 +393,11 @@ pub fn PricingPage() -> Element {
 
           TierCard {
             name: "Growth",
-            badge: "planned",
+            badge: "",
             tagline: "A fleet with customers on it.",
             price: "$99",
             cadence: "/mo",
-            price_note: "$0.35 per extra device · not billing yet",
+            price_note: "$0.35 per extra device",
             features: vec![
                 "250 devices".into(),
                 "7.5M pooled messages/mo".into(),
@@ -407,11 +413,11 @@ pub fn PricingPage() -> Element {
 
           TierCard {
             name: "Scale",
-            badge: "planned",
+            badge: "",
             tagline: "Thousands in the field.",
             price: "$349",
             cadence: "/mo",
-            price_note: "$0.20 per extra device · not billing yet",
+            price_note: "$0.20 per extra device",
             features: vec![
                 "1,500 devices".into(),
                 "45M pooled messages/mo".into(),
@@ -434,7 +440,7 @@ pub fn PricingPage() -> Element {
             div { class: "flex items-baseline gap-2 flex-wrap mb-2",
               h2 { class: "text-xl font-bold", "Fleet" }
               span { class: "badge badge-sm badge-outline font-mono tracking-wide",
-                "planned · talk to us first"
+                "talk to us first"
               }
             }
             p { class: "text-base-content/75 leading-relaxed",
@@ -446,7 +452,7 @@ pub fn PricingPage() -> Element {
               span { class: "text-4xl font-extrabold tracking-tight", "$1,499" }
               span { class: "text-base-content/60", "/mo" }
             }
-            p { class: "mt-1 mb-4 text-xs text-base-content/60", "indicative · not billing yet" }
+            p { class: "mt-1 mb-4 text-xs text-base-content/60", "indicative" }
             // A plain href, not a Link: the funnel context rides in the
             // query string, which a Route with no query prop cannot carry
             // (see views/contact.rs for why it has none). The destination
@@ -468,9 +474,9 @@ pub fn PricingPage() -> Element {
     section { id: "pricing-never-billed", class: "px-4 md:px-10 pb-14",
       div { class: "max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
         NeverCard {
-          label: "Not billing yet",
+          label: "Billable messages",
           value: "$0.30",
-          note: "per 10,000 · planned rate",
+          note: "per 10,000 · pooled",
           body: "A billable message is a device→platform report: telemetry, shadow report-back, or a log upload. Pooled across the whole account.",
         }
         NeverCard {
@@ -527,7 +533,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "What happens if I go over?",
-            body: "Nothing is billed in beta. Usage is already counted, so you can see exactly where you'd land: when paid tiers start, overage will run at $0.30 per 10,000 and service will keep going; free accounts pause ingestion instead, warned at 80% of the cap. No surprise invoice, ever.",
+            body: "On a paid tier, overage runs at $0.30 per 10,000 messages and service keeps going. Free accounts pause ingestion instead, warned at 80% of the cap. Usage is counted in the dashboard either way, so you can see where you stand. No surprise invoice, ever.",
           }
           Answer {
             question: "How long do you keep my data?",
@@ -552,7 +558,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Will these prices hold?",
-            body: "These are planned prices, published early so you can budget, and deliberately introductory while custom dashboards are still missing. They can still move before billing starts, and we'll tell you well ahead of any change that affects you.",
+            body: "They are deliberately introductory while custom dashboards are still missing. The Terms give you at least 30 days' notice before a change affects an existing paid subscription, and the change takes effect at your next renewal after that notice.",
           }
         }
       }
@@ -560,9 +566,9 @@ pub fn PricingPage() -> Element {
 
     section { id: "pricing-cta", class: "px-4 md:px-10 pb-24",
       div { class: "max-w-4xl mx-auto rounded-3xl border border-neutral-content bg-linear-to-br/srgb from-primary/40 via-secondary/40 to-accent/40 p-10 text-center shadow-2xl",
-        h2 { class: "text-2xl md:text-3xl font-bold mb-3", "Everything's free while we're in beta." }
+        h2 { class: "text-2xl md:text-3xl font-bold mb-3", "Ten devices are free for good." }
         p { class: "text-lg mb-8 leading-relaxed",
-          "Ten devices stay free after that. Start now and help shape what the rest costs."
+          "Start there, and upgrade from your organization page when a fleet outgrows it."
         }
         div { class: "flex flex-col sm:flex-row justify-center gap-4",
           Link {
