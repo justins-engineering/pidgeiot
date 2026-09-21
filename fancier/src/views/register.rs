@@ -1,4 +1,4 @@
-use crate::components::{Alert, FormBuilder};
+use crate::components::{Alert, FormBuilder, TermsNotice};
 use crate::helpers::{
   DisplayError, extract_ui_messages, kratos_return_to, url_query_param, view_network_error,
 };
@@ -7,9 +7,28 @@ use dioxus::prelude::*;
 use ory_kratos_client_wasm::apis::frontend_api::{
   create_browser_registration_flow, get_registration_flow,
 };
+use ory_kratos_client_wasm::models::ui_node::GroupEnum;
+
+/// Whether this registration step is the one that creates the account.
+///
+/// Kratos's default registration takes the profile traits first and asks
+/// for a credential on a second step, with a full page load between them
+/// that resets every signal, so a tick on the first step is gone by the
+/// second. The credential step is the one carrying nodes outside the
+/// default and profile groups; on a one-step flow that is the only step.
+fn creates_the_identity(groups: impl Iterator<Item = GroupEnum>) -> bool {
+  groups
+    .into_iter()
+    .any(|group| !matches!(group, GroupEnum::Default | GroupEnum::Profile))
+}
 
 #[component]
 pub fn RegisterFlow(flow: Option<String>) -> Element {
+  // Hoisted above the match below, which renders the form in only one of
+  // its arms: a hook called from one arm would shift this scope's hook
+  // indices as the flow resolves.
+  let terms_ok = use_signal(|| false);
+
   // 1. Fetch or initialize the flow natively
   let get_flow = use_resource(move || {
     let flow_param = flow.clone();
@@ -72,6 +91,7 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
   match &*get_flow.read() {
     Some(Ok(res)) => {
       let error_messages = extract_ui_messages(&res.ui);
+      let credential_step = creates_the_identity(res.ui.nodes.iter().map(|node| node.group));
 
       rsx! {
         h1 { class: "text-center text-2xl mt-10", "Sign Up" }
@@ -85,8 +105,22 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
               }
             }
 
-            // Pure HTML submission.
-            FormBuilder { ui: *res.ui.to_owned() }
+            // Notice on every step, the box only on the one that creates
+            // the account. Asking twice for the same act reads as a bug,
+            // and the earlier step binds nobody to anything.
+            div { class: "mb-6",
+              TermsNotice { accepted: credential_step.then_some(terms_ok) }
+            }
+
+            // Pure HTML submission. `inert` is the whole enforcement here,
+            // and it is allowed to be only a browser behaviour: an account
+            // created without the tick meets the gate on its first
+            // dashboard entry, which is where the record is written.
+            div {
+              "inert": (credential_step && !terms_ok()).then_some(""),
+              class: if credential_step && !terms_ok() { "opacity-60" } else { "" },
+              FormBuilder { ui: *res.ui.to_owned() }
+            }
             p { class: "text-sm leading-6 mt-4",
               "Already have an account? "
               Link {
@@ -107,5 +141,23 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
         p { class: "animate-pulse", "Loading registration flow..." }
       }
     },
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn only_the_step_that_asks_for_a_credential_creates_the_identity() {
+    let profile_step = [GroupEnum::Default, GroupEnum::Default, GroupEnum::Profile];
+    assert!(!creates_the_identity(profile_step.into_iter()));
+
+    let password_step = [GroupEnum::Default, GroupEnum::Password, GroupEnum::Profile];
+    assert!(creates_the_identity(password_step.into_iter()));
+
+    // A passkey-only deployment asks for its credential on that step too.
+    let passkey_step = [GroupEnum::Default, GroupEnum::Passkey];
+    assert!(creates_the_identity(passkey_step.into_iter()));
   }
 }

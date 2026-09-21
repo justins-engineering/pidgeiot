@@ -1,6 +1,6 @@
 # Kratos courier: useSend → Cloudflare Email Service
 
-Production Kratos sends verification, recovery and settings mail through
+Production Kratos sent verification, recovery and settings mail through
 useSend over Amazon SES. Cloudflare Email Service offers the same thing as
 authenticated SMTP submission on an account we already pay for, and removes
 both useSend and AWS SES from the subprocessor chain.
@@ -14,13 +14,16 @@ which is what makes rollback a config revert rather than a DNS wait.
 Everything here is applied on the VPS (`debian@15.204.254.3`) by the owner.
 Background and the phase plan live in the #65 scoping report, kept outside this repo.
 
-## Status: not yet run; rehearsed 2026-09-01
+## Status: run 2026-09-01
 
-This is Phase 4, and it goes last, alone, in its own window. Phase 3 — the
-same courier path on the dev stack against the real Cloudflare SMTP endpoint —
-is the gate, and it **passed**; see the Rehearsal record at the bottom. The
-URI, the sender and the verdicts below are what that run actually produced,
-not what it was expected to produce.
+Phase 4 ran on 2026-09-01: production Kratos now couriers through
+`smtp.mx.cloudflare.net:465`, proven that night by a real recovery mail with
+DKIM aligned and DMARC passing under `p=reject`. Phase 3 — the same path on
+the dev stack — was the gate and passed; its record is at the bottom, and the
+URI, the sender and the verdicts below are what that run produced.
+
+What follows stays a procedure because rollback is the same file and the same
+restart, and because it is the record of what was changed on the VPS.
 
 ## What changes
 
@@ -94,8 +97,8 @@ Also required before starting:
 Onboarding a sending domain makes Cloudflare publish `_dmarc.<domain>` with
 `p=reject` and **no `rua=`**. On `noreply.pidgeiot.com` that replaced the
 organizational fallback to the apex's `p=none`, so every message from the
-domain is now subject to rejection at receivers, including the mail the
-current useSend/SES path is still sending.
+domain is now subject to rejection at receivers, including anything the
+useSend/SES path would send if rollback were taken.
 
 That path survives it: `noreply.pidgeiot.com` is configured as an SES custom
 MAIL FROM domain (`MX 10 feedback-smtp.us-east-1.amazonses.com` plus the

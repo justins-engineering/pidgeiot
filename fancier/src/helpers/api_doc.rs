@@ -74,12 +74,12 @@ pub fn slugify(text: &str) -> String {
 /// Hands out one id per heading, numbering repeats the way GitHub does so
 /// the first heading with a given text keeps the bare slug.
 #[derive(Default)]
-struct Slugger {
+pub(crate) struct Slugger {
   seen: HashMap<String, usize>,
 }
 
 impl Slugger {
-  fn unique(&mut self, text: &str) -> String {
+  pub(crate) fn unique(&mut self, text: &str) -> String {
     let base = slugify(text);
     match self.seen.get_mut(&base) {
       Some(count) => {
@@ -107,7 +107,7 @@ fn level_number(level: HeadingLevel) -> u8 {
 
 /// Plain text of a heading's inline events: a code span contributes its
 /// literal, a link its label, which is what a slug is built from.
-fn inline_text(events: &[Event<'_>]) -> String {
+pub(crate) fn inline_text(events: &[Event<'_>]) -> String {
   let mut text = String::new();
   for event in events {
     match event {

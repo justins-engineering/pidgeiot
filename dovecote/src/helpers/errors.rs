@@ -18,7 +18,7 @@ use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
-use super::alerts::send_via_usesend;
+use super::alerts::send_text_email;
 use super::environment::root_url;
 use super::hyperdrive::get_db_client;
 use super::ops_probe::ops_alert_email;
@@ -374,7 +374,7 @@ async fn notify_new_signature(
     build.unwrap_or("(unknown)"),
   );
 
-  if let Err(e) = send_via_usesend(env, &recipient, &subject, &text).await {
+  if let Err(e) = send_text_email(env, &recipient, &subject, &text).await {
     console_error!("error report: notification email failed for {signature}: {e}");
   }
 }

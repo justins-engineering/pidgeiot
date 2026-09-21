@@ -18,21 +18,22 @@ use crate::helpers::{
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
-  load_org_roles, mark_webhook_event_processed, mint_invite_token, notify_contact_submission,
-  org_role_of, pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do,
-  proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
+  load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
+  notify_contact_submission, org_role_of, pigeon_move_shares_owner, plan_business_details,
+  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
   query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
   query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, readings_from_body, record_consent_event, remove_member,
-  reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url, send_feedback_email,
-  send_invite_email, send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state,
-  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_organization,
-  update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
+  raise_message_allowance_floor, readings_from_body, record_consent_event, record_terms_assent,
+  remove_member, reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url,
+  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
+  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
+  update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
   upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
   verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
+use capsules::consent::{ConsentSource, TermsAssentStatus};
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
@@ -41,7 +42,7 @@ use capsules::{
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
   PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryEndpoint, TelemetryHistoryBucket,
+  TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket,
   TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use futures::future::join_all;
@@ -472,8 +473,8 @@ fn resolve_serve_range(range: &Range, total: u64) -> (u64, u64) {
 /// terminators themselves, gated by two independent layers -- a
 /// source-address allowlist (COAP_SERVICE_ALLOWED_IPS, their egress
 /// addresses) and the COAP_SERVICE_SECRET Worker secret (set via `wrangler
-/// secret put` per env, never [vars] -- same convention as RESEND_API_KEY;
-/// local dev reads it from dovecote/.dev.vars). The var and secret keep
+/// secret put` per env, never [vars], like every credential here; local
+/// dev reads it from dovecote/.dev.vars). The var and secret keep
 /// their CoAP-era names: one gate, one shared value, and renaming a
 /// deployed secret buys nothing. The `:pigeon_id` path param IS the PSK
 /// identity -- `create`/`refresh_token` mint `tls_psk_identity` as the
@@ -589,6 +590,19 @@ async fn internal_consent_record(
       .unwrap()
       .with_cors(&cors);
   };
+  // This route only ever writes marketing rows, and `gate` and `checkout`
+  // are Terms assent surfaces. The `source` CHECK used to reject the
+  // combination; it holds all five values table-wide now, so the refusal
+  // has to be here or a row could claim a surface with no marketing
+  // checkbox on it.
+  if matches!(
+    payload.source,
+    ConsentSource::Gate | ConsentSource::Checkout
+  ) {
+    return Response::error("Bad Request: Invalid consent hook payload", 400)
+      .unwrap()
+      .with_cors(&cors);
+  }
 
   get_db!(ctx.env, client, &cors);
 
@@ -621,6 +635,36 @@ async fn internal_consent_record(
         .with_cors(&cors)
     }
   }
+}
+
+/// The Terms assent status both `/account/terms` routes answer with, read
+/// back from the row rather than assumed.
+///
+/// One copy because the two routes answered it identically: a field added
+/// to `TermsAssentStatus` would otherwise have to be written twice, and
+/// forgetting one would make `GET` and `POST` on the same path disagree
+/// with nothing to catch it.
+async fn terms_assent_response(
+  client: &tokio_postgres::Client,
+  user_uuid: &uuid::Uuid,
+  cors: &worker::Cors,
+) -> worker::Result<Response> {
+  let Ok(assent) = load_terms_assent(client, user_uuid).await else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(cors);
+  };
+  let status = TermsAssentStatus {
+    current_version: TERMS_VERSION.to_string(),
+    accepted_version: assent.as_ref().map(|(version, _)| version.clone()),
+    accepted_at: assent.map(|(_, at)| at),
+  };
+  let Ok(response) = Response::from_json(&status) else {
+    return Response::error("Internal Server Error", 500)
+      .unwrap()
+      .with_cors(cors);
+  };
+  response.with_cors(cors)
 }
 
 #[event(fetch, respond_with_errors)]
@@ -3345,10 +3389,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // email (never trusted from the body). Abuse protection is
     // deliberately existing-pattern-only: Content-Type must be JSON, body
     // and each field are size-capped (capsules::MAX_FEEDBACK_*), and
-    // delivery reuses the prod-only OPS_ALERT_EMAIL + RESEND_API_KEY pair,
-    // so staging/dev degrade to a logged no-op. No per-IP rate limiter
-    // here -- that's platform-level (a Cloudflare WAF rule or Turnstile),
-    // not something to hand-roll in-route.
+    // delivery reuses the prod-only OPS_ALERT_EMAIL var, so staging/dev
+    // degrade to a logged no-op. No per-IP rate limiter here -- that's
+    // platform-level (a Cloudflare WAF rule or Turnstile), not something
+    // to hand-roll in-route.
     .post_async("/feedback", |mut req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
 
@@ -3877,6 +3921,59 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Response::empty()?.with_status(204).with_cors(&cors)
       },
     )
+    // --- Terms assent ---
+    // The record the liability cap, the forum clause and the incorporated
+    // DPA are relied on against: version, account and time, all stamped by
+    // the server. Neither route answers 401 for anything but a session that
+    // no longer resolves -- the dashboard reads 401 as "signed out".
+    .get_async("/account/terms", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+      terms_assent_response(&client, &user_uuid, &cors).await
+    })
+    // Empty body on purpose: a client that could name its own source could
+    // claim a surface whose wording we cannot produce. The gate is the only
+    // thing this route records.
+    .post_async("/account/terms", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      get_db!(ctx.env, client, &cors);
+      if record_terms_assent(&client, user_uuid, ConsentSource::Gate, None)
+        .await
+        .is_err()
+      {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      }
+
+      // Read back rather than assume: the row carries the database's clock,
+      // not this isolate's, and the statement is uncacheable, so it reflects
+      // the insert above. The client takes this body as the new state and
+      // never refetches.
+      terms_assent_response(&client, &user_uuid, &cors).await
+    })
     // --- Organization Routes ---
     // Shared-org access for teams: individual Kratos accounts, org-level
     // RBAC, membership-row revocation. Authorization funnels through
@@ -4408,8 +4505,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let invite_url = build_invite_url(&ctx.env, &token);
 
-        // Best-effort delivery through the existing Resend transport; in
-        // dev (no RESEND_API_KEY) this logs the link instead. Either way
+        // Best-effort delivery through Cloudflare Email Service; an
+        // environment without the binding logs the link instead. Either way
         // the response below carries the token/URL once -- write-once,
         // same convention as device connector tokens.
         send_invite_email(
@@ -4799,6 +4896,42 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
+        // A session that resolved but whose id will not parse is our bug,
+        // not the caller's.
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Both of these sit above every Stripe call: we do not take money
+        // against terms we cannot show were accepted, and a refusal must
+        // happen before any Customer or Session object exists. 409 rather
+        // than 401, which the dashboard reads as a lost session.
+        let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if assent.as_ref().map(|(version, _)| version.as_str()) != Some(TERMS_VERSION) {
+          let mut message = String::with_capacity(63 + TERMS_VERSION.len());
+          message.push_str("Conflict: accept the Terms of Service dated ");
+          message.push_str(TERMS_VERSION);
+          message.push_str(" before subscribing");
+          return Response::error(message, 409).unwrap().with_cors(&cors);
+        }
+        // The organization is the one fact this assent carries that the
+        // identity cannot reconstruct after an abandoned checkout: it is
+        // the entity the buyer represents they may bind.
+        if record_terms_assent(&client, user_uuid, ConsentSource::Checkout, Some(org_id))
+          .await
+          .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
         // One uncacheable read for the customer id and the tax identity
         // (see load_org_billing_state): a registration saved a moment ago
         // decides the name a brand-new Customer is created under and what
@@ -5072,6 +5205,28 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .with_cors(&cors);
         }
 
+        // Checkout's rule, on the other route that takes money: a
+        // reprice is a fresh commitment at a new price, so it refuses
+        // without an assent to the published Terms and records its own.
+        // A session that resolved but whose id will not parse is our bug.
+        let Ok(user_uuid) = uuid::Uuid::parse_str(&auth.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(assent) = load_terms_assent(&client, &user_uuid).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if assent.as_ref().map(|(version, _)| version.as_str()) != Some(TERMS_VERSION) {
+          let mut message = String::with_capacity(65 + TERMS_VERSION.len());
+          message.push_str("Conflict: accept the Terms of Service dated ");
+          message.push_str(TERMS_VERSION);
+          message.push_str(" before changing plan");
+          return Response::error(message, 409).unwrap().with_cors(&cors);
+        }
+
         // The allowance-floor write below wants the usage table; the
         // state read bootstraps its own columns.
         if ensure_billing_usage_tables(&client).await.is_err() {
@@ -5112,6 +5267,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           )
           .unwrap()
           .with_cors(&cors);
+        }
+
+        // Below every refusal and above every Stripe call: the row says a
+        // purchase was made under this version for this organization, so
+        // a request that turns out to change nothing must not write one.
+        if record_terms_assent(&client, user_uuid, ConsentSource::Checkout, Some(org_id))
+          .await
+          .is_err()
+        {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
         }
 
         let prices = match resolve_checkout_prices(&ctx.env, payload.plan).await {

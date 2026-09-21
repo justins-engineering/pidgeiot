@@ -9,10 +9,7 @@ use capsules::{
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
-use worker::{
-  Env, Error, Fetch, Method, Request, RequestInit, Result, SendEmail, SendEmailBuilder,
-  console_error, console_log,
-};
+use worker::{Env, Error, Result, SendEmail, SendEmailBuilder, console_error, console_log};
 
 /// Column list shared by every `alert_definitions` read/RETURNING statement
 /// -- `condition`/`channel` are cast to `::text` rather than read as native
@@ -33,17 +30,14 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
 /// which carries its own window -- see `should_fire_now`.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
-/// `From:` fallback for platform mail -- shares the platform's one
-/// verified useSend sending domain with Kratos's courier setup, but never
-/// the credential. The Worker secret is still NAMED `RESEND_API_KEY` for
-/// historical reasons but holds a useSend API key -- useSend speaks the
-/// Resend-shaped payload, so sends 401 against api.resend.com if this ever
-/// gets swapped for a real Resend key (see `post_via_usesend` below).
+/// `From:` fallback for platform mail -- the platform's one verified
+/// sending domain, shared with Kratos's courier setup but never the
+/// credential.
 const DEFAULT_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
 
 /// Cloudflare Email Service binding (`[[send_email]]`, wrangler.toml).
-/// Its presence is what selects that transport over useSend, so it is
-/// declared only in the environments whose sending domain is onboarded.
+/// The only mail transport there is, so an environment that does not
+/// declare it cannot send at all.
 const EMAIL_BINDING: &str = "EMAIL";
 
 /// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
@@ -1463,17 +1457,16 @@ async fn send_alert_email(
   }
 }
 
-/// Whether this environment can send mail at all, by either transport --
-/// lets callers with a graceful no-op path (e.g. org invites) log a link
-/// instead of "sending" into the void, without duplicating the
-/// binding/secret lookups.
+/// Whether this environment can send mail at all -- lets callers with a
+/// graceful no-op path (e.g. org invites) log a link instead of "sending"
+/// into the void. The `[[send_email]]` binding is the whole answer.
 pub(crate) fn email_configured(env: &Env) -> bool {
-  env.send_email(EMAIL_BINDING).is_ok() || usesend_api_key(env).is_some()
+  env.send_email(EMAIL_BINDING).is_ok()
 }
 
 /// `From:` address for platform mail. A sending domain is onboarded per
 /// environment, so `MAIL_FROM_ADDRESS` ([env.*.vars], wrangler.toml)
-/// overrides the useSend default where one differs.
+/// overrides the default where one differs.
 fn mail_from_address(env: &Env) -> String {
   env
     .var("MAIL_FROM_ADDRESS")
@@ -1483,47 +1476,30 @@ fn mail_from_address(env: &Env) -> String {
     .unwrap_or_else(|| DEFAULT_FROM_ADDRESS.to_string())
 }
 
-/// `RESEND_API_KEY` Worker secret, if configured -- mirrors
-/// `helpers/greptime.rs::greptime_auth_token`'s secret-read shape. Never
-/// set via `[vars]`, same rule this codebase enforces for every credential
-/// (`wrangler secret put RESEND_API_KEY --env <env>`).
-fn usesend_api_key(env: &Env) -> Option<String> {
-  env
-    .secret("RESEND_API_KEY")
-    .ok()
-    .map(|v| v.to_string())
-    .filter(|s| !s.trim().is_empty())
-}
-
-#[derive(serde::Serialize)]
-struct UsesendEmailRequest<'a> {
-  from: &'a str,
-  to: [&'a str; 1],
-  subject: &'a str,
-  text: &'a str,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  html: Option<&'a str>,
-}
-
 /// Domain-only form of an email address, for log lines that need to stay
 /// diagnostic (spotting a bad domain or a bounce pattern) without retaining
 /// a full recipient address now that `head_sampling_rate = 1`
 /// (`wrangler.toml`) keeps every `console_error!`/`console_log!` line
-/// instead of sampling almost all of them away. `send_via_usesend` is
-/// shared by alert, invite, and feedback sends, so it has no per-call
-/// context (alert definition id, org id, ...) to log instead of the
-/// address -- redacting the address itself is the only option available at
-/// this layer.
+/// instead of sampling almost all of them away. `send_email` is shared by
+/// alert, invite, and feedback sends, so it has no per-call context (alert
+/// definition id, org id, ...) to log instead of the address -- redacting
+/// the address itself is the only option available at this layer.
 fn redact_email(email: &str) -> String {
   match email.rsplit_once('@') {
-    Some((_, domain)) if !domain.is_empty() => format!("***@{domain}"),
+    Some((_, domain)) if !domain.is_empty() => {
+      let mut redacted = String::with_capacity(4 + domain.len());
+      redacted.push_str("***@");
+      redacted.push_str(domain);
+      redacted
+    }
     _ => "***@(unparseable)".to_string(),
   }
 }
 
-/// Plain-text only: what the ops-facing senders (feedback, contact, error
-/// digests, allowance warnings) need.
-pub(crate) async fn send_via_usesend(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
+/// Plain-text entry point: the operator notices (feedback, contact, error
+/// digests, the Kratos readiness probe) and the free-tier allowance
+/// warning, which is the one send on this path that goes to a customer.
+pub(crate) async fn send_text_email(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
   send_email(env, to, subject, text, None).await
 }
 
@@ -1540,9 +1516,10 @@ pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessa
   .await
 }
 
-/// One transactional email, Cloudflare Email Service first: the
-/// `[[send_email]]` binding resolves only where it is declared, so its
-/// absence is what routes an environment back to useSend's HTTP API.
+/// One transactional email through Cloudflare Email Service. The
+/// `[[send_email]]` binding resolves only where it is declared and there
+/// is no second rail, so a send from an environment without it fails
+/// here rather than reporting a success nobody sent.
 async fn send_email(
   env: &Env,
   to: &str,
@@ -1550,11 +1527,27 @@ async fn send_email(
   text: &str,
   html: Option<&str>,
 ) -> Result<()> {
+  let Ok(sender) = env.send_email(EMAIL_BINDING) else {
+    console_error!(
+      "No {EMAIL_BINDING} binding -- cannot send mail to {} (subject: {subject})",
+      redact_email(to)
+    );
+    return Err(no_email_binding());
+  };
+
   let from = mail_from_address(env);
-  match env.send_email(EMAIL_BINDING) {
-    Ok(sender) => send_via_binding(&sender, &from, to, subject, text, html).await,
-    Err(_) => post_via_usesend(env, &from, to, subject, text, html).await,
-  }
+  send_via_binding(&sender, &from, to, subject, text, html).await
+}
+
+/// Failure returned when no `[[send_email]]` binding resolves. Its own
+/// function so the message is assertable where a Worker `Env` cannot be
+/// built, which is every test target this crate has.
+fn no_email_binding() -> Error {
+  let mut message = String::with_capacity(50 + EMAIL_BINDING.len());
+  message.push_str("Email send failed: no ");
+  message.push_str(EMAIL_BINDING);
+  message.push_str(" binding in this environment");
+  Error::RustError(message)
 }
 
 /// Hands the message to Cloudflare Email Service, which signs it with the
@@ -1591,78 +1584,11 @@ async fn send_via_binding(
   }
 }
 
-/// POSTs one transactional email via useSend's Resend-compatible HTTP API
-/// (`https://app.usesend.com/api/v1/emails`) -- mirrors
-/// `helpers/greptime.rs::post_line_protocol`'s `Fetch`/`RequestInit`/header
-/// shape. `RESEND_API_KEY` unset (expected until an operator runs
-/// `wrangler secret put`) is treated the same way `greptime_auth_token`
-/// being absent is treated elsewhere -- logged, never a hard failure,
-/// since alert delivery is always best-effort.
-async fn post_via_usesend(
-  env: &Env,
-  from: &str,
-  to: &str,
-  subject: &str,
-  text: &str,
-  html: Option<&str>,
-) -> Result<()> {
-  let Some(api_key) = usesend_api_key(env) else {
-    console_error!(
-      "RESEND_API_KEY not configured -- cannot send alert email to {} (subject: {subject})",
-      redact_email(to)
-    );
-    return Ok(());
-  };
-
-  let body = UsesendEmailRequest {
-    from,
-    to: [to],
-    subject,
-    text,
-    html,
-  };
-  let body_json = serde_json::to_string(&body).map_err(|e| {
-    console_error!("Failed to serialize Resend request: {e}");
-    Error::RustError("Internal Server Error".into())
-  })?;
-
-  let mut init = RequestInit::default();
-  init.with_method(Method::Post);
-  init.body = Some(body_json.into());
-  init.headers.set("Content-Type", "application/json")?;
-  init
-    .headers
-    .set("Authorization", &format!("Bearer {api_key}"))?;
-
-  let req = Request::new_with_init("https://app.usesend.com/api/v1/emails", &init)?;
-  let resp = Fetch::Request(req).send().await?;
-  let status = resp.status_code();
-
-  if status >= 400 {
-    console_error!(
-      "useSend send to {} returned HTTP {status} (subject: {subject})",
-      redact_email(to)
-    );
-  } else {
-    // The only positive signal on this path, and the reason it exists: every
-    // other branch here logs exclusively on failure, so mail that went out
-    // and mail that was never attempted are indistinguishable in a tail.
-    // Confirming that alert delivery worked at all took a mailbox rather
-    // than a log line. "Accepted" rather than "sent" on purpose -- a 2xx is
-    // useSend taking custody, not the message reaching an inbox.
-    console_log!(
-      "useSend accepted mail to {} (subject: {subject})",
-      redact_email(to)
-    );
-  }
-
-  Ok(())
-}
-
 #[cfg(test)]
 mod tests {
   use super::{
-    ResolvedReading, evaluate_ingest_condition, redact_email, should_fire_now, transitions_to_apply,
+    EMAIL_BINDING, ResolvedReading, evaluate_ingest_condition, no_email_binding, redact_email,
+    should_fire_now, transitions_to_apply,
   };
   use crate::objects::pigeons::PreviousTelemetryValue;
   use capsules::{AlertCondition, AlertObservation, Comparator, ConnectionStateKind};
@@ -1833,6 +1759,20 @@ mod tests {
   fn redact_email_handles_malformed_input_without_echoing_it() {
     assert_eq!(redact_email("not-an-email"), "***@(unparseable)");
     assert_eq!(redact_email("trailing@"), "***@(unparseable)");
+  }
+
+  #[test]
+  fn a_send_without_the_binding_fails_with_a_message_naming_it() {
+    let worker::Error::RustError(message) = no_email_binding() else {
+      panic!("a send with no transport must fail, not report success");
+    };
+    assert_eq!(
+      message,
+      "Email send failed: no EMAIL binding in this environment"
+    );
+    // Holds no_email_binding's with_capacity arithmetic to the string it builds;
+    // String promises only that the allocation is at least that large.
+    assert_eq!(50 + EMAIL_BINDING.len(), message.len());
   }
 
   fn at(unix_secs: i64) -> OffsetDateTime {

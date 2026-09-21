@@ -27,6 +27,20 @@
 
 import { serveWithMarkdownNegotiation } from "./markdown.mjs";
 
+// Staging serves every public page with a canonical link to production, so a
+// crawler that reaches it files each page as a duplicate. The header keeps
+// staging out of the index; the var is committed only under [env.staging].
+function withRobotsNoindex(response, env) {
+  if (!env.ROBOTS_NOINDEX) return response;
+  const headers = new Headers(response.headers);
+  headers.set("X-Robots-Tag", "noindex");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
 const CLOCK_SKEW_LEEWAY_SECONDS = 60;
 
@@ -135,7 +149,7 @@ export default {
     // See the file header: this is what keeps production (and an
     // accidental promotion) safe even with this handler wired in as `main`.
     if (!env.CF_ACCESS_AUD || !env.CF_ACCESS_CERTS_URL) {
-      return serveWithMarkdownNegotiation(request, env);
+      return withRobotsNoindex(await serveWithMarkdownNegotiation(request, env), env);
     }
 
     const assertion = request.headers.get("Cf-Access-Jwt-Assertion");
@@ -156,6 +170,6 @@ export default {
       return new Response("Forbidden", { status: 403 });
     }
 
-    return serveWithMarkdownNegotiation(request, env);
+    return withRobotsNoindex(await serveWithMarkdownNegotiation(request, env), env);
   },
 };

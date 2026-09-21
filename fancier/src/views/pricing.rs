@@ -1,5 +1,5 @@
 use super::org::redirect_to;
-use crate::components::ComparisonTables;
+use crate::components::{ComparisonTables, PurchaseTermsNotice};
 use crate::helpers::pricing_data::View;
 use crate::{Route, Session, UpgradeIntent, api};
 use capsules::{BillingPlan, OrganizationCreateRequest, TaxIdType};
@@ -109,6 +109,9 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   }
 
   rsx! {
+    div { class: "mb-3",
+      PurchaseTermsNotice {}
+    }
     button {
       class: "btn btn-outline w-full font-bold",
       disabled: busy(),
@@ -281,7 +284,10 @@ fn UpgradeOrgCreate(plan: BillingPlan, on_close: EventHandler<()>) -> Element {
                 },
               }
             }
-            div { class: "mt-5 flex items-center justify-end gap-3",
+            div { class: "mt-4",
+              PurchaseTermsNotice {}
+            }
+            div { class: "mt-4 flex items-center justify-end gap-3",
               button {
                 class: "btn btn-ghost",
                 r#type: "button",

@@ -1,7 +1,8 @@
-use crate::components::SetSessionCookie;
+use crate::components::{SetSessionCookie, TermsGate, blocks_dashboard};
 use crate::config::{KRATOS_BROWSER_URL, SESSION_COOKIE_NAME};
 use crate::helpers::session_cookie_valid;
 use crate::models::AuthState;
+use capsules::consent::TermsAssentStatus;
 use capsules::{AlertDefinition, BillingPlan, Flock, OrganizationMembership, Pigeon};
 use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
@@ -11,10 +12,11 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DemoPage,
-  DocumentationPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index, InviteAccept,
-  LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons, PricingPage,
-  PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo, SettingsFlow,
-  StoriesIndex, StoryPage, TermsPage, Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
+  DocumentationPage, DpaPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index,
+  InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons,
+  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo,
+  SettingsFlow, StoriesIndex, StoryPage, SubprocessorsPage, TermsPage, Unauthorized, UseCasesPage,
+  VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -129,6 +131,10 @@ enum Route {
   OpenSourcePage {},
   #[route("/terms/")]
   TermsPage {},
+  #[route("/dpa/")]
+  DpaPage {},
+  #[route("/subprocessors/")]
+  SubprocessorsPage {},
   // Org invite landing page -- public (NOT AuthGuard'd, see
   // views/invite.rs's module comment) and non-trailing-slash like the
   // Kratos flow routes, since it carries a query-param prop with
@@ -181,14 +187,46 @@ async fn static_routes() -> Result<Vec<String>, ServerFnError> {
 #[component]
 fn AuthGuard() -> Element {
   let session = use_context::<Session>();
-  // Hoisted above the match: a hook called from only one arm would shift
-  // this scope's hook indices as the auth state resolves.
+  // Hoisted above the match, both of them: a hook called from only one arm
+  // would shift this scope's hook indices as the auth state resolves.
   let nav = use_navigator();
+  // The whole client state of the Terms gate. It lives here rather than in
+  // the panel so it is fetched once per sign-in instead of once per route
+  // change, and nowhere else, since a cached answer to "what has this
+  // account accepted" is worth nothing.
+  let mut assent = use_signal(|| None::<TermsAssentStatus>);
+  // Whether the status above has been read at all. `None` cannot carry
+  // both "not fetched yet" and "fetched, unreadable": the first has to
+  // hold the dashboard, because rendering it and replacing it a moment
+  // later shows the person the fleet the gate exists to stand in front
+  // of, and the second has to render it, because a database blip must
+  // never lock an account out of its own devices.
+  let mut assent_read = use_signal(|| false);
+
+  use_resource(move || async move {
+    if (session.state)() == AuthState::Authenticated && !assent_read() {
+      let status = api::terms::status().await;
+      if status.is_some() {
+        assent.set(status);
+      }
+      assent_read.set(true);
+    }
+  });
 
   match (session.state)() {
     AuthState::Authenticated => {
-      rsx! {
-        Outlet::<Route> {}
+      if !assent_read() {
+        rsx! {
+          div { "Verifying session..." }
+        }
+      } else if blocks_dashboard(assent.read().as_ref()) {
+        rsx! {
+          TermsGate { assent }
+        }
+      } else {
+        rsx! {
+          Outlet::<Route> {}
+        }
       }
     }
     AuthState::Unauthenticated => {
@@ -473,6 +511,8 @@ mod public_route_trailing_slash {
   both_forms!(privacy, "/privacy", PrivacyPage);
   both_forms!(open_source, "/open-source", OpenSourcePage);
   both_forms!(terms, "/terms", TermsPage);
+  both_forms!(dpa, "/dpa", DpaPage);
+  both_forms!(subprocessors, "/subprocessors", SubprocessorsPage);
 
   #[test]
   fn root_unchanged() {

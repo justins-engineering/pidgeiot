@@ -1,9 +1,13 @@
-# Marketing consent: the trait, the record, and how they are wired
+# Consent: the trait, the record, and how they are wired
 
-Two things have to describe the same event: the words a person reads when they choose to
-receive marketing email, and the record that shows they chose it. GDPR Article 7(1) puts the
-burden of demonstrating consent on us, so a tick with nothing behind it is not consent we can
-rely on.
+Two things have to describe the same event: the words a person reads when they agree to
+something, and the record that shows they agreed. GDPR Article 7(1) puts the burden of
+demonstrating marketing consent on us, and contract formation asks the same question of a
+Terms of Service: a tick with nothing behind it is not something we can rely on.
+
+Most of this file is marketing consent, which came first and is the more configured of the
+two. **Terms assent has its own section at the end**; it shares the table and nothing else,
+and it involves no Kratos configuration at all.
 
 This was built before there were users to backfill, which is the only time it is cheap.
 
@@ -30,21 +34,24 @@ one rule (`consent_transition`) that decides whether a flow writes a row. They a
 shared crate so the words on the form and the record behind them cannot move independently.
 The notice version every row is stamped with is `capsules::PRIVACY_NOTICE_VERSION`, at the
 crate root rather than in this module because the privacy page renders the same constant as
-its "Last updated" line: the page and the rows can then never name different notices.
+its "Last updated" line: at the moment a row is written, the page and the row name the same
+notice, except across the minutes of a version deploy — see "Bumping either version".
 
 ### What a row holds, and what it deliberately does not
 
 `seq`, `identity_id`, `purpose` (`marketing_emails`, named after the trait so the two are
 obviously the same thing), `kind` (`granted`/`withdrawn`), `source`
-(`registration`/`settings`/`import`), `notice_version`, `flow_id`, and `at`.
+(`registration`/`settings`/`import`, plus `gate`/`checkout` on Terms assent rows only),
+`notice_version`, `flow_id`, `org_id` (a checkout assent's organisation, NULL everywhere
+else), and `at`.
 
-There are also `ip` and `user_agent` columns, and **they are left empty**. The privacy notice
-discloses addresses and user agents only as transient web logs kept "for debugging and abuse
-prevention"; keeping one against an identity as consent evidence is a different purpose with a
-different retention, so it needs its own line in the notice before the hook starts sending
-them. The columns exist so that switching them on is a config change rather than a migration:
-add two lines to each `.jsonnet` (they are written out in a comment there), and dovecote
-already stores and truncates what arrives.
+There are also `ip` and `user_agent` columns, and **they are left empty by every writer**. The
+privacy notice discloses addresses and user agents only as transient web logs kept "for
+debugging and abuse prevention"; keeping one against an identity as consent or contract
+evidence is a different purpose with a different retention, so it needs its own line in the
+notice first. The columns exist so that switching them on is a config change rather than a
+migration: add two lines to each `.jsonnet` (they are written out in a comment there), and
+dovecote already stores and truncates what arrives.
 
 ### Only transitions are recorded
 
@@ -223,17 +230,17 @@ Then `sudo systemctl restart kratos` and confirm `http://127.0.0.1:4433/health/r
 at `https://api.pidgeiot.com` (production dovecote) and accept that a staging registration
 records a row through production dovecote, or add a second Kratos config if that matters later.
 
-**File permissions.** `/opt/kratos/kratos.yml` is currently root:root 0644, and the unit runs
-under `DynamicUser=yes`, whose ephemeral uid can only read world-readable files. Putting
-`<SECRET>` in that file therefore makes it readable by any local account. The secret only
-grants "write a consent row for an identity id you name" — no reads, no dashboard access — so
-this is a modest exposure, but it is worth closing: create a static `kratos-conf` group, add
-`SupplementaryGroups=kratos-conf` to the unit, and set the config to `root:kratos-conf` 0640.
-The group must NOT be named `kratos`: `DynamicUser=yes` allocates a dynamic user and group named
+**File permissions.** `/opt/kratos/kratos.yml` holds `<SECRET>` and is `root:kratos-conf` 0640
+on the host; the unit reaches it through `SupplementaryGroups=kratos-conf`. `DynamicUser=yes`
+gives the service an ephemeral uid that can otherwise read only world-readable files, so the
+0644 the file started at exposed the secret to every local account. Annex II A.5 of the DPA
+states that restriction as a fact, so the mode and the unit's supplementary group have to stay
+together: either alone leaves the service unable to start or the secret world-readable. The
+group must NOT be named `kratos`: `DynamicUser=yes` allocates a dynamic user and group named
 after the unit, and a static namesake group collides with that allocation, failing the start
-with `217/USER` (observed live). Kratos has
-no file-based input for a hook secret and Ory's config loader cannot set a list item from an
-environment variable, so there is no way to keep the value out of the config file entirely.
+with `217/USER` (observed live). Kratos has no file-based input for a hook secret and Ory's
+config loader cannot set a list item from an environment variable, so there is no way to keep
+the value out of the config file entirely.
 
 ## Removing `subscribed`, and the node that outlives it
 
@@ -300,6 +307,121 @@ tightening a type under stored values, or adding a `required` entry nothing carr
 in sight. If one ever is, the answer is `user_v2` plus a per-identity `schema_id` **PATCH**,
 never an import.
 
+## Terms assent
+
+The second purpose on the same table, and a different kind of record: not a choice a person
+can withdraw, but evidence that an account accepted a published version of the Terms of
+Service. The attorney's memo asks for an affirmative act, reasonable notice, and a server-side
+record of version, account and time, kept before we rely on the liability cap, the forum
+clause, the jury waiver or the DPA the Terms incorporate. The design and its reasoning are in
+`docs/design/terms-assent-and-legal-pages.md`.
+
+**No Kratos configuration is involved.** No identity-schema change, no new trait, no jsonnet
+hook, no new Worker secret, nothing for the owner to apply on the VPS. There is no trait
+because there is nothing for the person to own: the record is the whole thing, and a trait
+would be evidence its subject could edit.
+
+### Two writing surfaces
+
+| Surface | `source` | `org_id` | Written by |
+|---|---|---|---|
+| The assent gate a signed-in browser meets before any dashboard route | `gate` | NULL | `POST /account/terms` |
+| The purchase itself | `checkout` | the organization being bound | `POST /orgs/:org_id/billing/checkout` and `PUT /orgs/:org_id/billing/plan` |
+
+The registration checkbox writes nothing. There is no identity to key a row on at the moment
+it is ticked, and the row the product relies on is the gate's, written against an
+authenticated session with the server's own clock. Registration's job
+is notice and a first affirmative act; the gate is the enforcement, which is also what covers
+accounts that existed before any of this.
+
+Both money-taking routes refuse without a current-version row and then write their own; a
+plan change is a fresh commitment at a new price, so the rule cannot stop at checkout.
+
+Notice followed by continued use, one of the DPA's three acceptance routes, leaves no row at
+all: its evidence is the sent message, kept outside this database with the signed legal records,
+and `docs/legal/README.md` carries the step that sends it.
+
+A `checkout` row always appends, even when a `gate` row for the same version is already on
+file. It is a distinct act: it names an organization and carries the authority-to-bind
+representation the Terms extract, and an abandoned checkout leaves no Stripe object to
+recover that from.
+
+### The transition rule is not reused
+
+`capsules::consent::consent_transition` and the marketing writer's
+`WHERE $3 <> COALESCE(...)` predicate both suppress a second `granted` row for the same
+identity and purpose *regardless of version* — which is exactly the shape of assent to a new
+version. `record_terms_assent` uses its own predicate instead: append only when no `granted`
+row exists for this identity, purpose **and version**. The decision is inside the INSERT for
+the same reason the marketing one is: one statement instead of a read and then a write. It
+narrows the common case rather than guaranteeing uniqueness — two tabs accepting at the same
+moment each read their own snapshot under READ COMMITTED and both append, which the reader
+absorbs by taking the newest row, and which the checkout path does deliberately anyway.
+
+The widened `source` CHECK covers the whole table, so it no longer rejects a marketing row
+claiming `gate` or `checkout`. `POST /internal/consent` refuses those two values itself, which
+is one line where a purpose-aware CHECK in three schema copies would be the same guarantee at
+several times the cost.
+
+### Two schema changes, one of them dangerous
+
+`source` is CHECK-constrained in three places and `CREATE TABLE IF NOT EXISTS` is inert
+against a table that already exists, so without an explicit widening the first `gate` insert
+fails at runtime on every deployed database while passing every local test against a fresh
+one. `infra/migrations/2026-09-14-terms-assent.sql` widens it and adds the nullable `org_id`
+column; `ensure_consent_tables` carries the same statements so a database the migration was
+not run against heals itself on the next request. The widening is conditional: it discovers
+the constraint's real name rather than assuming it, and the loop finds nothing after the first
+run, so a warm isolate never takes the table's exclusive lock.
+
+### Retention differs from a marketing row
+
+A marketing row is deleted with the identity, and so is a Terms assent row. Article 17(3)(e)
+would allow keeping the assent past deletion for the Massachusetts contract limitation period,
+where the evidence matters most, but the published retention table now carries a row saying it
+goes with the account and the DPA's Annex II G.5 states the same as a fact. **That retention is
+closed, not pending**: reopening it means moving both published documents. The row carries no
+address and no user agent in either case.
+
+### Bumping either version
+
+Both constants name a published document and stamp the rows written against it, so both are
+bumped the same way: fancier first, then dovecote, with the documents under `docs/legal/`
+updated in the same commit as the constant.
+
+`capsules::TERMS_VERSION` is the "Last updated" line the Terms, DPA and sub-processor pages
+render and the version every assent row is stamped with. Bumping it asks every account to
+accept again on its next sign-in, so a wording fix that needs no fresh assent must not move it.
+
+`capsules::PRIVACY_NOTICE_VERSION` is the Privacy Policy's own line and the version stamped on
+every marketing consent row. Bumping it asks nothing of anyone: consent already given stays in
+force, there is no re-consent prompt, and the rows that name the superseded notice resolve
+back to their text through `docs/legal/archive/`, which is what that directory is for.
+
+1. Update the documents under `docs/legal/` and set the constant to the deploy date. A
+   superseded privacy notice is archived as `docs/legal/archive/privacy-<version>.md` in the
+   same commit, or the rows naming it stop resolving to anything.
+2. Apply the migrations to staging, deploy **fancier first, then dovecote**, and sign in: the
+   gate appears, accepting clears it, and a reload inside 30 seconds does not bring it back.
+   That window is the check that matters — the read is uncacheable by design, and a reload
+   after the Hyperdrive window has expired proves nothing.
+3. Apply the migrations to production, then deploy in the same order.
+
+The order is not cosmetic. dovecote first means it answers the new version while the pages
+still render the old one, the gate fires, and every row written in that window says an account
+accepted text it was never shown. The other order writes no assent rows at all.
+
+There is no order that satisfies both constants at once, and it is worth knowing which way it
+breaks. In the fancier-first window `/privacy/` shows the new notice while dovecote still
+stamps the old version on any marketing row the registration hook writes. That is the harmless
+direction — the row names text that was on the page minutes earlier and is archived — and the
+window is a deploy apart, not a staged rollout. The assent rows are the ones a court reads, so
+they get the order that protects them.
+
+If the gate ever walls everyone out, redeploying the previous fancier version brings the
+dashboard back: the gate is client-side and dovecote needs no change, so nothing touches the
+database or the rows already written.
+
 ## Reading the current state
 
 **The dashboard reads the trait, and there is no new route for it.** The settings page already
@@ -312,25 +434,31 @@ The `consent_events` table is deliberately not exposed to the dashboard. It is t
 its audience is us and a regulator, and putting it on a subject-editable surface invites
 exactly the confusion the split above exists to avoid.
 
-Subject access request — everything on file about one person's consent:
+Subject access request — everything on file about one person, both purposes. Project
+`purpose` or the answer runs marketing consent and Terms assent together:
 
 ```sql
-SELECT kind, source, notice_version, at
+SELECT purpose, kind, source, notice_version, at
   FROM consent_events WHERE identity_id = '<id>' ORDER BY seq;
 ```
 
 Account-deletion erasure — delete the rows rather than anonymise them (a consent event is
 *about* the identity and nothing else, so a row with the id removed means nothing), and only
-alongside deleting the identity itself:
+alongside deleting the identity itself. Both purposes go, until the published retention table
+carries a row for the assent record:
 
 ```sql
 DELETE FROM consent_events WHERE identity_id = '<id>';
 ```
 
-Both statements are repeated in the migration header, which is where the erasure runbook
+Both statements are repeated in the migration headers, which is where the erasure runbook
 already looks.
 
 ## Reconciling a lost row
+
+This section is about marketing consent only. A Terms assent has no trait to reconcile
+against: a missing row means the account is asked again on its next sign-in, which is the
+whole repair.
 
 Because the hooks ignore failures, a dovecote outage can leave a person whose trait says
 `granted: true` with no `granted` row, or no row at all. The trait and the table disagreeing is

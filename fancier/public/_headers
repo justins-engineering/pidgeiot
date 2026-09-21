@@ -88,6 +88,10 @@
   Link: </privacy/index.md>; rel="alternate"; type="text/markdown"
 /terms/
   Link: </terms/index.md>; rel="alternate"; type="text/markdown"
+/dpa/
+  Link: </dpa/index.md>; rel="alternate"; type="text/markdown"
+/subprocessors/
+  Link: </subprocessors/index.md>; rel="alternate"; type="text/markdown"
 
 # RFC 9727 wants application/linkset+json (with its profile parameter)
 # on the api-catalog document; the file is extensionless, so wrangler's

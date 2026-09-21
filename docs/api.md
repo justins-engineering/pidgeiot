@@ -87,6 +87,8 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /dashboard-state/:scope_key`](#get-dashboard-statescope_key) | session | Read the caller's saved document for one scope |
 | [`PUT /dashboard-state/:scope_key`](#put-dashboard-statescope_key) | session | Replace the caller's document for one scope |
 | [`DELETE /dashboard-state/:scope_key`](#delete-dashboard-statescope_key) | session | Drop the caller's document for one scope |
+| [`GET /account/terms`](#get-accountterms) | session | Which Terms version the account has accepted |
+| [`POST /account/terms`](#post-accountterms) | session | Record assent to the published Terms |
 | [`GET /demo/pigeons/:pigeon_id/telemetry`](#get-demopigeonspigeon_idtelemetry) | none | Latest values for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/telemetry/history`](#get-demopigeonspigeon_idtelemetryhistory) | none | Telemetry history for the public demo pigeon |
 | [`GET /demo/pigeons/:pigeon_id/alerts`](#get-demopigeonspigeon_idalerts) | none | The alert rules the demo page draws its lines from |
@@ -976,6 +978,14 @@ Creates (and remembers) the org's Stripe customer on first use — a returning o
 checks out against the same Customer. `502` when Stripe itself is unreachable or the catalog
 is missing a price.
 
+**A current [Terms assent](#terms-assent) is required, and one is recorded.** Before any
+Stripe call, the route reads the caller's assent: no row for `capsules::TERMS_VERSION` is a
+`409` naming the version to accept, so no Customer or Session exists for a purchase that was
+refused. With one on file it appends its own assent row — `source = 'checkout'`, carrying the
+`org_id` of the entity being bound, which is the authority-to-bind representation the Terms
+extract and the one fact an abandoned checkout would otherwise leave nowhere. That write
+failing is a `500`: a paying customer with no record is the outcome this exists to prevent.
+
 **Tax is computed by Stripe Tax, and the session is built to let it.** Every session carries
 `automatic_tax[enabled]=true`, `billing_address_collection=required`,
 `customer_update[address]=auto` and `customer_update[name]=auto` (the session is always
@@ -1026,6 +1036,12 @@ Moves an org with a live subscription to a different paid tier, in place. Body:
 post-change `capsules::OrganizationBilling` (Stripe's own updated subscription state); the org
 row itself is written moments later by the `customer.subscription.updated` webhook, same as
 every other subscription change.
+
+**A current [Terms assent](#terms-assent) is required, and one is recorded**, exactly as at
+checkout: a reprice is a fresh commitment at a new price. No row for `capsules::TERMS_VERSION`
+is a `409` naming the version to accept, before any Stripe call. The assent row is written
+after the plan and subscription checks and before the reprice, so a request that changes
+nothing does not leave a row saying a purchase was made.
 
 One Stripe Subscriptions Update call re-prices two items together, resolved by `lookup_key` at
 request time: the licensed tier item to the new tier's flat price, and the per-device overage
@@ -2211,7 +2227,7 @@ curl -s -X POST https://api.pidgeiot.com/feedback \
 
 Returns `202` with an empty JSON object. `202`, not `200`/`201`, because nothing is persisted —
 the submission is formatted (`capsules::format_feedback_email`) and delivered best-effort as one
-email to the `OPS_ALERT_EMAIL` var via the existing Resend transport
+email to the `OPS_ALERT_EMAIL` var through Cloudflare Email Service
 (`helpers/feedback.rs::send_feedback_email`). `OPS_ALERT_EMAIL` is set in production's `[vars]`
 block only (same single-knob convention as the ops health probe), so staging/dev accept the
 request and log the formatted email instead of sending — the `202` never depends on delivery.
@@ -2277,7 +2293,7 @@ Returns `202` with an empty JSON object once the enquiry is **stored**. Unlike
 `POST /feedback`, this route persists before it notifies: the row in `contact_submissions`
 (`infra/migrations/2026-08-24-contact-submissions.sql`) is what keeps an enquiry from being
 lost to a mail-transport outage, so a storage failure is a real `500`. The notification email
-is then best-effort through the same `OPS_ALERT_EMAIL` + Resend transport every other ops mail
+is then best-effort through the same `OPS_ALERT_EMAIL` + Email Service path every other ops mail
 uses (`helpers/contact.rs`), stamping `notified_at` only once a send succeeds — `OPS_ALERT_EMAIL`
 is set in production's `[vars]` block only, so staging and dev store the row and log the
 formatted email instead of sending it.
@@ -2452,6 +2468,52 @@ work with what it has.
 Drops the document and frees its key against the cap. **204**, and deleting a scope that was
 never stored is not an error. Account-deletion erasure removes every row for an identity
 directly (`infra/migrations/2026-08-31-dashboard-state.sql`).
+
+---
+
+### Terms assent
+
+The record that an account accepted a published version of the Terms of Service, kept before
+the liability cap, the forum clause, the jury waiver or the incorporated DPA is relied on. It
+is a row in `consent_events` under `purpose = 'terms_of_service'`, written only by the two
+surfaces below, and **both the version and the time are the server's** — a client supplies
+neither, so no row can misdescribe what was accepted or when. The row stores no address and no
+user agent: the privacy notice describes both only as transient web logs.
+
+`current_version` is `capsules::TERMS_VERSION`, the "Last updated" date the Terms page renders.
+It rides the wire rather than being read from the dashboard's own compiled copy because the two
+binaries deploy separately: a gate keyed on the client's constant would ask for assent to a
+version this API would not stamp. On a version bump the dashboard deploys first, then this API,
+so no row is ever written against text that is not yet published.
+
+**The read is exempt from Hyperdrive's ~60s query cache** — its statement carries `now()`, which
+Hyperdrive refuses to cache. It gates a screen the person has just cleared, so a cached answer
+would put that screen back in front of them for up to a minute after they accepted.
+
+Neither route answers **401** for anything but a session that no longer resolves: the dashboard
+reads 401 as "signed out" and clears its caches.
+
+#### `GET /account/terms`
+
+**Auth:** session
+
+Returns `capsules::consent::TermsAssentStatus` — `{ current_version, accepted_version,
+accepted_at }`. `accepted_version` and `accepted_at` are `null` when the account has never
+accepted any version; `accepted_at` is RFC 3339. A version other than `current_version` means a
+new one has been published since.
+
+#### `POST /account/terms`
+
+**Auth:** session
+
+Records assent to `current_version` and returns the same `TermsAssentStatus` the `GET` would now
+return, so a client never re-reads to confirm its own write. **The body is ignored and must be
+empty** — the surface is recorded as `gate`, and a client that could name its own surface could
+claim one whose wording we cannot produce.
+
+Accepting twice is not an error: a second call for a version already on file writes nothing and
+answers **200** with the same status. **500** if the row cannot be written, which is the one
+failure that must not look like success.
 
 ---
 
@@ -3186,7 +3248,8 @@ Body is `capsules::ConsentHookPayload`:
  "flow_id": "<kratos_flow_uuid>"}
 ```
 
-`source` is one of `registration`, `settings`, `import`. `flow_id`, `ip` and `user_agent` are
+`source` is one of `registration`, `settings`, `import`; `gate` and `checkout` are Terms
+assent surfaces and are refused here with a `400`. `flow_id`, `ip` and `user_agent` are
 all optional; the shipped hooks send only `flow_id`, and the reason the other two are accepted
 but not sent is in `docs/consent.md`. `ip` and `user_agent` are truncated to
 `capsules::MAX_CONSENT_CONTEXT_BYTES`. Neither the notice version nor a timestamp is accepted
@@ -3234,6 +3297,9 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
   `MAX_CONSENT_CONTEXT_BYTES` — `capsules/src/consent.rs`, which also holds the transition
   rule (`consent_transition`) the `/internal/consent` route applies; the notice version it
   stamps is the crate-root `PRIVACY_NOTICE_VERSION`
+- `TermsAssentStatus` (the `/account/terms` response), `TERMS_OF_SERVICE_PURPOSE`,
+  `TERMS_ASSENT_LABEL`, `TERMS_ASSENT_CHECKOUT_NOTICE` — same module; the version an assent row
+  is stamped with is the crate-root `TERMS_VERSION`
 - `MQTT_TLS_PORT`, `MQTT_TOPIC_TELEMETRY`, `MQTT_TOPIC_SHADOW_REPORT`, `MQTT_TOPIC_LOGS`,
   `MQTT_TOPIC_SHADOW_TARGET` — the wire constants the broker mirrors
 - `TelemetryLatest` / `TelemetryLatestRow`, `TelemetryHistoryPoint`, `TelemetryHistoryBucket`,

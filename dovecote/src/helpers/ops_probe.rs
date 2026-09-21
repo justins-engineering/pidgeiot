@@ -2,7 +2,7 @@ use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Delay, Env, Fetch, Method, Request, Result, console_error, console_log};
 
-use super::alerts::send_via_usesend;
+use super::alerts::send_text_email;
 use super::hyperdrive::get_db_client;
 
 /// Which row in `ops_health_state` this probe owns. A constant rather than a
@@ -36,7 +36,7 @@ pub async fn send_ops_email(env: &Env, subject: &str, text: &str) {
     );
     return;
   };
-  if let Err(e) = send_via_usesend(env, &recipient, subject, text).await {
+  if let Err(e) = send_text_email(env, &recipient, subject, text).await {
     console_error!("ops email: send failed ({subject}): {e}");
   }
 }
@@ -198,5 +198,5 @@ async fn record_and_notify(
   };
 
   console_log!("ops probe: kratos transition -> healthy={healthy}, notifying");
-  send_via_usesend(env, recipient, &subject, &text).await
+  send_text_email(env, recipient, &subject, &text).await
 }

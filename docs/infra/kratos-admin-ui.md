@@ -76,7 +76,8 @@ Three independent layers, in order of how much they'd have to fail together:
 1. The process binds `127.0.0.1:3000` only (`HOSTNAME=127.0.0.1`). Confirmed
    with `ss -lntp`: a single `127.0.0.1:3000` row, no `0.0.0.0` row.
 2. The host firewall's `INPUT` policy is `DROP`, and no rule opens 3000. The
-   accepted TCP ports are 22 and 5684.
+   accepted TCP ports are 22 for SSH and the device transports Annex II A.5
+   of the DPA names, 5684 for CoAP and 8883 for MQTT over TLS.
 3. The tunnel's ingress does not mention this hostname, and its catch-all rule
    is `http_status:404` — so even a DNS record pointed at the tunnel by mistake
    would 404 rather than reach the app.

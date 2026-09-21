@@ -6,7 +6,7 @@ use tokio_postgres::types::Type;
 use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
-use super::alerts::send_via_usesend;
+use super::alerts::send_text_email;
 use super::ops_probe::ops_alert_email;
 
 /// Ensured-once-per-isolate flag: `POST /contact` is unauthenticated and
@@ -105,7 +105,7 @@ pub async fn store_contact_submission(
 ///
 /// Reuses the existing notification plumbing rather than adding a provider
 /// or a secret: recipient is the `OPS_ALERT_EMAIL` var (production-only by
-/// design, one knob), transport is `send_via_usesend`. Staging and dev
+/// design, one knob), transport is `send_text_email`. Staging and dev
 /// degrade to a logged no-op, and even in production a send failure is
 /// fire-and-log -- the sender's 202 never depends on delivery, and the row
 /// stored above is what makes that safe.
@@ -128,7 +128,7 @@ pub async fn notify_contact_submission(
     return;
   };
 
-  if let Err(e) = send_via_usesend(env, &recipient, subject, text).await {
+  if let Err(e) = send_text_email(env, &recipient, subject, text).await {
     console_error!("contact: email send failed for submission {submission_id}: {e}");
     return;
   }

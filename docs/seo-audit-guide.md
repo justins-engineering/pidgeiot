@@ -20,7 +20,7 @@ Shell variables used by every check command:
 ```sh
 BASE=https://pidgeiot.com
 # Indexable pages (must match the build's per-page head-tag map and the sitemap):
-PAGES="/ /features/ /pricing/ /documentation/ /api-reference/ /architecture/ /getting-started/ /demo/ /open-source/ /about/ /privacy/ /terms/"
+PAGES="/ /features/ /how-it-works/ /use-cases/ /pricing/ /compare/ /self-hosting/ /documentation/ /api-reference/ /architecture/ /getting-started/ /demo/ /stories/ /open-source/ /about/ /contact/ /privacy/ /terms/ /dpa/ /subprocessors/"
 # Representative noindexed-by-design routes (auth shells, auth flows, error pages):
 NOINDEXED="/dashboard/ /flocks/ /session/ /settings/ /login/ /registration/ /recovery/ /verification/ /error/ /unauthorized/"
 # Source tree and the build step that injects head tags / regenerates the sitemap:

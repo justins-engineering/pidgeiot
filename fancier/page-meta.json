@@ -85,6 +85,14 @@
     "/terms/": {
       "title": "Terms of Service | PidgeIoT",
       "description": "The terms for using PidgeIoT during early access: acceptable use, account responsibility, licensing, and how changes to the service are communicated."
+    },
+    "/dpa/": {
+      "title": "Data Processing Agreement (DPA) | PidgeIoT",
+      "description": "The data processing terms PidgeIoT operates under as your processor: roles, security measures, sub-processors, transfers, breach notice, and deletion."
+    },
+    "/subprocessors/": {
+      "title": "Sub-processors We Use | PidgeIoT",
+      "description": "Every third party that processes customer data for PidgeIoT: what each one does, what data reaches it, where that happens, and the transfer mechanism."
     }
   }
 }

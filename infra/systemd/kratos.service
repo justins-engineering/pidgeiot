@@ -68,6 +68,10 @@ SyslogIdentifier=kratos
 # world-readable); the one 0600 file there (.env) is read by systemd as
 # root, per above.
 DynamicUser=yes
+# kratos.yml carries a webhook key, so it is 0640 under this static group
+# rather than world-readable. Never name the group "kratos": it collides
+# with the allocation DynamicUser= makes and the unit fails with 217/USER.
+SupplementaryGroups=kratos-conf
 
 # Read-only everything: Kratos's local footprint is pure config. All
 # mutable state (identities, sessions, the courier queue) lives in

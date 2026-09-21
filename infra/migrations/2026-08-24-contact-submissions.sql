@@ -1,7 +1,7 @@
 -- Migration: storage for the public contact form (`POST /contact`, see
 -- docs/api.md). The notification email is the working surface, but it is
 -- best-effort like every other send in this codebase, so the row is what
--- guarantees an enquiry is never lost to a Resend outage -- and it is what
+-- guarantees an enquiry is never lost to a mail outage -- and it is what
 -- makes "did anyone ever reply?" answerable.
 --
 -- No IP address column, deliberately. The rate limiter keys on
