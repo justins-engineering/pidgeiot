@@ -16,6 +16,8 @@ For the data your devices and your team put into the platform, you (or the organ
 
 Account data. When you register a dashboard account, our self-hosted Ory Kratos identity system stores your email address and a hash of your password. Your email address is the only thing it requires. It also holds whatever else you choose to give it: a name, a phone number, your choice about product-update email, and any additional sign-in credential you set up (a passkey, an authenticator app or backup codes). We never store your password in plain text.
 
+Acceptance records. When you accept our terms, we record which version you accepted, the account that accepted it, the time, and the screen you accepted it on. Where the acceptance happens at checkout, we also record the organization it was given for. The record carries no IP address and no user agent.
+
 Device data. The platform exists to hold the data your devices send it: telemetry values, device configuration (shadow state), and device log uploads, along with the metadata you enter when creating flocks and pigeons (names, descriptions, connector settings). You control what your devices report.
 
 Web logs. Like nearly every web service, our infrastructure records standard request logs (IP address, user agent, timestamps, and the routes requested) used for debugging and abuse prevention.
@@ -93,7 +95,8 @@ We keep data for as long as it serves the purpose it was collected for, and no l
 | Web and API request logs | 7 days, then deleted automatically by our edge provider. |
 | Logs on our own server (identity service, device transport) | Kept in the server's system journal and deleted after 30 days. |
 | Your product-update choice | The record of when you gave or withdrew consent is kept while your account exists, so we can show we had it, and deleted with your account. |
-| Backups of our databases | Rotated on our database host's own schedule. Deleted data disappears from a backup when that backup expires. |
+| Your acceptance of our terms | The record of which version you accepted, and when, is kept while your account exists, so we can show you accepted it, and deleted with your account. |
+| Backups of our databases | Our database host captures a base backup of each cluster daily and keeps it current by streaming the write-ahead log every 60 seconds or 16 MB, whichever comes first, retaining 10 days of them. Deleted data disappears from a backup when that backup expires. |
 
 ## Why we are allowed to process your data
 
