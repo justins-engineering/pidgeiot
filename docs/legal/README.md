@@ -8,7 +8,7 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 | --- | --- | --- |
 | `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-15.md` |
 | `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-15.md` |
-| `dpa.md` | `/dpa/` | `24-eu-paperwork/dpa.md`, with the edits in `docs/design/terms-assent-and-legal-pages.md` section 8 applied |
+| `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-20.md` |
 | `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, same section |
 
 `archive/` holds superseded published text, named for the version it was published as, so a consent
@@ -21,9 +21,9 @@ heading ids now come from the heading text, the way `/api-reference/` has always
 
 Business folder to repository, never back. The business copies are counsel's working drafts and are
 meant to move ahead of what is published; a two-way copy would drag a draft onto the live page. The
-Terms and the Privacy Policy are verbatim, with only the "Last updated" line replaced. The DPA and
-the sub-processor list are an interim text: counsel's substantive review is pending, and her version
-replaces the published one under the DPA's own Section 12.2.
+Terms, the Privacy Policy and the DPA are verbatim, with only the "Last updated" line replaced. The
+sub-processor list is ours: counsel's Annex III points at it and it is maintained under the DPA's
+own Section 6.
 
 ## The date on the page
 
@@ -50,20 +50,12 @@ considers the old one current, so no gate fires and no row is written.
 These are not agent actions and not engineering calls. Each is a place where what we deploy and
 what we publish have to be made to agree.
 
-- **The assent record is not in the Privacy Policy's retention table.** Every Terms assent row is
-  version, account and time, with no address and no user agent, and erasure deletes it with the
-  identity, because that is what the published policy promises. Keeping it past deletion under
-  Article 17(3)(e) for the contract limitation period is the record worth having and takes one new
-  retention row plus one collection sentence in the settled policy. Until those land, the code
-  stays inside what the page says.
-
-- **The DPA offers Module Three where the Privacy Policy names Module Two only.** DPA 9.2 extends
-  the standard contractual clauses to Module Three where a customer is itself a processor for a
-  third-party controller; the Policy states Module Two, with the UK Addendum and the Swiss
-  adaptations, as the basis for customer data transferred to the United States. Both ship in the
-  same deployment, so as they stand the two pages disagree about what covers such a transfer. The
-  Policy is settled and cannot move here, so the call is whether the published DPA drops that
-  sentence for now or keeps it and lets counsel's version resolve it under Section 12.2.
+- **The assent record is now in the Privacy Policy's retention table, and that closes the
+  Article 17(3)(e) question against us.** Every Terms assent row is version, account, time and
+  source, with no address and no user agent, and the policy says it is deleted with the account.
+  The DPA's Annex II G.5 states the same as a fact and keys any exception to what the policy
+  permits, so keeping a row past deletion for the contract limitation period would now make a
+  published clause false. Moving that line is a decision about the DPA as well as the policy.
 
 ## Shipping a change to these documents
 
@@ -88,8 +80,8 @@ Nothing here is an agent action. The full reasoning is in
    confirm the substituted date and no surviving `{{LAST_UPDATED}}`.
 5. Email every organization owner on file that the Terms, the Privacy Policy, the DPA and the
    sub-processor list are published, and keep the sent message with the signed legal records.
-   The DPA names notice followed by continued use as one of its two acceptance routes, and for
-   an owner who never countersigns and never reaches the dashboard gate that message is the
+   The DPA names notice followed by continued use as one of its three acceptance routes, and
+   for an owner who never countersigns and never reaches the dashboard gate that message is the
    only evidence the notice was given.
 6. Apply both migrations to production, in the same order, then deploy fancier and dovecote.
 

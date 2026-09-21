@@ -599,17 +599,17 @@ config pins wasm32 and a wasm test binary cannot execute.
 
 ---
 
-## 8. The interim `/dpa/` and `/subprocessors/` content
+## 8. The `/dpa/` and `/subprocessors/` content
 
-`docs/legal/dpa.md` is `24-eu-paperwork/dpa.md` with the edits map-dpa-content specifies;
-`docs/legal/subprocessors.md` is `subprocessors.md` with its own. The business-folder copies are not
-edited: they stay the attorney's working drafts, and her reviewed version replaces the published one
-later under the DPA's own Section 12.2.
+`docs/legal/dpa.md` is the attorney's 2026-09-20 final, typeset verbatim; this section records the
+interim text it replaced and the edits that built it, which the final makes history. Her Annex III
+points at `docs/legal/subprocessors.md`, which stays ours and is maintained under the DPA's own
+Section 6.
 
 ### 8.1 Mechanical, applied in the content commit
 
-- The DRAFT block at `dpa.md:3` becomes one sentence: "**Status:** Counsel's substantive review of
-  this document is pending; any change it produces is made under Section 12.2."
+- The DRAFT block at `dpa.md:3` became one sentence naming counsel's review as pending. Her final
+  is the event that makes it false, so the typeset carries no status line.
 - `dpa.md:7`, the LAWYER note citing a superseded Terms memo, is deleted with one of its blank
   lines. Nothing replaces it.
 - The `Last updated: {{LAST_UPDATED}}` line is added after the H1.
@@ -665,10 +665,9 @@ publishes the gap to every customer and to any supervisory authority. The owner 
 removing the vendor rather than the disclosure: the Service sends on the edge provider's Email
 Service alone, and the row is out of the list and out of Annex II.H.
 
-One more is separated out in the deploy checklist: Module Three, which the settled Privacy Policy
-does not name, so the two documents disagree about what covers a transfer from a customer who is
-itself a processor. The seven remaining open content questions publish under the conservative
-reading already in the draft, and counsel's version replaces them under the DPA's own Section 12.2.
+One more was separated out in the deploy checklist: Module Three, which the settled Privacy Policy
+did not name. Both documents now name it, so they agree. The seven remaining open content questions
+are answered by counsel's final, which is what publishes.
 
 ---
 
@@ -902,9 +901,6 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
   with the identity. What that costs is the evidence in exactly the case it was kept for, a
   dispute with someone who has since deleted their account, so one retention row in the settled
   policy is still worth asking counsel for.
-- **The DPA we publish is ours, not counsel's.** Section 8's edits are engineering applying a
-  content map to a legal document. The status line says the review is pending and the change clause
-  covers replacement, but the interim text is text a customer can rely on from the day it deploys.
 - **The second ask after registration** reads as a bug to a user who has just ticked a box. The
   `localStorage` handoff in section 4.2 is the escape hatch, and until it exists the gate copy has
   to do real work to explain itself.

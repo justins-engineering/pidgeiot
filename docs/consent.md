@@ -330,7 +330,7 @@ would be evidence its subject could edit.
 
 The registration checkbox writes nothing. There is no identity to key a row on at the moment
 it is ticked, and the row the product relies on is the gate's, written against an
-authenticated session with the server's own clock, address and user agent. Registration's job
+authenticated session with the server's own clock. Registration's job
 is notice and a first affirmative act; the gate is the enforcement, which is also what covers
 accounts that existed before any of this.
 
@@ -376,13 +376,12 @@ run, so a warm isolate never takes the table's exclusive lock.
 
 ### Retention differs from a marketing row
 
-A marketing row is deleted with the identity. A Terms assent is worth keeping past deletion
-under Article 17(3)(e) — establishment, exercise or defence of legal claims — for the
-Massachusetts contract limitation period, because the evidence matters exactly when a dispute
-makes it valuable. **That retention is not in force yet.** It needs its own row in the
-published retention table first: the policy as published promises that deleting an account
-deletes everything the table does not list, so until counsel adds the row, erasure takes the
-assent rows with it. The row carries no address and no user agent in either case.
+A marketing row is deleted with the identity, and so is a Terms assent row. Article 17(3)(e)
+would allow keeping the assent past deletion for the Massachusetts contract limitation period,
+where the evidence matters most, but the published retention table now carries a row saying it
+goes with the account and the DPA's Annex II G.5 states the same as a fact. **That retention is
+closed, not pending**: reopening it means moving both published documents. The row carries no
+address and no user agent in either case.
 
 ### Bumping either version
 

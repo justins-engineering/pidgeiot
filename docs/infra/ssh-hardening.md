@@ -385,6 +385,10 @@ sshd -T | grep -i passwordauthentication
 established sessions alone. Keep the current session open and prove a new
 one works from a second terminal before closing it.
 
+Applied. `sshd -T` on 2026-09-21 returns `passwordauthentication no` and
+`kbdinteractiveauthentication no`, which is the state the DPA's Annex II
+asserts.
+
 Do this as its own change, after the cutover below is finished and
 verified — locking down authentication and swapping the ban mechanism at
 the same time makes it ambiguous which one caused any resulting lockout.
