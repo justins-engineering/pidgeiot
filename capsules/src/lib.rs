@@ -86,7 +86,7 @@ pub use dashboard_state::{
 /// record, and it lives in the shared crate because those are the two things
 /// that must never disagree: a stored consent naming a version the page no
 /// longer shows cannot be resolved back to the words the person was shown.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-14";
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-21";
 
 /// The date the published Terms of Service last changed, ISO 8601 so it sorts.
 ///
@@ -95,7 +95,7 @@ pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-14";
 /// the decision that a version needs fresh assent: every account is asked again
 /// on its next sign-in, so a wording fix that needs no re-assent must not move
 /// it.
-pub const TERMS_VERSION: &str = "2026-09-14";
+pub const TERMS_VERSION: &str = "2026-09-21";
 
 #[cfg(test)]
 mod version_tests {
