@@ -9,7 +9,7 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 | `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-15.md` |
 | `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-15.md` |
 | `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-20.md` |
-| `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, same section |
+| `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, then maintained here |
 
 `archive/` holds superseded published text, named for the version it was published as, so a consent
 row stamped with an older version can still be resolved back to the words that were on screen.

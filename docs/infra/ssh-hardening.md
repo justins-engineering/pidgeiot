@@ -346,14 +346,16 @@ keeps the attacker out. What keeps them out is having nothing to guess:
 sshd -T | grep -iE 'passwordauthentication|kbdinteractiveauthentication|permitrootlogin'
 ```
 
-On this host that check returned `passwordauthentication yes` (with
-`permitrootlogin without-password`, so root is already key-only). Those
-attempts are therefore not bouncing off a wall — they are guesses against a
-live door, on an image that ships a predictably-named `debian` account with
-sudo. Turning password and keyboard-interactive auth off removes that
-entire class outright; no amount of rate limiting is equivalent.
+On 2026-09-21 that check returns `passwordauthentication no`,
+`kbdinteractiveauthentication no` and `permitrootlogin without-password`,
+which is the state the DPA's Annex II asserts. It used to return
+`passwordauthentication yes`: root was key-only but every other account was a
+live door for the guessing above, on an image that ships a predictably-named
+`debian` account with sudo. Turning password and keyboard-interactive auth off
+removed that entire class outright; no amount of rate limiting is equivalent.
 
-Two things make this change bite people, so do both.
+Two things make this change bite, and both were done here; they are also the
+recipe for any host it is repeated on.
 
 **Confirm key auth works before removing the fallback.** There is no
 password to fall back on afterward, and the only alternative is the
@@ -385,13 +387,10 @@ sshd -T | grep -i passwordauthentication
 established sessions alone. Keep the current session open and prove a new
 one works from a second terminal before closing it.
 
-Applied. `sshd -T` on 2026-09-21 returns `passwordauthentication no` and
-`kbdinteractiveauthentication no`, which is the state the DPA's Annex II
-asserts.
-
-Do this as its own change, after the cutover below is finished and
-verified — locking down authentication and swapping the ban mechanism at
-the same time makes it ambiguous which one caused any resulting lockout.
+That drop-in, `/etc/ssh/sshd_config.d/10-no-password-auth.conf` with those two
+lines, is what the host runs. It went in on its own, apart from the fail2ban
+cutover above: locking down authentication and swapping the ban mechanism in
+one go makes it ambiguous which of them caused any resulting lockout.
 
 ## Automation hygiene, independent of which throttle is in front
 

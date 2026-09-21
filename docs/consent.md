@@ -230,17 +230,17 @@ Then `sudo systemctl restart kratos` and confirm `http://127.0.0.1:4433/health/r
 at `https://api.pidgeiot.com` (production dovecote) and accept that a staging registration
 records a row through production dovecote, or add a second Kratos config if that matters later.
 
-**File permissions.** `/opt/kratos/kratos.yml` is currently root:root 0644, and the unit runs
-under `DynamicUser=yes`, whose ephemeral uid can only read world-readable files. Putting
-`<SECRET>` in that file therefore makes it readable by any local account. The secret only
-grants "write a consent row for an identity id you name" — no reads, no dashboard access — so
-this is a modest exposure, but it is worth closing: create a static `kratos-conf` group, add
-`SupplementaryGroups=kratos-conf` to the unit, and set the config to `root:kratos-conf` 0640.
-The group must NOT be named `kratos`: `DynamicUser=yes` allocates a dynamic user and group named
+**File permissions.** `/opt/kratos/kratos.yml` holds `<SECRET>` and is `root:kratos-conf` 0640
+on the host; the unit reaches it through `SupplementaryGroups=kratos-conf`. `DynamicUser=yes`
+gives the service an ephemeral uid that can otherwise read only world-readable files, so the
+0644 the file started at exposed the secret to every local account. Annex II A.5 of the DPA
+states that restriction as a fact, so the mode and the unit's supplementary group have to stay
+together: either alone leaves the service unable to start or the secret world-readable. The
+group must NOT be named `kratos`: `DynamicUser=yes` allocates a dynamic user and group named
 after the unit, and a static namesake group collides with that allocation, failing the start
-with `217/USER` (observed live). Kratos has
-no file-based input for a hook secret and Ory's config loader cannot set a list item from an
-environment variable, so there is no way to keep the value out of the config file entirely.
+with `217/USER` (observed live). Kratos has no file-based input for a hook secret and Ory's
+config loader cannot set a list item from an environment variable, so there is no way to keep
+the value out of the config file entirely.
 
 ## Removing `subscribed`, and the node that outlives it
 
@@ -337,9 +337,9 @@ accounts that existed before any of this.
 Both money-taking routes refuse without a current-version row and then write their own; a
 plan change is a fresh commitment at a new price, so the rule cannot stop at checkout.
 
-The DPA's own second acceptance route, notice followed by continued use, leaves no row at all:
-its evidence is the sent message, kept outside this database with the signed legal records, and
-`docs/legal/README.md` carries the step that sends it.
+Notice followed by continued use, one of the DPA's three acceptance routes, leaves no row at
+all: its evidence is the sent message, kept outside this database with the signed legal records,
+and `docs/legal/README.md` carries the step that sends it.
 
 A `checkout` row always appends, even when a `gate` row for the same version is already on
 file. It is a distinct act: it names an organization and carries the authority-to-bind

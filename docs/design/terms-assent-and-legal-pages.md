@@ -774,25 +774,25 @@ call.
   owner took the first. The Service sends on the edge provider's Email Service alone and the row is
   out of both the list and Annex II.H, so the published annex names no vendor without a stated
   location and mechanism. The settled Privacy Policy names no fallback either.
-- **The two constants' values.** `TERMS_VERSION` and `PRIVACY_NOTICE_VERSION` to the deploy date,
-  one commit on the branch. Both constants read `2026-09-14` in the code while the settled text
-  deploys later, so leaving them would make the page and the existing rows disagree.
+- **The two constants' values.** Both constants read `2026-09-21`, the date the settled text
+  landed on the branch. The ruling above makes the production deploy date the value, so a deploy
+  on a later day moves them again, in one commit before fancier ships, or the pages and the rows
+  they stamp disagree.
 - **Whether the superseded privacy text is archived.** `docs/legal/archive/privacy-2026-09-04.md`
   exists so a row stamped with the old version can still be resolved back to the words on screen;
   the row-count query in section 9.3 decides whether production holds any such row.
-- **The retention row for the assent record**, in the settled Privacy Policy, plus the sentence
-  that we keep one. Until counsel adds them, every assent row is deleted with the identity and
-  carries no address or user agent, which is what the published policy describes.
-- **Module Three, which the Privacy Policy does not name.** DPA 9.2 extends the clauses to Module
-  Three where the customer is itself a processor for a third-party controller; the settled Policy
-  names Module Two, with the UK Addendum and the Swiss adaptations, as the basis for customer data
-  transferred to the United States. This one is separated from the seven below because it is not
-  DPA-internal: it contradicts a settled document shipping in the same deployment, which is the
-  class of defect the memo's second item exists to prevent. Drop the sentence from the published
-  DPA so the two agree, or keep it and log it as the first thing counsel's version resolves.
-- **The seven other open DPA content questions.** They publish under the conservative reading
-  already in the draft, with the status line saying counsel's review is pending, and her version
-  replaces them under the DPA's own Section 12.2. `map-dpa-content.md` sets each out.
+- **The retention row for the assent record** is in the settled Privacy Policy, and the code
+  matches it: a row is version, account, time and source, carries no address or user agent, and is
+  deleted with the account. The DPA's Annex II account-deletion item says the same, so moving that
+  line now means moving two published documents together.
+- **Module Three.** DPA 9.2 extends the clauses to Module Three where the customer is itself a
+  processor for a third-party controller, and the settled Policy now names it alongside Module Two,
+  with the UK Addendum and the Swiss adaptations. The two agree, and an edit to either has to keep
+  them agreeing: a contradiction between two documents shipping in one deployment is the class of
+  defect the memo's second item exists to prevent, and neither shows it on its own.
+- **The seven other open DPA content questions.** Counsel's final DPA replaced the draft they were
+  raised against, so the published text answers them and carries no status line about a pending
+  review. `map-dpa-content.md` records what each one was.
 - **Blocking existing accounts on day one, rather than 30 days' notice first.** The revised Terms
   promise 30 days' email notice for material changes to existing customers; a clause cannot govern
   its own adoption, and the superseded Terms promise only notice via the site, which publishing the
@@ -896,11 +896,10 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
 - **Two deploys, one version.** The pages and the rows are stamped by two separately deployed
   binaries. The ordering rule holds only if whoever bumps the constant follows it, and nothing
   enforces it mechanically.
-- **The Privacy Policy does not yet describe this record.** The code takes the defaults that keep
-  the deployment inside what the policy says: no address, no user agent, and erasure
-  with the identity. What that costs is the evidence in exactly the case it was kept for, a
-  dispute with someone who has since deleted their account, so one retention row in the settled
-  policy is still worth asking counsel for.
+- **The record is erased with the account.** The Privacy Policy's retention table says so and the
+  code matches it: no address, no user agent, erasure with the identity. What that costs is the
+  evidence in exactly the case the record was kept for, a dispute with someone who has since
+  deleted their account.
 - **The second ask after registration** reads as a bug to a user who has just ticked a box. The
   `localStorage` handoff in section 4.2 is the escape hatch, and until it exists the gate copy has
   to do real work to explain itself.
