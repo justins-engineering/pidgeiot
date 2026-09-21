@@ -37,7 +37,7 @@ pub const TURNSTILE_SITE_KEY: &str = match option_env!("TURNSTILE_SITE_KEY") {
   None => "1x00000000000000000000AA",
 };
 
-/// Whether paid subscriptions are actually charging yet. False through
-/// beta, which is what keeps the pricing page's "not billing yet" badges
-/// and its upgrade buttons saying the same thing.
-pub const BILLING_LIVE: bool = false;
+/// Whether paid subscriptions are actually charging. Off through beta,
+/// when the pricing page's upgrade button was a disabled chip for
+/// everyone; on, the button offers checkout to a signed-in visitor.
+pub const BILLING_LIVE: bool = true;

@@ -367,7 +367,7 @@ three call sites, rendered from one capsules constant:
 - `fancier/src/views/pricing.rs:258`, the `UpgradeOrgCreate` modal, whose one-field design
   (`pricing.rs:179-186`) is preserved: a notice line is not a field.
 - `fancier/src/views/org.rs:768`, the org page's upgrade button, the only live route to checkout
-  while `BILLING_LIVE = false`.
+  while `BILLING_LIVE` is off.
 
 `capsules::BillingCheckoutRequest` is unchanged, so this commit does not span three crates.
 `api::billing::checkout` already calls `fetch_json_any_status`, so a 409 is distinguishable by
@@ -799,7 +799,8 @@ call.
   page satisfies. There is no paying customer and the only thing blocked is the dashboard. A future
   bump should use an effective-date constant and a banner during the notice window rather than a
   wall on day one.
-- **`BILLING_LIVE`.** Unchanged at `false` unless the owner says otherwise. It gates only the
+- **`BILLING_LIVE`.** Flipped to `true` on the owner's word once the legal pages were live,
+  with the "not billing yet" copy retired in the same change. It gates only the
   pricing CTA: the org page is already a live route to checkout, so the checkout notice and the 409
   ship regardless.
 
