@@ -224,10 +224,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     return None
 
 
+# Cloudflare's Browser Integrity Check refuses Python's default agent with a 1010
+# before the worker sees the request; curl on the VPS and browsers pass.
+USER_AGENT = "pidgeiot-ops/1 (+https://pidgeiot.com)"
+
+
 def http(method, url, body=None, headers=None, follow=True):
   """Returns (status, header list of (name, value), text body)."""
   request = urllib.request.Request(url, data=body, method=method,
-                                   headers=headers or {})
+                                   headers={"User-Agent": USER_AGENT, **(headers or {})})
   opener = urllib.request.build_opener(*([] if follow else [NoRedirect]))
   try:
     with opener.open(request, timeout=30) as resp:
