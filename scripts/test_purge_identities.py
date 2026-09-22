@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Unit tests for the purge planner and the internal/external classification.
+
+  python3 -m unittest discover -s scripts -p 'test_*.py'
+
+Pure functions only: nothing here opens a socket, a database or a shell.
+"""
+
+import importlib.util
+import json
+import os
+import tempfile
+import unittest
+
+_SPEC = importlib.util.spec_from_file_location(
+  "purge_identities",
+  os.path.join(os.path.dirname(os.path.abspath(__file__)), "purge-identities.py"))
+purge = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(purge)
+
+KEEPS = purge.KEEP_EMAILS
+HELD = purge.HELD_EMAILS
+OPTIONS = {"delete_envs": ["staging"], "mode": "fixture", "orphan_stripe": False}
+
+
+def empty_inventory(env="staging", **overrides):
+  inv = {"env": env, "flocks": [], "pigeons": [], "acl": [], "orgs": [], "alerts": [],
+         "dashboard_state": [], "invites": [], "consent": [], "errors": 0, "contact": 0,
+         "usage": 0, "member_refs": [], "owner_email": 0}
+  inv.update(overrides)
+  return inv
+
+
+def org_row(org_id, role="owner", name="Org", customer="", subscription="",
+            members=1, owners=1, flocks=0):
+  return [org_id, role, name, customer, subscription, str(members), str(owners), str(flocks)]
+
+
+class Classification(unittest.TestCase):
+  def test_the_four_keeps_are_never_candidates(self):
+    for email in KEEPS:
+      self.assertEqual(purge.classify_email(email, KEEPS, HELD), "keep")
+
+  def test_a_stranger_is_external(self):
+    for email in ("someone@gmail.com", "helpdesk@pvta.com", "2166724122@qq.com"):
+      self.assertEqual(purge.classify_email(email, KEEPS, HELD), "external")
+
+  def test_the_mail_catcher_is_held_but_its_plus_addresses_are_not(self):
+    self.assertEqual(purge.classify_email("staging-catch@pidgeiot.com", KEEPS, HELD), "held")
+    self.assertEqual(
+      purge.classify_email("staging-catch+alertdiag-f4d51c@pidgeiot.com", KEEPS, HELD),
+      "candidate")
+
+  def test_each_internal_pattern_on_its_own(self):
+    for email in ("code+consent-verify-1@jes.contact", "someone@example.com",
+                  "person+e2e-1@elsewhere.net", "test-run@elsewhere.net"):
+      self.assertEqual(purge.classify_email(email, KEEPS, HELD), "candidate")
+
+  def test_case_and_whitespace_do_not_change_the_class(self):
+    self.assertEqual(purge.classify_email("  CODE@JES.contact ", KEEPS, HELD), "keep")
+
+  def test_an_extra_keep_wins_over_the_internal_rule(self):
+    keeps = set(KEEPS) | {"staging-catch+samples98-9fe947@pidgeiot.com"}
+    self.assertEqual(
+      purge.classify_email("staging-catch+samples98-9fe947@pidgeiot.com", keeps, HELD), "keep")
+
+  def test_a_missing_address_is_external_rather_than_a_candidate(self):
+    self.assertEqual(purge.classify_email("", KEEPS, HELD), "external")
+
+
+class InventoryLoading(unittest.TestCase):
+  def _write(self, text):
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    handle.write(text)
+    handle.close()
+    self.addCleanup(os.unlink, handle.name)
+    return handle.name
+
+  def test_json_lines(self):
+    path = self._write('{"id":"a","traits":{"email":"A@x"},"state":"active"}\n'
+                       '{"id":"b","traits":{"email":"b@x"},"state":"active"}\n')
+    self.assertEqual([i["email"] for i in purge.load_identities(path)], ["a@x", "b@x"])
+
+  def test_concatenated_pages(self):
+    page = json.dumps([{"id": "a", "traits": {"email": "a@x"}}])
+    self.assertEqual(len(purge.load_identities(self._write(page + page))), 2)
+
+  def test_a_traitless_identity_still_loads(self):
+    self.assertEqual(purge.load_identities(self._write('{"id":"a"}'))[0]["email"], "")
+
+
+class Planner(unittest.TestCase):
+  identity = {"id": "11111111-1111-1111-1111-111111111111", "email": "fixture@jes.contact"}
+
+  def plan(self, inv, options=None):
+    return purge.plan_identity(self.identity, {"staging": inv}, options or OPTIONS)
+
+  def kinds(self, plan):
+    return [(s["kind"], s["target"]) for s in plan["steps"]]
+
+  def test_nothing_owned_still_purges_the_identity(self):
+    plan = self.plan(empty_inventory())
+    self.assertEqual(plan["steps"], [])
+    self.assertEqual(plan["holds"], [])
+    self.assertEqual(plan["empty_envs"], ["staging"])
+
+  def test_an_environment_holding_anything_is_not_marked_empty(self):
+    plan = self.plan(empty_inventory(errors=1))
+    self.assertEqual(plan["empty_envs"], [])
+
+  def test_pigeons_are_deleted_before_their_flock(self):
+    inv = empty_inventory(
+      flocks=[["f1", "Flock", "", "2"]],
+      pigeons=[["p1", "f1"], ["p2", "f1"]])
+    self.assertEqual(self.kinds(self.plan(inv)),
+                     [("pigeon", "p1"), ("pigeon", "p2"), ("flock", "f1")])
+
+  def test_a_flock_is_deleted_before_the_org_that_owns_it(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "o1", "0"]],
+                          orgs=[org_row("o1", flocks=1)])
+    self.assertEqual(self.kinds(self.plan(inv)), [("flock", "f1"), ("org-delete", "o1")])
+
+  def test_an_org_with_another_member_is_held_not_transferred(self):
+    plan = self.plan(empty_inventory(orgs=[org_row("o1", members=2)]))
+    self.assertEqual(plan["steps"], [])
+    self.assertIn("successor", plan["holds"][0])
+
+  def test_membership_of_someone_elses_org_is_left_not_deleted(self):
+    plan = self.plan(empty_inventory(orgs=[org_row("o1", role="member", members=3)]))
+    self.assertEqual(self.kinds(plan), [("org-leave", "o1")])
+
+  def test_a_stripe_carrying_org_is_held_until_the_flag_names_a_reason(self):
+    inv = empty_inventory(orgs=[org_row("o1", customer="cus_x", subscription="sub_x")])
+    self.assertIn("Stripe", self.plan(inv)["holds"][0])
+    allowed = dict(OPTIONS, orphan_stripe=True)
+    self.assertEqual(self.kinds(self.plan(inv, allowed)), [("org-delete", "o1")])
+
+  def test_pending_invites_are_revoked_before_their_org_goes(self):
+    inv = empty_inventory(orgs=[org_row("o1")],
+                          invites=[["i1", "o1", "x@y", "f"], ["i2", "o1", "z@y", "t"]])
+    self.assertEqual(self.kinds(self.plan(inv)),
+                     [("invite", "o1/i1"), ("org-delete", "o1")])
+
+  def test_a_pending_invite_on_a_surviving_org_holds_the_identity(self):
+    inv = empty_inventory(invites=[["i1", "o9", "x@y", "f"]])
+    self.assertIn("surviving org o9", self.plan(inv)["holds"][0])
+
+  def test_a_flock_of_an_org_that_is_not_solely_theirs_is_held(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "o1", "0"]],
+                          orgs=[org_row("o1", members=2)])
+    self.assertEqual(self.kinds(self.plan(inv)), [])
+    self.assertTrue(any("not solely theirs" in h for h in self.plan(inv)["holds"]))
+
+  def test_error_reports_and_saved_graphs_each_get_a_step(self):
+    inv = empty_inventory(errors=3, dashboard_state=[["graphs.v1.pigeon.p1"], ["graphs.v1.f"]])
+    self.assertEqual(self.kinds(self.plan(inv)),
+                     [("errors", ""), ("dashboard-state", "graphs.v1.pigeon.p1"),
+                      ("dashboard-state", "graphs.v1.f")])
+
+  def test_a_grant_on_someone_elses_pigeon_is_a_note_never_a_delete(self):
+    plan = self.plan(empty_inventory(acl=[["p9", "owner", "f"]]))
+    self.assertEqual(plan["steps"], [])
+    self.assertIn("Durable Object", plan["notes"][0])
+
+  def test_rows_in_an_unselected_environment_hold_the_identity(self):
+    plans = purge.plan_identity(
+      self.identity,
+      {"staging": empty_inventory(), "prod": empty_inventory("prod", errors=1)},
+      OPTIONS)
+    self.assertEqual(plans["holds"], ["rows in prod, which this run did not select"])
+
+  def test_an_empty_unselected_environment_is_not_a_hold(self):
+    plans = purge.plan_identity(
+      self.identity,
+      {"staging": empty_inventory(), "prod": empty_inventory("prod")},
+      OPTIONS)
+    self.assertEqual(plans["holds"], [])
+
+
+class Sweep(unittest.TestCase):
+  def labels(self, mode):
+    return {label: sql for label, sql in purge.sweep_sql(mode)}
+
+  def test_fixture_mode_takes_both_consent_purposes(self):
+    self.assertNotIn("purpose", self.labels("fixture")["consent_events"])
+
+  def test_erasure_mode_keeps_the_terms_assent_and_erases_anything_else(self):
+    sql = self.labels("erasure")["consent_events"]
+    self.assertIn(f"purpose <> '{purge.TERMS_PURPOSE}'", sql)
+    self.assertNotIn("marketing_emails", sql)
+
+  def test_correspondence_is_detached_rather_than_deleted(self):
+    self.assertTrue(self.labels("fixture")["contact_submissions"].startswith("UPDATE"))
+
+  def test_every_footprint_table_is_swept_or_verified(self):
+    swept = " ".join(sql for _label, sql in purge.sweep_sql("fixture"))
+    verified = " ".join(purge.VERIFY_QUERIES.values())
+    for table in ("consent_events", "contact_submissions", "billing_usage_periods",
+                  "billing_meter_reports", "organization_members", "organization_invites",
+                  "pigeon_acl", "error_events", "dashboard_state"):
+      self.assertIn(table, swept, table)
+    for table in ("flocks", "pigeon_acl", "alert_definitions", "organization_members",
+                  "organization_invites", "consent_events", "dashboard_state",
+                  "error_events", "contact_submissions", "billing_usage_periods"):
+      self.assertIn(table, verified, table)
+
+
+class Paths(unittest.TestCase):
+  def test_each_step_kind_maps_to_its_documented_route(self):
+    cases = {
+      ("pigeon", "p1"): "/pigeons/p1",
+      ("flock", "f1"): "/flocks/f1",
+      ("alert", "a1"): "/alerts/a1",
+      ("errors", ""): "/errors",
+      ("dashboard-state", "graphs.v1.pigeon.p1"): "/dashboard-state/graphs.v1.pigeon.p1",
+      ("invite", "o1/i1"): "/orgs/o1/invites/i1",
+      ("org-delete", "o1"): "/orgs/o1",
+    }
+    for (kind, target), path in cases.items():
+      self.assertEqual(purge.step_path({"kind": kind, "target": target}), path)
+
+  def test_a_slash_in_a_scope_key_cannot_escape_its_segment(self):
+    self.assertEqual(purge.step_path({"kind": "dashboard-state", "target": "a/b"}),
+                     "/dashboard-state/a%2Fb")
+
+
+class GoneChecks(unittest.TestCase):
+  def test_an_invite_is_checked_by_its_own_id_not_the_org_prefixed_target(self):
+    self.assertEqual(purge.gone_target({"kind": "invite", "target": "o1/i1"}), "i1")
+
+  def test_every_other_kind_checks_its_target_verbatim(self):
+    self.assertEqual(purge.gone_target({"kind": "flock", "target": "f1"}), "f1")
+
+  def test_each_check_covers_a_kind_the_planner_can_emit(self):
+    for kind in purge.GONE_CHECKS:
+      self.assertIn(kind, {"flock", "alert", "dashboard-state", "invite", "org-delete",
+                           "errors"})
+
+
+class ConnectionStrings(unittest.TestCase):
+  def test_the_dev_string_decomposes_into_pg_variables(self):
+    env = purge.pg_env(purge.DEV_PG_FALLBACK)
+    self.assertEqual(env["PGHOST"], "127.0.0.1")
+    self.assertEqual(env["PGDATABASE"], "dovecote")
+    self.assertEqual(env["PGSSLMODE"], "disable")
+
+  def test_a_percent_encoded_password_is_decoded(self):
+    env = purge.pg_env("postgres://u:p%40ss@h:5433/d?sslmode=require")
+    self.assertEqual(env["PGPASSWORD"], "p@ss")
+    self.assertEqual(env["PGPORT"], "5433")
+
+
+if __name__ == "__main__":
+  unittest.main()

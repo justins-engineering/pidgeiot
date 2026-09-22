@@ -10,3 +10,6 @@ kratos.yml
 # prune-worktrees.sh is deliberately tracked; everything else here is local.
 .claude/*
 !.claude/prune-worktrees.sh
+
+# Python bytecode from scripts/
+__pycache__/

@@ -226,7 +226,9 @@ API: read every identity's traits, change credentials, and permanently delete
 identities. Deletion is the sharp edge — `flocks.user_id` and every DO-resident
 `pigeon_acl` key are keyed on Kratos identity IDs (see the identity-remap
 warning in `CLAUDE.md`), so removing an identity here strands that user's
-flocks and pigeons in a way no undo in this console can repair. A support hire
+flocks and pigeons in a way no undo in this console can repair. Deleting an
+account is therefore [`account-deletion.md`](./account-deletion.md)'s
+procedure, not this console's delete button. A support hire
 who only ever needed to read an email address would be one misclick from that.
 So: **adding a support person to `PidgeIoT Admins` is not the way to give them
 customer visibility, now or later.** That group means "full production identity
