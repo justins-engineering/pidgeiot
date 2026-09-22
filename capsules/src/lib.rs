@@ -82,11 +82,11 @@ pub use dashboard_state::{
 
 /// The date the published privacy notice last changed, ISO 8601 so it sorts.
 ///
-/// It feeds the notice's own "Last updated" line and every consent event we
-/// record, and it lives in the shared crate because those are the two things
-/// that must never disagree: a stored consent naming a version the page no
-/// longer shows cannot be resolved back to the words the person was shown.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-21";
+/// It feeds the notice's own "Last updated" line and every marketing consent
+/// row we record, and it lives in the shared crate because those are the two
+/// things that must never disagree: a stored consent naming a version the page
+/// no longer shows resolves only through `docs/legal/archive/`.
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-22";
 
 /// The date the published Terms of Service last changed, ISO 8601 so it sorts.
 ///
