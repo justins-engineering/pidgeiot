@@ -45,17 +45,20 @@ gate fires, and every row written in that window says an account accepted text i
 The other order is harmless: the pages show the new text for a few minutes while `dovecote` still
 considers the old one current, so no gate fires and no row is written.
 
-## Decisions counsel owns before the first deploy
+## Decisions counsel owns
 
 These are not agent actions and not engineering calls. Each is a place where what we deploy and
 what we publish have to be made to agree.
 
-- **The assent record is now in the Privacy Policy's retention table, and that closes the
-  Article 17(3)(e) question against us.** Every Terms assent row is version, account, time and
-  source, with no address and no user agent, and the policy says it is deleted with the account.
-  The DPA's Annex II G.3 states the same as a fact and keys any exception to what the policy
-  permits, so keeping a row past deletion for the contract limitation period would now make a
-  published clause false. Moving that line is a decision about the DPA as well as the policy.
+- **The assent record outlives the account, on the Article 17(3)(e) ground.** Every Terms assent
+  row is version, account, time and source, with no address and no user agent, and the Privacy
+  Policy's retention table keeps it while the account exists and afterward only as needed to
+  establish or defend our contractual rights or comply with legal obligations. The DPA does not
+  move with it: Section 2.2 makes the Privacy Policy the governing document for provider-controlled
+  records, Section 8.2 excepts retention the policy expressly provides for, and Annex II G.3 states
+  its account-deletion items "as applicable". A retained row is an identity id and a date once the
+  identity is gone, so the DSAR log has to keep the identity-to-email mapping or the row evidences
+  nothing.
 
 ## Shipping a change to these documents
 

@@ -376,12 +376,14 @@ run, so a warm isolate never takes the table's exclusive lock.
 
 ### Retention differs from a marketing row
 
-A marketing row is deleted with the identity, and so is a Terms assent row. Article 17(3)(e)
-would allow keeping the assent past deletion for the Massachusetts contract limitation period,
-where the evidence matters most, but the published retention table now carries a row saying it
-goes with the account and the DPA's Annex II G.5 states the same as a fact. **That retention is
-closed, not pending**: reopening it means moving both published documents. The row carries no
-address and no user agent in either case.
+A marketing row is deleted with the identity. A Terms assent row is not: the published
+retention table keeps it afterward, as needed to establish or defend our contractual rights or
+comply with legal obligations, which is the Article 17(3)(e) ground. The evidence is worth
+least at the moment it would be destroyed, because that is when the counterparty has left. The
+DPA needs no edit for it: Section 2.2 makes the Privacy Policy the governing document for
+provider-controlled records, Section 8.2 excepts retention the policy expressly provides for,
+and Annex II G.3 states its account-deletion items "as applicable". The row carries no address
+and no user agent either way.
 
 ### Bumping either version
 
@@ -444,12 +446,16 @@ SELECT purpose, kind, source, notice_version, at
 
 Account-deletion erasure — delete the rows rather than anonymise them (a consent event is
 *about* the identity and nothing else, so a row with the id removed means nothing), and only
-alongside deleting the identity itself. Both purposes go, until the published retention table
-carries a row for the assent record:
+alongside deleting the identity itself. Scope it to the marketing purpose: the assent rows are
+retained by the published table and deleting them is the one thing this statement must not do.
 
 ```sql
-DELETE FROM consent_events WHERE identity_id = '<id>';
+DELETE FROM consent_events
+  WHERE identity_id = '<id>' AND purpose = 'marketing_emails';
 ```
+
+The retained assent rows name an identity that no longer exists, so the DSAR log keeps the
+identity-to-email mapping for a deleted account or they evidence nothing.
 
 Both statements are repeated in the migration headers, which is where the erasure runbook
 already looks.

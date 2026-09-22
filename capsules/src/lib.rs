@@ -86,7 +86,7 @@ pub use dashboard_state::{
 /// row we record, and it lives in the shared crate because those are the two
 /// things that must never disagree: a stored consent naming a version the page
 /// no longer shows resolves only through `docs/legal/archive/`.
-pub const PRIVACY_NOTICE_VERSION: &str = "2026-09-22";
+pub const PRIVACY_NOTICE_VERSION: &str = "2026-10-26";
 
 /// The date the published Terms of Service last changed, ISO 8601 so it sorts.
 ///

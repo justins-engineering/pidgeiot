@@ -491,8 +491,9 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
 -- Consent history, marketing and Terms assent alike. The Kratos identity
 -- trait is the current state of a marketing choice and the person owns it;
--- these rows are the evidence, written only by dovecote and never updated
--- or deleted while the account exists. Column-by-column reasoning, plus the
+-- these rows are the evidence, written only by dovecote and never updated.
+-- Erasure is purpose-scoped: the marketing rows go with the account, the
+-- Terms assent rows outlive it. Column-by-column reasoning, plus the
 -- erasure and subject-access statements, live in
 -- infra/migrations/2026-08-27-consent-events.sql and
 -- infra/migrations/2026-09-14-terms-assent.sql.

@@ -102,11 +102,15 @@ CREATE INDEX IF NOT EXISTS idx_consent_events_identity
 -- Account-deletion erasure: unlike contact_submissions (where the row is
 -- correspondence the sender addressed to us and only `user_id` is
 -- cleared), a consent event is *about* the identity and nothing else, so
--- anonymising it would leave a row that means nothing. Delete it:
---   DELETE FROM consent_events WHERE identity_id = '<id>';
+-- anonymising it would leave a row that means nothing. Delete the
+-- marketing rows, and only those:
+--   DELETE FROM consent_events
+--     WHERE identity_id = '<id>' AND purpose = 'marketing_emails';
 -- Do this only alongside deleting the identity itself. While the account
 -- exists the history is what demonstrates the consent we are relying on,
--- and Article 7(1) is the reason to keep it.
+-- and Article 7(1) is the reason to keep it. The Terms assent rows outlive
+-- the account under the published retention table; see
+-- infra/migrations/2026-09-14-terms-assent.sql.
 --
 -- Subject access request -- everything on file about one person's
 -- consent, in the order it happened:

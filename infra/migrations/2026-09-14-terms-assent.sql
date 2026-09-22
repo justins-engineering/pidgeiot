@@ -58,14 +58,16 @@ END $$;
 --   SELECT purpose, kind, source, notice_version, at
 --     FROM consent_events WHERE identity_id = '<id>' ORDER BY seq;
 --
--- Account-deletion erasure: every row for the identity goes, both purposes.
---   DELETE FROM consent_events WHERE identity_id = '<id>';
+-- Account-deletion erasure: the marketing rows go, the assent rows stay.
+--   DELETE FROM consent_events
+--     WHERE identity_id = '<id>' AND purpose = 'marketing_emails';
 --
--- Keeping a Terms assent past deletion under Article 17(3)(e) -- evidence of
--- a contract, for the limitation period -- is the retention the design argues
--- for, and it needs its own row in the published Privacy Policy first: the
--- policy as published promises that deleting an account deletes everything
--- the retention table does not list. Until that row exists, erasure takes the
--- assent rows with it. No row carries an ip or a user agent either way.
+-- A Terms assent outlives the account under Article 17(3)(e) -- evidence of a
+-- contract, kept as needed to establish or defend our contractual rights or
+-- comply with legal obligations -- and the published Privacy Policy's
+-- retention table says so, which is what makes the retention lawful to rely
+-- on. Once the identity is gone the row is an id and a date, so the DSAR log
+-- keeps the identity-to-email mapping or the row evidences nobody. No row
+-- carries an ip or a user agent either way.
 
 RESET ROLE;
