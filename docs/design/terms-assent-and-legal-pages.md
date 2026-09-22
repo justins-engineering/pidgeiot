@@ -384,15 +384,15 @@ completion, and would change the test-pinned parameter set
 
 ## 5. Versions, and the "Last updated" line
 
-### 5.1 Two constants
+### 5.1 One constant per document
 
 ```rust
 /// The date the published Terms of Service last changed, ISO 8601 so it sorts.
 ///
-/// It feeds the Terms page's own "Last updated" line, the DPA and sub-processor
-/// list published with them, and every Terms assent we record. Bumping it is
-/// the decision that a version needs fresh assent: every account is asked again
-/// on its next sign-in, so a wording fix that needs no re-assent must not move it.
+/// It feeds the Terms page's own "Last updated" line and every Terms assent we
+/// record. Bumping it is the decision that a version needs fresh assent: every
+/// account is asked again on its next sign-in, so a wording fix that needs no
+/// re-assent must not move it.
 pub const TERMS_VERSION: &str = "2026-09-XX";
 ```
 
@@ -402,15 +402,16 @@ depend on, so the two cannot name different documents. **No wrangler var**: a Wo
 dovecote only, and the page could then disagree with the rows, which is the exact failure the
 constant exists to prevent.
 
-One constant covers Terms, DPA and sub-processor list. The DPA forms part of the Terms and the
-sub-processor list forms part of the DPA, and all three ship in one deployment. The Privacy Policy
-renders `PRIVACY_NOTICE_VERSION`, bumped to the same deploy date. If the
-DPA ever changes on its own under its Section 12.2 while the Terms stand still, split then: a
-`DPA_VERSION` constant and nothing else moves. Adding it now gives the owner two dates to keep in
-step at every deploy and buys nothing.
+Four documents, four constants: the Privacy Policy renders `PRIVACY_NOTICE_VERSION`, the DPA
+`DPA_VERSION`, the sub-processor list `SUBPROCESSORS_VERSION`. One constant covered all but the
+Policy at first, on the reasoning that the DPA forms part of the Terms, the list forms part of the
+DPA, and all three ship in one deployment. The DPA then changed on its own under its Section 12.2
+while the Terms stood still, which is the case that splits them: `TERMS_VERSION` is the version
+every assent row is stamped with, so dating a DPA or sub-processor change off it would ask every
+account to accept the Terms again for words they already accepted.
 
-A capsules unit test asserts both constants match `^\d{4}-\d{2}-\d{2}$`. No such test exists today
-and a malformed value would ship silently into every row.
+A capsules unit test asserts all four constants match `^\d{4}-\d{2}-\d{2}$`. A malformed value
+would otherwise ship silently into every row.
 
 ### 5.2 One token, two substituters
 
@@ -421,7 +422,7 @@ unchecked hand edit at every deploy.
 
 - **HTML page.** `helpers/legal_doc.rs::render(src, version)` does one `str::replace` before
   parsing, inside the `use_memo` that already runs once per mount. Terms, DPA and sub-processors
-  pass `TERMS_VERSION`; Privacy passes `PRIVACY_NOTICE_VERSION`.
+  pass their own constant, and `build-release.sh` reads the same four.
 - **Markdown variant.** `fancier/scripts/build-release.sh` reads the constants out of
   `capsules/src/lib.rs` and substitutes during the copy, in the same block that already copies
   `docs/api.md` to `api-reference/index.md` (`build-release.sh:196-205`):
@@ -765,8 +766,8 @@ Everything the implementation could settle for itself, it settled, and the reaso
 mechanism it belongs to. What is left is owner and counsel work, and none of it is an engineering
 call.
 
-- **Ruled by the owner on 2026-09-15: the deploy date, and how the gate asks.** The two constants
-  take the ISO date of the production deploy. The gate confirms rather than asking a second time,
+- **Ruled by the owner on 2026-09-15: the deploy date, and how the gate asks.** A constant takes
+  the ISO date of the production deploy that publishes the document it dates. The gate confirms rather than asking a second time,
   because the box at registration records nothing and the row is written here; no `localStorage`
   handoff carries that tick across, which would leave a row naming a surface the client chose.
 - **The useSend sub-processor row: settled, not blocking.** Of the three ways out -- remove the
@@ -774,10 +775,11 @@ call.
   owner took the first. The Service sends on the edge provider's Email Service alone and the row is
   out of both the list and Annex II.H, so the published annex names no vendor without a stated
   location and mechanism. The settled Privacy Policy names no fallback either.
-- **The two constants' values.** Both constants read `2026-09-21`, the date the settled text
-  landed on the branch. The ruling above makes the production deploy date the value, so a deploy
-  on a later day moves them again, in one commit before fancier ships, or the pages and the rows
-  they stamp disagree.
+- **The constants' values.** `TERMS_VERSION` and `SUBPROCESSORS_VERSION` read `2026-09-21`, the
+  date the settled text landed on the branch; `PRIVACY_NOTICE_VERSION` and `DPA_VERSION` read the
+  effective date of the changes those two documents carry. The ruling above makes the production
+  deploy date the value, so a deploy on a later day moves the ones whose document changed, in one
+  commit before fancier ships, or the pages and the rows they stamp disagree.
 - **Whether the superseded privacy text is archived.** `docs/legal/archive/privacy-2026-09-04.md`
   exists so a row stamped with the old version can still be resolved back to the words on screen;
   the row-count query in section 9.3 decides whether production holds any such row.

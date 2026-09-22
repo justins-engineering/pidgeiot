@@ -7,7 +7,7 @@
 //! substitution is the publication date, which the deployment decides.
 
 use crate::helpers::legal_doc;
-use capsules::{PRIVACY_NOTICE_VERSION, TERMS_VERSION};
+use capsules::{DPA_VERSION, PRIVACY_NOTICE_VERSION, SUBPROCESSORS_VERSION, TERMS_VERSION};
 use dioxus::prelude::*;
 
 const TERMS_MD: &str = include_str!("../../../docs/legal/terms.md");
@@ -97,7 +97,7 @@ pub fn DpaPage() -> Element {
   rsx! {
     LegalDocument {
       section_id: "data-processing-agreement",
-      version: TERMS_VERSION,
+      version: DPA_VERSION,
       source: DPA_MD,
     }
   }
@@ -106,7 +106,11 @@ pub fn DpaPage() -> Element {
 #[component]
 pub fn SubprocessorsPage() -> Element {
   rsx! {
-    LegalDocument { section_id: "subprocessors-list", version: TERMS_VERSION, source: SUBPROCESSORS_MD }
+    LegalDocument {
+      section_id: "subprocessors-list",
+      version: SUBPROCESSORS_VERSION,
+      source: SUBPROCESSORS_MD,
+    }
   }
 }
 
@@ -172,15 +176,19 @@ mod tests {
       .collect()
   }
 
-  /// Which route publishes each document, and where the build copies it
-  /// from. The order is the one `build-release.sh` uses.
+  /// Which route publishes each document, and the line `build-release.sh`
+  /// copies it with -- the date variable included, so a variant cannot be
+  /// dated from another document's constant. The order is the script's.
   const PUBLISHED: [(&str, &str); 4] = [
-    ("/terms/", "copy_legal terms terms.md"),
-    ("/privacy/", "copy_legal privacy privacy.md"),
-    ("/dpa/", "copy_legal dpa dpa.md"),
+    ("/terms/", r#"copy_legal terms terms.md "$TERMS_DATE""#),
+    (
+      "/privacy/",
+      r#"copy_legal privacy privacy.md "$PRIVACY_DATE""#,
+    ),
+    ("/dpa/", r#"copy_legal dpa dpa.md "$DPA_DATE""#),
     (
       "/subprocessors/",
-      "copy_legal subprocessors subprocessors.md",
+      r#"copy_legal subprocessors subprocessors.md "$SUBPROCESSORS_DATE""#,
     ),
   ];
 

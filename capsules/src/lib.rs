@@ -90,22 +90,45 @@ pub const PRIVACY_NOTICE_VERSION: &str = "2026-10-26";
 
 /// The date the published Terms of Service last changed, ISO 8601 so it sorts.
 ///
-/// It feeds the Terms page's own "Last updated" line, the DPA and sub-processor
-/// list published with them, and every Terms assent we record. Bumping it is
-/// the decision that a version needs fresh assent: every account is asked again
-/// on its next sign-in, so a wording fix that needs no re-assent must not move
-/// it.
+/// It feeds the Terms page's own "Last updated" line and every Terms assent we
+/// record. Bumping it is the decision that a version needs fresh assent: every
+/// account is asked again on its next sign-in, so a wording fix that needs no
+/// re-assent must not move it. It dates the Terms alone: the DPA and the
+/// sub-processor list carry their own constants, so dating a change to either
+/// cannot re-ask the question.
 pub const TERMS_VERSION: &str = "2026-09-21";
+
+/// The date the published Data Processing Agreement last changed, ISO 8601 so
+/// it sorts.
+///
+/// Moved by a change to `docs/legal/dpa.md`, re-dated to the day that change
+/// deploys. The DPA changes under its own Section 12.2 without fresh assent to
+/// the Terms, which is why it does not take `TERMS_VERSION`.
+pub const DPA_VERSION: &str = "2026-10-26";
+
+/// The date the published sub-processor list last changed, ISO 8601 so it
+/// sorts.
+///
+/// Moved by a change to `docs/legal/subprocessors.md`, re-dated to the day that
+/// change deploys. The list is maintained under the DPA's own Section 6 and
+/// moves far more often than either document it serves.
+pub const SUBPROCESSORS_VERSION: &str = "2026-09-21";
 
 #[cfg(test)]
 mod version_tests {
-  use super::{PRIVACY_NOTICE_VERSION, TERMS_VERSION};
+  use super::{DPA_VERSION, PRIVACY_NOTICE_VERSION, SUBPROCESSORS_VERSION, TERMS_VERSION};
 
-  /// Both constants are stamped into rows and rendered on a page, so a
-  /// malformed one would ship silently and sort wrongly against the rest.
+  /// Every constant dates a published page and two of them are stamped into
+  /// rows, so a malformed one would ship silently and sort wrongly against
+  /// the rest.
   #[test]
   fn version_constants_are_iso_dates() {
-    for version in [PRIVACY_NOTICE_VERSION, TERMS_VERSION] {
+    for version in [
+      PRIVACY_NOTICE_VERSION,
+      TERMS_VERSION,
+      DPA_VERSION,
+      SUBPROCESSORS_VERSION,
+    ] {
       let parts: Vec<&str> = version.split('-').collect();
       assert_eq!(parts.len(), 3, "{version} is not YYYY-MM-DD");
       assert!(

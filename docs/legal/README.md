@@ -14,8 +14,9 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 `archive/` holds superseded published text, named for the version it was published as, so a consent
 row stamped with an older version can still be resolved back to the words that were on screen.
 It covers the Terms, the DPA and the sub-processor list as much as the Policy: one Terms assent row
-stamps `TERMS_VERSION` for all three, so a change to any of them that does not move that constant
-still leaves superseded text to archive.
+stamps `TERMS_VERSION` for all three, so a change to the DPA or the list, which moves its own
+constant and not that one, still leaves superseded text to archive, as `archive/dpa-<version>.md`
+or `archive/subprocessors-<version>.md`.
 
 The `/privacy/#privacy-*` anchors the hand-written page shipped before 2026-09-14 do not survive:
 heading ids now come from the heading text, the way `/api-reference/` has always produced them.
@@ -32,13 +33,14 @@ own Section 6.
 
 Each document carries the literal token `{{LAST_UPDATED}}` on its "Last updated" line, substituted
 twice over: by `fancier`'s `helpers::legal_doc::render` for the HTML page, and by
-`fancier/scripts/build-release.sh` for the markdown variant. Terms, DPA and sub-processor list
-render `capsules::TERMS_VERSION`; the Privacy Policy renders `capsules::PRIVACY_NOTICE_VERSION`.
-Both constants are ISO dates and a test holds them to that shape.
+`fancier/scripts/build-release.sh` for the markdown variant. Each page renders its own constant
+from `capsules/src/lib.rs`: `/terms/` renders `TERMS_VERSION`, `/privacy/`
+`PRIVACY_NOTICE_VERSION`, `/dpa/` `DPA_VERSION`, `/subprocessors/` `SUBPROCESSORS_VERSION`. All
+four are ISO dates and a test holds them to that shape.
 
 `TERMS_VERSION` is also what every Terms assent row is stamped with, so bumping it asks every
 account to accept again on its next sign-in. A wording fix that needs no fresh assent must not move
-it.
+it, and a change to the DPA or the sub-processor list moves that document's own constant instead.
 
 ## Deploy order on a version bump: fancier first, then dovecote
 
@@ -68,11 +70,11 @@ what we publish have to be made to agree.
 Nothing here is an agent action. The full reasoning is in
 `docs/design/terms-assent-and-legal-pages.md` section 11; this is the list.
 
-1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set
-   `TERMS_VERSION` (and `PRIVACY_NOTICE_VERSION` if the policy moved) to the deploy date. The
-   open sub-processor question is answered: the fallback email vendor was removed from the
-   Service, so the only vendor on the list that carries our mail is the edge provider. The
-   Resend row stays, and says on its face that no data reaches it.
+1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set each
+   changed document's own constant to the deploy date. The open sub-processor question is answered:
+   the fallback email vendor was removed from the Service, so the only vendor on the list that
+   carries our mail is the edge provider. The Resend row stays, and says on its face that no data
+   reaches it.
 2. Apply `infra/migrations/2026-08-27-consent-events.sql` and then
    `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, in that order, then
    deploy fancier and dovecote to staging **in that order** too. The first file creates the table
