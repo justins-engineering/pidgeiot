@@ -13,6 +13,9 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 
 `archive/` holds superseded published text, named for the version it was published as, so a consent
 row stamped with an older version can still be resolved back to the words that were on screen.
+It covers the Terms, the DPA and the sub-processor list as much as the Policy: one Terms assent row
+stamps `TERMS_VERSION` for all three, so a change to any of them that does not move that constant
+still leaves superseded text to archive.
 
 The `/privacy/#privacy-*` anchors the hand-written page shipped before 2026-09-14 do not survive:
 heading ids now come from the heading text, the way `/api-reference/` has always produced them.
