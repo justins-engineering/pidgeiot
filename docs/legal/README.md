@@ -8,7 +8,7 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 | --- | --- | --- |
 | `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-15.md` |
 | `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-15.md` |
-| `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-20.md` |
+| `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-22.md` |
 | `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, then maintained here |
 
 `archive/` holds superseded published text, named for the version it was published as, so a consent
@@ -53,12 +53,12 @@ what we publish have to be made to agree.
 - **The assent record outlives the account, on the Article 17(3)(e) ground.** Every Terms assent
   row is version, account, time and source, with no address and no user agent, and the Privacy
   Policy's retention table keeps it while the account exists and afterward only as needed to
-  establish or defend our contractual rights or comply with legal obligations. The DPA does not
-  move with it: Section 2.2 makes the Privacy Policy the governing document for provider-controlled
-  records, Section 8.2 excepts retention the policy expressly provides for, and Annex II G.3 states
-  its account-deletion items "as applicable". A retained row is an identity id and a date once the
-  identity is gone, so the DSAR log has to keep the identity-to-email mapping or the row evidences
-  nothing.
+  establish or defend our contractual rights or comply with legal obligations. Section 2.2 makes
+  the Privacy Policy the governing document for provider-controlled records and Section 8.2 excepts
+  retention the policy expressly provides for, and Annex II G.3 now says so on its own face: it
+  names the acceptance record among the retained provider-controlled records rather than among the
+  items account deletion removes. A retained row is an identity id and a date once the identity is
+  gone, so the DSAR log has to keep the identity-to-email mapping or the row evidences nothing.
 
 ## Shipping a change to these documents
 

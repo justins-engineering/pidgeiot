@@ -380,10 +380,10 @@ A marketing row is deleted with the identity. A Terms assent row is not: the pub
 retention table keeps it afterward, as needed to establish or defend our contractual rights or
 comply with legal obligations, which is the Article 17(3)(e) ground. The evidence is worth
 least at the moment it would be destroyed, because that is when the counterparty has left. The
-DPA needs no edit for it: Section 2.2 makes the Privacy Policy the governing document for
-provider-controlled records, Section 8.2 excepts retention the policy expressly provides for,
-and Annex II G.3 states its account-deletion items "as applicable". The row carries no address
-and no user agent either way.
+DPA agrees: Section 2.2 makes the Privacy Policy the governing document for provider-controlled
+records, Section 8.2 excepts retention the policy expressly provides for, and Annex II G.3
+names the acceptance record among the retained provider-controlled records rather than among
+the items account deletion removes. The row carries no address and no user agent either way.
 
 ### Bumping either version
 
