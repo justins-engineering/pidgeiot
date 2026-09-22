@@ -11,15 +11,19 @@ session for an identity on that pigeon's own access list.
 
 So the order is forced and this script exists to hold it: inventory first,
 then delete through the product's own routes as the account, then sweep
-what no route reaches, then the identity, then verify with direct psql.
+what no route reaches, then prove by direct psql that nothing is left, and
+only then the identity -- proving it afterwards would report the problem
+one step too late to fix.
 
   scripts/purge-identities.py --env dev --identities ids.txt
   scripts/purge-identities.py --env both --candidates-from identities.json
-  scripts/purge-identities.py --env staging --candidates-from ids.json --apply
+  scripts/purge-identities.py --env both --candidates-from ids.json --apply
 
-Dry run is the default; --apply asks for the plan's candidate count typed
-back on a terminal. One Kratos serves staging and production, so `both` is
-one identity list against two databases.
+Dry run is what happens without --apply, which asks for the plan's ready
+count typed back on a terminal. One Kratos serves staging and production,
+so `both` is one identity list against two databases -- and the only --env
+that can finish an account holding rows in each, since rows in a database
+the run did not select are a hold.
 
 Connection strings are read by name from the environment, else from
 `secrets.env`, and are decomposed into PG* variables so they never reach
@@ -206,6 +210,11 @@ class Database:
     """One statement batch in a single transaction."""
     return self.rows("BEGIN;\n" + sql + "\nCOMMIT;\n", **params)
 
+  def opened(self):
+    """Server and database, so two environments cannot silently share one."""
+    return tuple(self.rows("SELECT current_database(),"
+                           " coalesce(inet_server_addr()::text, 'local'), inet_server_port();")[0])
+
 
 # --- http --------------------------------------------------------------
 
@@ -341,6 +350,12 @@ INVENTORY_QUERIES = {
   "acl": "SELECT a.id, a.role, f.user_id = :'id'::uuid FROM pigeon_acl a"
          " JOIN pigeons p ON p.id = a.id JOIN flocks f ON f.id = p.flock_id"
          " WHERE a.entity_id = :'id'::uuid ORDER BY a.id",
+  # Grants OTHER entities hold on the pigeons this run would delete. The
+  # keep list protects accounts, not the devices they were granted.
+  "acl_others": "SELECT a.id, a.entity_id::text, a.role FROM pigeon_acl a"
+                " JOIN pigeons p ON p.id = a.id JOIN flocks f ON f.id = p.flock_id"
+                " WHERE f.user_id = :'id'::uuid AND a.entity_id <> :'id'::uuid"
+                " ORDER BY a.id, a.entity_id",
   "orgs": "SELECT m.org_id::text, m.role, o.name,"
           " coalesce(o.stripe_customer_id, ''), coalesce(o.stripe_subscription_id, ''),"
           " (SELECT count(*) FROM organization_members m2 WHERE m2.org_id = m.org_id)::text,"
@@ -367,6 +382,14 @@ INVENTORY_QUERIES = {
                  " (lower(email) = :'email' AND user_id <> :'id'::uuid) ORDER BY org_id",
   "owner_email": "SELECT count(*)::text FROM flocks"
                  " WHERE lower(owner_email) = :'email' AND user_id <> :'id'::uuid",
+  # An email channel is a reference to a person no id column carries.
+  # `position` rather than LIKE: an address may hold a `_` or a `%`.
+  "alert_recipients": "SELECT id::text, user_id::text FROM alert_definitions"
+                      " WHERE user_id <> :'id'::uuid"
+                      " AND position(:'email' IN lower(channel::text)) > 0 ORDER BY id",
+  # pigeon_acl.entity_id holds org ids too, so an org id pasted into the
+  # list would sweep away every grant that org confers.
+  "org_identity": "SELECT count(*)::text FROM organizations WHERE id = :'id'::uuid",
 }
 
 # The same columns, as one count each -- the post-apply proof.
@@ -394,6 +417,15 @@ VERIFY_QUERIES = {
                                  " WHERE user_id = :'id'::uuid",
   "billing_usage_periods.owner_id": "SELECT count(*) FROM billing_usage_periods"
                                     " WHERE owner_id = :'id'::uuid",
+  "billing_usage_periods.owner_id (deleted orgs)": "SELECT count(*) FROM billing_usage_periods"
+                                                   " WHERE owner_id = ANY(:'orgs'::uuid[])",
+  "billing_meter_reports.org_id": "SELECT count(*) FROM billing_meter_reports"
+                                  " WHERE org_id = ANY(:'orgs'::uuid[])",
+  "organizations.id": "SELECT count(*) FROM organizations WHERE id = ANY(:'orgs'::uuid[])",
+  # The gateway's Postgres sync is best-effort, so a 200 from the pigeon
+  # route does not prove the mirror row went with the Durable Object.
+  "pigeons.id (deleted pigeons)": "SELECT count(*) FROM pigeons"
+                                  " WHERE id = ANY(:'pigeons'::text[])",
 }
 
 
@@ -402,8 +434,8 @@ def inventory(db, identity):
   out = {"env": db.name}
   for key, sql in INVENTORY_QUERIES.items():
     rows = db.rows(sql, id=identity["id"], email=identity["email"] or NO_EMAIL)
-    out[key] = int(rows[0][0]) if key in ("errors", "contact", "usage", "owner_email") \
-        else rows
+    out[key] = int(rows[0][0]) \
+        if key in ("errors", "contact", "usage", "owner_email", "org_identity") else rows
   return out
 
 
@@ -424,6 +456,7 @@ def plan_identity(identity, inventories, options):
   steps, holds, notes = [], [], []
   deleted_orgs = {}
   empty_envs = []
+  purging = {i.lower() for i in options.get("purging_ids", ())}
   for env, inv in sorted(inventories.items()):
     if env not in options["delete_envs"]:
       if not is_empty(inv):
@@ -431,27 +464,52 @@ def plan_identity(identity, inventories, options):
       continue
     if is_empty(inv):
       empty_envs.append(env)
+    if inv["org_identity"]:
+      holds.append(f"{env}: this id names an organization, not an identity -- a sweep keyed "
+                   "on it would strip that org's grants from every pigeon it reaches")
+      continue
     sole = {o[0] for o in inv["orgs"] if o[1] == "owner" and int(o[5]) == 1}
+    # An org this identity solely owns goes with it, so a grant it confers
+    # is not access anybody keeps.
+    keeps_access = purging | {o.lower() for o in sole}
     for pigeon_id, _flock in inv["pigeons"]:
       steps.append({"env": env, "kind": "pigeon", "target": pigeon_id})
+    for pigeon_id, entity_id, role in inv["acl_others"]:
+      if entity_id.lower() in keeps_access:
+        continue
+      holds.append(f"{env}: pigeon {pigeon_id} also grants {role} to {entity_id}, which this "
+                   "run keeps -- deleting it takes a device from an account that stays")
     for pigeon_id, role, own_flock in inv["acl"]:
       if own_flock != "t":
         # Someone else's device. The mirror row is swept below; the copy
         # inside that pigeon's Durable Object is reachable by no route.
         notes.append(f"{env}: {role} grant on surviving pigeon {pigeon_id} -- the Durable "
                      "Object's own copy survives; recreate that pigeon to clear it")
+    org_flocks = {}
     for flock_id, _name, org_id, _pigeons in inv["flocks"]:
       if org_id and org_id not in sole:
         holds.append(f"{env}: flock {flock_id} belongs to org {org_id}, not solely theirs")
         continue
       steps.append({"env": env, "kind": "flock", "target": flock_id})
+      if org_id:
+        org_flocks[org_id] = org_flocks.get(org_id, 0) + 1
     for alert_id, _name in inv["alerts"]:
       steps.append({"env": env, "kind": "alert", "target": alert_id})
+    for alert_id, owner in inv["alert_recipients"]:
+      notes.append(f"{env}: alert {alert_id} of {owner} mails this address; the definition "
+                   "survives and keeps mailing it")
+    for org_id, other in inv["member_refs"]:
+      notes.append(f"{env}: membership of {other} in org {org_id} names this address or this "
+                   "inviter; the sweep blanks that reference")
+    if inv["owner_email"]:
+      notes.append(f"{env}: {inv['owner_email']} flock(s) owned by others carry this address "
+                   "as owner_email; the sweep blanks it")
     if inv["errors"]:
       steps.append({"env": env, "kind": "errors", "target": ""})
     for (scope_key,) in inv["dashboard_state"]:
       steps.append({"env": env, "kind": "dashboard-state", "target": scope_key})
-    org_steps, org_holds, org_notes, gone = plan_orgs(env, inv, options, identity["id"])
+    org_steps, org_holds, org_notes, gone = plan_orgs(env, inv, options, identity["id"],
+                                                      org_flocks)
     steps.extend(org_steps)
     holds.extend(org_holds)
     notes.extend(org_notes)
@@ -461,7 +519,7 @@ def plan_identity(identity, inventories, options):
           "empty_envs": empty_envs}
 
 
-def plan_orgs(env, inv, options, identity_id):
+def plan_orgs(env, inv, options, identity_id, org_flocks):
   """An org is left, deleted, or reported -- never transferred by a script."""
   steps, holds, notes, gone = [], [], [], []
   for org_id, role, name, customer, subscription, members, _owners, flocks in inv["orgs"]:
@@ -477,6 +535,14 @@ def plan_orgs(env, inv, options, identity_id):
       holds.append(f"{env}: org {org_id} ({name!r}) carries Stripe ids; "
                    "pass --orphan-stripe REASON once the subscription is cancelled")
       continue
+    mine = org_flocks.get(org_id, 0)
+    if flocks > mine:
+      # A transferred flock keeps its creator's id as provenance, so the
+      # identity's own rows do not name every flock the org owns -- and
+      # DELETE /orgs refuses while any of them is left.
+      holds.append(f"{env}: org {org_id} ({name!r}) owns {flocks} flock(s) but only {mine} "
+                   "came from this identity; the rest need an owner before the org goes")
+      continue
     for invite_id, invite_org, _email, spent in inv["invites"]:
       if invite_org == org_id and spent != "t":
         steps.append({"env": env, "kind": "invite", "target": f"{org_id}/{invite_id}"})
@@ -487,7 +553,7 @@ def plan_orgs(env, inv, options, identity_id):
   for invite_id, invite_org, _email, spent in inv["invites"]:
     if invite_org not in gone and spent != "t":
       holds.append(f"{env}: pending invite {invite_id} on surviving org {invite_org} -- "
-                   "revoke it or let it expire before purging its author")
+                   "revoke it or let it expire before purging this account")
   return steps, holds, notes, gone
 
 
@@ -524,9 +590,6 @@ def sweep_sql(mode):
     ("dashboard_state", "DELETE FROM dashboard_state WHERE user_id = :'id'::uuid"),
     ("flocks.owner_email", "UPDATE flocks SET owner_email = NULL"
                            " WHERE lower(owner_email) = :'email'"),
-    # A pigeon whose Durable Object was confirmed empty but whose mirror
-    # row outlived it; cascades shadow, history and acl.
-    ("pigeons (do already empty)", "DELETE FROM pigeons WHERE id = ANY(:'pigeons'::text[])"),
   ]
 
 
@@ -631,17 +694,22 @@ class Run:
 
 def confirm(expected):
   if not sys.stdin.isatty():
-    die("--apply needs a terminal: it asks for the plan's candidate count typed back")
-  print(f"\nType the candidate count ({expected}) to apply, anything else to abort: ", end="")
+    die("--apply needs a terminal: it asks for the plan's ready count typed back")
+  print(f"\nType the ready count ({expected}) to apply, anything else to abort: ", end="")
   sys.stdout.flush()
   if sys.stdin.readline().strip() != str(expected):
     die("count did not match; nothing was changed")
 
 
 def purge_one(plan, identity, databases, kratos, run, options):
-  """Objects through the product, then SQL, then the identity, then verify."""
+  """Objects through the product, then SQL, then the row check, then the identity.
+
+  The counts have to be proved before the Kratos delete, not after: once
+  the identity is gone there is no session left to finish anything they
+  turn up. Returns the manual checks the run could not settle itself.
+  """
   api_hosts = {env: ENVIRONMENTS[env][0] for env in options["delete_envs"]}
-  do_emptied = {env: [] for env in options["delete_envs"]}
+  manual = []
   pending = [s for s in plan["steps"]
              if not run.done(identity["id"], f"{s['env']}:{s['kind']}:{s['target']}")]
   # The session is only the key to the product's own routes; with nothing
@@ -664,7 +732,11 @@ def purge_one(plan, identity, databases, kratos, run, options):
         die(f"{step['kind']} {step['target']} in {step['env']} answered HTTP {status}; "
             "stopping this identity with its Durable Object still reachable")
       if outcome == "do-already-empty":
-        do_emptied[step["env"]].append(step["target"])
+        # Now, not in the sweep: the flock delete that follows refuses
+        # while a mirror row is still there.
+        db.script("DELETE FROM pigeons WHERE id = :'t';", t=step["target"])
+        manual.append(f"{step['env']}: pigeon {step['target']} answered {status} and its "
+                      "access list was already empty -- read its Durable Object by hand")
     run.log(identity=identity["id"], env=step["env"], step=step["kind"],
             target=step["target"], status=outcome)
     run.mark(identity["id"], key)
@@ -681,12 +753,19 @@ def purge_one(plan, identity, databases, kratos, run, options):
       run.mark(identity["id"], key)
       continue
     orgs = "{" + ",".join(plan["deleted_orgs"].get(env, [])) + "}"
-    pigeons = "{" + ",".join(do_emptied[env]) + "}"
     statements = "\n".join(sql + ";" for _label, sql in sweep_sql(options["mode"]))
-    db.script(statements, id=identity["id"], email=identity["email"] or NO_EMAIL,
-              orgs=orgs, pigeons=pigeons)
+    db.script(statements, id=identity["id"], email=identity["email"] or NO_EMAIL, orgs=orgs)
     run.log(identity=identity["id"], env=env, step="sweep", status="applied")
     run.mark(identity["id"], key)
+
+  left = verify_rows(identity, plan, databases)
+  if left:
+    for line in left:
+      print(f"    {line}")
+    run.log(identity=identity["id"], step="verify", status="failed", rows=left)
+    die(f"{identity['email'] or identity['id']}: rows survive the purge, so the identity is "
+        "left in place -- its session is the only key to anything still keyed on it")
+  run.log(identity=identity["id"], step="verify", status="clean")
 
   if not run.done(identity["id"], "kratos"):
     run.log(identity=identity["id"], step="revoke-sessions",
@@ -704,34 +783,40 @@ def purge_one(plan, identity, databases, kratos, run, options):
       stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
       fh.write(f"{stamp}\t{identity['id']}\t{identity['email']}\t{options['dsar_ref']}\n")
 
-  return verify(identity, databases, kratos)
+  return manual
 
 
 def resolve_failure(step, status, db, identity, api_hosts, cookie):
   """A delete that did not answer 2xx: already gone, or a hard stop."""
   if step["kind"] == "pigeon":
-    # The mirror row can outlive the Durable Object only if an earlier run
-    # died between the two writes. `detail` is the same emptiness test the
-    # test plan uses: no ACL row left means the DO was wiped.
-    detail = api_status(api_hosts[step["env"]], cookie,
+    # An emptied Durable Object keeps no access-list row, so `detail`
+    # answers 403 -- but so does a half-wiped one, a session that stopped
+    # resolving, and an edge blip. Take only those two statuses, and only
+    # while the same cookie still works on a route that must succeed.
+    api = api_hosts[step["env"]]
+    detail = api_status(api, cookie,
                         f"/pigeons/{urllib.parse.quote(step['target'], safe='')}/detail")
-    return "do-already-empty" if detail >= 400 else "stop"
+    if detail not in (403, 404) or api_status(api, cookie, "/orgs") != 200:
+      return "stop"
+    return "do-already-empty"
   check = GONE_CHECKS.get(step["kind"])
   if check and db.count(check, id=identity["id"], t=gone_target(step)) == 0:
     return "already-gone"
   return "stop"
 
 
-def verify(identity, databases, kratos):
+def verify_rows(identity, plan, databases):
   """Direct psql only: a list route would answer from the query cache."""
   failures = []
   for env, db in sorted(databases.items()):
+    orgs = "{" + ",".join(plan["deleted_orgs"].get(env, [])) + "}"
+    pigeons = "{" + ",".join(s["target"] for s in plan["steps"]
+                             if s["kind"] == "pigeon" and s["env"] == env) + "}"
     for label, sql in VERIFY_QUERIES.items():
-      left = db.count(sql, id=identity["id"], email=identity["email"] or NO_EMAIL)
+      left = db.count(sql, id=identity["id"], email=identity["email"] or NO_EMAIL,
+                      orgs=orgs, pigeons=pigeons)
       if left:
         failures.append(f"{env}: {left} row(s) left in {label}")
-  if kratos.identity_status(identity["id"]) != 404:
-    failures.append("kratos: the identity still resolves")
   return failures
 
 
@@ -747,8 +832,11 @@ def orphan_report(databases, known_ids):
   found = []
   for db in databases.values():
     for table, column in columns:
+      # entity_id and friends hold org ids as well; an org is not an
+      # identity that went missing.
       rows = db.rows(f"SELECT DISTINCT {column}::text FROM {table}"
-                     f" WHERE NOT ({column} = ANY(:'ids'::uuid[]))", ids=ids)
+                     f" WHERE NOT ({column} = ANY(:'ids'::uuid[]))"
+                     f" AND {column} NOT IN (SELECT id FROM organizations)", ids=ids)
       for (value,) in rows:
         found.append(f"{db.name}: {table}.{column} = {value}")
   return found
@@ -766,11 +854,13 @@ def parse_args(argv):
   source.add_argument("--identities", metavar="FILE",
                       help="explicit ids or emails, one per line, '#' comments")
   p.add_argument("--keep", metavar="FILE", help="extra addresses or ids never to delete")
-  p.add_argument("--dry-run", action="store_true", default=True)
+  p.add_argument("--dry-run", action="store_true")
   p.add_argument("--apply", action="store_true")
   p.add_argument("--include-held", action="store_true")
   p.add_argument("--orphan-stripe", metavar="REASON")
   p.add_argument("--allow-external", metavar="REASON")
+  p.add_argument("--absent-ok", metavar="REASON",
+                 help="sweep an id Kratos no longer knows; check it is not an org id")
   p.add_argument("--mode", choices=["fixture", "erasure"], default="fixture")
   p.add_argument("--dsar-log", metavar="PATH")
   p.add_argument("--dsar-ref", metavar="REF", default="")
@@ -820,8 +910,11 @@ def resolve_targets(args, kratos, keeps, held):
   for want in wanted:
     row = by_id.get(want) or by_email.get(want)
     if not row and UUID_RE.match(want):
-      # An id Kratos no longer knows still has rows to sweep. There is no
-      # address left to classify, and no keep-list identity can be missing.
+      # An id Kratos no longer knows may be an identity whose rows outlived
+      # it -- or an organization id, which the sweep would read as one.
+      if not args.absent_ok:
+        die(f"{want} is a uuid Kratos does not know; pass --absent-ok REASON to sweep an "
+            "identity that is already gone, and check first that it is not an org id")
       row = {"id": want, "email": "", "state": "absent"}
     if not row:
       die(f"{want} is in neither the identity ids nor the addresses Kratos knows")
@@ -837,6 +930,8 @@ def main(argv=None):
   args = parse_args(sys.argv[1:] if argv is None else argv)
   repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
   apply = args.apply
+  if args.dry_run and apply:
+    die("--dry-run and --apply contradict each other; without --apply nothing is changed")
 
   if args.env == "both":
     delete_envs = ["staging", "prod"]
@@ -846,6 +941,9 @@ def main(argv=None):
   # dev shares nothing with the deployed realm, and mixing them is how a
   # local test run would reach production.
   inventory_envs = ["dev"] if realm == "dev" else ["staging", "prod"]
+  if args.mode == "erasure" and not (args.dsar_log and args.dsar_ref):
+    die("--mode erasure needs --dsar-log PATH and --dsar-ref REF: the log line is the only "
+        "surviving link between a retained row and the person who asked")
   if args.mode == "erasure":
     die("erasure mode is written but refused: docs/legal/privacy.md and the DPA's Annex II G.3 "
         "both still say the acceptance record is deleted with the account, so keeping it would "
@@ -876,13 +974,34 @@ def main(argv=None):
       die(f"{secret_name} is not set; it is needed to prove {env} holds no rows")
     databases[env] = Database(env, uri)
 
+  # Both deployed strings name the same managed instance, so a crossed
+  # variable is a plausible typo and an unrecoverable one: the run would
+  # sweep one database while calling it the other.
+  opened = {}
+  for env, db in databases.items():
+    where = db.opened()
+    if where in opened:
+      die(f"{env} and {opened[where]} opened the same database ({where[0]}); check which "
+          "connection string each variable holds")
+    opened[where] = env
+
+  # Every flag that waives a refusal is an authorization; the reason it
+  # named is the record of who allowed what.
+  reasons = {name: value for name, value in (("allow-external", args.allow_external),
+                                             ("orphan-stripe", args.orphan_stripe),
+                                             ("absent-ok", args.absent_ok)) if value}
   options = {
     "delete_envs": delete_envs,
     "mode": args.mode,
     "orphan_stripe": bool(args.orphan_stripe),
     "dsar_log": args.dsar_log,
     "dsar_ref": args.dsar_ref,
+    # A held address is skipped below, so a grant to one is access that
+    # stays rather than access this run takes with it.
+    "purging_ids": {row["id"] for row in candidates
+                    if args.include_held or row["email"] not in HELD_EMAILS},
   }
+  run.log(event="start", env=args.env, mode=args.mode, apply=bool(apply), reasons=reasons)
 
   print(f"purge-identities: env={args.env} mode={args.mode} realm={realm}")
   print(f"  classes: {counts}")
@@ -891,6 +1010,10 @@ def main(argv=None):
     state = "included by --include-held" if args.include_held else "held"
     print(f"  {state}: {email} -- {reason}")
   print(f"  deleting in: {', '.join(delete_envs)}; inventorying: {', '.join(inventory_envs)}")
+  for where, env in sorted(opened.items(), key=lambda kv: kv[1]):
+    print(f"  {env} database: {where[0]}")
+  for name, reason in sorted(reasons.items()):
+    print(f"  --{name}: {reason}")
   print(f"  run directory: {run_dir}\n")
 
   plans = []
@@ -956,7 +1079,8 @@ def main(argv=None):
           f"cancel them yourself: {run_dir}/stripe-to-cancel.txt")
 
   with open(os.path.join(run_dir, "plan.json"), "w", encoding="utf-8") as fh:
-    json.dump({"env": args.env, "mode": args.mode, "counts": counts, "plans": plans}, fh, indent=2)
+    json.dump({"env": args.env, "mode": args.mode, "counts": counts, "reasons": reasons,
+               "plans": plans}, fh, indent=2)
 
   print(f"\n{len(ready)} ready, {held} held, {len(refused)} skipped")
   if not apply:
@@ -964,22 +1088,21 @@ def main(argv=None):
     return 0
 
   confirm(len(ready))
-  failures = []
+  manual = []
   for plan in ready:
     identity = {"id": plan["id"], "email": plan["email"]}
     print(f"\npurging {plan['email'] or plan['id']} ...")
-    left = purge_one(plan, identity, databases, kratos, run, options)
-    if left:
-      failures.extend(f"{plan['email'] or plan['id']}: {line}" for line in left)
-      print("  VERIFY FAILED")
-      for line in left:
-        print(f"    {line}")
-    else:
-      print("  verified: no rows in either database, identity 404")
+    manual.extend(f"{plan['email'] or plan['id']}: {line}"
+                  for line in purge_one(plan, identity, databases, kratos, run, options))
+    print("  verified: no rows in either database, identity 404")
 
-  print(f"\napplied: {len(ready)} identity(ies), {len(failures)} verification failure(s)")
+  print(f"\napplied: {len(ready)} identity(ies)")
+  if manual:
+    print(f"{len(manual)} manual check(s) -- a Durable Object this run could not wipe itself:")
+    for line in manual:
+      print(f"    {line}")
   print(f"log: {run.log_path}")
-  return 1 if failures else 0
+  return 1 if manual else 0
 
 
 if __name__ == "__main__":

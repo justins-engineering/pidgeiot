@@ -20,13 +20,15 @@ _SPEC.loader.exec_module(purge)
 
 KEEPS = purge.KEEP_EMAILS
 HELD = purge.HELD_EMAILS
-OPTIONS = {"delete_envs": ["staging"], "mode": "fixture", "orphan_stripe": False}
+OPTIONS = {"delete_envs": ["staging"], "mode": "fixture", "orphan_stripe": False,
+           "purging_ids": set()}
 
 
 def empty_inventory(env="staging", **overrides):
-  inv = {"env": env, "flocks": [], "pigeons": [], "acl": [], "orgs": [], "alerts": [],
-         "dashboard_state": [], "invites": [], "consent": [], "errors": 0, "contact": 0,
-         "usage": 0, "member_refs": [], "owner_email": 0}
+  inv = {"env": env, "flocks": [], "pigeons": [], "acl": [], "acl_others": [], "orgs": [],
+         "alerts": [], "alert_recipients": [], "dashboard_state": [], "invites": [],
+         "consent": [], "errors": 0, "contact": 0, "usage": 0, "member_refs": [],
+         "owner_email": 0, "org_identity": 0}
   inv.update(overrides)
   return inv
 
@@ -139,6 +141,47 @@ class Planner(unittest.TestCase):
     self.assertEqual(self.kinds(plan), [("org-leave", f"o1/{self.identity['id']}")])
     self.assertEqual(purge.step_path(plan["steps"][0]),
                      f"/orgs/o1/members/{self.identity['id']}")
+
+  def test_an_org_owning_a_flock_the_identity_did_not_create_is_held(self):
+    # A transferred flock keeps its creator's id, so the org owns one the
+    # identity's own rows never name and DELETE /orgs would refuse.
+    inv = empty_inventory(flocks=[["f1", "Flock", "o1", "0"]],
+                          orgs=[org_row("o1", flocks=2)])
+    plan = self.plan(inv)
+    self.assertEqual(self.kinds(plan), [("flock", "f1")])
+    self.assertTrue(any("only 1 came from this identity" in h for h in plan["holds"]))
+
+  def test_an_org_owning_only_this_identitys_flocks_is_still_deleted(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "o1", "0"]],
+                          orgs=[org_row("o1", flocks=1)])
+    self.assertEqual(self.kinds(self.plan(inv)), [("flock", "f1"), ("org-delete", "o1")])
+
+  def test_a_grant_another_account_holds_on_a_doomed_pigeon_holds_the_purge(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "", "1"]], pigeons=[["p1", "f1"]],
+                          acl_others=[["p1", "9e1a", "member"]])
+    plan = self.plan(inv)
+    self.assertTrue(any("takes a device from an account that stays" in h
+                        for h in plan["holds"]))
+
+  def test_a_grant_held_by_another_identity_in_the_same_run_is_not_a_hold(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "", "1"]], pigeons=[["p1", "f1"]],
+                          acl_others=[["p1", "9E1A", "member"]])
+    options = dict(OPTIONS, purging_ids={"9e1a"})
+    self.assertEqual(self.plan(inv, options)["holds"], [])
+
+  def test_the_org_grant_on_a_doomed_pigeon_is_not_a_hold_when_the_org_goes_too(self):
+    inv = empty_inventory(flocks=[["f1", "Flock", "o1", "1"]], pigeons=[["p1", "f1"]],
+                          acl_others=[["p1", "o1", "owner"]], orgs=[org_row("o1", flocks=1)])
+    self.assertEqual(self.plan(inv)["holds"], [])
+
+  def test_an_id_that_names_an_organization_is_held_before_anything_is_planned(self):
+    plan = self.plan(empty_inventory(org_identity=1, flocks=[["f1", "F", "", "0"]]))
+    self.assertEqual(plan["steps"], [])
+    self.assertIn("names an organization", plan["holds"][0])
+
+  def test_an_alert_of_another_account_mailing_this_address_is_reported(self):
+    plan = self.plan(empty_inventory(alert_recipients=[["a9", "someone"]]))
+    self.assertTrue(any("keeps mailing it" in n for n in plan["notes"]))
 
   def test_a_stripe_carrying_org_is_held_until_the_flag_names_a_reason(self):
     inv = empty_inventory(orgs=[org_row("o1", customer="cus_x", subscription="sub_x")])
@@ -294,6 +337,50 @@ class RemoteShell(unittest.TestCase):
     script = self.script()
     self.assertIn("--headers--", script)
     self.assertIn("--body--", script)
+
+
+class FailureResolution(unittest.TestCase):
+  """A pigeon delete that did not answer 2xx. `api_status` is stubbed."""
+
+  step = {"env": "staging", "kind": "pigeon", "target": "p1"}
+
+  def answers(self, detail, orgs):
+    seen = []
+
+    def stub(_api, _cookie, path):
+      seen.append(path)
+      return detail if "/detail" in path else orgs
+
+    original = purge.api_status
+    purge.api_status = stub
+    self.addCleanup(setattr, purge, "api_status", original)
+    outcome = purge.resolve_failure(self.step, 500, None, {"id": "i1"},
+                                    {"staging": "http://api"}, "cookie")
+    return outcome, seen
+
+  def test_an_empty_access_list_with_the_session_still_working_is_believed(self):
+    self.assertEqual(self.answers(403, 200)[0], "do-already-empty")
+
+  def test_an_expired_session_is_not_proof_that_a_durable_object_was_wiped(self):
+    self.assertEqual(self.answers(401, 401)[0], "stop")
+
+  def test_a_server_error_on_the_probe_is_not_proof_either(self):
+    self.assertEqual(self.answers(500, 200)[0], "stop")
+
+  def test_a_session_that_stopped_working_after_the_probe_stops_the_run(self):
+    self.assertEqual(self.answers(403, 401)[0], "stop")
+
+
+class Bindings(unittest.TestCase):
+  def test_every_verify_query_uses_only_the_four_bindings_verify_rows_passes(self):
+    import re
+    for label, sql in purge.VERIFY_QUERIES.items():
+      for name in re.findall(r":\'([a-z_]+)\'", sql):
+        self.assertIn(name, ("id", "email", "orgs", "pigeons"), label)
+
+  def test_the_sweep_no_longer_binds_a_pigeon_list_it_is_not_given(self):
+    for label, sql in purge.sweep_sql("fixture"):
+      self.assertNotIn(":\'pigeons\'", sql, label)
 
 
 class ConnectionStrings(unittest.TestCase):
