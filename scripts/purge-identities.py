@@ -23,8 +23,9 @@ one identity list against two databases.
 
 Connection strings are read by name from the environment, else from
 `secrets.env`, and are decomposed into PG* variables so they never reach
-argv. Recovery tokens are piped to the remote shell, never passed as
-arguments. Nothing secret is printed or logged.
+argv. Recovery links reach the remote shell in a file it writes itself, so
+no token lands in either machine's argv. No connection string, cookie or
+token is printed or logged.
 
 Docs: docs/infra/account-deletion.md is the procedure this implements and
 the DPA's Annex II G.3 refers to.
@@ -244,26 +245,35 @@ class Kratos:
       return http(method, url, body.encode() if body else None, headers, follow)
     return self._remote(method, url, body, follow)
 
-  def _remote(self, method, url, body, follow):
-    # The script text carries the url and body on stdin, so a one-time
-    # recovery token never appears in argv on either machine.
-    lines = ["set -eu", "b=$(mktemp)", "h=$(mktemp)",
-             "code=$(curl -sS -X %s -o \"$b\" -D \"$h\" -w '%%{http_code}' %s %s %s)" % (
-               shlex.quote(method),
-               "-L" if follow else "",
-               "-H 'Content-Type: application/json' --data-binary @- " if body else "",
-               shlex.quote(url))]
+  def remote_script(self, method, url, body, follow):
+    """The shell the ssh hop runs. The url and body are files it writes from
+    quoted heredocs: a one-time recovery token belongs in neither machine's
+    argv, and curl cannot read a body from the pipe this script arrives on."""
+    lines = ["set -eu", "b=$(mktemp)", "h=$(mktemp)", "k=$(mktemp)", "d=",
+             'trap \'rm -f "$b" "$h" "$k" $d\' EXIT',
+             'cat >"$k" <<\'PURGE_CONF\'', "url = " + json.dumps(url), "PURGE_CONF"]
+    data = ""
     if body:
-      lines[-1] += " <<'PURGE_BODY'\n" + body + "\nPURGE_BODY"
-    lines += ["printf '%s\\n' \"$code\"", "printf -- '--headers--\\n'", 'cat "$h"',
-              "printf -- '--body--\\n'", 'cat "$b"', 'rm -f "$b" "$h"']
+      lines += ["d=$(mktemp)", 'cat >"$d" <<\'PURGE_BODY\'', body, "PURGE_BODY"]
+      data = '-H \'Content-Type: application/json\' --data-binary @"$d"'
+    lines += ["code=$(curl -sS -K \"$k\" -X %s -o \"$b\" -D \"$h\" -w '%%{http_code}' %s %s)" % (
+                shlex.quote(method), "-L" if follow else "", data),
+              "printf '%s\\n' \"$code\"", "printf -- '--headers--\\n'", 'cat "$h"',
+              "printf -- '--body--\\n'", 'cat "$b"']
+    return "\n".join(lines) + "\n"
+
+  def _remote(self, method, url, body, follow):
     args = ["ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=auto",
             "-o", f"ControlPath={self._control}", "-o", "ControlPersist=120",
             self.ssh, "sh", "-s"]
-    proc = subprocess.run(args, input="\n".join(lines), capture_output=True, text=True)
+    proc = subprocess.run(args, input=self.remote_script(method, url, body, follow),
+                          capture_output=True, text=True)
     if proc.returncode != 0:
       die(f"ssh curl failed: {proc.stderr.strip()[:300]}")
-    head, _, rest = proc.stdout.partition("--headers--\n")
+    head, marker, rest = proc.stdout.partition("--headers--\n")
+    if not marker or not head.strip():
+      die(f"the remote shell produced no status line for {method} "
+          f"{url.split('?')[0]}; nothing was read")
     raw_headers, _, text = rest.partition("--body--\n")
     headers = []
     for line in raw_headers.splitlines():
@@ -441,7 +451,7 @@ def plan_identity(identity, inventories, options):
       steps.append({"env": env, "kind": "errors", "target": ""})
     for (scope_key,) in inv["dashboard_state"]:
       steps.append({"env": env, "kind": "dashboard-state", "target": scope_key})
-    org_steps, org_holds, org_notes, gone = plan_orgs(env, inv, options)
+    org_steps, org_holds, org_notes, gone = plan_orgs(env, inv, options, identity["id"])
     steps.extend(org_steps)
     holds.extend(org_holds)
     notes.extend(org_notes)
@@ -451,13 +461,13 @@ def plan_identity(identity, inventories, options):
           "empty_envs": empty_envs}
 
 
-def plan_orgs(env, inv, options):
+def plan_orgs(env, inv, options, identity_id):
   """An org is left, deleted, or reported -- never transferred by a script."""
   steps, holds, notes, gone = [], [], [], []
   for org_id, role, name, customer, subscription, members, _owners, flocks in inv["orgs"]:
     members, flocks = int(members), int(flocks)
     if role != "owner":
-      steps.append({"env": env, "kind": "org-leave", "target": org_id})
+      steps.append({"env": env, "kind": "org-leave", "target": f"{org_id}/{identity_id}"})
       continue
     if members > 1:
       holds.append(f"{env}: sole owner of org {org_id} ({name!r}) with {members - 1} other "
@@ -548,6 +558,10 @@ def step_path(step):
     org_id, _, invite_id = target.partition("/")
     return f"/orgs/{urllib.parse.quote(org_id, safe='')}/invites/" \
            f"{urllib.parse.quote(invite_id, safe='')}"
+  if kind == "org-leave":
+    org_id, _, user_id = target.partition("/")
+    return f"/orgs/{urllib.parse.quote(org_id, safe='')}/members/" \
+           f"{urllib.parse.quote(user_id, safe='')}"
   if kind == "org-delete":
     return "/orgs/" + urllib.parse.quote(target, safe="")
   raise ValueError(f"no path for step kind {kind!r}")
@@ -563,8 +577,13 @@ STEP_VERBS = {
 }
 
 def gone_target(step):
-  """What GONE_CHECKS binds: an invite step carries its org id as well."""
-  return step["target"].partition("/")[2] if step["kind"] == "invite" else step["target"]
+  """What GONE_CHECKS binds: the two composite targets carry an id each."""
+  org_id, _, rest = step["target"].partition("/")
+  if step["kind"] == "invite":
+    return rest
+  if step["kind"] == "org-leave":
+    return org_id
+  return step["target"]
 
 
 GONE_CHECKS = {
@@ -575,6 +594,8 @@ GONE_CHECKS = {
   "invite": "SELECT count(*) FROM organization_invites WHERE id = :'t'::uuid",
   "org-delete": "SELECT count(*) FROM organizations WHERE id = :'t'::uuid",
   "errors": "SELECT count(*) FROM error_events WHERE user_id = :'id'::uuid",
+  "org-leave": "SELECT count(*) FROM organization_members"
+               " WHERE org_id = :'t'::uuid AND user_id = :'id'::uuid",
 }
 
 

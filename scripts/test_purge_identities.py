@@ -31,6 +31,15 @@ def empty_inventory(env="staging", **overrides):
   return inv
 
 
+def one_of_every_kind():
+  """An inventory that makes the planner emit every step kind it knows."""
+  return empty_inventory(
+    flocks=[["f1", "Flock", "", "1"]], pigeons=[["p1", "f1"]], alerts=[["a1", "Alert"]],
+    errors=1, dashboard_state=[["graphs.v1.f1"]],
+    orgs=[org_row("o1"), org_row("o2", role="member", members=3)],
+    invites=[["i1", "o1", "x@y", "f"]])
+
+
 def org_row(org_id, role="owner", name="Org", customer="", subscription="",
             members=1, owners=1, flocks=0):
   return [org_id, role, name, customer, subscription, str(members), str(owners), str(flocks)]
@@ -125,9 +134,11 @@ class Planner(unittest.TestCase):
     self.assertEqual(plan["steps"], [])
     self.assertIn("successor", plan["holds"][0])
 
-  def test_membership_of_someone_elses_org_is_left_not_deleted(self):
+  def test_membership_of_someone_elses_org_is_left_by_the_route_that_removes_a_member(self):
     plan = self.plan(empty_inventory(orgs=[org_row("o1", role="member", members=3)]))
-    self.assertEqual(self.kinds(plan), [("org-leave", "o1")])
+    self.assertEqual(self.kinds(plan), [("org-leave", f"o1/{self.identity['id']}")])
+    self.assertEqual(purge.step_path(plan["steps"][0]),
+                     f"/orgs/o1/members/{self.identity['id']}")
 
   def test_a_stripe_carrying_org_is_held_until_the_flag_names_a_reason(self):
     inv = empty_inventory(orgs=[org_row("o1", customer="cus_x", subscription="sub_x")])
@@ -206,9 +217,19 @@ class Sweep(unittest.TestCase):
 
 
 class Paths(unittest.TestCase):
+  def test_every_kind_the_planner_emits_has_a_route(self):
+    plan = purge.plan_identity({"id": "i1", "email": "f@jes.contact"},
+                               {"staging": one_of_every_kind()}, OPTIONS)
+    self.assertEqual({s["kind"] for s in plan["steps"]},
+                     {"pigeon", "flock", "alert", "errors", "dashboard-state", "invite",
+                      "org-delete", "org-leave"})
+    for step in plan["steps"]:
+      self.assertTrue(purge.step_path(step).startswith("/"), step)
+
   def test_each_step_kind_maps_to_its_documented_route(self):
     cases = {
       ("pigeon", "p1"): "/pigeons/p1",
+      ("org-leave", "o1/u1"): "/orgs/o1/members/u1",
       ("flock", "f1"): "/flocks/f1",
       ("alert", "a1"): "/alerts/a1",
       ("errors", ""): "/errors",
@@ -231,10 +252,48 @@ class GoneChecks(unittest.TestCase):
   def test_every_other_kind_checks_its_target_verbatim(self):
     self.assertEqual(purge.gone_target({"kind": "flock", "target": "f1"}), "f1")
 
+  def test_a_leave_step_is_checked_by_the_org_it_names_not_the_user(self):
+    self.assertEqual(purge.gone_target({"kind": "org-leave", "target": "o1/u1"}), "o1")
+
+  def test_a_scope_key_holding_a_slash_is_checked_whole(self):
+    self.assertEqual(purge.gone_target({"kind": "dashboard-state", "target": "a/b"}), "a/b")
+
   def test_each_check_covers_a_kind_the_planner_can_emit(self):
     for kind in purge.GONE_CHECKS:
       self.assertIn(kind, {"flock", "alert", "dashboard-state", "invite", "org-delete",
-                           "errors"})
+                           "errors", "org-leave"})
+
+
+class RemoteShell(unittest.TestCase):
+  """The generated ssh script, checked as text -- nothing here runs a shell."""
+
+  def script(self, body=None):
+    return purge.Kratos.remote_script(
+      purge.Kratos.__new__(purge.Kratos), "POST" if body else "GET",
+      "http://127.0.0.1:4434/self-service/recovery?flow=f&token=t", body, True)
+
+  def test_the_body_is_a_file_curl_reads_not_the_pipe_the_script_arrives_on(self):
+    script = self.script('{"identity_id": "x"}')
+    self.assertIn('cat >"$d" <<\'PURGE_BODY\'\n{"identity_id": "x"}\nPURGE_BODY', script)
+    self.assertIn('--data-binary @"$d"', script)
+    self.assertNotIn("--data-binary @-", script)
+
+  def test_a_heredoc_never_follows_the_command_substitution_that_would_swallow_it(self):
+    for line in self.script('{"a": 1}').splitlines():
+      if line.startswith("code=$("):
+        self.assertNotIn("<<", line)
+
+  def test_the_one_time_token_reaches_curl_in_a_config_file_not_in_argv(self):
+    script = self.script()
+    self.assertIn('url = "http://127.0.0.1:4434/self-service/recovery?flow=f&token=t"', script)
+    for line in script.splitlines():
+      if line.startswith("code=$("):
+        self.assertNotIn("token=t", line)
+
+  def test_the_reply_is_framed_so_a_silent_remote_shell_cannot_read_as_a_status(self):
+    script = self.script()
+    self.assertIn("--headers--", script)
+    self.assertIn("--body--", script)
 
 
 class ConnectionStrings(unittest.TestCase):
