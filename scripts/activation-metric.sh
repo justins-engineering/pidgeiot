@@ -5,8 +5,10 @@
 # "define and instrument the activation metric") - a cheap read against our
 # own Postgres, not a new analytics project.
 #
-# "Signup" is every row in the Kratos identities table, counted regardless
-# of current account state. State is a mutable, present-tense account
+# "Signup" is every row in the Kratos identities table whose address is not
+# ours (@jes.contact: the founders' accounts and the e2e fixtures registered
+# from that domain would count as signups that never activate), counted
+# regardless of current account state. State is a mutable, present-tense account
 # status (for example an admin deactivation) rather than a property of the
 # original signup event, so filtering on it would make an already-reported
 # week's signup count change retroactively whenever someone's state changes
@@ -135,6 +137,7 @@ parse_pg_uri "$KRATOS_PSQL_CONNECTION"
 signups_tsv=$(psql -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c "
   SELECT id, extract(epoch FROM created_at)::bigint
   FROM identities
+  WHERE COALESCE(lower(traits->>'email'), '') NOT LIKE '%@jes.contact'
   ORDER BY created_at
 ") || {
   echo "activation-metric: failed to read identities from the kratos database" >&2
