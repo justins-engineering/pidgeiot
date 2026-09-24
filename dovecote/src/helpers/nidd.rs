@@ -71,13 +71,11 @@ pub struct CallbackAuth {
 }
 
 /// A ThingSpace `NiddService` callback, holding only what dovecote reads. `username` and
-/// `password` are deliberately absent, so a parsed callback never carries the credential.
+/// `password` are deliberately absent, so a parsed callback never carries the credential; the
+/// request id is read once, by `CallbackAuth`, which also parses when this does not.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NiddCallback {
-  /// ThingSpace's request id; the same for every callback about one downlink.
-  #[serde(default)]
-  pub request_id: Option<String>,
   /// The top-level identifiers, which name the device the way the request did.
   #[serde(default)]
   pub device_ids: Vec<CarrierId>,
@@ -561,7 +559,6 @@ mod tests {
 
   fn uplink_with(inner: Vec<CarrierId>, top: Vec<CarrierId>) -> NiddCallback {
     NiddCallback {
-      request_id: None,
       device_ids: top,
       status: None,
       callback_count: None,

@@ -1,9 +1,42 @@
-use capsules::{Connector, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
+use capsules::{
+  CoapConfig, Connector, HttpsConfig, MqttConfig, NiddConfig, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, TelemetryEndpoint,
+};
 use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
+
+/// A connector with every secret removed: the token, a PSK secret, and a Nidd pigeon's claim key,
+/// which signs every downlink for the device's life. What the read routes answer with. The PSK
+/// identity, the endpoint and the IMEI are provisioning facts, not secrets, and stay.
+pub fn connector_without_secrets(connector: &Connector) -> Connector {
+  match connector {
+    Connector::Https(c) => Connector::Https(HttpsConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+    }),
+    Connector::Coap(c) => Connector::Coap(CoapConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity.clone(),
+      tls_psk_secret: None,
+    }),
+    Connector::Mqtt(c) => Connector::Mqtt(MqttConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity.clone(),
+      tls_psk_secret: None,
+    }),
+    Connector::Nidd(c) => Connector::Nidd(NiddConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      imei: c.imei.clone(),
+      claim_key: None,
+    }),
+  }
+}
 
 /// Proof that this pigeon's ACL check (the DO's `/pigeon/authz/check`
 /// route, dispatched to `objects::pigeons::check_authorized`) has already
@@ -642,4 +675,45 @@ pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Res
     })?;
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::connector_without_secrets;
+  use capsules::{CoapConfig, Connector, NiddConfig};
+
+  #[test]
+  fn a_nidd_connector_keeps_its_binding_and_loses_its_secrets() {
+    let stripped = connector_without_secrets(&Connector::Nidd(NiddConfig {
+      endpoint: "nidd://VZWSCEF".to_string(),
+      token: "token".to_string(),
+      imei: "490154203237518".to_string(),
+      claim_key: Some("00112233445566778899aabbccddeeff".to_string()),
+    }));
+    assert_eq!(
+      stripped,
+      Connector::Nidd(NiddConfig {
+        endpoint: "nidd://VZWSCEF".to_string(),
+        token: String::new(),
+        imei: "490154203237518".to_string(),
+        claim_key: None,
+      })
+    );
+  }
+
+  #[test]
+  fn a_psk_connector_keeps_its_identity_and_loses_its_secret() {
+    let stripped = connector_without_secrets(&Connector::Coap(CoapConfig {
+      endpoint: "coaps://coap.pidgeiot.com/device/pigeons/abc".to_string(),
+      token: "token".to_string(),
+      tls_psk_identity: Some("abc".to_string()),
+      tls_psk_secret: Some("secret".to_string()),
+    }));
+    assert_eq!(stripped.token(), "");
+    assert_eq!(stripped.psk(), None);
+    let Connector::Coap(coap) = stripped else {
+      panic!("variant changed");
+    };
+    assert_eq!(coap.tls_psk_identity.as_deref(), Some("abc"));
+  }
 }
