@@ -1133,9 +1133,11 @@ server-side. New answers: `400` for an IMEI that fails the check; `403` "Forbidd
 enabled in this environment" when this deployment has no ThingSpace account configured; `403`
 "Forbidden: NIDD is not enabled for this organization" when the flock's organization is not
 allowlisted, checked before the IMEI is looked at; `409` "Conflict: a pigeon with this IMEI
-already exists". The `201` body's `connector.Nidd` carries
-`endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like the token, the claim key
-is shown only here and by `token/refresh`.
+already exists"; `503` "Service Unavailable: the pigeon could not be recorded; try again" when a
+step after the pigeon's creation fails (its Postgres record or the organization's access grant),
+in which case the create is undone, so a retry starts clean. The `201` body's `connector.Nidd`
+carries `endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like the token, the
+claim key is shown only here and by `token/refresh`.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flock/pigeons \

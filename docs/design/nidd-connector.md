@@ -1369,10 +1369,11 @@ served. So leftovers are made unreachable by construction:
   (`infra/init-db.sql:104`, `:114`, `:131`, `:181`, `:211`) clear any leftover's shadow, ACL,
   telemetry history and alert rows in the same transaction. It is safe because the DO has just
   answered 201, so no live pigeon holds the id.
-- If that transaction fails for a `Nidd` create, the route undoes the create through the DO's own
-  `/pigeon/delete`, as the new owner, and answers 503, so no pigeon ever exists over an id whose
-  leftovers were not cleared. This is the one place the best-effort mirror rule gives way, and
-  only for this reason; the operator retries.
+- If that transaction fails for a `Nidd` create, or any other step after the DO's 201 does (the
+  organization's ACL grant, the parse of the DO's answer), the route undoes the create through the
+  DO's own `/pigeon/delete`, as the new owner, and answers 503, so no pigeon ever exists over an
+  id whose leftovers were not cleared. This is the one place the best-effort mirror rule gives
+  way, and only for this reason; the operator retries.
 - The log-dictionary GET (`dovecote/src/lib.rs:2823-2891`) answers 404 when the R2 object's
   `uploaded()` time predates the pigeon's `created_at`, which the DO's authorization check
   (`/pigeon/authz/check`, `dovecote/src/objects/pigeons.rs:375`) returns in a response header and
@@ -1592,7 +1593,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 27 | `target_config` over 1341 bytes | 413 at the PUT, nothing written | A target the device could never receive must not exist |
 | 28 | Two creates race for one IMEI | Both reach the same DO, which serializes them; the second answers 409 | Uniqueness without an index |
 | 29 | An account tries to register an IMEI it does not hold | Outside `NIDD_ALLOWED_ORG_IDS`: 403 before any IMEI lookup, so it can neither probe nor squat. Inside it (JES's own organizations): the rightful create answers 409, no data or downlink crosses, and the organization holding the pigeon deletes it | While D2 keeps NIDD to JES's devices, only JES can hold a Nidd pigeon; D1 is revisited before that changes |
-| 30 | Delete, then the same IMEI registered again | Same DO id; the mirror insert deletes any leftover in its own transaction, a failed transaction undoes the create, and a dictionary older than the pigeon is never served | The seconds-long queue window of section 9 is the residual |
+| 30 | Delete, then the same IMEI registered again | Same DO id; the mirror insert deletes any leftover in its own transaction, a failed transaction or any other failure after the DO's 201 undoes the create, and a dictionary older than the pigeon is never served | The seconds-long queue window of section 9 is the residual |
 | 31 | dovecote rolled back past the Nidd release while a Nidd pigeon exists | Old code reads the row as an empty `Https` connector (`capsules/src/lib.rs:241`) | Task 0.4 ships first, so a rollback lands on a `refresh_token` that refuses rather than rewrites; the runbook rule stays: never roll back past the Nidd release with Nidd pigeons live |
 | 32 | A browser tab holding a pre-Nidd fancier bundle | The flock list fails to parse until reload | fancier deploys first |
 | 33 | `NiddService` re-registered elsewhere on the account | Uplink silently goes elsewhere | The runbook's step 2 at every deploy; D11 |

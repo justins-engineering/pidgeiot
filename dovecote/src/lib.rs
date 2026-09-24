@@ -663,6 +663,38 @@ fn or_none(value: &str) -> &str {
   if value.is_empty() { "none" } else { value }
 }
 
+/// Undoes a Nidd create the Durable Object accepted but the route could not finish, and answers
+/// 503 so the operator retries. The id repeats after a delete, so a pigeon left standing would
+/// live over rows an earlier pigeon left under it and hold its IMEI against every retry.
+async fn undo_nidd_create(
+  principal: &Principal,
+  obj_id: &worker::ObjectId<'_>,
+  cors: &worker::Cors,
+) -> worker::Result<Response> {
+  let undone = match Request::new("https://internal/pigeon/delete", Method::Delete) {
+    Ok(undo) => {
+      proxy_to_pigeon_do(
+        undo,
+        &principal.user_id,
+        principal.org_roles_header(),
+        obj_id,
+        "/delete",
+      )
+      .await
+    }
+    Err(e) => Err(e),
+  };
+  if !undone.is_ok_and(|resp| resp.status_code() < 400) {
+    console_error!("Nidd create: undo failed for pigeon {obj_id}");
+  }
+  Response::error(
+    "Service Unavailable: the pigeon could not be recorded; try again",
+    503,
+  )
+  .unwrap()
+  .with_cors(cors)
+}
+
 /// The one line every NIDD callback logs. Never a body, password, frame, account name, IMEI,
 /// ICCID or IMSI: only what kind of callback it was, what became of it, the derived pigeon id,
 /// ThingSpace's request id and attempt, and the latency, watched against an acknowledgement
@@ -1848,23 +1880,47 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         }
       };
 
-      let do_response =
-        proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/create").await?;
+      let Ok(do_response) = proxy_to_pigeon_do(
+        req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        "/create",
+      )
+      .await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
       if do_response.status_code() >= 400 {
         return do_response.with_cors(&cors);
       }
 
-      let pcr = parse_do_response::<PigeonDetail>(do_response).await?;
+      // From here on the Durable Object holds the pigeon, so a Nidd create that cannot finish
+      // is undone rather than left over its id's leftovers.
+      let Ok(pcr) = parse_do_response::<PigeonDetail>(do_response).await else {
+        if nidd_imei.is_some() {
+          return undo_nidd_create(&principal, &obj_id, &cors).await;
+        }
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
 
       // Org-owned flock: seed the org's own ACL row alongside the
       // creator's. The DO write is authoritative, not best-effort -- a
       // failed grant fails the request loudly (the pigeon exists with the
-      // creator as owner; retry via POST /pigeons/:id/acl).
+      // creator as owner; retry via POST /pigeons/:id/acl), except that a
+      // Nidd create is undone.
       let org_acl = match flock.org_id {
         Some(org) => {
           let org_id_str = org.to_string();
           let Ok(grant_resp) = grant_org_acl_via_do(&obj_id, &org_id_str).await else {
             console_error!("Org ACL grant dispatch failed for pigeon {}", pcr.pigeon.id);
+            if nidd_imei.is_some() {
+              return undo_nidd_create(&principal, &obj_id, &cors).await;
+            }
             return Response::error(
               "Internal Server Error: pigeon created but org access grant failed -- retry via POST /pigeons/:id/acl",
               500,
@@ -1878,6 +1934,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
               grant_resp.status_code(),
               pcr.pigeon.id
             );
+            if nidd_imei.is_some() {
+              return undo_nidd_create(&principal, &obj_id, &cors).await;
+            }
             return Response::error(
               "Internal Server Error: pigeon created but org access grant failed -- retry via POST /pigeons/:id/acl",
               500,
@@ -1912,28 +1971,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // and the operator retries, and no pigeon ever lives over leftovers it could read.
       if nidd_imei.is_some() {
         if !mirrored {
-          let undone = match Request::new("https://internal/pigeon/delete", Method::Delete) {
-            Ok(undo) => {
-              proxy_to_pigeon_do(
-                undo,
-                &principal.user_id,
-                principal.org_roles_header(),
-                &obj_id,
-                "/delete",
-              )
-              .await
-            }
-            Err(e) => Err(e),
-          };
-          if !undone.is_ok_and(|resp| resp.status_code() < 400) {
-            console_error!("Nidd create: undo failed for pigeon {}", pcr.pigeon.id);
-          }
-          return Response::error(
-            "Service Unavailable: the pigeon could not be recorded; try again",
-            503,
-          )
-          .unwrap()
-          .with_cors(&cors);
+          return undo_nidd_create(&principal, &obj_id, &cors).await;
         }
         delete_log_dictionary(&ctx.env, &pcr.pigeon.id).await;
       }
