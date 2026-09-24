@@ -3132,7 +3132,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       "paused"
     }
     Uplink::Telemetry(body) => {
-      match serde_json::from_slice::<capsules::TelemetryReportBody>(body) {
+      let outcome = match serde_json::from_slice::<capsules::TelemetryReportBody>(body) {
         Err(e) => {
           console_log!(
             "{} pigeon={pigeon_id}",
@@ -3161,15 +3161,16 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
               console_log!("NIDD uplink: telemetry rejected for pigeon {pigeon_id}: {message}");
               "rejected"
             }
-            TelemetryOutcome::Stored => {
-              if shadow_push_due(&row, now) {
-                downlink = plan_shadow_push(pigeons, &mut row, now);
-              }
-              "stored"
-            }
+            TelemetryOutcome::Stored => "stored",
           }
         }
+      };
+      // A refused frame still shows the device awake, and the config it is owed may be what
+      // fixes its reporting.
+      if shadow_push_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
       }
+      outcome
     }
     Uplink::ShadowReport(body) => match serde_json::from_slice::<PigeonShadowReportRequest>(body) {
       Err(e) => {
