@@ -771,6 +771,9 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   })
 }
 
+/// Creates this pigeon in its fresh Durable Object: the row, the creator's owner ACL and an empty
+/// shadow, with every connector credential minted here. The body's connector only names the
+/// variant.
 async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let Ok(Some(user_id)) = req.headers().get("X-User-Id") else {
     return Response::error("Request missing 'X-User-Id'", 400);
@@ -915,6 +918,9 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     .from_json(&response)
 }
 
+/// Mints this pigeon a new token, and a new PSK for the variants that carry one, revoking the
+/// old credentials. Owner only. A stored connector this build cannot parse is refused with 500
+/// rather than rebuilt, so a refresh can never overwrite what it does not understand.
 async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
@@ -929,12 +935,12 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   };
 
   // Read the current pigeon to keep its connector type.
-  let mut pigeon = match pigeons.sql.exec(
+  let row = match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
-      Ok(p) => Pigeon::from(p),
+      Ok(p) => p,
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         return Response::error("Internal Server Error", 500);
@@ -946,7 +952,16 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  pigeon.connector = match &pigeon.connector {
+  // Parsed here, not through `From<PigeonRow>`, which reads a connector it does not know as an
+  // empty `Https` one. Writing that back would destroy a connector a newer build minted, which is
+  // exactly what a rollback past that build would otherwise do.
+  let Ok(stored_connector) = serde_json::from_str::<Connector>(&row.connector) else {
+    console_error!("Pigeon token refresh: stored connector unreadable");
+    return Response::error("Internal Server Error: stored connector unreadable", 500);
+  };
+  let mut pigeon = Pigeon::from(row);
+
+  pigeon.connector = match &stored_connector {
     Connector::Https(_) => {
       let endpoint = build_http_endpoint(&pigeons.env, &do_id);
       Connector::Https(HttpsConfig {
