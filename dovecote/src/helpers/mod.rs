@@ -102,6 +102,7 @@ pub use retention::sweep_telemetry_history_retention;
 
 mod coap_service;
 pub use coap_service::is_allowed_coap_service_ip;
+pub use coap_service::thingspace_callbacks_configured;
 
 mod device_limits;
 pub use device_limits::DEVICE_FIRMWARE_LIMITER;

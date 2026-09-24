@@ -6,8 +6,11 @@
 //! which runs on WebCrypto, is exercised by the host-target tests.
 
 use capsules::{PigeonShadow, TelemetryBatch, TelemetryReading, TelemetryReportBody};
+use futures::future::{Either, select};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::pin::pin;
+use std::time::Duration;
 
 /// Device to platform: a telemetry body, exactly as the HTTPS telemetry route takes it.
 pub const FRAME_TELEMETRY: u8 = 0x01;
@@ -446,6 +449,17 @@ pub fn shadow_push_due(row: &NiddRow, now: i64) -> bool {
     && row.awaiting_version != 0
     && ((row.pushed_version < row.awaiting_version && now - row.pushed_at >= NIDD_PUSH_HOLD_SECS)
       || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
+}
+
+/// Runs `future` until `limit` passes: `None` when the timer won. The future is dropped rather
+/// than aborted, so a request it already sent may still land.
+pub async fn within<F: Future>(limit: Duration, future: F) -> Option<F::Output> {
+  let future = pin!(future);
+  let deadline = pin!(worker::Delay::from(limit));
+  match select(future, deadline).await {
+    Either::Left((output, _)) => Some(output),
+    Either::Right(((), _)) => None,
+  }
 }
 
 /// How much older than its arrival a reading first stored on this delivery attempt really is:
