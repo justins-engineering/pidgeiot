@@ -263,7 +263,7 @@ pub fn parse_error_line(context: &str, error: &serde_json::Error) -> String {
     serde_json::error::Category::Eof => "eof",
   };
   let column = error.column().to_string();
-  let mut line = String::with_capacity(context.len() + 17 + category.len() + column.len());
+  let mut line = String::with_capacity(context.len() + 18 + category.len() + column.len());
   line.push_str(context);
   line.push_str(" category=");
   line.push_str(category);

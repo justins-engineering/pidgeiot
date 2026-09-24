@@ -808,9 +808,10 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
   let callback = match serde_json::from_str::<NiddCallback>(&raw) {
     Ok(callback) => callback,
     Err(e) => {
-      let mut context = String::with_capacity(52 + request_id.len());
+      let shown_id = or_none(&request_id);
+      let mut context = String::with_capacity(53 + shown_id.len());
       context.push_str("nidd_cb outcome=unknown_shape request=");
-      context.push_str(or_none(&request_id));
+      context.push_str(shown_id);
       context.push_str(" parse=callback");
       console_error!("{}", parse_error_line(&context, &e));
       return Response::ok("").unwrap().with_cors(&cors);
