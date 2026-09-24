@@ -10,8 +10,8 @@ use crate::helpers::gps_track;
 use crate::helpers::move_flock;
 use crate::{Route, api};
 use capsules::{
-  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
+  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -693,6 +693,66 @@ fn ConnectorInfo(
                                 #[cfg(feature = "web")]
                                 if let Some(window) = web_sys::window() {
                                     let _ = window.navigator().clipboard().write_text(&sample);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                    }
+                }
+                Connector::Nidd(config) => {
+                    let endpoint = config.endpoint.clone();
+                    let imei = config.imei.clone();
+                    rsx! {
+                      tr {
+                        th { "Protocol" }
+                        td { "NIDD (Verizon ThingSpace, NB-IoT)" }
+                        td {}
+                      }
+                      tr {
+                        th { "IMEI" }
+                        td {
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{imei}"
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&imei);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                      tr {
+                        th { "APN" }
+                        td {
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{NIDD_APN}" }
+                        }
+                        td {}
+                      }
+                      tr {
+                        th { "Endpoint" }
+                        td {
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&endpoint);
                                 }
                             },
                             Icon { icon: LdCopy }

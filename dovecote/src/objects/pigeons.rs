@@ -8,10 +8,10 @@ use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
-  MqttConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow,
-  PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest,
-  PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
+  MqttConfig, NiddConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest,
+  PigeonDetail, PigeonFlockUpdateRequest, PigeonLogChunk, PigeonLogChunkRow, PigeonRow,
+  PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
+  PigeonSuspensionRequest, PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -643,6 +643,12 @@ fn strip_secrets(pigeon: &mut Pigeon) {
       tls_psk_identity: c.tls_psk_identity,
       tls_psk_secret: None,
     }),
+    Connector::Nidd(c) => Connector::Nidd(NiddConfig {
+      endpoint: c.endpoint,
+      token: String::new(),
+      imei: c.imei,
+      claim_key: None,
+    }),
   };
 
   if let Some(endpoint) = pigeon.telemetry_endpoint.as_mut() {
@@ -843,6 +849,10 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         tls_psk_secret: Some(psk),
       })
     }
+    // NIDD needs a carrier account this build does not configure.
+    Connector::Nidd(_) => {
+      return Response::error("Forbidden: NIDD is not enabled in this environment", 403);
+    }
   };
 
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
@@ -998,6 +1008,11 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
         tls_psk_identity: Some(do_id.clone()),
         tls_psk_secret: Some(psk),
       })
+    }
+    // Create refuses Nidd, so no such pigeon exists to refresh.
+    Connector::Nidd(_) => {
+      console_error!("Pigeon token refresh: Nidd connector while NIDD is disabled");
+      return Response::error("Internal Server Error", 500);
     }
   };
 

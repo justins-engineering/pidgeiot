@@ -46,6 +46,9 @@ pub fn device_credentials(connector: &Connector) -> Vec<DeviceCredential> {
       Connector::Mqtt(_) => {
         "The CONNECT password on a certificate session (CONFIG_PIGEON_MQTT_AUTH_CERT). A PSK session may leave it empty, unless the build also fetches firmware over HTTPS."
       }
+      Connector::Nidd(_) => {
+        "Only for firmware downloads over a second, IP PDN. NIDD frames never carry it; a NIDD-only build leaves it empty."
+      }
     },
   });
 
@@ -87,6 +90,9 @@ pub fn device_credentials(connector: &Connector) -> Vec<DeviceCredential> {
       }
       Connector::Mqtt(_) => {
         "The broker this pigeon dials. It carries no path, because MQTT names resources with topics rather than URLs."
+      }
+      Connector::Nidd(_) => {
+        "The APN of the Non-IP PDN, as a URI. The scheme has to match a NIDD build."
       }
     },
   });
