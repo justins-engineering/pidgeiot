@@ -3231,6 +3231,13 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       }
     };
   }
+  // A push that cannot be sent is marked unsent, as a failed send is, so the next uplink sends
+  // it instead of waiting out the delivery window.
+  if identity.is_none() && matches!(downlink, Some(NiddDownlink::Shadow { .. })) {
+    row.pushed_version = 0;
+    row.pushed_at = 0;
+    downlink = None;
+  }
   finish_nidd_uplink(
     pigeons,
     row,

@@ -790,7 +790,8 @@ the send sees the push as outstanding. If a `SHADOW` send answers 503 (not confi
 unreachable), the tail runs
 `UPDATE pigeon_nidd SET pushed_version = 0, pushed_at = 0 WHERE pushed_version = ?1 AND pushed_at = ?2`
 with the values it wrote, so a newer push planned meanwhile is left alone; that makes the push due
-again on the next uplink. A 502 (ThingSpace refused the message itself; a 408 or 429 is a 503, 8.3)
+again on the next uplink. An uplink that plans a `SHADOW` but cannot read the connector to address
+it zeroes `pushed_*` in its own row write instead, with the same effect. A 502 (ThingSpace refused the message itself; a 408 or 429 is a 503, 8.3)
 is logged and left: the same bytes would fail the same way, and the 86400-second rule retries it
 once a day at most. A failed `STATUS` is logged and dropped.
 
