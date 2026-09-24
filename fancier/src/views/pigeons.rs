@@ -4,7 +4,9 @@ use crate::components::{
 };
 use crate::helpers::{connection_state, device_credentials};
 use crate::{Route, api};
-use capsules::{CoapConfig, Connector, HttpsConfig, MqttConfig, Pigeon, PigeonCreateRequest};
+use capsules::{
+  CoapConfig, Connector, HttpsConfig, MqttConfig, NiddConfig, Pigeon, PigeonCreateRequest,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTriangleAlert, LdX};
@@ -574,11 +576,12 @@ fn ErrorPigeonsState() -> Element {
 
 /// The one and only sighting of a pigeon's write-once credentials. Every
 /// value is labelled with the build-time symbol it belongs in, because the
-/// three strings a device needs are indistinguishable by shape.
+/// strings a device needs are indistinguishable by shape.
 #[component]
 fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
   let fields = device_credentials::device_credentials(&connector);
-  let secret_shown = device_credentials::has_psk(&connector);
+  let secret = device_credentials::write_once_secret(&connector).map(|(noun, _)| noun);
+  let nidd = matches!(connector, Connector::Nidd(_));
 
   rsx! {
     div {
@@ -602,13 +605,18 @@ fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
           "🔑 Device Credentials"
         }
         p { class: "py-4 text-sm text-base-content/80",
-          if secret_shown {
-            "The token and the PSK secret below are shown "
+          if let Some(noun) = secret {
+            "The token and the {noun} below are shown "
           } else {
             "The token below is shown "
           }
           strong { "only once" }
           ". Copy them into your device build now; they cannot be retrieved later. Refreshing this pigeon's token mints replacements and retires these."
+        }
+        if nidd {
+          p { class: "text-xs text-base-content/60",
+            "The device library does not ship its NIDD transport yet. The symbols below are the ones its NIDD build will read."
+          }
         }
         for field in fields {
           CredentialRow {
@@ -691,6 +699,7 @@ fn CreatePigeonModal(
   let mut local_session = use_context::<crate::LocalSession>();
   let mut is_saving = use_signal(|| false);
   let mut submit_error = use_signal(|| Option::<String>::None);
+  let mut imei_error = use_signal(|| Option::<&'static str>::None);
 
   rsx! {
     div {
@@ -725,6 +734,7 @@ fn CreatePigeonModal(
                       flock_id: id,
                       ..Default::default()
                   };
+                  let mut imei = String::new();
 
                   for (key, val) in evt.values() {
                       if let FormValue::Text(val) = val {
@@ -736,30 +746,44 @@ fn CreatePigeonModal(
                               "board" => {
                                   pcr.board = if !val.is_empty() { Some(val) } else { None };
                               }
+                              "imei" => imei = val.trim().to_string(),
                               _ => {}
                           }
                       }
                   }
 
-                  pcr.connector = match selected_connector.read().as_str() {
+                  let selected = selected_connector.read().clone();
+                  pcr.connector = match selected.as_str() {
                       "Coap" => Connector::Coap(CoapConfig::default()),
                       "Mqtt" => Connector::Mqtt(MqttConfig::default()),
+                      "Nidd" => {
+                          let problem = imei_problem(&imei);
+                          imei_error.set(problem);
+                          if problem.is_some() {
+                              return;
+                          }
+                          Connector::Nidd(NiddConfig {
+                              imei,
+                              ..NiddConfig::default()
+                          })
+                      }
                       _ => Connector::Https(HttpsConfig::default()),
                   };
 
                   is_saving.set(true);
                   submit_error.set(None);
-                  if let Some((pigeon_id, connector)) = api::pigeons::create(&pcr).await {
-                      is_saving.set(false);
-                      if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
-                          flock.pigeon_ids.push(pigeon_id.clone());
+                  match api::pigeons::create(&pcr).await {
+                      Ok((pigeon_id, connector)) => {
+                          is_saving.set(false);
+                          if let Some(flock) = local_session.flocks.write().get_mut(&flock_id) {
+                              flock.pigeon_ids.push(pigeon_id.clone());
+                          }
+                          on_created.call((pigeon_id, connector));
                       }
-                      on_created.call((pigeon_id, connector));
-                  } else {
-                      is_saving.set(false);
-                      submit_error.set(
-                          Some("Failed to register pigeon. Please try again.".to_string()),
-                      );
+                      Err(message) => {
+                          is_saving.set(false);
+                          submit_error.set(Some(message));
+                      }
                   }
               }
           },
@@ -823,6 +847,41 @@ fn CreatePigeonModal(
                   selected: selected_connector() == "Mqtt",
                   "MQTT (TLS)"
                 }
+                option {
+                  value: "Nidd",
+                  selected: selected_connector() == "Nidd",
+                  "NIDD (Verizon, NB-IoT)"
+                }
+              }
+            }
+            if selected_connector() == "Nidd" {
+              div {
+                label {
+                  class: "fieldset-legend text-xs font-semibold mb-1",
+                  r#for: "create_pigeon_imei",
+                  "IMEI"
+                }
+                input {
+                  class: "input input-bordered w-full text-sm font-mono",
+                  class: if imei_error.read().is_some() { "input-error" },
+                  id: "create_pigeon_imei",
+                  name: "imei",
+                  r#type: "text",
+                  inputmode: "numeric",
+                  maxlength: 15_i64,
+                  autocomplete: "off",
+                  required: true,
+                  placeholder: "15 digits",
+                  oninput: move |_| imei_error.set(None),
+                }
+                if let Some(problem) = imei_error() {
+                  p { class: "text-error text-xs mt-1", "{problem}" }
+                }
+                p { class: "text-xs text-base-content/60 mt-1",
+                  "The 15 digits on the modem label, or from "
+                  code { "AT+CGSN" }
+                  ". The device must be NB-IoT on a Verizon NIDD line."
+                }
               }
             }
             div {
@@ -864,6 +923,44 @@ fn CreatePigeonModal(
         onclick: move |_| on_close.call(()),
       }
       BoardDatalist {}
+    }
+  }
+}
+
+/// Why the create form refuses this IMEI, or `None` when dovecote would
+/// accept it. The length is told apart from the check digit because a
+/// digit short and a digit wrong need different fixes.
+fn imei_problem(imei: &str) -> Option<&'static str> {
+  if imei.len() != 15 || !imei.bytes().all(|b| b.is_ascii_digit()) {
+    Some("An IMEI is 15 digits.")
+  } else if !capsules::imei_is_valid(imei) {
+    Some("That IMEI's check digit is wrong.")
+  } else {
+    None
+  }
+}
+
+#[cfg(test)]
+mod imei_tests {
+  use super::imei_problem;
+
+  #[test]
+  fn a_valid_imei_passes() {
+    assert_eq!(imei_problem("490154203237518"), None);
+  }
+
+  #[test]
+  fn a_wrong_check_digit_is_named_as_such() {
+    assert_eq!(
+      imei_problem("490154203237519"),
+      Some("That IMEI's check digit is wrong.")
+    );
+  }
+
+  #[test]
+  fn a_wrong_length_or_a_letter_is_a_length_problem() {
+    for imei in ["", "49015420323751", "4901542032375180", "49015420323751a"] {
+      assert_eq!(imei_problem(imei), Some("An IMEI is 15 digits."));
     }
   }
 }

@@ -124,15 +124,23 @@ pub async fn update(pigeon_id: &str, pur: &PigeonUpdateRequest) -> Option<String
 /// Returns the new pigeon's id and the connector exactly as minted --
 /// with the credentials the create response carries once and no read
 /// route ever returns again, which is why the caller gets the whole
-/// connector rather than just its token: a PSK-bearing connector has a
-/// second secret in it, and both have to reach the reveal.
-pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, Connector)> {
-  let body = serde_json::to_string(pigeon).ok()?;
-  let body = serde_wasm_bindgen::to_value(&body).ok()?;
-  let response = fetch_json("POST", "/flock/pigeons", Some(&body)).await?;
-  let json = JsFuture::from(response.json().ok()?).await.ok()?;
-
-  let detail = serde_wasm_bindgen::from_value::<PigeonDetail>(json).ok()?;
+/// connector rather than just its token: a PSK-bearing or NIDD connector
+/// has a second secret in it, and both have to reach the reveal. `Err`
+/// carries the server's message, since a refused NIDD pigeon (400, 403,
+/// 409) is a distinct answer the user needs to read.
+pub async fn create(pigeon: &PigeonCreateRequest) -> Result<(String, Connector), String> {
+  let Some(body) = to_body(pigeon) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("POST", "/flock/pigeons", Some(&body)).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  let Some(detail) = parse::<PigeonDetail>(response).await else {
+    return Err("Failed to parse response".to_string());
+  };
   let id = detail.pigeon.id.clone();
 
   // Cache the pigeon (token is stripped on subsequent GETs)
@@ -140,7 +148,7 @@ pub async fn create(pigeon: &PigeonCreateRequest) -> Option<(String, Connector)>
   pigeon_list.insert(id.clone(), detail.pigeon.clone());
   pigeon_list.write();
 
-  Some((id, detail.pigeon.connector.clone()))
+  Ok((id, detail.pigeon.connector))
 }
 
 /// Moves a pigeon into another flock, keeping both flocks' cached

@@ -5,6 +5,7 @@ use crate::components::{
   TelemetryEndpointModal, TelemetryStatTiles, TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
+use crate::helpers::device_credentials;
 use crate::helpers::firmware_repush;
 use crate::helpers::gps_track;
 use crate::helpers::move_flock;
@@ -467,6 +468,8 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
   }
 }
 
+/// How the pigeon was provisioned, and the one place its token (and any
+/// second write-once secret) can be rotated and read again.
 #[component]
 fn ConnectorInfo(
   pigeon_id: String,
@@ -483,9 +486,12 @@ fn ConnectorInfo(
     .unwrap_or_else(|_| "Invalid Format".to_string());
 
   let mut refreshed_token = use_signal(|| None::<String>);
-  // A refresh rotates a PSK-bearing connector's secret alongside its
-  // token, and this is the only moment either is readable.
-  let mut refreshed_psk = use_signal(|| None::<String>);
+  // A refresh rotates a PSK-bearing connector's secret, or a NIDD
+  // pigeon's claim key, alongside its token, and this is the only moment
+  // either is readable.
+  let mut refreshed_secret = use_signal(|| None::<String>);
+  let nidd = matches!(connector, Connector::Nidd(_));
+  let secret_heading = if nidd { "Claim Key" } else { "TLS PSK" };
   let mut is_refreshing = use_signal(|| false);
   let mut refresh_error = use_signal(|| Option::<String>::None);
   let mut confirm_refresh = use_signal(|| false);
@@ -499,7 +505,11 @@ fn ConnectorInfo(
       }
 
       p { class: "text-xs text-base-content/60 md:px-4",
-        "How this pigeon was provisioned, not a restriction on it: its token authenticates it on every device transport."
+        if nidd {
+          "Its NIDD frames are authenticated by the carrier and the claim key built into its firmware. The token serves only the HTTPS device routes, such as firmware downloads, on a board that also holds an IP PDN."
+        } else {
+          "How this pigeon was provisioned, not a restriction on it: its token authenticates it on every IP device transport."
+        }
       }
 
       div { class: "overflow-x-auto",
@@ -806,9 +816,9 @@ fn ConnectorInfo(
                 }
               }
             }
-            if let Some(secret) = refreshed_psk() {
+            if let Some(secret) = refreshed_secret() {
               tr {
-                th { "TLS PSK" }
+                th { "{secret_heading}" }
                 td {
                   div { class: "flex flex-col gap-2",
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
@@ -858,7 +868,7 @@ fn ConnectorInfo(
             class: "btn btn-ghost btn-sm text-base-content/60",
             onclick: move |_| {
                 refreshed_token.set(None);
-                refreshed_psk.set(None);
+                refreshed_secret.set(None);
             },
             "I've Saved the Token"
           }
@@ -881,8 +891,11 @@ fn ConnectorInfo(
                       Some(connector) => {
                           is_refreshing.set(false);
                           refreshed_token.set(Some(connector.token().to_string()));
-                          refreshed_psk
-                              .set(connector.psk().map(|(_, secret)| secret.to_string()));
+                          refreshed_secret
+                              .set(
+                                  device_credentials::write_once_secret(&connector)
+                                      .map(|(_, secret)| secret.to_string()),
+                              );
                       }
                       None => {
                           is_refreshing.set(false);
@@ -897,6 +910,10 @@ fn ConnectorInfo(
           ", and any pre-shared key rotates with it. A device already in the field keeps "
           "failing every request until its firmware is rebuilt with the new token and "
           "reflashed on site."
+          if nidd {
+            " This pigeon's claim key rotates too, and the device is refused until it is "
+            "rebuilt with the new one."
+          }
         }
       }
     }

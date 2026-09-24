@@ -15,20 +15,27 @@ pub struct DeviceCredential {
   /// `None` for the MQTT PSK identity: the device library reads it from
   /// `pigeon_config.device_id` and deliberately has no symbol of its own,
   /// since a second place to write the same string could only disagree
-  /// with the first.
+  /// with the first. `None` for a NIDD pigeon's IMEI too, which the
+  /// carrier reports rather than the build.
   pub target: Option<&'static str>,
   pub note: &'static str,
 }
 
-/// Whether this connector carries a write-once secret beyond the token,
-/// which is what decides how the reveal warns about retrieval.
-pub fn has_psk(connector: &Connector) -> bool {
-  connector.psk().is_some()
+/// The write-once secret this connector carries beyond the token, as the
+/// noun prose names it and its value: a TLS-PSK's secret, or a NIDD
+/// pigeon's claim key. `None` when there is none, or it was stripped by a
+/// read route. Decides how the reveal and a refresh warn about retrieval.
+pub fn write_once_secret(connector: &Connector) -> Option<(&'static str, &str)> {
+  match connector {
+    Connector::Nidd(config) => config.claim_key.as_deref().map(|key| ("claim key", key)),
+    _ => connector.psk().map(|(_, secret)| ("PSK secret", secret)),
+  }
 }
 
 /// Everything a device needs from a create or a token refresh, in the
 /// order an operator fills a build in: the credential first, then how the
-/// handshake names the device, then the address.
+/// handshake (or, for NIDD, the carrier) names the device, then the
+/// address.
 pub fn device_credentials(connector: &Connector) -> Vec<DeviceCredential> {
   let mut fields = Vec::with_capacity(4);
 
@@ -76,6 +83,23 @@ pub fn device_credentials(connector: &Connector) -> Vec<DeviceCredential> {
     });
   }
 
+  if let Connector::Nidd(config) = connector {
+    if let Some(claim_key) = &config.claim_key {
+      fields.push(DeviceCredential {
+        label: "Claim key",
+        value: claim_key.clone(),
+        target: Some("CONFIG_PIGEON_NIDD_CLAIM_KEY"),
+        note: "The device presents it once per boot to claim this pigeon, and checks every message from the platform with it. Refreshing the token mints a new one, and the device must be rebuilt with it.",
+      });
+    }
+    fields.push(DeviceCredential {
+      label: "IMEI",
+      value: config.imei.clone(),
+      target: None,
+      note: "The modem this pigeon answers to. The carrier reports it; nothing to build in.",
+    });
+  }
+
   fields.push(DeviceCredential {
     label: match connector {
       Connector::Mqtt(_) => "Broker endpoint",
@@ -103,7 +127,7 @@ pub fn device_credentials(connector: &Connector) -> Vec<DeviceCredential> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use capsules::{CoapConfig, HttpsConfig, MqttConfig};
+  use capsules::{CoapConfig, HttpsConfig, MqttConfig, NiddConfig};
 
   fn labels(connector: &Connector) -> Vec<&'static str> {
     device_credentials(connector)
@@ -144,6 +168,15 @@ mod tests {
     })
   }
 
+  fn nidd() -> Connector {
+    Connector::Nidd(NiddConfig {
+      endpoint: "nidd://VZWSCEF".to_string(),
+      token: "tok".to_string(),
+      imei: "490154203237518".to_string(),
+      claim_key: Some("key".to_string()),
+    })
+  }
+
   #[test]
   fn an_https_pigeon_reveals_a_token_and_an_endpoint() {
     assert_eq!(labels(&https()), vec!["Device token", "Device endpoint"]);
@@ -151,7 +184,7 @@ mod tests {
       targets(&https()),
       vec![Some("CONFIG_PIGEON_TOKEN"), Some("CONFIG_PIGEON_ENDPOINT")]
     );
-    assert!(!has_psk(&https()));
+    assert_eq!(write_once_secret(&https()), None);
   }
 
   #[test]
@@ -174,7 +207,7 @@ mod tests {
         Some("CONFIG_PIGEON_ENDPOINT")
       ]
     );
-    assert!(has_psk(&coap()));
+    assert_eq!(write_once_secret(&coap()), Some(("PSK secret", "hex")));
   }
 
   #[test]
@@ -217,6 +250,47 @@ mod tests {
       tls_psk_secret: None,
     });
     assert_eq!(labels(&stripped), vec!["Device token", "Broker endpoint"]);
-    assert!(!has_psk(&stripped));
+    assert_eq!(write_once_secret(&stripped), None);
+  }
+
+  #[test]
+  fn a_nidd_pigeon_reveals_its_claim_key_and_imei_in_build_order() {
+    assert_eq!(
+      labels(&nidd()),
+      vec!["Device token", "Claim key", "IMEI", "Device endpoint"]
+    );
+    assert_eq!(
+      targets(&nidd()),
+      vec![
+        Some("CONFIG_PIGEON_TOKEN"),
+        Some("CONFIG_PIGEON_NIDD_CLAIM_KEY"),
+        None,
+        Some("CONFIG_PIGEON_ENDPOINT")
+      ]
+    );
+    let values: Vec<String> = device_credentials(&nidd())
+      .into_iter()
+      .map(|f| f.value)
+      .collect();
+    assert_eq!(
+      values,
+      vec!["tok", "key", "490154203237518", "nidd://VZWSCEF"]
+    );
+    assert_eq!(write_once_secret(&nidd()), Some(("claim key", "key")));
+  }
+
+  #[test]
+  fn a_nidd_connector_read_back_stripped_keeps_its_imei_but_no_claim_key() {
+    let stripped = Connector::Nidd(NiddConfig {
+      endpoint: "nidd://VZWSCEF".to_string(),
+      token: String::new(),
+      imei: "490154203237518".to_string(),
+      claim_key: None,
+    });
+    assert_eq!(
+      labels(&stripped),
+      vec!["Device token", "IMEI", "Device endpoint"]
+    );
+    assert_eq!(write_once_secret(&stripped), None);
   }
 }
