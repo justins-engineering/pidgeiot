@@ -48,6 +48,11 @@ js-sys = "0.3.102"
 wasm-bindgen = "0.2.125"
 wasm-bindgen-futures = "0.4.75"
 time-tz = { version = "2", default-features = false, features = ["db"] }
+# JES's own Verizon ThingSpace client: the OAuth, session and NIDD send calls behind a Nidd
+# pigeon's downlink (objects/thingspace.rs). The callback is parsed by helpers/nidd.rs instead.
+thingspace-sdk = { path = "/home/justin/thingspace-sdk-rust", default-features = false, features = [
+  "worker",
+] }
 
 [dev-dependencies]
 # Only the tests want it, and only to recompute the published OpenPGP key's

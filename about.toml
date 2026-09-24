@@ -2,7 +2,8 @@
 # open-source-license inventories (see fancier/scripts/generate-oss-notices.sh,
 # which drives both, and fancier/src/views/open_source.rs, which renders the
 # result at /open-source). One config, not two, since the accepted-license
-# policy is a whole-project decision, not a per-crate one.
+# policy is a whole-project decision; the one reviewed exception for a single
+# crate sits in its own table at the end.
 #
 # `targets` scopes each crate's dependency graph to what actually gets
 # compiled: both dovecote (Cloudflare Workers) and fancier (the WASM SPA)
@@ -38,7 +39,14 @@ accepted = [
 # their own Cargo.toml, added alongside this file) — they're PidgeIoT's own
 # AGPL-3.0 code, not a third-party dependency, and are attributed separately
 # at the top of /open-source, not folded into this generated inventory.
-# Must come last: TOML table headers own every key that follows them until
-# the next header, so `accepted` has to precede this section.
+# Must follow the top-level keys: TOML table headers own every key that
+# follows them until the next header, so `accepted` has to precede this
+# section.
 [private]
 ignore = true
+
+# JES's own ThingSpace client, under the same licence as this repository. Accepted for that crate
+# alone, so no other AGPL dependency reaches either inventory unreviewed. Crate tables must come
+# last in this file.
+[thingspace-sdk]
+accepted = ["AGPL-3.0-only"]
