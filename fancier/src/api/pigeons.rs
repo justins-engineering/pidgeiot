@@ -268,21 +268,30 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<Connector> {
   Some(connector)
 }
 
+/// Replaces the pigeon's `target_config`. `Err` carries the server's
+/// message, which names the refusal: a firmware board mismatch, or a NIDD
+/// pigeon's config too large for one downlink frame (413).
 pub async fn update_shadow(
   pigeon_id: &str,
   psur: &PigeonShadowUpdateRequest,
-) -> Option<PigeonShadow> {
+) -> Result<PigeonShadow, String> {
   let mut path = String::with_capacity(80);
   path.push_str("/pigeons/");
   path.push_str(pigeon_id);
   path.push_str("/shadow");
 
-  let json_string = serde_json::to_string(psur).ok()?;
-  let body = serde_wasm_bindgen::to_value(&json_string).ok()?;
-  let response = fetch_json("PUT", &path, Some(&body)).await?;
-  let json = JsFuture::from(response.json().ok()?).await.ok()?;
-
-  serde_wasm_bindgen::from_value::<PigeonShadow>(json).ok()
+  let Some(body) = to_body(psur) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("PUT", &path, Some(&body)).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  parse::<PigeonShadow>(response)
+    .await
+    .ok_or_else(|| "Failed to parse response".to_string())
 }
 
 // GET /pigeons/:id/logs -- every currently-stored device log chunk for

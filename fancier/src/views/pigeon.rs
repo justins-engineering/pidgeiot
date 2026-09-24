@@ -11,8 +11,9 @@ use crate::helpers::gps_track;
 use crate::helpers::move_flock;
 use crate::{Route, api};
 use capsules::{
-  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
+  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon,
+  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -1220,19 +1221,11 @@ fn ShadowInfo(
                                     target_config,
                                 };
                                 match api::pigeons::update_shadow(&pigeon_id, &req).await {
-                                    Some(new_shadow) => {
+                                    Ok(new_shadow) => {
                                         repushed_version.set(Some(new_shadow.target_version));
                                         on_repushed.call(new_shadow);
                                     }
-                                    None => {
-                                        repush_error
-                                            .set(
-                                                Some(
-                                                    "Failed to re-push the firmware target. Please try again."
-                                                        .to_string(),
-                                                ),
-                                            );
-                                    }
+                                    Err(message) => repush_error.set(Some(message)),
                                 }
                             }
                             Err(err) => repush_error.set(Some(err)),
@@ -1442,8 +1435,9 @@ fn AclInfo(acl: PigeonAcl) -> Element {
 
 /// Client-side-only sanity cap on an uploaded `target_config` JSON file --
 /// dovecote's `PUT /pigeons/:id/shadow` enforces no size limit of its own on
-/// `target_config`, so this exists purely to give a friendly error instead
-/// of stuffing something absurd into the textarea below.
+/// an IP pigeon's `target_config` (a NIDD pigeon's is held to
+/// `NIDD_MAX_TARGET_CONFIG_BYTES`), so this exists purely to give a friendly
+/// error instead of stuffing something absurd into the textarea below.
 const MAX_SHADOW_UPLOAD_BYTES: u64 = 64 * 1024;
 
 /// Parses an uploaded `target_config` JSON file's text and, on success,
@@ -1469,9 +1463,29 @@ fn parse_shadow_upload(text: &str) -> Result<String, String> {
   }
 }
 
+/// The size dovecote holds a NIDD pigeon's `target_config` to: its compact
+/// serialization, whatever whitespace the editor holds. `None` while the
+/// editor's text is not valid JSON.
+fn compact_config_bytes(raw: &str) -> Option<usize> {
+  let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+  serde_json::to_string(&value)
+    .ok()
+    .map(|compact| compact.len())
+}
+
 #[cfg(test)]
 mod shadow_upload_tests {
-  use super::parse_shadow_upload;
+  use super::{compact_config_bytes, parse_shadow_upload};
+
+  #[test]
+  fn the_byte_count_is_compact_utf8_whatever_the_editor_holds() {
+    assert_eq!(
+      compact_config_bytes("{\n  \"log\": 3,\n  \"on\": true\n}"),
+      Some(19)
+    );
+    assert_eq!(compact_config_bytes("{\"s\":\"é\"}"), Some(10));
+    assert_eq!(compact_config_bytes("{not json"), None);
+  }
 
   #[test]
   fn accepts_a_json_object_and_pretty_prints_it() {
@@ -1519,6 +1533,9 @@ mod shadow_upload_tests {
   }
 }
 
+/// Edits the shadow's `target_config`, typed or loaded from a file. For a
+/// NIDD pigeon it counts the bytes against the one downlink frame the
+/// whole config has to fit; the server's 413 stays the authority.
 #[component]
 pub fn EditShadowModal(
   pigeon_id: String,
@@ -1537,6 +1554,15 @@ pub fn EditShadowModal(
   let mut is_saving = use_signal(|| false);
   let mut file_error = use_signal(|| Option::<String>::None);
   let mut loaded_file_name = use_signal(|| Option::<String>::None);
+
+  let nidd = pigeon_detail
+    .read()
+    .as_ref()
+    .is_some_and(|detail| matches!(detail.pigeon.connector, Connector::Nidd(_)));
+  let config_bytes = nidd
+    .then(|| compact_config_bytes(&json_input.read()))
+    .flatten();
+  let oversize = config_bytes.is_some_and(|bytes| bytes > NIDD_MAX_TARGET_CONFIG_BYTES);
 
   rsx! {
     dialog { class: "modal", id: "edit_shadow_modal",
@@ -1569,7 +1595,7 @@ pub fn EditShadowModal(
                           };
 
                           match crate::api::pigeons::update_shadow(&pigeon_id, &req).await {
-                              Some(new_shadow) => {
+                              Ok(new_shadow) => {
                                   if let Some(detail) = pigeon_detail.write().as_mut() {
                                       detail.shadow = new_shadow;
                                   }
@@ -1578,11 +1604,9 @@ pub fn EditShadowModal(
                                       r#"document.getElementById("edit_shadow_modal").close();"#,
                                   );
                               }
-                              None => {
+                              Err(message) => {
                                   is_saving.set(false);
-                                  submit_error.set(
-                                      Some("Failed to save shadow. Please try again.".to_string()),
-                                  );
+                                  submit_error.set(Some(message));
                               }
                           }
                       }
@@ -1680,6 +1704,16 @@ pub fn EditShadowModal(
                 },
               }
 
+              if let Some(bytes) = config_bytes {
+                p {
+                  class: "text-xs mt-1",
+                  class: if oversize { "text-error" } else { "text-base-content/60" },
+                  "{bytes} of {NIDD_MAX_TARGET_CONFIG_BYTES} bytes"
+                  if oversize {
+                    ". One NIDD downlink frame carries the whole config, so trim it to save."
+                  }
+                }
+              }
               // Not a daisyUI .label: it is white-space: nowrap, so the sentence
               // sets the modal's minimum width and runs off a phone screen.
               if let Some(err) = error_msg.read().as_ref() {
@@ -1698,7 +1732,7 @@ pub fn EditShadowModal(
             button {
               class: "btn btn-primary shadow-md min-w-[120px]",
               r#type: "submit",
-              disabled: error_msg.read().is_some() || is_saving(),
+              disabled: error_msg.read().is_some() || is_saving() || oversize,
               if is_saving() {
                 span { class: "loading loading-spinner loading-sm" }
               } else {
