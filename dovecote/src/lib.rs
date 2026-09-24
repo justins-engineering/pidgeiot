@@ -696,9 +696,10 @@ async fn undo_nidd_create(
 }
 
 /// The one line every NIDD callback logs. Never a body, password, frame, account name, IMEI,
-/// ICCID or IMSI: only what kind of callback it was, what became of it, the derived pigeon id,
-/// ThingSpace's request id and attempt, and the latency, watched against an acknowledgement
-/// deadline Verizon does not publish.
+/// ICCID or IMSI: only what kind of callback it was, what became of it (for a delivery report or
+/// configuration result, its status and reason too), the derived pigeon id, ThingSpace's request
+/// id and attempt, and the latency, watched against an acknowledgement deadline Verizon does not
+/// publish.
 fn log_nidd_callback(
   kind: &str,
   outcome: &str,
@@ -862,14 +863,13 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
     NiddResponse::Delivery(report) | NiddResponse::Config(report) => {
       let status = header_safe(callback.status.clone());
       let reason = header_safe(report.reason.clone().map(|r| r.replace(' ', "_")));
-      console_log!(
-        "nidd_cb kind={kind} status={} reason={} pigeon={} request={}",
-        or_none(&status),
-        or_none(&reason),
-        or_none(&pigeon_id),
-        or_none(&request_id),
-      );
-      log_nidd_callback(kind, "logged", &pigeon_id, &request_id, attempt, started);
+      let (status, reason) = (or_none(&status), or_none(&reason));
+      let mut outcome = String::with_capacity(22 + status.len() + reason.len());
+      outcome.push_str("logged status=");
+      outcome.push_str(status);
+      outcome.push_str(" reason=");
+      outcome.push_str(reason);
+      log_nidd_callback(kind, &outcome, &pigeon_id, &request_id, attempt, started);
       return Response::ok("").unwrap().with_cors(&cors);
     }
   };
