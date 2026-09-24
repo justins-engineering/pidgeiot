@@ -43,8 +43,8 @@ the alternative.
 | 12 | Postgres | No schema change and no migration. |
 | 13 | SDK | Depend on the owner's crate for the three outbound calls after a short patch; parse the inbound callback in dovecote, where it is tested as the security boundary it is. Accept its `AGPL-3.0-only` licence for that crate alone. |
 | 14 | Radio contract | At most 4 radio accesses an hour (Verizon's guideline), an obligation on the application's cadence, telemetry batched inside one frame, the radio released within 5 s. |
-| 15 | Departure board | Stays on LTE-M IP. NIDD suits low-duty sensors and, possibly, the e-paper variant. |
-| 16 | Gate | Nothing merges to `main` until the bench Feather attaches to Verizon NB-IoT and the SIM's NIDD plan is confirmed. First, and independent of NIDD: the SDK's public example worker is removed and the account credentials rotated (task 0.5). |
+| 15 | Departure board | Stays on LTE-M IP. NIDD suits low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not. |
+| 16 | Gate | Nothing merges to `main` until the bench nRF9160 Feather attaches to Verizon NB-IoT and the SIM's NIDD plan is confirmed. Never the nRF9151: Verizon does not support the board. First, and independent of NIDD: the SDK's public example worker is removed and the account credentials rotated (task 0.5). |
 | 17 | Effort | 65 to 105 hours for the platform through a proven staging loop; 36 to 62 more for the device library and production. |
 | 18 | Running cost | About $0.0004 per device-day on Cloudflare at 5-minute readings sent every 15 minutes, $0.0001 at hourly readings. NIDD carrier pricing is unpublished. |
 | 19 | Who may create a Nidd pigeon | Only a flock in an organization listed in `NIDD_ALLOWED_ORG_IDS`, a fail-closed allowlist, while D2 keeps NIDD to JES's own devices. |
@@ -1698,8 +1698,10 @@ uses was deprecated in NCS 3.2 and is absent from v3.4.0), its `modem/ltes_lc.h`
 a receive loop that prints each downlink as hex and whether its tag verifies against the claim
 key (printing ok or bad, never the key), shell commands that send a canned `HELLO` (the
 claim key from `prj.local.conf`, the sample credential convention) or N filler bytes, and the IMEI
-and ICCID logged at boot. Flashing is pre-approved; the Feather programs through the nRF5340-DK
-acting as J-Link, and its console is chosen by serial, not index. Ordered by risk:
+and ICCID logged at boot. It is built for the nRF9160 Feather (`circuitdojo_feather/nrf9160/ns`),
+never the nRF9151, which Verizon does not support. Flashing is pre-approved; the Feather programs
+through the nRF5340-DK acting as J-Link, and its console is chosen by serial, not index. Ordered by
+risk:
 
 | # | Check | Pass means |
 |---|---|---|
@@ -1719,17 +1721,16 @@ account's contact record; the unit tests cover it.
 
 ### 13.3 Tier 3: the device transport end to end
 
-With section 14's library and the `nidd_init` sample on the Feather against staging: boot sends
-`HELLO` and the pigeon shows claimed in the logs; `pigeon_shadow_get` returns the pushed shadow; a
-dashboard write raises `PIGEON_EVENT_SHADOW_UPDATE` inside the active time or at the next wake; the
-app applies it and `pigeon_shadow_report` returns 0 on `STATUS STORED`; batched readings arrive
-with correct ages; after a token refresh the device's frames are dropped at the platform, any
+With section 14's library and the `nidd_init` sample on the nRF9160 Feather against staging: boot
+sends `HELLO` and the pigeon shows claimed in the logs; `pigeon_shadow_get` returns the pushed
+shadow; a dashboard write raises `PIGEON_EVENT_SHADOW_UPDATE` inside the active time or at the next
+wake; the app applies it and `pigeon_shadow_report` returns 0 on `STATUS STORED`; batched readings
+arrive with correct ages; after a token refresh the device's frames are dropped at the platform, any
 notice signed with the new key fails its tag, and at the next boot the `HELLO` draws `UNCLAIMED 1`,
 which turns billable sends into `-EACCES`; a paused account turns them into `-EAGAIN` with 3600; a
 frame with a corrupted tag, sent from the runbook shell, is dropped; FOTA over the IP PDN if B9
-passed. Then a 24-hour soak at the contract's
-cadence with every reading accounted for against the billing counter, and a field unit at a real
-site, which is also the NB-IoT coverage check.
+passed. Then a 24-hour soak at the contract's cadence with every reading accounted for against the
+billing counter, and a field unit at a real site, which is also the NB-IoT coverage check.
 
 ## 14. The device transport follow-on: `pigeon_nidd.c`
 
@@ -1871,15 +1872,17 @@ PidgeIoT's origin was putting departure boards on NIDD, so the question deserves
   down and printed uplinks came up (reader map `device-and-origin.md` 3.1).
 
 So the LED departure board stays on LTE-M IP, and its bandwidth path is the CoAP migration
-(`docs/design/coap-nrf91-migration.md`). Where NIDD could fit a sign is the low-power e-paper
-variant on the nRF9151 that the owner ruled in on 2026-09-18: a shelter display showing scheduled
-times, updated by exception a few times an hour. For that case the envelope reserves platform frame
-`0x83` for application data, and the platform would need a way to address a downlink that is not
-a shadow; neither is in v1 (decision D10).
+(`docs/design/coap-nrf91-migration.md`). The low-power e-paper variant the owner ruled in on
+2026-09-18 is planned on the nRF9151, which Verizon does not support, so as planned it cannot carry
+NIDD on Verizon; a NIDD sign would need a core Verizon supports. Where NIDD could fit such a sign
+is a shelter display showing scheduled times, updated by exception a few times an hour. For that
+case the envelope reserves platform frame `0x83` for application data, and the platform would need
+a way to address a downlink that is not a shadow; neither is in v1 (decision D10).
 
 ### 14.5 Sample and estimate
 
-`pigeon-examples/nidd_init` (NCS workspace only, `circuitdojo_feather/nrf9151/ns`): NB-IoT only,
+`pigeon-examples/nidd_init` (NCS workspace only, `circuitdojo_feather/nrf9160/ns`; never the
+nRF9151, which Verizon does not support): NB-IoT only,
 PSM at the NCS defaults, RAI, batched telemetry, a 20-minute wake that records readings and
 flushes (which is what keeps the sample inside 14.1's four accesses an hour), the claim key in
 `prj.local.conf`, and a `PIGEON_EVENT_SHADOW_UPDATE` handler that applies
@@ -1893,8 +1896,9 @@ sample, 8 to 16 on the bench.
 Hours are ranges for one engineer, bench and deploy waiting included; owner hours are separate.
 
 **Gate:** nothing merges to `main` until tasks 0.1 to 0.3 pass and task 0.5 is done. Task 0.5 is
-independent of NIDD and urgent: it closes an exposure that exists today. If the bench Feather cannot
-attach to Verizon NB-IoT, the connector cannot be proven and the work stops at Phase 0.
+independent of NIDD and urgent: it closes an exposure that exists today. If the bench nRF9160
+Feather cannot attach to Verizon NB-IoT, the connector cannot be proven and the work stops at
+Phase 0. The nRF9151 is no fallback: Verizon does not support the board.
 
 Phase 0, the gate and the rollback guard:
 
@@ -1970,7 +1974,7 @@ last. No Postgres migration at any step.
 | D7 | Downlink delivery window (`maximumDeliveryTime`) | **86400 seconds**: covers 48 PSM periods at the NCS defaults, and a push that lapses is re-sent on the next uplink | Longer lets superseded shadows pile up for a burst on wake; shorter than the device's sleep fails every push |
 | D8 | Confirm every converged shadow report with `STATUS STORED` | **Yes**: one extra downlink per shadow change keeps the library's rule that a report is the one confirmed call | No reply when converged: saves that downlink, and the device can no longer tell a stored report from a lost one |
 | D9 | Price NIDD | **No downlink metering in v1**, NIDD kept off the pricing and marketing pages until the carrier price is known, and the "every transport in the free tier" promise (`fancier/src/views/pricing.rs:544`) reviewed before NIDD is listed. Downlinks per organization are logged, so the decision will have data | Meter downlinks now, against a carrier price nobody has seen |
-| D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, the e-paper variant | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |
+| D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |
 | D11 | An automated check that `NiddService` still points at us | **Not in v1**: the runbook's step 2 at every deploy. Revisit when a paying NIDD device exists | Hourly from the existing cron: about 72 ThingSpace calls a day per environment, and the environment that does not hold the listener reads "drifted" forever |
 | D12 | Forged uplink by someone holding the listener password and posting from a Verizon address | **Accept for v1, with the line pin**: against such a forger the password is the only uplink secret (4.2), every API-credential holder can read it back [LIST], and it is rotated on any suspicion (8.4). They could store readings and shadow reports in a claimed pigeon whose IMEI and ICCID they know; they could never steer the device, whose downlink is signed | An uplink MAC keyed by the claim key plus a device sequence number on every frame: 12 more bytes an uplink and a replay window in `pigeon_nidd`, after which the claim key alone authenticates uplink and the listener password is only a filter |
 
