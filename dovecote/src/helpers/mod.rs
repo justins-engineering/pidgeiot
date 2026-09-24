@@ -82,6 +82,7 @@ pub use pigeons::check_pigeon_authz;
 pub use pigeons::delete_pigeon_pg_db;
 pub use pigeons::grant_org_acl_via_do;
 pub use pigeons::insert_pigeon_pg_db;
+pub use pigeons::nidd_uplink_via_do;
 pub use pigeons::proxy_binary_to_pigeon_do;
 pub use pigeons::proxy_to_pigeon_do;
 pub use pigeons::proxy_websocket_to_pigeon_do;
@@ -102,6 +103,7 @@ pub use retention::sweep_telemetry_history_retention;
 
 mod coap_service;
 pub use coap_service::is_allowed_coap_service_ip;
+pub use coap_service::is_allowed_thingspace_ip;
 pub use coap_service::thingspace_callbacks_configured;
 
 mod device_limits;

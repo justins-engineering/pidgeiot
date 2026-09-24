@@ -14,23 +14,24 @@ use crate::helpers::{
   ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
   fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
   get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
-  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
-  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
-  load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
-  notify_contact_submission, org_role_of, pigeon_move_shares_owner, plan_business_details,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, readings_from_body, record_consent_event, record_terms_assent,
-  remove_member, reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url,
-  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
-  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
-  update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
-  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
-  verify_webhook_signature, webhook_action, write_business_details,
+  is_allowed_coap_service_ip, is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev,
+  list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts, list_flock_firmware,
+  list_org_invites, list_org_members, list_pigeon_alert_state, list_pigeon_alerts,
+  list_user_organizations, load_business_details, load_dashboard_state, load_org_billing_overview,
+  load_org_billing_state, load_org_roles, load_terms_assent, mark_webhook_event_processed,
+  mint_invite_token, nidd_uplink_via_do, notify_contact_submission, org_role_of,
+  pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
+  record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
+  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
+  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
+  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
+  update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
+  write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::consent::{ConsentSource, TermsAssentStatus};
@@ -637,6 +638,293 @@ async fn internal_consent_record(
   }
 }
 
+/// A configured secret's value, or `None` when it is unset or only whitespace, the definition
+/// the other service-internal routes use.
+fn configured_secret(env: &Env, name: &str) -> Option<String> {
+  env
+    .secret(name)
+    .ok()
+    .map(|value| value.to_string())
+    .filter(|value| !value.trim().is_empty())
+}
+
+/// A request id fit for a header and a log line: printable ASCII, bounded. ThingSpace's are
+/// UUIDs; anything else is replaced by nothing rather than forwarded.
+fn header_safe(value: Option<String>) -> String {
+  value
+    .filter(|v| v.len() <= 128 && v.bytes().all(|b| b.is_ascii_graphic()))
+    .unwrap_or_default()
+}
+
+/// `value`, or `none` when it is empty, for a log field.
+fn or_none(value: &str) -> &str {
+  if value.is_empty() { "none" } else { value }
+}
+
+/// The one line every NIDD callback logs. Never a body, password, frame, account name, IMEI,
+/// ICCID or IMSI: only what kind of callback it was, what became of it, the derived pigeon id,
+/// ThingSpace's request id and attempt, and the latency, watched against an acknowledgement
+/// deadline Verizon does not publish.
+fn log_nidd_callback(
+  kind: &str,
+  outcome: &str,
+  pigeon_id: &str,
+  request_id: &str,
+  attempt: i64,
+  started_ms: u64,
+) {
+  let ms = Date::now().as_millis().saturating_sub(started_ms);
+  console_log!(
+    "nidd_cb kind={kind} outcome={outcome} pigeon={} request={} attempt={attempt} ms={ms}",
+    or_none(pigeon_id),
+    or_none(request_id),
+  );
+}
+
+/// `POST /internal/thingspace/nidd`: Verizon ThingSpace's `NiddService` callback, carrying every
+/// uplink from a `Nidd` pigeon, every downlink delivery report and every line-configuration
+/// result. Not a device or dashboard route; the only legitimate caller is ThingSpace.
+///
+/// Three gates, cheapest first, each failing closed: the source address against
+/// `THINGSPACE_CALLBACK_ALLOWED_IPS`, the body's `password` against the
+/// `THINGSPACE_CALLBACK_PASSWORD` secret in constant time, and the inner `accountName` against
+/// `THINGSPACE_ACCOUNT_NAME`. ThingSpace sends the password in clear, which is why the other two
+/// are not optional; the account gate is what stops another ThingSpace customer who registered
+/// this URL. Refusals are 403, **never 401**, which the dashboard reads as a lost session.
+///
+/// A 2xx tells ThingSpace to stop resending, so it is answered only once a resend could not
+/// change the outcome: after the pigeon's Durable Object stored the uplink and enqueued its
+/// history, or for anything a resend would repeat identically. A store that failed, or a deploy
+/// with NIDD half configured, answers 503 so ThingSpace resends and then archives. Billing, the
+/// Postgres sync and every downlink run in the Durable Object after it answers.
+async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+  use crate::helpers::nidd::{
+    CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, callback_imei,
+    callback_line, is_billable, nidd_object_name, parse_error_line, within,
+  };
+  use base64::Engine as _;
+  use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+  /// ThingSpace's standard-alphabet base64, whether or not it pads.
+  const MESSAGE_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+  );
+  /// How long the free-tier fuse may hold the acknowledgement before it fails open.
+  const FUSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+  let cors = build_cors(&ctx.env, &req);
+  let started = Date::now().as_millis();
+
+  if !is_allowed_thingspace_ip(&ctx.env, &req) {
+    console_error!(
+      "ThingSpace callback from disallowed address {:?}",
+      req.headers().get("CF-Connecting-IP").ok().flatten()
+    );
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  // 503 rather than 403: ThingSpace resends and then archives, so a deploy gap loses nothing.
+  let (Some(expected_password), Some(account_name)) = (
+    configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD"),
+    configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME"),
+  ) else {
+    console_error!("nidd_cb outcome=not_configured: callback password or account name unset");
+    return Response::error("Service Unavailable: NIDD is not configured", 503)
+      .unwrap()
+      .with_cors(&cors);
+  };
+
+  let Ok(raw) = req.text().await else {
+    return Response::error("Bad Request: Failed to read body", 400)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  if raw.len() > NIDD_CALLBACK_MAX_BYTES {
+    console_error!("nidd_cb outcome=too_large size={}", raw.len());
+    return Response::error("Payload Too Large: callback body exceeds size cap", 413)
+      .unwrap()
+      .with_cors(&cors);
+  }
+
+  let auth = match serde_json::from_str::<CallbackAuth>(&raw) {
+    Ok(auth) => auth,
+    Err(e) => {
+      console_error!(
+        "{}",
+        parse_error_line("nidd_cb outcome=bad_body parse=auth", &e)
+      );
+      return Response::error("Bad Request: Invalid JSON", 400)
+        .unwrap()
+        .with_cors(&cors);
+    }
+  };
+  let Some(password) = auth.password else {
+    console_error!("nidd_cb outcome=bad_body: no password");
+    return Response::error("Bad Request: Missing password", 400)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  if !constant_time_eq(password.as_bytes(), expected_password.as_bytes()) {
+    console_error!("nidd_cb outcome=wrong_password");
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+  let request_id = header_safe(auth.request_id);
+
+  let callback = match serde_json::from_str::<NiddCallback>(&raw) {
+    Ok(callback) => callback,
+    Err(e) => {
+      let mut context = String::with_capacity(52 + request_id.len());
+      context.push_str("nidd_cb outcome=unknown_shape request=");
+      context.push_str(or_none(&request_id));
+      context.push_str(" parse=callback");
+      console_error!("{}", parse_error_line(&context, &e));
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+  let attempt = callback.callback_count.unwrap_or(1);
+  let kind = callback.kind();
+
+  let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+    console_error!("nidd_cb: PIGEONS binding unavailable");
+    return Response::error("Service Unavailable", 503)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  let imei = callback_imei(&callback);
+  let obj_id = match imei.as_deref() {
+    Some(imei) => match namespace.id_from_name(&nidd_object_name(imei)) {
+      Ok(id) => Some(id),
+      Err(e) => {
+        console_error!("nidd_cb: deriving a pigeon id failed: {e}");
+        return Response::error("Service Unavailable", 503)
+          .unwrap()
+          .with_cors(&cors);
+      }
+    },
+    None => None,
+  };
+  let pigeon_id = obj_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+
+  // Not secret, since every holder of the API credentials sees it, but ThingSpace writes it:
+  // another customer's registration of this URL cannot carry ours.
+  if callback.account_name() != Some(account_name.as_str()) {
+    log_nidd_callback(
+      kind,
+      "foreign_account",
+      &pigeon_id,
+      &request_id,
+      attempt,
+      started,
+    );
+    return Response::ok("").unwrap().with_cors(&cors);
+  }
+
+  let uplink = match &callback.nidd_response {
+    NiddResponse::Uplink(uplink) => uplink,
+    // Nothing on the device's path depends on these: its own reported version is the
+    // convergence signal.
+    NiddResponse::Delivery(report) | NiddResponse::Config(report) => {
+      let status = header_safe(callback.status.clone());
+      let reason = header_safe(report.reason.clone().map(|r| r.replace(' ', "_")));
+      console_log!(
+        "nidd_cb kind={kind} status={} reason={} pigeon={} request={}",
+        or_none(&status),
+        or_none(&reason),
+        or_none(&pigeon_id),
+        or_none(&request_id),
+      );
+      log_nidd_callback(kind, "logged", &pigeon_id, &request_id, attempt, started);
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+
+  let Some(obj_id) = obj_id else {
+    log_nidd_callback(kind, "no_imei", "", &request_id, attempt, started);
+    return Response::ok("").unwrap().with_cors(&cors);
+  };
+  let frame = match uplink
+    .message
+    .as_deref()
+    .map(|message| MESSAGE_BASE64.decode(message.trim()))
+  {
+    Some(Ok(frame)) if !frame.is_empty() => frame,
+    _ => {
+      log_nidd_callback(
+        kind,
+        "bad_message",
+        &pigeon_id,
+        &request_id,
+        attempt,
+        started,
+      );
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+
+  // Checked here, as the HTTP telemetry route does, so the Durable Object opens no Postgres
+  // connection on the uplink path. The fuse has no deadline of its own and sits before the
+  // acknowledgement, so it is raced against a second and fails open, its own error rule.
+  let mut paused = false;
+  if is_billable(frame[0]) {
+    match within(FUSE_TIMEOUT, check_ingest_fuse(&ctx.env, &pigeon_id)).await {
+      Some(fuse) => paused = matches!(fuse, IngestFuse::Pause),
+      None => {
+        console_error!("nidd_cb: ingest fuse timed out for pigeon {pigeon_id} (failing open)")
+      }
+    }
+  }
+
+  let line = callback_line(&callback);
+  let dispatched = nidd_uplink_via_do(
+    &obj_id,
+    &frame,
+    &request_id,
+    attempt,
+    paused,
+    line.as_deref(),
+  )
+  .await;
+  let stored = match dispatched {
+    Ok(mut response) => {
+      let status = response.status_code();
+      let body = response.text().await.unwrap_or_default();
+      match status {
+        200..=299 => Ok(body),
+        // No pigeon behind that IMEI: an unprovisioned line, which a resend cannot help.
+        404 => Ok("no_pigeon".to_string()),
+        _ => {
+          console_error!("nidd_cb: pigeon {pigeon_id} answered {status}");
+          Err("store_failed")
+        }
+      }
+    }
+    Err(e) => {
+      console_error!("nidd_cb: dispatch to pigeon {pigeon_id} failed: {e}");
+      Err("dispatch_failed")
+    }
+  };
+
+  match stored {
+    Ok(outcome) => {
+      let outcome = header_safe(Some(outcome));
+      let outcome = if outcome.is_empty() {
+        "stored"
+      } else {
+        &outcome
+      };
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, attempt, started);
+      Response::ok("").unwrap().with_cors(&cors)
+    }
+    Err(outcome) => {
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, attempt, started);
+      Response::error("Service Unavailable", 503)
+        .unwrap()
+        .with_cors(&cors)
+    }
+  }
+}
+
 /// The Terms assent status both `/account/terms` routes answer with, read
 /// back from the row rather than assumed.
 ///
@@ -1227,6 +1515,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     // same way; unlike them it writes rather than reads.
     .post_async("/internal/consent", |req, ctx| async move {
       internal_consent_record(req, ctx).await
+    })
+    // Verizon ThingSpace's NiddService callback: NIDD uplinks, delivery reports and line
+    // results. Gated by source address, callback password and account, never a session.
+    .post_async("/internal/thingspace/nidd", |req, ctx| async move {
+      nidd_callback(req, ctx).await
     })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);

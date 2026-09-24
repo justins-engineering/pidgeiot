@@ -30,6 +30,15 @@ pub const STATUS_PAUSED: u8 = 0x01;
 /// `STATUS` code: the pigeon is not claimed; the argument is 1 when answering a failed `HELLO`.
 pub const STATUS_UNCLAIMED: u8 = 0x02;
 
+/// The callback's request id, from the gateway to the pigeon's Durable Object.
+pub const HEADER_REQUEST_ID: &str = "X-Nidd-Request-Id";
+/// ThingSpace's `callbackCount`: which delivery attempt this is.
+pub const HEADER_ATTEMPT: &str = "X-Nidd-Attempt";
+/// `paused` when the gateway's free-tier fuse refused a billable frame, else `open`.
+pub const HEADER_INGEST: &str = "X-Nidd-Ingest";
+/// The line the uplink came from, when the callback named one.
+pub const HEADER_LINE: &str = "X-Nidd-Line";
+
 /// Bytes of HMAC-SHA256 that end every platform frame.
 pub const NIDD_TAG_BYTES: usize = 8;
 /// Bytes in a claim key, which a `HELLO` carries raw.

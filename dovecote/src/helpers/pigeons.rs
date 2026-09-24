@@ -143,6 +143,41 @@ pub async fn psk_lookup_via_do(stub: &worker::ObjectId<'_>) -> worker::Result<Re
   stub.fetch_with_request(do_req).await
 }
 
+/// Hands one NIDD uplink frame to its pigeon's Durable Object (`/pigeon/nidd/uplink`), raw bytes
+/// in the binary-safe style of `proxy_binary_to_pigeon_do`. The headers are built here, never
+/// copied from the caller: the callback route has already passed its three gates, which is what
+/// the DO's trusted-internal path rests on.
+pub async fn nidd_uplink_via_do(
+  stub: &worker::ObjectId<'_>,
+  frame: &[u8],
+  request_id: &str,
+  attempt: i64,
+  paused: bool,
+  line: Option<&str>,
+) -> worker::Result<Response> {
+  use crate::helpers::nidd::{HEADER_ATTEMPT, HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
+
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let mut init = RequestInit::default();
+  init.with_method(worker::Method::Post);
+  init.headers.set(HEADER_REQUEST_ID, request_id)?;
+  init.headers.set(HEADER_ATTEMPT, &attempt.to_string())?;
+  init
+    .headers
+    .set(HEADER_INGEST, if paused { "paused" } else { "open" })?;
+  if let Some(line) = line {
+    init.headers.set(HEADER_LINE, line)?;
+  }
+  init.body = Some(js_sys::Uint8Array::from(frame).into());
+
+  let do_req = Request::new_with_init("https://internal/pigeon/nidd/uplink", &init)?;
+  stub.fetch_with_request(do_req).await
+}
+
 /// Writes an ORG-granted `pigeon_acl` row (`entity_id` = the org id, role
 /// `owner` -- each member's effective rights are then derived from their
 /// own role in that org, see `objects/pigeons.rs::authorize_dashboard`)
