@@ -45,6 +45,8 @@ pub use billing::mark_webhook_event_processed;
 
 pub mod vies;
 
+pub mod nidd;
+
 mod business_details;
 pub use business_details::ensure_business_details_columns;
 pub use business_details::load_business_details;
