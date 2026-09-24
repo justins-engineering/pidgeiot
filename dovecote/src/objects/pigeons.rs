@@ -358,8 +358,9 @@ impl DurableObject for Pigeons {
 
     // A Nidd pigeon's claim, the push it owes its device, and the uplinks it has seen, in one
     // row for the telemetry blob's billing reason: `id INTEGER PRIMARY KEY` is the rowid and
-    // carries no backing index, so an uplink costs one row read and one row written. Never add
-    // an index here either. No foreign key to `pigeons`, so `delete` wipes it explicitly.
+    // carries no backing index, so an uplink costs one row read and one row written, plus a
+    // second read for telemetry, whose enqueue awaits. Never add an index here either. No
+    // foreign key to `pigeons`, so `delete` wipes it explicitly.
     sql
       .exec(
         "CREATE TABLE IF NOT EXISTS pigeon_nidd (

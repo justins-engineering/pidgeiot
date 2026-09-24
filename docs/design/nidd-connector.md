@@ -620,7 +620,8 @@ implementation anywhere yet"), both once the platform half is live.
 One single-row table, created in `DurableObject::new` beside the others
 (`dovecote/src/objects/pigeons.rs:172-347`) and shaped like `pigeon_telemetry_latest` for the same
 billing reason: `id INTEGER PRIMARY KEY` is the rowid, so no backing index, one row read and one
-row written per uplink whatever happens.
+row written per uplink whatever happens, plus the second read step 10 of 6.3 needs after a
+telemetry enqueue.
 
 ```sql
 CREATE TABLE IF NOT EXISTS pigeon_nidd (
@@ -737,8 +738,8 @@ concurrently under its documented behaviour.
     `update_shadow_pg_db` exactly as `handle_ws_shadow_report` does today (`:1797-1828`); then the
     planned downlink, if any (6.4).
 
-Row cost of a steady-state telemetry uplink: `pigeon_nidd` one read and one write,
-`pigeon_telemetry_latest` one read and one write. Nothing else.
+Row cost of a steady-state telemetry uplink: `pigeon_nidd` two reads (before and after the
+enqueue) and one write, `pigeon_telemetry_latest` one read and one write. Nothing else.
 
 ### 6.4 `Pigeons`: downlink
 
@@ -1985,10 +1986,11 @@ Queues $0.40 per million operations, three per message
 Workers Paid (https://developers.cloudflare.com/hyperdrive/platform/pricing/, read by the cost
 review on 2026-09-24). The arithmetic is `nidd/synth/cost.py` in the job directory.
 
-**Per uplink, steady state:** one Worker request (the callback), one Durable Object request, two
-SQLite rows read and two written (`pigeon_nidd` and the telemetry blob), one queue message, one
-Postgres query at the gateway (the fuse, uncached, section 9), and the queue consumer's existing
-history insert, billing tally and alert lookup. No downlink and no ThingSpace call.
+**Per uplink, steady state:** one Worker request (the callback), one Durable Object request, three
+SQLite rows read and two written (`pigeon_nidd` read twice, the telemetry blob once, each written
+once), one queue message, one Postgres query at the gateway (the fuse, uncached, section 9), and
+the queue consumer's existing history insert, billing tally and alert lookup. No downlink and no
+ThingSpace call.
 
 **Per device-day on Cloudflare** (DO duration estimated at 100 ms active at 128 MB per uplink,
 CPU at 10 ms per uplink including the consumer; both estimates):
