@@ -2459,12 +2459,31 @@ async fn read_telemetry_endpoint_device(pigeons: &Pigeons, _req: Request) -> Res
   })
 }
 
+#[derive(serde::Deserialize)]
+struct CreatedAtRow {
+  #[serde(deserialize_with = "capsules::deserialize_unix_float_to_i64")]
+  created_at: i64,
+}
+
 /// Bare ACL probe for gateway routes whose data lives outside this DO
 /// (telemetry history is in Postgres) but whose authorization still lives
-/// in this pigeon's local `pigeon_acl` table.
+/// in this pigeon's local `pigeon_acl` table. Answers with the pigeon's
+/// `created_at` in `PIGEON_CREATED_AT_HEADER`, so a route can refuse what
+/// an earlier pigeon under a repeated id left behind.
 async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
-  Response::ok("authorized")
+  let mut response = Response::ok("authorized")?;
+  let created_at = pigeons
+    .sql
+    .exec("SELECT created_at FROM pigeons LIMIT 1;", None)
+    .and_then(|cursor| cursor.to_array::<CreatedAtRow>());
+  if let Some(row) = created_at.ok().and_then(|rows| rows.into_iter().next()) {
+    response.headers_mut().set(
+      crate::helpers::PIGEON_CREATED_AT_HEADER,
+      &row.created_at.to_string(),
+    )?;
+  }
+  Ok(response)
 }
 
 /// Owner-level sibling of `check_authorized`, for a gateway write that has

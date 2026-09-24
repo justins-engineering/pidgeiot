@@ -77,9 +77,11 @@ pub use flocks::get_user_flocks;
 pub use flocks::pigeon_move_shares_owner;
 
 mod pigeons;
+pub use pigeons::PIGEON_CREATED_AT_HEADER;
 pub use pigeons::PigeonAccess;
 pub use pigeons::check_pigeon_authz;
 pub use pigeons::connector_without_secrets;
+pub use pigeons::delete_log_dictionary;
 pub use pigeons::delete_pigeon_pg_db;
 pub use pigeons::grant_org_acl_via_do;
 pub use pigeons::insert_pigeon_pg_db;

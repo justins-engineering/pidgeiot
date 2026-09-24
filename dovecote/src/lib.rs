@@ -1,3 +1,4 @@
+use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
   INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
@@ -10,17 +11,18 @@ use crate::helpers::{
   count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
   create_invite, create_organization, create_pigeon_alert, create_portal_session,
   create_user_flock, delete_alert_definition, delete_dashboard_state, delete_flock_if_empty,
-  delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
-  ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
-  fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
-  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev,
-  list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts, list_flock_firmware,
-  list_org_invites, list_org_members, list_pigeon_alert_state, list_pigeon_alerts,
-  list_user_organizations, load_business_details, load_dashboard_state, load_org_billing_overview,
-  load_org_billing_state, load_org_roles, load_terms_assent, mark_webhook_event_processed,
-  mint_invite_token, nidd_uplink_via_do, notify_contact_submission, org_role_of,
-  pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  delete_log_dictionary, delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit,
+  ensure_billing_tables, ensure_billing_usage_tables, ensure_business_details_columns,
+  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
+  get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
+  ingest_error_report, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
+  is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
+  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
+  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
+  load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
+  load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
+  nidd_uplink_via_do, notify_contact_submission, org_role_of, pigeon_move_shares_owner,
+  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
@@ -700,7 +702,7 @@ fn log_nidd_callback(
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
     CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, callback_imei,
-    callback_line, is_billable, nidd_object_name, parse_error_line, within,
+    callback_line, is_billable, parse_error_line, within,
   };
   use base64::Engine as _;
   use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -1785,6 +1787,37 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .with_cors(&cors);
       }
 
+      // Every NIDD line rides JES's one ThingSpace account, so a Nidd pigeon needs NIDD
+      // configured here and an allowlisted organization, both checked before the IMEI is read:
+      // an account outside the list never learns from a 409 which IMEIs are taken.
+      let nidd_imei = match &payload.connector {
+        capsules::Connector::Nidd(requested) => {
+          if configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME").is_none() {
+            return Response::error("Forbidden: NIDD is not enabled in this environment", 403)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          if !flock
+            .org_id
+            .is_some_and(|org| nidd_org_allowed(&ctx.env, &org))
+          {
+            return Response::error("Forbidden: NIDD is not enabled for this organization", 403)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          if !capsules::imei_is_valid(&requested.imei) {
+            return Response::error(
+              "Bad Request: IMEI must be 15 digits ending in its check digit",
+              400,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          Some(requested.imei.clone())
+        }
+        _ => None,
+      };
+
       // Device-count entitlement, status-gated before plan inside
       // check_device_cap. A refusal blocks growth only -- existing devices
       // keep ingesting -- and the check fails open on lookup errors, so a
@@ -1799,10 +1832,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       };
 
-      let obj_id = namespace.unique_id().map_err(|e| {
-        console_error!("Failed to create unique DO ID: {e}");
-        worker::Error::RustError("Internal Server Error".into())
-      })?;
+      // A Nidd pigeon's object is named by its IMEI, so a callback carrying the IMEI reaches it
+      // with no index, and a second create for the same IMEI lands in it and answers 409.
+      let obj_id = match &nidd_imei {
+        Some(imei) => namespace.id_from_name(&nidd_object_name(imei)),
+        None => namespace.unique_id(),
+      };
+      let obj_id = match obj_id {
+        Ok(obj_id) => obj_id,
+        Err(e) => {
+          console_error!("Failed to create DO ID: {e}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+      };
 
       let do_response =
         proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/create").await?;
@@ -1849,13 +1893,49 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         None => None,
       };
 
-      match get_db_client(&ctx.env).await {
-        Ok(client) => {
-          if let Err(e) = insert_pigeon_pg_db(client, &pcr).await {
+      let mirrored = match get_db_client(&ctx.env).await {
+        Ok(client) => match insert_pigeon_pg_db(client, &pcr).await {
+          Ok(()) => true,
+          Err(e) => {
             console_error!("External DB Sync Error for pigeon {}: {e}", pcr.pigeon.id);
+            false
           }
+        },
+        Err(err) => {
+          console_error!("Sync skipped: Hyperdrive connection failed: {err}");
+          false
         }
-        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
+      };
+
+      // A Nidd pigeon's mirror insert is also what clears an earlier pigeon's leftovers under
+      // its reused id, so it is the one mirror that may not fail quietly: the create is undone
+      // and the operator retries, and no pigeon ever lives over leftovers it could read.
+      if nidd_imei.is_some() {
+        if !mirrored {
+          let undone = match Request::new("https://internal/pigeon/delete", Method::Delete) {
+            Ok(undo) => {
+              proxy_to_pigeon_do(
+                undo,
+                &principal.user_id,
+                principal.org_roles_header(),
+                &obj_id,
+                "/delete",
+              )
+              .await
+            }
+            Err(e) => Err(e),
+          };
+          if !undone.is_ok_and(|resp| resp.status_code() < 400) {
+            console_error!("Nidd create: undo failed for pigeon {}", pcr.pigeon.id);
+          }
+          return Response::error(
+            "Service Unavailable: the pigeon could not be recorded; try again",
+            503,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+        delete_log_dictionary(&ctx.env, &pcr.pigeon.id).await;
       }
 
       // Best-effort PG mirror of the org ACL row (the client from the
@@ -2303,19 +2383,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
         }
 
-        // Best-effort cleanup of this pigeon's stored log dictionary --
-        // same fire-and-log convention as the PG sync above; a
-        // leftover R2 object is unreachable anyway once the ACL rows are
-        // gone (every log-dictionary route re-checks the ACL first).
-        match ctx.env.bucket("FIRMWARE_BUCKET") {
-          Ok(bucket) => {
-            let object_key = format!("log-dictionaries/{pigeon_id}.json");
-            if bucket.delete(&object_key).await.is_err() {
-              console_error!("R2 log dictionary cleanup failed for {object_key}");
-            }
-          }
-          Err(e) => console_error!("Cleanup skipped: FIRMWARE_BUCKET bind failed: {e}"),
-        }
+        // Best-effort, like the PG sync above. A Nidd pigeon's id comes back when its IMEI is
+        // created again, so a leftover is not unreachable by the ACL alone: the dictionary
+        // route's created_at check is what keeps it from the next pigeon.
+        delete_log_dictionary(&ctx.env, &pigeon_id).await;
 
         Response::empty()?.with_cors(&cors)
       },
@@ -3147,6 +3218,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+        // Uploaded before this pigeon existed: an earlier pigeon's under the same id, which a
+        // Nidd pigeon's IMEI-derived id can have.
+        let uploaded_secs = (object.uploaded().as_millis() / 1000) as i64;
+        if access.created_at().is_some_and(|created| uploaded_secs < created) {
+          return Response::error("Not Found: No log dictionary uploaded for this pigeon", 404)
+            .unwrap()
+            .with_cors(&cors);
+        }
 
         let Some(body) = object.body() else {
           console_error!("R2 object body unexpectedly absent for {object_key}");

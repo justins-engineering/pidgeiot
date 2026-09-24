@@ -458,6 +458,24 @@ pub fn shadow_push_due(row: &NiddRow, now: i64) -> bool {
       || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
 }
 
+/// Whether this environment's `NIDD_ALLOWED_ORG_IDS` lists the organization, the create gate
+/// that keeps NIDD to JES's own devices while every line rides JES's one ThingSpace account.
+/// Empty or unset lists none, and a personal flock has no organization to list.
+pub fn nidd_org_allowed(env: &worker::Env, org_id: &uuid::Uuid) -> bool {
+  env
+    .var("NIDD_ALLOWED_ORG_IDS")
+    .is_ok_and(|raw| org_listed(&raw.to_string(), org_id))
+}
+
+/// Whether a comma-separated list of organization ids names this one, compared as UUIDs so case
+/// and hyphenation cannot cause a false refusal. Unparseable entries name nothing.
+fn org_listed(raw: &str, org_id: &uuid::Uuid) -> bool {
+  raw
+    .split(',')
+    .filter_map(|entry| uuid::Uuid::parse_str(entry.trim()).ok())
+    .any(|listed| listed == *org_id)
+}
+
 /// Runs `future` until `limit` passes: `None` when the timer won. The future is dropped rather
 /// than aborted, so a request it already sent may still land.
 pub async fn within<F: Future>(limit: Duration, future: F) -> Option<F::Output> {
@@ -729,6 +747,21 @@ mod tests {
 
     let unusable = uplink_with(vec![id("ICCID", "8914\r\nX")], vec![]);
     assert_eq!(callback_line(&unusable), None);
+  }
+
+  #[test]
+  fn only_a_listed_organization_may_create() {
+    let org = uuid::Uuid::parse_str("b30f82fd-a437-481b-9522-e52976022858").unwrap();
+    assert!(org_listed("b30f82fd-a437-481b-9522-e52976022858", &org));
+    assert!(org_listed(
+      " 5bdd10e2-e079-48f0-8a81-49798d55e2f9 , B30F82FD-A437-481B-9522-E52976022858",
+      &org
+    ));
+    assert!(!org_listed("", &org));
+    assert!(!org_listed(
+      "not-a-uuid, 5bdd10e2-e079-48f0-8a81-49798d55e2f9",
+      &org
+    ));
   }
 
   #[test]
