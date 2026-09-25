@@ -34,7 +34,7 @@ the alternative.
 | 3 | How a callback is trusted | Source address among Verizon's eight published addresses (fail closed), then the body's `password` in constant time, then `accountName` equal to this environment's account. 403, never 401. Against a direct forger only the password is secret (4.2); forged uplink is decision D12. |
 | 4 | Routes | One new route, `POST /internal/thingspace/nidd`. No listener-management or send route: registering the listener is an owner runbook, and every send starts inside a Durable Object. |
 | 5 | Envelope | One type byte, and no NUL byte anywhere, since ThingSpace refuses a downlink holding two in a row. Uplink bodies are exactly today's HTTPS device bodies; `HELLO` carries the claim key as hex; the downlink shadow is a text header of its two versions (at most 22 bytes), raw `target_config` and a 16-character hex HMAC tag; replies are 21 to 30 bytes. |
-| 6 | Size budget | 1358 bytes a frame in both directions. A Nidd pigeon's `target_config` always fits at 1319 bytes (up to 1337 while its versions are short), refused with 413 at the dashboard write. |
+| 6 | Size budget | 1358 bytes a frame in both directions at the platform; the device caps an uplink frame at the 1273 bytes the bench modem accepts, and batches. A Nidd pigeon's `target_config` always fits at 1319 bytes (up to 1337 while its versions are short), refused with 413 at the dashboard write. |
 | 7 | When to acknowledge | After the durable handoff (the DO's write plus the queue enqueue), never before. Billing, the Postgres sync and every downlink run after the response. |
 | 8 | Duplicates | De-duplicated in the pigeon's DO on `requestId` plus a frame digest, in the same row as the claim. A ThingSpace resend is never stored or billed twice. Whether identical frames from two wakes stay distinct depends on Verizon's request ids, a Phase 2 gate (B5). |
 | 9 | Downlink | A shadow write that raises `target_version` pushes one frame; `HELLO` and shadow reports get replies; a push that failed or lapsed is re-sent on the next uplink; at most one unsolicited push per 15 minutes. No downlink at all in the steady state. |
@@ -69,7 +69,7 @@ Sources, each read on 2026-09-24:
 | The network "supports more than one simultaneous Packet Data Network (PDN) connection", IP and Non-IP together, for devices that support it | [NIDD] | A board may keep an IP PDN beside `VZWSCEF` for HTTPS firmware download, which is why a Nidd pigeon still gets a bearer token |
 | NIDD is enabled by choosing the NIDD price plan on Activate, Restore or Change Service Plan, and the application must "wait for this additional callback before sending or received NIDD messages" | [NIDD] | Provisioning is done in the ThingSpace portal before a pigeon is created; the `niddConfigResponse` callback is logged, not acted on |
 | "The maximum size of the data can be 10864 bit or 1358 bytes", base64 on the API | [SEND] | One 1358-byte budget per frame, counted decoded |
-| "NIDD is capable of transporting up to 1500 bytes in a single transmission" | [NIDD] | The only uplink figure; the device holds uplink to 1358 too until the bench measures more |
+| "NIDD is capable of transporting up to 1500 bytes in a single transmission" | [NIDD] | The only published uplink figure. The bench modem refuses far less (B4: 1273 bytes accepted, 1283 refused), so the device caps an uplink frame at 1273 and batches; the platform accepts up to 1358 |
 | `maximumDeliveryTime` "allowed range is 2 secs -- 2592000 secs (30 days)" | [SEND] | Downlinks use 86400 s |
 | Unreachable device: "the data is buffered by the Verizon Network", a callback says it is buffered, and another says it "could not be delivered" once the window passes; statuses `Delivered`, `Queued`, `DeliveryFailed` | [NIDD], [SEND] | No reachability API; a lapsed push is re-sent on the device's next uplink |
 | Callbacks "must acknowledge receipt ... by sending back a 2xx status code"; unacknowledged ones are "resent by ThingSpace three more times at 5 minute intervals, for a total of 4 attempts", then archived 30 days and resendable through support by Request ID | [CB] | 2xx only after the durable handoff; 503 whenever a resend can succeed; de-duplication on `requestId` plus digest |
@@ -147,9 +147,10 @@ A wire-contract block after the MQTT one (`capsules/src/lib.rs:588-617`):
 /// APN of Verizon's NIDD service, and the authority of every minted `nidd://` endpoint.
 pub const NIDD_APN: &str = "VZWSCEF";
 
-/// Largest NIDD frame in either direction: Verizon's downlink cap of 10864 bits, counted before
-/// base64. Devices hold their uplink to it as well; the only published uplink figure is 1500
-/// bytes per transmission.
+/// Largest NIDD frame dovecote sends or accepts: Verizon's downlink cap of 10864 bits, counted
+/// before base64. The modem's own uplink ceiling is lower (1273 bytes accepted, 1283 refused, on
+/// an nRF9160 with mfw 1.3.7), so the device library holds its frames to 1273; docs/api.md states
+/// that cap.
 pub const NIDD_MAX_FRAME_BYTES: usize = 1358;
 
 /// Largest serialized `target_config` a Nidd pigeon always accepts: one frame less the downlink
@@ -443,8 +444,8 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
    with a log line. 503 rather than 403, so a deploy gap loses nothing: ThingSpace resends and
    then archives (the Stripe webhook precedent, `lib.rs:5368-5373`).
 3. `req.text()`, then over `NIDD_CALLBACK_MAX_BYTES` (8192) is 413, the contact route's pattern
-   (`lib.rs:3553-3563`). The largest legitimate body, a 1358-byte frame with six carrier
-   identifiers, is 2370 bytes (section 17).
+   (`lib.rs:3553-3563`). The largest legitimate body, a 1358-byte frame's base64 inside the
+   564 bytes B5 measured around it, is under 2400 bytes (section 17).
 4. `serde_json::from_str::<CallbackAuth>` (two fields, `password: Option<String>` and
    `request_id: Option<String>` renamed from `requestId`): not JSON or no password is 400.
    `constant_time_eq` against the secret: 403 on mismatch.
@@ -1064,10 +1065,16 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
 
 ### 7.5 Budgets against one frame
 
-| Frame | Size | Fits 1358 |
+Uplink frames are measured against the 1273 bytes the bench modem accepts (B4: mfw 1.3.7 on the
+nRF9160 accepted 1273 and refused 1283 in `send()` with `EINVAL`, before any radio access;
+1274 to 1282 untested), which the device library caps a frame at; platform frames against the
+1358 bytes ThingSpace sends. dovecote itself accepts any frame up to 1358.
+
+| Frame | Size | Fits |
 |---|---|---|
-| `TELEMETRY`, flat, the library's worst case at 8 keys (`pigeon/src/pigeon_internal.h:39-66`; `PIGEON_TELEMETRY_BODY_MAX` is 1323 with its NUL) | 1 + 1322 = 1323 | yes |
-| `TELEMETRY`, flat, 9 keys at the worst case | 1 + 1487 = 1488 | no; refused at build time (14.2), since the core hands the transport one pre-built body and never splits it to fit |
+| `TELEMETRY`, flat, the library's worst case at 7 keys | about 1158 | yes |
+| `TELEMETRY`, flat, the library's worst case at 8 keys (`pigeon/src/pigeon_internal.h:39-66`; `PIGEON_TELEMETRY_BODY_MAX` is 1323 with its NUL) | 1 + 1322 = 1323 | no: over 1273, refused at build time (14.2), since the core hands the transport one pre-built body and never splits it to fit |
+| `TELEMETRY`, flat, 9 keys at the worst case | 1 + 1487 = 1488 | no |
 | `TELEMETRY`, batch, ten realistic keys, 1 / 3 / 4 / 6 / 7 readings | 188 / 540 / 716 / 1070 / 1247 | yes |
 | `TELEMETRY`, batch, ten realistic keys, 8 readings | 1424 | no |
 | `SHADOW_REPORT`, the library's largest report body (`pigeon/src/pigeon_https.c:723-732`) | 1 + 384 | yes |
@@ -1076,7 +1083,7 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
 | `SHADOW`, `target_config` at its cap, single-digit versions | 1 + 4 + 1337 + 16 = 1358 | yes, by construction |
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
 | `STATUS` | 21 to 30 | yes |
-| Callback body around a 1358-byte frame with six carrier ids | 2370 | under the 8 KiB route cap |
+| Callback body around a 1273-byte uplink, measured (B5: 564 bytes plus the frame's base64) | 2264 | under the 8 KiB route cap |
 
 ## 8. ThingSpace credentials, cache and session
 
@@ -1776,14 +1783,18 @@ shadow, and a report folded into the cache when it is confirmed
   5 seconds [NUG]. Never hold the connection for a reply: NB-IoT latency makes a round trip
   through the SCEF, ThingSpace and dovecote too slow for that window, so replies arrive by paging
   during the PSM active time, or are buffered by the network to the next wake [NIDD].
-- Telemetry batched with `age_secs` inside one frame (1357 body bytes). The core never splits a
+- Uplink frames capped at 1273 bytes, the largest the bench modem accepted (B4, mfw 1.3.7); it
+  refused 1283 in `send()` with `EINVAL` before any radio access, and 1274 to 1282 are untested,
+  so 1273 is the cap until a modem firmware measures more. dovecote accepts up to 1358 either way.
+- Telemetry batched with `age_secs` inside one frame (1272 body bytes). The core never splits a
   flat set to fit a transport: it hands the transport one pre-built body
   (`pigeon_transport_report_telemetry`, `pigeon/src/pigeon_internal.h:140-142`) from a buffer of
   `PIGEON_TELEMETRY_BODY_MAX` bytes (`pigeon/src/pigeon_core.c:75`), which grows with
   `CONFIG_PIGEON_TELEMETRY_MAX_KEYS` (`pigeon_internal.h:60-66`), and splits only escape-heavy
-  sets that overflow that same buffer (`pigeon_internal.h:53-55`). At 8 keys the buffer is 1323
-  bytes with its NUL; at 9 it is 1488. So the build refuses a key count whose flat body could
-  exceed the frame (14.2), and `pigeon_nidd.c` never has to split pre-built JSON.
+  sets that overflow that same buffer (`pigeon_internal.h:53-55`). At 7 keys the buffer is
+  about 1158 bytes with its NUL, at 8 it is 1323 and at 9 it is 1488. So the build refuses a key
+  count whose flat body could exceed the frame, 8 keys included (14.2), and `pigeon_nidd.c` never
+  has to split pre-built JSON.
 - `HELLO` at every boot, and again after an `UNCLAIMED 0` notice (at most hourly). Nothing polls.
 - Every platform frame's tag verified against the built-in claim key; a frame that fails is
   dropped and logged.
@@ -1825,10 +1836,11 @@ its buffer defaulting to 1024 on NIDD; `PIGEON_LOG_UPLOAD` (`:456`) stays off NI
 case, checks the `nidd://` scheme and configures the PDP context while the modem is offline.
 
 Build-time checks, each a `BUILD_ASSERT` naming the Kconfig to change:
-`PIGEON_TELEMETRY_BODY_MAX <= 1358` (the value counts the NUL, so the flat body is at most 1357
-bytes plus the type byte; it holds at the default 8 keys), naming `CONFIG_PIGEON_TELEMETRY_MAX_KEYS`
-as the one to lower; the telemetry batch body fits 1357 bytes;
-`CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64 <= 1357` (the report body);
+`PIGEON_TELEMETRY_BODY_MAX <= 1273` (the value counts the NUL, so the flat body is at most 1272
+bytes plus the type byte; it fails at the default 8 keys and holds at 7, so a NIDD build defaults
+`CONFIG_PIGEON_TELEMETRY_MAX_KEYS` to 7), naming `CONFIG_PIGEON_TELEMETRY_MAX_KEYS` as the one to
+lower; the telemetry batch body fits 1272 bytes; `CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64 <= 1272`
+(the report body);
 `sizeof(CONFIG_PIGEON_NIDD_CLAIM_KEY) == 33`; an NB-IoT network mode (`LTE_NETWORK_MODE_NBIOT`,
 `_NBIOT_GPS`, or a dual mode preferring NB-IoT).
 
@@ -1844,7 +1856,7 @@ as the one to lower; the telemetry batch body fits 1357 bytes;
   by the readers on 2026-09-24), and `SO_KEEPOPEN` so it survives PDN re-establishment; the receive
   thread; then `HELLO`. Log the IMEI once, so the operator can match it to the dashboard.
 - **Send** (`pigeon_nidd_send(type, body, len)`, one module mutex, bounded and answering `-EBUSY`
-  as the other connectors do): frame into a static 1358-byte buffer, `SO_RAI` to `NRF_RAI_ONGOING`,
+  as the other connectors do): frame into a static 1273-byte buffer, `SO_RAI` to `NRF_RAI_ONGOING`,
   `zsock_send`, then re-arm a delayable work item that sets `NRF_RAI_NO_DATA` after
   `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet. If B8 shows `NRF_RAI_NO_DATA` refused on a raw socket,
   every send uses `NRF_RAI_LAST` instead.
@@ -1873,8 +1885,8 @@ as the one to lower; the telemetry batch body fits 1357 bytes;
 | `pigeon_shadow_get` | The cached shadow; the first call after start waits up to `SHADOW_WAIT` for the `HELLO` reply | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
 
-Static RAM at defaults: two 1358-byte frame buffers, the cached configs (2 x 320), a 2048-byte
-stack; about 5.4 KB.
+Static RAM at defaults: a 1273-byte send buffer and a 1358-byte receive buffer, the cached configs
+(2 x 320), a 2048-byte stack; about 5.3 KB.
 
 ### 14.4 With the departure board in mind
 
@@ -2055,9 +2067,9 @@ in that hour goes over briefly; 120 for a departure board at its 30-second defau
 
 **Bytes per frame** (section 7): a four-key batch of three readings 294; ten keys, one reading 188
 batched or 149 flat; a shadow report 78; a `HELLO` 33; a `SHADOW` 58 to 1358 with its tag, 179 with
-a firmware target; a `STATUS` 21 to 30. Base64 adds a third on the ThingSpace legs: the callback
-carrying a 1358-byte frame with six carrier identifiers is 2370 bytes. On the radio, a device at the
-first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
+a firmware target; a `STATUS` 21 to 30. Base64 adds a third on the ThingSpace legs: a callback is
+564 bytes plus the frame's base64 (B5), 2264 around a 1273-byte uplink. On the radio, a device at
+the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
 
 ## 18. UNVERIFIED and sources
 
@@ -2073,8 +2085,9 @@ first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   callbacks only. If uplink request ids can repeat, byte-identical frames from different wakes
   collide in the de-duplication key (6.3 step 2); B5's two-`HELLO` gate decides whether a device
   sequence byte is needed. The backdating assumes the count.
-- **U4.** The uplink ceiling: 1358 or 1500 bytes, and whether 1358 is counted before or after base64
-  in practice (B4, B7).
+- **U4.** Settled by B4 and B7 for one modem: an nRF9160 on mfw 1.3.7 accepts a 1273-byte uplink
+  and refuses 1283 in `send()`, 1274 to 1282 untested; ThingSpace counts 1358 before base64 and
+  refuses 1359 (`TooLong`). Other modems and firmware are unmeasured.
 - **U5.** The IMEI's form in callbacks (15 or 16 digits), the `kind` spelling, and which kind a
   delivery report's top-level `deviceIds` carries when the downlink was sent by IMEI (B5, B7).
 - **U6.** Which fields Verizon's OAuth response carries; the HTTP status for a wrong UWS password;

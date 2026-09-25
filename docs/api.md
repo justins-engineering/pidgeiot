@@ -285,7 +285,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
-| NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below, the uplink by the device build; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
+| NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below; an uplink frame is accepted up to it, and the device library caps its own at the 1273 bytes the bench modem accepts; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
 | `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1319 bytes serialized at worst (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`); exactly, what one `SHADOW` frame carries at the version the write creates, up to 1337 | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
 | `POST /internal/thingspace/nidd`, bytes per body | 8 KiB | `lib.rs`, `413` over the cap |
 | NIDD downlink delivery window | 86400 s (ThingSpace's `maximumDeliveryTime`) | `objects/thingspace.rs`; a lapsed push is re-sent on the next uplink |
@@ -3450,9 +3450,12 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 
 ### NIDD sizes and cadence
 
-| Frame | Size | Fits 1358 |
+Uplink frames are measured against 1273 bytes, the device's cap; platform frames against 1358.
+
+| Frame | Size | Fits |
 |---|---|---|
-| `TELEMETRY`, flat, eight keys at the `pigeon` library's worst-case key and value sizes | 1323 | yes |
+| `TELEMETRY`, flat, seven keys at the `pigeon` library's worst-case key and value sizes | about 1158 | yes |
+| `TELEMETRY`, flat, eight keys at those sizes | 1323 | no |
 | `TELEMETRY`, flat, nine keys at those sizes | 1488 | no |
 | `TELEMETRY`, batch of ten realistic keys, 1 / 3 / 4 / 6 / 7 readings | 188 / 540 / 716 / 1070 / 1247 | yes |
 | `TELEMETRY`, batch of ten realistic keys, 8 readings | 1424 | no |
@@ -3462,9 +3465,15 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
 | `STATUS` | 21 to 30 | yes |
 
-- **1358 bytes a frame, both ways** (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64:
-  Verizon's downlink cap of 10864 bits. The only uplink figure Verizon publishes is 1500 bytes per
-  transmission; devices hold uplink to 1358 as well.
+- **1358 bytes a frame, both ways, at the platform** (`capsules::NIDD_MAX_FRAME_BYTES`), counted
+  before base64: Verizon's downlink cap of 10864 bits. ThingSpace refuses a 1359-byte downlink
+  (`400 NiddService.INPUT_INVALID.Message.TooLong`), and dovecote accepts an uplink frame up to
+  1358 bytes.
+- **1273 bytes an uplink frame at the device.** The modem's ceiling is below Verizon's figures
+  (1500 bytes per transmission is the only uplink one it publishes): an nRF9160 on modem firmware
+  1.3.7 delivered 1273-byte frames whole and refused 1283 in `send()` with `EINVAL`, before any
+  radio access; 1274 to 1282 are untested. The `pigeon` library caps an uplink frame at 1273 bytes
+  and batches readings to fit.
 - **`target_config` must fit one `SHADOW` frame** for a `Nidd` pigeon: the frame less the type
   byte, the version header and the tag's 16 characters. The header grows with the versions, so
   the cap is counted at each write for the version it creates: 1337 bytes at single-digit
@@ -3472,9 +3481,9 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
   versions), which always fits and which the dashboard holds a save to. A larger config is refused
   `413` at the shadow `PUT`, since one frame carries the whole config and one the device could
   never receive must not become its target.
-- **An uplink body is at most 1357 bytes** after the type byte. A device never splits a pre-built
+- **An uplink body is at most 1272 bytes** after the type byte. A device never splits a pre-built
   body to fit, so a build whose largest flat telemetry body could exceed that has to report fewer
-  keys.
+  keys: seven at the library's worst-case sizes, where eight come to 1323.
 - **At most four radio accesses an hour**, uplink and downlink together: Verizon's network usage
   guideline for automated traffic. This is the application's obligation, not something the
   platform or the device library can enforce, since a paged downlink is an access the device

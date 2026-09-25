@@ -658,9 +658,10 @@ pub const MQTT_TOPIC_SHADOW_TARGET: &str = "pigeon/shadow/target";
 /// APN of Verizon's NIDD service, and the authority of every minted `nidd://` endpoint.
 pub const NIDD_APN: &str = "VZWSCEF";
 
-/// Largest NIDD frame in either direction: Verizon's downlink cap of 10864 bits, counted before
-/// base64. Devices hold their uplink to it as well; the only published uplink figure is 1500
-/// bytes per transmission.
+/// Largest NIDD frame dovecote sends or accepts: Verizon's downlink cap of 10864 bits, counted
+/// before base64. The modem's own uplink ceiling is lower (1273 bytes accepted, 1283 refused, on
+/// an nRF9160 with mfw 1.3.7), so the device library holds its frames to 1273; docs/api.md states
+/// that cap.
 pub const NIDD_MAX_FRAME_BYTES: usize = 1358;
 
 /// Largest serialized `target_config` a Nidd pigeon always accepts: one frame less the downlink
