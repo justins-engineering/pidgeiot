@@ -51,8 +51,10 @@ const NIDD_STATUS_HEADER_MAX: usize = 15;
 pub const NIDD_CALLBACK_MAX_BYTES: usize = 8192;
 /// How long a `PAUSED` notice asks the device to hold its billable sends.
 pub const NIDD_PAUSED_HOLD_SECS: u32 = 3600;
-/// `maximumDeliveryTime` of every downlink; a push that lapses is re-sent on the next uplink.
-pub const NIDD_MT_DELIVERY_SECS: i64 = 86_400;
+/// `maximumDeliveryTime` of every downlink, and how long a sent `SHADOW` is left to land before
+/// the next uplink carries it again. A frame that misses the device's connection was never seen
+/// to arrive later, so it is not held.
+pub const NIDD_MT_DELIVERY_SECS: i64 = 30;
 /// Shortest gap between two unsolicited shadow pushes to one pigeon.
 const NIDD_PUSH_HOLD_SECS: i64 = 900;
 /// Shortest gap between two `PAUSED` or `UNCLAIMED` notices to one pigeon.
@@ -485,9 +487,9 @@ pub struct NiddRow {
   pub line_id: Option<String>,
   /// The newest `target_version` the device has not confirmed; 0 when converged.
   pub awaiting_version: i32,
-  /// The `target_version` of the last `SHADOW` sent; 0 after a failed send.
+  /// The `target_version` of the last `SHADOW` sent; 0 after a send that never reached ThingSpace.
   pub pushed_version: i32,
-  /// When that `SHADOW` was sent; 0 after a failed send.
+  /// When that `SHADOW` was sent; 0 after a send that never reached ThingSpace.
   pub pushed_at: i64,
   /// When the last `PAUSED` or `UNCLAIMED` notice went out.
   pub notice_at: i64,
@@ -536,14 +538,24 @@ pub fn notice_due(row: &NiddRow, now: i64) -> bool {
   now - row.notice_at >= NIDD_NOTICE_HOLD_SECS
 }
 
-/// Whether an unsolicited shadow push is due: the device is claimed and behind, and either the
-/// newest target has not been sent and no push went out in the last hold window, or the last
-/// push's delivery window has passed without the device confirming it.
+/// Whether a dashboard write pushes the shadow unsolicited: the device is claimed and behind, the
+/// newest target has not been sent, and no `SHADOW` went out in the last hold window. A push to a
+/// device holding no connection can be lost, so the next uplink carries anything this holds back
+/// or loses.
 pub fn shadow_push_due(row: &NiddRow, now: i64) -> bool {
   row.claimed_at.is_some()
     && row.awaiting_version != 0
-    && ((row.pushed_version < row.awaiting_version && now - row.pushed_at >= NIDD_PUSH_HOLD_SECS)
-      || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
+    && row.pushed_version < row.awaiting_version
+    && now - row.pushed_at >= NIDD_PUSH_HOLD_SECS
+}
+
+/// Whether an uplink from the claimed device draws the `SHADOW` it is owed as its reply, sent
+/// while that uplink's connection is up: the device is behind, and the newest target is unsent or
+/// held, or went out longer ago than its delivery window without being confirmed.
+pub fn shadow_reply_due(row: &NiddRow, now: i64) -> bool {
+  row.claimed_at.is_some()
+    && row.awaiting_version != 0
+    && (row.pushed_version < row.awaiting_version || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
 }
 
 /// Whether this environment's `NIDD_ALLOWED_ORG_IDS` lists the organization, the create gate
@@ -1091,7 +1103,7 @@ mod tests {
   }
 
   #[test]
-  fn shadow_push_due_truth_table() {
+  fn shadow_push_and_reply_truth_table() {
     let now = 1_000_000;
     let claimed = NiddRow {
       claimed_at: Some(1),
@@ -1099,10 +1111,11 @@ mod tests {
       ..Default::default()
     };
 
-    // Never pushed: due.
+    // Never pushed: a dashboard write pushes it, and an uplink draws it.
     assert!(shadow_push_due(&claimed, now));
+    assert!(shadow_reply_due(&claimed, now));
 
-    // Hold: a push of an older version went out ten minutes ago.
+    // A dashboard write ten minutes after the last push is held, and the next uplink carries it.
     let held = NiddRow {
       pushed_version: 7,
       pushed_at: now - 600,
@@ -1110,40 +1123,49 @@ mod tests {
     };
     assert!(!shadow_push_due(&held, now));
     assert!(shadow_push_due(&held, now - 600 + 900));
+    assert!(shadow_reply_due(&held, now));
 
-    // The newest version is already out and inside its delivery window.
-    let outstanding = NiddRow {
+    // The newest version is out and inside its delivery window: nothing is sent twice.
+    let in_flight = NiddRow {
       pushed_version: 8,
-      pushed_at: now - 3600,
+      pushed_at: now - NIDD_MT_DELIVERY_SECS,
       ..claimed.clone()
     };
-    assert!(!shadow_push_due(&outstanding, now));
+    assert!(!shadow_push_due(&in_flight, now));
+    assert!(!shadow_reply_due(&in_flight, now));
 
-    // Lapse: that push's delivery window has passed unconfirmed.
+    // Past the window without the device confirming: the next uplink re-sends it, however soon,
+    // and a dashboard write never does, however late.
     let lapsed = NiddRow {
-      pushed_at: now - 86_401,
-      ..outstanding.clone()
+      pushed_at: now - NIDD_MT_DELIVERY_SECS - 1,
+      ..in_flight.clone()
     };
-    assert!(shadow_push_due(&lapsed, now));
+    assert!(shadow_reply_due(&lapsed, now));
+    assert!(!shadow_push_due(&lapsed, now));
+    assert!(!shadow_push_due(&lapsed, now + 86_400));
 
-    // Failed send: the reset makes it due again.
-    let failed = NiddRow {
+    // A send that never reached ThingSpace: due again for both.
+    let unsent = NiddRow {
       pushed_version: 0,
       pushed_at: 0,
       ..claimed.clone()
     };
-    assert!(shadow_push_due(&failed, now));
+    assert!(shadow_push_due(&unsent, now));
+    assert!(shadow_reply_due(&unsent, now));
 
-    // Unclaimed, or converged: never.
-    let unclaimed = NiddRow {
-      claimed_at: None,
-      ..claimed.clone()
-    };
-    assert!(!shadow_push_due(&unclaimed, now));
-    let converged = NiddRow {
-      awaiting_version: 0,
-      ..lapsed
-    };
-    assert!(!shadow_push_due(&converged, now));
+    // Unclaimed, or converged: never, and a converged device's telemetry draws nothing.
+    for row in [
+      NiddRow {
+        claimed_at: None,
+        ..lapsed.clone()
+      },
+      NiddRow {
+        awaiting_version: 0,
+        ..lapsed
+      },
+    ] {
+      assert!(!shadow_push_due(&row, now));
+      assert!(!shadow_reply_due(&row, now));
+    }
   }
 }

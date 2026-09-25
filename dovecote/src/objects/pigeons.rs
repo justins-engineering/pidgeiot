@@ -2,7 +2,7 @@ use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddRow, NiddSqlRow, STATUS_PAUSED, STATUS_STORED,
   STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
   nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
-  sign_frame, status_frame,
+  shadow_reply_due, sign_frame, status_frame,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -2965,9 +2965,12 @@ enum NiddDownlink {
 
 /// Records a push of the current shadow in `row` and returns it, or `None` when the shadow
 /// cannot be read. Recorded before the send, so a second trigger meanwhile sees it outstanding.
+/// `awaiting_version` is taken from the same read, so a device that converged by another path
+/// stops being owed one.
 fn plan_shadow_push(pigeons: &Pigeons, row: &mut NiddRow, now: i64) -> Option<NiddDownlink> {
   match read_shadow(pigeons) {
     Ok(shadow) => {
+      row.awaiting_version = awaiting(&shadow);
       row.pushed_version = shadow.target_version;
       row.pushed_at = now;
       Some(NiddDownlink::Shadow {
@@ -3130,9 +3133,6 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         row.line_id = line.clone();
         // The device asked, so it always gets the shadow.
         downlink = plan_shadow_push(pigeons, &mut row, now);
-        if let Some(NiddDownlink::Shadow { shadow, .. }) = &downlink {
-          row.awaiting_version = awaiting(shadow);
-        }
         "claimed"
       } else {
         // Signed with the key it presented, so a device built with a stale key can verify it
@@ -3147,8 +3147,13 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       downlink = plan_notice(&mut row, now, STATUS_UNCLAIMED, 0, None);
       "unclaimed"
     }
+    // One reply per uplink: the notice when due, since it is what quiets the device, else the
+    // shadow it is owed, sent while this uplink's connection is up.
     Uplink::Telemetry(_) | Uplink::ShadowReport(_) if paused => {
       downlink = plan_notice(&mut row, now, STATUS_PAUSED, NIDD_PAUSED_HOLD_SECS, None);
+      if downlink.is_none() && shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
       "paused"
     }
     Uplink::Telemetry(body) => {
@@ -3182,9 +3187,9 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           }
         }
       };
-      // A refused frame still shows the device awake, and the config it is owed may be what
-      // fixes its reporting.
-      if shadow_push_due(&row, now) {
+      // Sent while this uplink's connection is up, since a push to an idle device can be lost. A
+      // refused frame still shows the device awake, and the owed config may fix its reporting.
+      if shadow_reply_due(&row, now) {
         downlink = plan_shadow_push(pigeons, &mut row, now);
       }
       outcome
@@ -3316,9 +3321,8 @@ fn spawn_nidd_tail(
 }
 
 /// Builds, signs and sends one downlink. A `SHADOW` that could not be sent is marked unpushed,
-/// unless a newer push was planned meanwhile, so it is due again on the device's next uplink;
-/// one ThingSpace refused is left, since the same bytes would fail the same way. A failed notice
-/// is dropped.
+/// unless a newer push was planned meanwhile, so it is due again at once; one ThingSpace refused
+/// is left as sent, since the same bytes would fail the same way. A failed notice is dropped.
 async fn send_nidd_downlink(
   env: &Env,
   sql: &SqlStorage,
