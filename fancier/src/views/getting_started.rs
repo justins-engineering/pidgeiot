@@ -91,7 +91,7 @@ pub fn GettingStartedPage() -> Element {
           GsStep {
             number: "4",
             title: "Save the one-time device token",
-            body: "A Device Token dialog appears immediately -- this is the only time the token is ever shown, and it can't be retrieved later (refreshing it mints a new keypair and revokes this one). Copy it with the clipboard button, then click \"I've Saved the Token.\"",
+            body: "A Device Credentials dialog appears immediately. This is the only time the token is ever shown, and it can't be retrieved later (refreshing it mints a new keypair and revokes this one). Copy it with the clipboard button, then click \"I've Saved These.\"",
           }
           GsStep {
             number: "5",
@@ -144,11 +144,11 @@ pub fn GettingStartedPage() -> Element {
         }
 
         h3 { class: "text-lg font-bold mb-2",
-          "1. Clone the repo and set up the west workspace"
+          "1. Clone the repos and set up the west workspace"
         }
         GsCode { code: "git clone https://github.com/justins-engineering/pigeon-examples.git\ncd pigeon-examples\npython3 -m venv .venv && source .venv/bin/activate\npip install west\nwest update\nwest packages pip --install\ngit clone https://github.com/justins-engineering/pigeon.git pigeon" }
         p { class: "text-sm text-base-content/60 mb-6",
-          "A clone is already a west workspace, so there is no \"west init\" step; the pigeon library is not a west project but a plain checkout at the top of that workspace, which is where the samples look for it. \"west update\" fetches the Zephyr sources -- a few hundred MB, one time only."
+          "A clone is already a west workspace, so there is no \"west init\" step; the pigeon library is not a west project but a plain checkout at the top of that workspace, which is where the samples look for it. \"west update\" fetches Zephyr and its modules, one time only. That is about 3.5 GB to download, and the workspace needs about 10 GB of free disk once the Python packages are in."
         }
 
         h3 { class: "text-lg font-bold mb-2", "2. Add your device credentials" }
@@ -175,10 +175,10 @@ pub fn GettingStartedPage() -> Element {
         }
         GsCode { code: "WARNING: Using a test - not safe - entropy source\n*** Pigeon v4.4.1 ***\n[00:00:00.000,000] <inf> net_connect: Bringing network interface up\n[00:00:00.000,000] <inf> net_connect: Connecting to the network\n[00:00:00.000,000] <inf> nsos_sockets: NSOS: connecting\n[00:00:00.000,000] <wrn> net_connect: Network disconnected\n[00:00:01.010,000] <inf> nsos_sockets: NSOS: active\n[00:00:01.010,000] <inf> net_connect: Network connected\n[00:00:01.010,000] <inf> pigeon: Initializing Pigeon tracking instance: pigeon-wifi-sample\n[00:00:01.010,000] <inf> pigeon: Transport mapped to secure HTTPS edge pipeline: https://api.pidgeiot.com/device/pigeons/<pigeon-id>\n[00:00:01.010,000] <inf> pigeon: Pigeon tracking instance ready: pigeon-wifi-sample\n[00:00:01.010,000] <inf> pigeon: Queued telemetry: reset_cause=8\n[00:00:01.260,005] <inf> shadow: Shadow fetched: target_version=0 current_version=0 updated_at=1788196053\n[00:00:01.260,005] <inf> pigeon: Queued telemetry: uptime_s=1\n[00:00:01.260,005] <inf> pigeon: Queued telemetry: poll_count=1\n[00:00:01.610,009] <inf> pigeon: Flushed 3 telemetry key(s) in one report (51 bytes)\n[00:00:01.610,009] <inf> shadow: Shadow already converged at version 0; nothing to apply\n[00:00:01.610,009] <inf> shadow: Next shadow poll in 60 s" }
         p { class: "text-sm text-base-content/60 mb-6",
-          "The entropy warning is expected: native_sim has no hardware random source, so Zephyr simulates one and says so loudly. Real boards use their own TRNG."
+          "The entropy warning is expected: native_sim has no hardware random source, so Zephyr simulates one and says so loudly. Real boards use their own TRNG. The one \"Network disconnected\" warning is expected too: the simulated interface reports its state before it has an address."
         }
         p { class: "text-base-content/70 leading-relaxed mb-4",
-          "That last line is the simulator reporting its own uptime as a telemetry value. Leave it running -- it keeps flushing on an interval."
+          "The \"Flushed 3 telemetry key(s)\" line is the simulator's first report: its reset cause, its uptime in seconds and its poll count. Leave it running -- it keeps flushing on an interval."
         }
         p { class: "text-base-content/70 leading-relaxed mb-2",
           "Back in the dashboard, on the pigeon's detail page:"
@@ -209,11 +209,19 @@ pub fn GettingStartedPage() -> Element {
             ". Anything else stays visible in Target but won't appear in Current, which is exactly how you spot a key your firmware ignored.)"
           }
           li {
-            "Every numeric value the device reports becomes graphable under Telemetry Graphs. "
+            "Every numeric value the device reports becomes graphable under Telemetry Graphs. This sample sends three keys: "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
               "uptime_s"
             }
-            " is the only key this sample sends -- it plots as a dutiful climbing staircase, which proves the pipeline but wins no awards. Graphs get good when you report real sensor values ("
+            " and "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+              "poll_count"
+            }
+            " plot as dutiful climbing staircases, and "
+            code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
+              "reset_cause"
+            }
+            " arrives once per boot. That proves the pipeline but wins no awards. Graphs get good when you report real sensor values ("
             Link { class: "link link-secondary", to: Route::DemoPage {}, "see the live demo" }
             ")."
           }
