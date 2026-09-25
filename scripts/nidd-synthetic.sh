@@ -398,7 +398,10 @@ stop_wrangler
 # Phase 3: fully configured, organization A allowlisted.
 # ======================================================================================
 
-start_wrangler main --var "NIDD_ALLOWED_ORG_IDS:$org_a"
+# A rotation's grace window, with a fixture value that is no credential anywhere.
+previous_password="nidd-synthetic-previous-password"
+start_wrangler main --var "NIDD_ALLOWED_ORG_IDS:$org_a" \
+  --var "THINGSPACE_CALLBACK_PASSWORD_PREVIOUS:$previous_password"
 
 step 1 "callback gates"
 m=$(mark)
@@ -406,6 +409,13 @@ NIDD_ACCT=$account jq -cn '{username: "pidgeiot", password: "wrong-password", re
   niddResponse: {niddConfigResponse: {accountName: $ENV.NIDD_ACCT}}}' >"$work/body"
 callback "(wrong password)"
 expect "wrong password answers 403" 403 "$status"
+NIDD_PW=$previous_password NIDD_ACCT=$account jq -cn '{username: "pidgeiot",
+  password: $ENV.NIDD_PW, requestId: "s1p", callbackCount: 1,
+  niddResponse: {niddConfigResponse: {accountName: $ENV.NIDD_ACCT}}}' >"$work/body"
+callback "(the previous password, inside its grace window)"
+expect "the previous password answers 200" 200 "$status"
+expect_log "and is logged as the previous one" "$m" \
+  'nidd_cb password=previous request=s1p attempt=1'
 {
   printf '{"pad":"'
   head -c $((8193 - 10)) /dev/zero | tr '\0' x

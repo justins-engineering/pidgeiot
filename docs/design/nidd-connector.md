@@ -220,8 +220,13 @@ the body:
 2. **Password.** The body's `password`, compared with the `THINGSPACE_CALLBACK_PASSWORD` secret
    by `constant_time_eq` (`dovecote/src/helpers/crypto.rs:9`). An unset or whitespace-only secret
    counts as unconfigured, the definition at `dovecote/src/lib.rs:503-511`, and here answers 503
-   so ThingSpace keeps the callback (5.1, step 2). The username is registered as the constant
-   `pidgeiot` and not checked: it carries no entropy.
+   (5.1, step 4). For a day after a rotation a second secret,
+   `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, holds the password the rotation replaced and is
+   accepted too (`match_callback_password`, both compared in constant time every time, logged as
+   `password=previous`): B6 saw ThingSpace keep sending a replaced password for up to 13 min 55 s
+   after the new one was registered, and with no resend after a refusal each such callback was
+   lost (8.4). The username is registered as the constant `pidgeiot` and not checked: it carries
+   no entropy.
 3. **Account.** The `accountName` inside `niddResponse` must equal the `THINGSPACE_ACCOUNT_NAME`
    secret. This is the gate that stops the realistic spoof: any other ThingSpace customer can
    register our URL as their listener, so their callbacks arrive from the same eight addresses,
@@ -377,15 +382,16 @@ text.
 **Auth:** ThingSpace callback credentials required
 
 Verizon ThingSpace's `NiddService` callback: every uplink from a `Nidd` pigeon
-(`niddMONotificationResponse`), every downlink delivery report (`niddMTDeliveryResponse`) and
-every line-configuration result (`niddConfigResponse`) arrives here. Not a device or dashboard
-route; the only legitimate caller is ThingSpace. Three gates, each failing closed: the source
-address (`CF-Connecting-IP`) must appear in the environment's `THINGSPACE_CALLBACK_ALLOWED_IPS`
-(Verizon's published callback addresses; empty means deny-all); the body's `password` must equal
-the `THINGSPACE_CALLBACK_PASSWORD` Worker secret, compared in constant time; and `accountName`
-must be this environment's ThingSpace account. ThingSpace sends the password in clear text inside
-the body, which is why the other two gates are not optional. Any `Content-Type` is accepted, and
-the body is capped at 8 KiB before it is parsed.
+(`niddMONotificationResponse`), every downlink delivery report (`niddMTDeliveryResponse`) and every
+line-configuration result (`niddConfigResponse`) arrives here. Not a device or dashboard route; the
+only legitimate caller is ThingSpace. Three gates, each failing closed: the source address
+(`CF-Connecting-IP`) must appear in the environment's `THINGSPACE_CALLBACK_ALLOWED_IPS` (Verizon's
+published callback addresses; empty means deny-all); the body's `password` must equal the
+`THINGSPACE_CALLBACK_PASSWORD` Worker secret, compared in constant time (for a day after a rotation,
+the password it replaced, `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, is accepted too, since ThingSpace
+keeps sending it for minutes); and `accountName` must be this environment's ThingSpace account.
+ThingSpace sends the password in clear text inside the body, which is why the other two gates are
+not optional. Any `Content-Type` is accepted, and the body is capped at 8 KiB before it is parsed.
 
 Body is ThingSpace's callback JSON, unchanged. An uplink:
 
@@ -1100,6 +1106,7 @@ the comment block above `[vars]` the way `COAP_SERVICE_SECRET` is (`dovecote/wra
 | `THINGSPACE_UWS_USERNAME`, `THINGSPACE_UWS_PASSWORD` | UWS login for `POST /api/m2m/v1/session/login` [LOGIN] | same |
 | `THINGSPACE_ACCOUNT_NAME` | The billing account (`<10 digits>-<5 digits>` [SEND]); also this environment's NIDD switch | callback 503, Nidd create 403, no downlinks |
 | `THINGSPACE_CALLBACK_PASSWORD` | 40 random hex characters (160 bits), its own value per environment, never the UWS password [REG] | callback 503 |
+| `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` | The listener password the last rotation replaced, set by the runbook's step 3 and deleted by the owner 24 hours later (8.4) | only the current password is accepted |
 
 The account name is not a credential, but it identifies a Verizon billing account and the
 repository is public, so it stays out of `wrangler.toml`.
@@ -1232,14 +1239,20 @@ or an IMEI.
 - **UWS password or API key pair** (Verizon recommends a new UWS password every three months
   [CRED]): put the new secret in each environment. The latch fingerprint changes, the cached tokens
   keep working until they lapse, and the next login uses the new values.
-- **Callback password**: steps 3 to 6 of 8.5, back to back. Callbacks refused 403 in between are
-  resent five minutes later [CB], but no page read says whether a resend carries the password it
-  was first sent with, and whether an uplink sent between deregistering and registering (steps 4
-  and 5) is archived or lost is unpublished. So a rotation may lose uplinks, recoverable only by a
-  support resend by request id from the 30-day archive [CB]. B6's rotation variant records which
-  password a resend carries; if it is the old one, the change is to accept an optional
-  `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` beside the current one, in constant time, for the length
-  of a rotation.
+- **Callback password**: the script of 8.5, run again. B6 measured what a rotation costs without
+  a grace window: after re-registering, ThingSpace went on sending a password other than the
+  registered one, interleaved with the new one, for 13 min 55 s the first time and 9 min 27 s
+  the second, and since a refused callback is retried only once, a second later, every one of
+  those uplinks was lost (B10 lost five of twelve that way). Which password they carried was not
+  logged; the replaced one is the likely value. So step 3 first copies the password registered
+  now (read from the listener list, never printed) into `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`,
+  then mints the new one, and the route accepts both, each compared in constant time, logging
+  `nidd_cb password=previous` whenever the old one arrives, which settles the question on the
+  next rotation. The owner deletes the previous secret 24 hours later, which ends the window; a
+  leaked old password is live that long and no longer. Step 3 copies the password only from a
+  registration naming one of our own two callback URLs, so a first registration never admits a
+  password set by whatever held `NiddService` before. An uplink sent between deregistering and
+  registering (steps 4 and 5) is lost outright (B6), so rotate at a quiet time.
 - **Suspected compromise of the account credentials**: rotate the UWS password and key pair in the
   ThingSpace portal first (anyone holding them can read the listener password back [LIST]), then
   the callback password.
@@ -1254,66 +1267,23 @@ Registering displaces whatever holds `NiddService` on the account today (the 202
 registered one, and the SDK's example worker routes one to `/vzw/nidd`,
 `thingspace-sdk-rust/examples/cf-worker/wasm-serv/src/lib.rs:30`), so it is the owner's action,
 decision D4, and it waits on task 0.5. The commands live in `docs/infra/thingspace-nidd.md` as one
-script, run with `bash`, never pasted into an interactive shell, where `set -e` or an `exit` would
-close the shell. They read every value from exported environment variables, pass secrets to `curl`
-and `jq` on stdin or through `env`, never on a command line, and print none. curl's config syntax
-treats `"` and `\` inside a quoted value as special, so a secret containing either needs escaping
-first.
+script, which is the authority; this section keeps its steps and the reasons for them. It is run
+with `bash`, never pasted into an interactive shell, where `set -e` or an `exit` would close the
+shell. It reads every value from exported environment variables, passes secrets to `curl` and `jq`
+on stdin or through `env`, never on a command line, and prints none. curl's config syntax treats
+`"` and `\` inside a quoted value as special, so a secret containing either needs escaping first.
 
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-ts=https://thingspace.verizon.com
-env_flag=(--env staging)   # production: env_flag=()
-url=https://api-staging.pidgeiot.com/internal/thingspace/nidd
-nonempty() { [ -n "$1" ] && [ "$1" != null ]; }
-
-# 1. Log in once: OAuth, then the session. A failure here counts toward Verizon's five-strike
-#    lockout and the Worker's latch does not see it, so the script stops at the first failure.
-access=$(printf 'user-agent = "pidgeiot-ops/1"\nuser = "%s:%s"\n' \
-    "$THINGSPACE_PUBLIC_KEY" "$THINGSPACE_PRIVATE_KEY" |
-  curl -sS -f -K - -X POST -d grant_type=client_credentials "$ts/api/ts/v1/oauth2/token" |
-  jq -r .access_token)
-nonempty "$access" || { echo 'OAuth token missing' >&2; exit 1; }
-session=$(jq -n '{username: env.THINGSPACE_UWS_USERNAME, password: env.THINGSPACE_UWS_PASSWORD}' |
-  curl -sS -f -K <(printf 'header = "Authorization: Bearer %s"\n' "$access") \
-    -H 'Content-Type: application/json' --data-binary @- "$ts/api/m2m/v1/session/login" |
-  jq -r .sessionToken)
-nonempty "$session" || { echo 'session token missing' >&2; exit 1; }
-hdrs() { printf 'header = "Authorization: Bearer %s"\nheader = "VZ-M2M-Token: %s"\n' \
-  "$access" "$session"; }
-cb="$ts/api/m2m/v1/callbacks/$THINGSPACE_ACCOUNT_NAME"
-
-# 2. Who holds NiddService now. The response carries each listener's password in clear, so jq
-#    keeps only the name and URL, and nothing else of it is kept.
-listeners=$(curl -sS -f -K <(hdrs) -H 'Content-Type: application/json' "$cb" |
-  jq -c '[.[]? | {name: (.name // .serviceName), url}]')
-printf '%s\n' "${listeners:-[]}"
-holder=$(printf '%s' "${listeners:-[]}" | jq '[.[] | select(.name == "NiddService")] | length')
-
-# 3. A fresh callback password, straight into the Worker secret, never printed. Reached only after
-#    steps 1 and 2 succeeded: from here every callback needs the new password.
-CB_PW=$(openssl rand -hex 20)
-export CB_PW
-[ ${#CB_PW} -eq 40 ] || exit 1
-printf %s "$CB_PW" |
-  (cd dovecote && bunx wrangler secret put THINGSPACE_CALLBACK_PASSWORD "${env_flag[@]}")
-
-# 4. If step 2 found NiddService, remove it first, as Verizon advises.
-if [ "$holder" -gt 0 ]; then
-  curl -sS -f -o /dev/null -K <(hdrs) -H 'Content-Type: application/json' \
-    -X DELETE "$cb/name/NiddService"
-fi
-
-# 5. Register this environment's URL. Only the status is printed: the answer names the account.
-jq -n --arg url "$url" \
-    '{name: "NiddService", url: $url, username: "pidgeiot", password: env.CB_PW}' |
-  curl -sS -f -o /dev/null -w '%{http_code}\n' -K <(hdrs) -H 'Content-Type: application/json' \
-    --data-binary @- -X POST "$cb"
-unset CB_PW access session
-
-# 6. Repeat step 2 (with a fresh login if more than 15 minutes have passed) to confirm the URL.
-```
+1. Log in: OAuth, then the session. A failure here counts toward Verizon's five-strike lockout and
+   the Worker's latch does not see it, so the script stops at the first failure.
+2. List the account's listeners. The response carries each listener's password in clear [LIST],
+   so only names and URLs are printed, userinfo redacted; the password of a `NiddService`
+   registration naming one of our own two callback URLs is kept, unprinted, for step 3.
+3. Put that password into `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` (8.4), then mint a fresh
+   40-hex-character password straight into `THINGSPACE_CALLBACK_PASSWORD`. Reached only after
+   steps 1 and 2 succeeded: from here every callback needs one of the two.
+4. If step 2 found `NiddService`, deregister it, as Verizon advises.
+5. Register this environment's URL for `NiddService`, username `pidgeiot`, with the new password.
+6. List again to confirm the URL.
 
 Four things the script relies on. `set -euo pipefail` makes a failed `curl -f` anywhere in a
 pipeline stop the script, and the `nonempty` checks catch a 200 without a token, since `jq -r`
@@ -1344,8 +1314,9 @@ holding them later is removed and the credentials rotated (8.4).
 8. Prove it with a real uplink (tier 2, B5): `wrangler tail --env staging` shows one `nidd_cb`
    line with `outcome=stored`.
 
-The password is kept nowhere but the Worker secret and the registration; a lost one is replaced by
-repeating steps 1 and 3 to 6.
+The password is kept nowhere but the Worker secrets and the registration; a lost one is replaced
+by running the script again, and 24 hours after any run that set
+`THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` the owner deletes it.
 
 **Cutover to production**, each step on the owner's word: put the six production secrets
 (`wrangler secret put` with no `--env`, production being the default environment); commit the
@@ -1596,7 +1567,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 |---|---|---|---|
 | 1 | Callback password or account name unset (a deploy gap) | 503, logged as lost with its request id | Honest, and the uplink is lost: ThingSpace retries once at once and never later (B6). Recovery is a support resend by request id from the 30-day archive [CB], if that archive holds it. Deploy the secrets before the registration |
 | 2 | Callback from an address outside the allowlist | 403, address logged | Not ThingSpace |
-| 3 | Wrong callback password | 403, logged with the body's request id and attempt | Lost, as in row 1: no resend follows the one immediate retry (B6). A rotation is 8.4's case |
+| 3 | Wrong callback password | 403, logged with the body's request id and attempt | Lost, as in row 1: no resend follows the one immediate retry (B6). A rotation is 8.4's case: the replaced password stays accepted for a day |
 | 4 | Another ThingSpace customer's callback reaches us (their registration names our URL) | 200, dropped at the account gate, logged | A resend cannot change it |
 | 5 | Browser Integrity Check blocks ThingSpace's client | Nothing reaches the Worker, no log line at all | The Configuration Rule of 8.5 step 7 goes in before the first callback; tier 2 proves it |
 | 6 | Body over 8 KiB | 413 | Over three times the largest legitimate body |

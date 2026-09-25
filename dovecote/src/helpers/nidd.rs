@@ -5,6 +5,7 @@
 //! capsules, and docs/api.md is the authority both sides follow. Everything except `sign_frame`,
 //! which runs on WebCrypto, is exercised by the host-target tests.
 
+use super::constant_time_eq;
 use capsules::{NIDD_MAX_FRAME_BYTES, PigeonShadow};
 use futures::future::{Either, select};
 use serde::Deserialize;
@@ -73,6 +74,36 @@ pub struct CallbackAuth {
   /// ThingSpace's `callbackCount`: which delivery attempt this is, from 1.
   #[serde(default, rename = "callbackCount")]
   pub callback_count: Option<i64>,
+}
+
+/// Which configured listener password a callback presented.
+#[derive(Debug, PartialEq)]
+pub enum PasswordMatch {
+  /// `THINGSPACE_CALLBACK_PASSWORD`.
+  Current,
+  /// `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, set for a day after a rotation.
+  Previous,
+  /// Neither: the callback is refused.
+  Neither,
+}
+
+/// Checks a callback's password against the current one and, while a rotation's grace window
+/// holds it, the previous one. ThingSpace kept sending a replaced password for up to 13 min 55 s
+/// after the new one was registered, so without the second an ordinary rotation loses uplinks.
+/// Both comparisons run in constant time and always both run, so timing cannot say which matched.
+pub fn match_callback_password(
+  presented: &str,
+  current: &str,
+  previous: Option<&str>,
+) -> PasswordMatch {
+  let is_current = constant_time_eq(presented.as_bytes(), current.as_bytes());
+  let is_previous =
+    previous.is_some_and(|previous| constant_time_eq(presented.as_bytes(), previous.as_bytes()));
+  match (is_current, is_previous) {
+    (true, _) => PasswordMatch::Current,
+    (false, true) => PasswordMatch::Previous,
+    (false, false) => PasswordMatch::Neither,
+  }
 }
 
 /// A ThingSpace `NiddService` callback, holding only what dovecote reads. `username` and
@@ -692,6 +723,35 @@ mod tests {
 
     let bare: CallbackAuth = serde_json::from_str("{}").unwrap();
     assert!(bare.password.is_none() && bare.request_id.is_none() && bare.callback_count.is_none());
+  }
+
+  #[test]
+  fn the_previous_password_is_accepted_only_while_set() {
+    assert_eq!(
+      match_callback_password("new", "new", Some("old")),
+      PasswordMatch::Current
+    );
+    assert_eq!(
+      match_callback_password("old", "new", Some("old")),
+      PasswordMatch::Previous
+    );
+    assert_eq!(
+      match_callback_password("old", "new", None),
+      PasswordMatch::Neither
+    );
+    assert_eq!(
+      match_callback_password("other", "new", Some("old")),
+      PasswordMatch::Neither
+    );
+    assert_eq!(
+      match_callback_password("", "new", Some("old")),
+      PasswordMatch::Neither
+    );
+    // Current wins when an operator left both secrets holding the same value.
+    assert_eq!(
+      match_callback_password("same", "same", Some("same")),
+      PasswordMatch::Current
+    );
   }
 
   #[test]

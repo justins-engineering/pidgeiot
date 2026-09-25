@@ -3631,15 +3631,16 @@ because a value the caller supplies is an assertion rather than a record.
 **Auth:** ThingSpace callback credentials required
 
 Verizon ThingSpace's `NiddService` callback: every uplink from a `Nidd` pigeon
-(`niddMONotificationResponse`), every downlink delivery report (`niddMTDeliveryResponse`) and
-every line-configuration result (`niddConfigResponse`) arrives here. Not a device or dashboard
-route; the only legitimate caller is ThingSpace. Three gates, each failing closed: the source
-address (`CF-Connecting-IP`) must appear in the environment's `THINGSPACE_CALLBACK_ALLOWED_IPS`
-(Verizon's published callback addresses; empty means deny-all); the body's `password` must equal
-the `THINGSPACE_CALLBACK_PASSWORD` Worker secret, compared in constant time; and `accountName`
-must be this environment's ThingSpace account. ThingSpace sends the password in clear text inside
-the body, which is why the other two gates are not optional. Any `Content-Type` is accepted, and
-the body is capped at 8 KiB before it is parsed.
+(`niddMONotificationResponse`), every downlink delivery report (`niddMTDeliveryResponse`) and every
+line-configuration result (`niddConfigResponse`) arrives here. Not a device or dashboard route; the
+only legitimate caller is ThingSpace. Three gates, each failing closed: the source address
+(`CF-Connecting-IP`) must appear in the environment's `THINGSPACE_CALLBACK_ALLOWED_IPS` (Verizon's
+published callback addresses; empty means deny-all); the body's `password` must equal the
+`THINGSPACE_CALLBACK_PASSWORD` Worker secret, compared in constant time (for a day after a rotation,
+the password it replaced, `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, is accepted too, since ThingSpace
+keeps sending it for minutes); and `accountName` must be this environment's ThingSpace account.
+ThingSpace sends the password in clear text inside the body, which is why the other two gates are
+not optional. Any `Content-Type` is accepted, and the body is capped at 8 KiB before it is parsed.
 
 Body is ThingSpace's callback JSON, unchanged. An uplink:
 

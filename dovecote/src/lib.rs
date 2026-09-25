@@ -747,7 +747,8 @@ fn log_nidd_callback(
 ///
 /// Three gates, cheapest first, each failing closed: the source address against
 /// `THINGSPACE_CALLBACK_ALLOWED_IPS`, the body's `password` against the
-/// `THINGSPACE_CALLBACK_PASSWORD` secret in constant time, and the inner `accountName` against
+/// `THINGSPACE_CALLBACK_PASSWORD` secret in constant time (or, for a day after a rotation,
+/// `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`), and the inner `accountName` against
 /// `THINGSPACE_ACCOUNT_NAME`. ThingSpace sends the password in clear, which is why the other two
 /// are not optional; the account gate is what stops another ThingSpace customer who registered
 /// this URL. Refusals are 403, **never 401**, which the dashboard reads as a lost session.
@@ -760,8 +761,8 @@ fn log_nidd_callback(
 /// Postgres sync and every downlink run in the Durable Object after it answers.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
-    CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, callback_imei,
-    callback_line, is_billable, parse_error_line, within,
+    CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, PasswordMatch,
+    callback_imei, callback_line, is_billable, match_callback_password, parse_error_line, within,
   };
   use base64::Engine as _;
   use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -829,9 +830,19 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       .unwrap()
       .with_cors(&cors);
   };
-  if !constant_time_eq(password.as_bytes(), expected_password.as_bytes()) {
-    log_nidd_refusal("wrong_password", &request_id, &attempt);
-    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  let previous_password = configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD_PREVIOUS");
+  match match_callback_password(&password, &expected_password, previous_password.as_deref()) {
+    PasswordMatch::Current => {}
+    PasswordMatch::Previous => {
+      console_log!(
+        "nidd_cb password=previous request={} attempt={attempt}",
+        or_none(&request_id)
+      );
+    }
+    PasswordMatch::Neither => {
+      log_nidd_refusal("wrong_password", &request_id, &attempt);
+      return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+    }
   }
 
   let callback = match serde_json::from_str::<NiddCallback>(&raw) {

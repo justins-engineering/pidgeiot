@@ -128,10 +128,13 @@ head_sampling_rate = 1
 # THINGSPACE_UWS_PASSWORD (the session login), THINGSPACE_ACCOUNT_NAME (the
 # billing account, which is also this environment's NIDD switch: unset
 # means the callback answers 503, a Nidd create 403, and nothing is sent)
-# and THINGSPACE_CALLBACK_PASSWORD (the listener password registered with
-# NiddService, its own value per environment). Set via `wrangler secret
-# put <NAME> --env <env>`; dev reads them from dovecote/.dev.vars and never
-# holds the four API secrets.
+# THINGSPACE_CALLBACK_PASSWORD (the listener password registered with
+# NiddService, its own value per environment) and, for a day after a
+# rotation only, THINGSPACE_CALLBACK_PASSWORD_PREVIOUS (the password it
+# replaced, still accepted because ThingSpace keeps sending it for minutes
+# after the new one is registered). Set via `wrangler secret put <NAME>
+# --env <env>`; dev reads them from dovecote/.dev.vars and never holds the
+# four API secrets.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
