@@ -3469,7 +3469,7 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
 | `TELEMETRY`, flat, nine keys at those sizes | 1488 | no |
 | `TELEMETRY`, batch of ten realistic keys, 1 / 3 / 4 / 6 / 7 readings | 188 / 540 / 716 / 1070 / 1247 | yes |
 | `TELEMETRY`, batch of ten realistic keys, 8 readings | 1424 | no |
-| `SHADOW_REPORT` at the library's largest report body | 385 | yes |
+| `SHADOW_REPORT` at the library's default `CONFIG_PIGEON_SHADOW_CONFIG_MAX` | 385 | yes |
 | `HELLO` | 33 | yes |
 | `SHADOW` with `target_config` at its cap | 1358 | yes, by construction |
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
@@ -3491,6 +3491,11 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   versions), which always fits and which the dashboard holds a save to. A larger config is refused
   `413` at the shadow `PUT`, since one frame carries the whole config and one the device could
   never receive must not become its target.
+- **The `pigeon` library receives less than that.** It keeps a `target_config` of at most
+  `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1` bytes: 319 by default, and 1207 at most on a NIDD build,
+  where the same symbol bounds the shadow report. A larger config passes the `PUT`, but the device
+  drops it with a log line and never reports that version, so every uplink draws the same `SHADOW`
+  again until a smaller write replaces it.
 - **An uplink body is at most 1272 bytes** after the type byte. A device never splits a pre-built
   body to fit, so a build whose largest flat telemetry body could exceed that has to report fewer
   keys: seven at the library's worst-case sizes, where eight come to 1323.
