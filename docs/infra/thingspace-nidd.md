@@ -137,35 +137,57 @@ env_flag=(--env staging)   # production: env_flag=()
 url=https://api-staging.pidgeiot.com/internal/thingspace/nidd
 nonempty() { [ -n "$1" ] && [ "$1" != null ]; }
 
-# 1. Log in once: OAuth, then the session. A failure here counts toward Verizon's five-strike
-#    lockout and the Worker's latch does not see it, so the script stops at the first failure.
-access=$(printf 'user-agent = "pidgeiot-ops/1"\nuser = "%s:%s"\n' \
-    "$THINGSPACE_PUBLIC_KEY" "$THINGSPACE_PRIVATE_KEY" |
-  curl -sS -f -K - -X POST -d grant_type=client_credentials "$ts/api/ts/v1/oauth2/token" |
-  jq -r .access_token)
-nonempty "$access" || { echo 'OAuth token missing' >&2; exit 1; }
-session=$(jq -n '{username: env.THINGSPACE_UWS_USERNAME, password: env.THINGSPACE_UWS_PASSWORD}' |
-  curl -sS -f -K <(printf 'header = "Authorization: Bearer %s"\n' "$access") \
-    -H 'Content-Type: application/json' --data-binary @- "$ts/api/m2m/v1/session/login" |
-  jq -r .sessionToken)
-nonempty "$session" || { echo 'session token missing' >&2; exit 1; }
+# Logs in: OAuth, then the session. A failure counts toward Verizon's five-strike lockout and the
+# Worker's latch does not see it, so the script stops at the first one. A session was refused 96 s
+# after it was issued on 2026-09-24, so each step that changes the account logs in just before.
+login() {
+  access=$(printf 'user-agent = "pidgeiot-ops/1"\nuser = "%s:%s"\n' \
+      "$THINGSPACE_PUBLIC_KEY" "$THINGSPACE_PRIVATE_KEY" |
+    curl -sS -f -K - -X POST -d grant_type=client_credentials "$ts/api/ts/v1/oauth2/token" |
+    jq -r .access_token)
+  nonempty "$access" || { echo 'OAuth token missing' >&2; exit 1; }
+  session=$(jq -n '{username: env.THINGSPACE_UWS_USERNAME, password: env.THINGSPACE_UWS_PASSWORD}' |
+    curl -sS -f -K <(printf 'header = "Authorization: Bearer %s"\n' "$access") \
+      -H 'Content-Type: application/json' --data-binary @- "$ts/api/m2m/v1/session/login" |
+    jq -r .sessionToken)
+  nonempty "$session" || { echo 'session token missing' >&2; exit 1; }
+}
 hdrs() { printf 'header = "Authorization: Bearer %s"\nheader = "VZ-M2M-Token: %s"\n' \
   "$access" "$session"; }
 cb="$ts/api/m2m/v1/callbacks/$THINGSPACE_ACCOUNT_NAME"
+# The listing carries each listener's password in clear: print names and URLs only, userinfo
+# redacted.
+show() {
+  jq -c '[.[]? | {name: (.name // .serviceName),
+    url: ((.url // "") | sub("//[^/@]*@"; "//<userinfo>@"))}]'
+}
 
-# 2. Who holds NiddService now. The response carries each listener's password in clear, so jq
-#    prints only names and URLs, userinfo redacted, and keeps the password of a NiddService
-#    registration naming one of our own callback URLs for step 3, never printed.
+# The last line always says what holds NiddService, above all when nothing does.
+listener=unchanged
+finish() {
+  case $listener in
+    registered) echo "NiddService: registered for $url" ;;
+    none) echo 'NO LISTENER: nothing holds NiddService; uplinks are lost until a run succeeds' ;;
+    *) echo 'NiddService: unchanged' ;;
+  esac
+}
+trap finish EXIT
+
+# 1. Log in.
+login
+
+# 2. Who holds NiddService now. Keep, never printed, the password of a NiddService registration
+#    naming one of our own callback URLs, for step 3.
 ours='^https://api(-staging)?[.]pidgeiot[.]com/internal/thingspace/nidd$'
 listing=$(curl -sS -f -K <(hdrs) -H 'Content-Type: application/json' "$cb")
-printf '%s' "$listing" | jq -c '[.[]? | {name: (.name // .serviceName),
-  url: ((.url // "") | sub("//[^/@]*@"; "//<userinfo>@"))}]'
+printf '%s' "$listing" | show
 holder=$(printf '%s' "$listing" |
   jq '[.[]? | select((.name // .serviceName) == "NiddService")] | length')
 CB_PW_PREVIOUS=$(printf '%s' "$listing" | jq -r --arg ours "$ours" 'first(.[]? |
   select((.name // .serviceName) == "NiddService" and ((.url // "") | test($ours))) |
   .password // empty) // empty')
 unset listing
+if [ "$holder" -eq 0 ]; then listener=none; fi
 
 # 3. The password registered now becomes the previous one, which the Worker still accepts, so
 #    callbacks ThingSpace goes on sending with it after step 5 are not lost; then a fresh one.
@@ -183,20 +205,39 @@ export CB_PW
 printf %s "$CB_PW" |
   (cd dovecote && bunx wrangler secret put THINGSPACE_CALLBACK_PASSWORD "${env_flag[@]}")
 
-# 4. If step 2 found NiddService, remove it first, as Verizon advises.
+# 4. A fresh login, since the secret puts take a while, then, if step 2 found NiddService, remove
+#    it first, as Verizon advises.
+login
 if [ "$holder" -gt 0 ]; then
   curl -sS -f -o /dev/null -K <(hdrs) -H 'Content-Type: application/json' \
     -X DELETE "$cb/name/NiddService"
+  listener=none
 fi
 
-# 5. Register this environment's URL. Only the status is printed: the answer names the account.
-jq -n --arg url "$url" \
-    '{name: "NiddService", url: $url, username: "pidgeiot", password: env.CB_PW}' |
-  curl -sS -f -o /dev/null -w '%{http_code}\n' -K <(hdrs) -H 'Content-Type: application/json' \
-    --data-binary @- -X POST "$cb"
-unset CB_PW access session
+# 5. Register this environment's URL. On a 401 or 403, log in afresh and try once more; anything
+#    else stops the script. Only the status is printed: the answer names the account.
+register() {
+  jq -n --arg url "$url" \
+      '{name: "NiddService", url: $url, username: "pidgeiot", password: env.CB_PW}' |
+    curl -sS -o /dev/null -w '%{http_code}' -K <(hdrs) -H 'Content-Type: application/json' \
+      --data-binary @- -X POST "$cb" || true
+}
+status=$(register)
+if [ "$status" = 401 ] || [ "$status" = 403 ]; then
+  echo "register answered $status; once more on a fresh login"
+  login
+  status=$(register)
+fi
+unset CB_PW
+case $status in
+  2??) listener=registered ;;
+  *) echo "register answered $status" >&2; exit 1 ;;
+esac
 
-# 6. Repeat step 2 (with a fresh login if more than 15 minutes have passed) to confirm the URL.
+# 6. Confirm on a fresh login: NiddService must name this environment's URL.
+login
+curl -sS -f -K <(hdrs) -H 'Content-Type: application/json' "$cb" | show
+unset access session
 ```
 
 What the script relies on:
@@ -204,9 +245,18 @@ What the script relies on:
 - `set -euo pipefail` makes a failed `curl -f` anywhere in a pipeline stop the script, and the
   `nonempty` checks catch a `200` without a token, since `jq -r` prints `null` and exits 0.
   Without both, a failed login would still reach step 3 and replace the Worker's callback password
-  while step 5 fails, and every callback would then answer `403`.
+  while step 5 fails, and every callback would then answer `403`. Step 5 alone reads the status
+  itself, so that a `401` or `403` can be retried once on a fresh login before the script stops.
+- **It logs in afresh before every step that changes the account.** On 2026-09-24 a session was
+  refused `401` 96 seconds after it was issued, between a successful deregistration and the
+  registration, which left the account with no listener at all. Each login is one more strike
+  only if it fails, and the script stops at the first failure.
+- **The last line says what holds `NiddService`**, whatever stopped the script: registered for
+  this URL, unchanged, or `NO LISTENER`. On `NO LISTENER` every uplink is lost until a run
+  succeeds; run the script again once the cause is fixed.
 - Verizon's list, register and deregister pages each say the request must set the content type to
-  JSON, so steps 2 and 4 send it too, and `NiddService` is among deregister's valid service names.
+  JSON, so steps 2, 4 and 6 send it too, and `NiddService` is among deregister's valid service
+  names.
 - **An empty list from step 2 does not prove that nothing holds `NiddService`.** The list shows
   only listeners registered through the Connectivity Management REST API, and a service
   registered through the older SOAP API cannot be registered again through REST. The 2023

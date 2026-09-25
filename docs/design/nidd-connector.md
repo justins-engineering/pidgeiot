@@ -1281,9 +1281,16 @@ on stdin or through `env`, never on a command line, and prints none. curl's conf
 3. Put that password into `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` (8.4), then mint a fresh
    40-hex-character password straight into `THINGSPACE_CALLBACK_PASSWORD`. Reached only after
    steps 1 and 2 succeeded: from here every callback needs one of the two.
-4. If step 2 found `NiddService`, deregister it, as Verizon advises.
+4. Log in afresh, then, if step 2 found `NiddService`, deregister it, as Verizon advises. A
+   session was refused 401 96 seconds after it was issued (B6), between a successful
+   deregistration and the registration, and left the account with no listener; so every step
+   that changes the account runs on a fresh login.
 5. Register this environment's URL for `NiddService`, username `pidgeiot`, with the new password.
-6. List again to confirm the URL.
+   A 401 or 403 is retried once on a fresh login; anything else, or a second refusal, stops the
+   script.
+6. List again, on a fresh login, to confirm the URL. Whatever stopped the script, its last line
+   says what holds `NiddService`: this URL, unchanged, or `NO LISTENER`, the state in which every
+   uplink is lost until a run succeeds.
 
 Four things the script relies on. `set -euo pipefail` makes a failed `curl -f` anywhere in a
 pipeline stop the script, and the `nonempty` checks catch a 200 without a token, since `jq -r`
