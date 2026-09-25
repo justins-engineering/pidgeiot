@@ -268,8 +268,9 @@ Then, outside the script:
 
 7. In the Cloudflare dashboard, add a Configuration Rule turning Browser Integrity Check off for
    `/internal/thingspace/*` on both API hostnames, before the first callback. The zone's Browser
-   Integrity Check already refuses non-browser clients on these hosts with "error code: 1010", and
-   ThingSpace's user agent is unknown.
+   Integrity Check already refuses some non-browser clients on these hosts with "error code:
+   1010". ThingSpace's own client (`User-Agent: Verizon's callback service`) met no challenge in
+   62 requests on 2026-09-24, so the rule is insurance against the check changing.
 8. Prove it with a real uplink from a provisioned device: `wrangler tail --env staging` (no flag
    for production) shows one `nidd_cb` line with `outcome=stored`. The line carries request ids,
    pigeon ids, statuses, sizes and latencies only; if it ever shows a password, a frame, an IMEI or
@@ -324,3 +325,34 @@ staging again only with a second ThingSpace account.
   logging in and emails ops. Once the cause is fixed, a changed secret value re-arms it; if the
   values were right all along, bump `THINGSPACE_LOGIN_EPOCH` in that environment's vars and
   deploy. Putting a secret again with the same value does not re-arm it.
+
+## Staging record, 2026-09-24
+
+What staging holds after bring-up and the tier 2 bench, by name only.
+
+- **Secrets.** `THINGSPACE_ACCOUNT_NAME` and `THINGSPACE_CALLBACK_PASSWORD` were put first, then
+  the four API secrets (`THINGSPACE_PUBLIC_KEY`, `THINGSPACE_PRIVATE_KEY`,
+  `THINGSPACE_UWS_USERNAME`, `THINGSPACE_UWS_PASSWORD`), each piped from the SDK repository's
+  gitignored `secrets.toml` into `wrangler secret put --env staging`.
+- **Portal.** The owner registered the staging callback URL in the ThingSpace portal against the
+  API key, with no service assigned.
+- **Registration**, 20:47Z to 20:57Z: section 2's script, one login. The listing showed
+  `NiddService` held by the deleted SDK example worker's `/vzw/nidd` and 21 other services by the
+  same dead host; the script deregistered `NiddService` and registered
+  `https://api-staging.pidgeiot.com/internal/thingspace/nidd` (200). The 21 others still name the
+  dead host, which the owner may deregister.
+- **Rotations**, during the bench. At 21:50Z a rotation's registration was refused 401 after its
+  deregistration had succeeded, leaving no listener until a manual registration at 21:53:54Z; that
+  is why section 2 now logs in before each change and ends on what holds `NiddService`. A second
+  rotation at 22:09Z ran clean. Both were followed by minutes of callbacks carrying a password
+  other than the registered one, the reason for `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`.
+- **Organization allowlist.** Staging's `NIDD_ALLOWED_ORG_IDS` is
+  `2d407cb2-9e01-4c12-9f6e-af4bd25900c4` (organization "NIDD tier 2 bench"), passed with
+  `--var NIDD_ALLOWED_ORG_IDS:<id>` at each deploy. The committed staging value is `""`, so a deploy
+  without that `--var` closes Nidd create on staging again.
+- **Fixture identities** left in production Kratos, which serves staging, for the fixture purge:
+  `staging-catch+nidd-a-9b1844@pidgeiot.com` (the staging synthetic suite's; owns nothing) and
+  `staging-catch+nidd-t2-0d3660@pidgeiot.com` (the bench's; owns the tier 2 organization, its flock
+  and the bench pigeon).
+- **Step 7** (the Browser Integrity Check rule) is not done; step 8 passed with real uplinks
+  stored at 21:24Z and 22:23Z.

@@ -3430,10 +3430,13 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
   converged. A push that never left, or whose delivery window lapsed, is re-sent the next time the
   device is known to be awake, and a device that cannot apply a config draws at most one re-push
   a day.
-- **The network buffers.** Each downlink is sent with a delivery window (`maximumDeliveryTime`)
-  of 86400 seconds; a sleeping device receives it by paging during its PSM active time or at its
-  next wake. A burst of buffered pushes settles on the newest: the device keeps the shadow with
-  the highest `target_version` and reads any older `SHADOW` only for its `current_version`.
+- **A sleeping device may miss a push.** Each downlink is sent with a delivery window
+  (`maximumDeliveryTime`) of 86400 seconds. A device in its PSM active time receives it by paging
+  within seconds, but ThingSpace's buffering did not deliver a frame queued while the device
+  slept at its next wake, reporting it `DeliveryFailed` 30 minutes on; a push lapsed that way is
+  re-sent on an uplink once its delivery window has passed. Pushes that do arrive in a burst
+  settle on the newest: the device keeps the shadow with the highest `target_version` and reads
+  any older `SHADOW` only for its `current_version`.
 - **A report always gets exactly one reply**, `SHADOW` or `STATUS STORED`. A report is confirmed
   by that `STATUS STORED`, or by a `SHADOW` whose `current_version` is at least the version
   reported. A `SHADOW` whose `current_version` is below what the device applied means the report

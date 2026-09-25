@@ -12,8 +12,10 @@ ThingSpace"), and the 2026-09-18 position that the platform stays vendor-agnosti
 over LTE-M first; NIDD as an optional carrier-specific path, never a dependency"
 (memory `project_product_strategy.md:117`).
 
-Nothing here was run against ThingSpace or the bench Feather. Every claim that needs either is a
-check in [section 13](#13-tests-and-the-staging-verification-plan) or sits in
+Tier 1, the staging synthetic suite and tier 2, the bench nRF9160 Feather against staging, ran on
+2026-09-24. Section 13.2 records the bench's results, and the sections they changed (7, 8.4, 8.5,
+12, 14) say what the bench measured in place of what the pages promised; every claim neither run
+settled is a check in [section 13](#13-tests-and-the-staging-verification-plan) or sits in
 [section 18](#18-unverified-and-sources). External pages were read on 2026-09-24; internal anchors
 are `file:line` at `fcc093c`.
 
@@ -1317,7 +1319,8 @@ holding them later is removed and the credentials rotated (8.4).
 7. In the Cloudflare dashboard, a Configuration Rule turning Browser Integrity Check off for
    `/internal/thingspace/*` on both API hostnames, before the first callback. The zone's BIC has
    already refused non-browser clients on these hosts with "error code: 1010" (memory
-   `reference_cloudflare_bic_python_ua.md`), and ThingSpace's user agent is unknown.
+   `reference_cloudflare_bic_python_ua.md`). ThingSpace's user agent, `Verizon's callback
+   service`, met no challenge in 62 requests (B5), so the rule is insurance, not a fix.
 8. Prove it with a real uplink (tier 2, B5): `wrangler tail --env staging` shows one `nidd_cb`
    line with `outcome=stored`.
 
@@ -1576,7 +1579,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 2 | Callback from an address outside the allowlist | 403, address logged | Not ThingSpace |
 | 3 | Wrong callback password | 403, logged with the body's request id and attempt | Lost, as in row 1: no resend follows the one immediate retry (B6). A rotation is 8.4's case: the replaced password stays accepted for a day |
 | 4 | Another ThingSpace customer's callback reaches us (their registration names our URL) | 200, dropped at the account gate, logged | A resend cannot change it |
-| 5 | Browser Integrity Check blocks ThingSpace's client | Nothing reaches the Worker, no log line at all | The Configuration Rule of 8.5 step 7 goes in before the first callback; tier 2 proves it |
+| 5 | Browser Integrity Check blocks ThingSpace's client | Nothing reaches the Worker, no log line at all | B5: none of 62 ThingSpace requests was challenged; the Configuration Rule of 8.5 step 7 stays as insurance |
 | 6 | Body over 8 KiB | 413 | Over three times the largest legitimate body |
 | 7 | Body not JSON, or no password | 400 | Kept in ThingSpace's archive for a support resend after a parser fix |
 | 8 | Authenticated body of an unknown shape | 200, logged by `CallbackAuth`'s request id and the parse error's category and column | Nothing to do with it; a resend is identical |
@@ -1595,7 +1598,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 21 | Session idle-expired or replaced, OAuth token expired or stale (a gateway `fault` on login or send) | One re-mint or re-login, one retry | Invisible to callers |
 | 22 | ThingSpace refuses a send (a 4xx other than 408 and 429) | 502, logged, not retried until the delivery window passes | The same bytes fail the same way; 408 and 429 are 503 and retried on the next uplink |
 | 23 | Send fails on 503 (unconfigured, latched, unreachable) | `pushed_*` reset; re-sent on the next uplink | The device is known awake then |
-| 24 | Device asleep past the 86400 s delivery window | `DeliveryFailed` logged; re-sent on its next uplink | No reachability API needed |
+| 24 | Device asleep when a push is sent | B8: `Queued`, not delivered at the next wake, `DeliveryFailed` 30 minutes later; logged, and re-sent on an uplink once the 86400 s window has passed | Not acceptable as it stands: a sleeping device gets its config a day late. D13 |
 | 25 | Dashboard edits pile up while the device sleeps | One push per 15 minutes; the newest rides the next push or the report reply | Bounds carrier cost and radio accesses |
 | 26 | Buffered pushes delivered in a burst on wake | The device keeps the highest `target_version` | Device rule, section 14 |
 | 27 | `target_config` over what one `SHADOW` frame carries at the new version (never below 1319 bytes) | 413 at the PUT, nothing written | A target the device could never receive must not exist |
@@ -1723,6 +1726,29 @@ risk:
 | B9 | Only if B1 says IP: default context IP, Non-IP on a new CID bound to its PDN; an HTTPS GET to `api-staging.pidgeiot.com` while the raw socket is open | FOTA over the IP PDN is possible, and IP downlink is not swallowed by the raw socket |
 | B10 | Twelve frames inside six minutes | Any drops or rate-control events |
 
+**Results, 2026-09-24.** The bench nRF9160 Feather (`NRF9160_SICA_REV2`, modem firmware 1.3.7,
+the ThingSpace SIM ending 8276) ran the probe with Non-IP on its own CID against staging dovecote
+at `5646507`. `wrangler tail` stayed connected from 21:14Z to 00:40Z with no gap over 347 s, so
+every absence below is one the tail could have recorded.
+
+| # | Result | What was measured |
+|---|---|---|
+| B1 | owner | `NiddService` was held by the SDK example worker's `/vzw/nidd`, and 21 other services by the same deleted host; staging's registration displaced it. The plan carries IP data, 250 KB a month (D6) |
+| B2 | pass | Verizon NB-IoT, band 13 (EARFCN 5276), RSRP -103 dBm, registered home 8 s after boot with no reject |
+| B3 | pass | Non-IP on CID 1, APN `vzwscef`, beside IPv4v6 on `vzwinternet` at CID 0 (IP MTU 1428). The modem reports no Non-IP MTU; `AT+CGAPNRC` and `AT+CCIOTOPT?` answer `ERROR` on this firmware; no rate-control event |
+| B4 | partial | 17, 687, 1022, 1189 and 1273 bytes delivered whole; 1283, 1294, 1315 and 1357 refused by `send()` with `EINVAL` before any radio access; 1274 to 1282 untested. The uplink cap is 1273 (7.5, 14.1) |
+| B5 | pass | `POST`, `application/json`, `User-Agent: Verizon's callback service`, HTTP/1.1, TLS 1.3, the listener credentials in the body and no `Authorization` header. Six of the eight published addresses (3.87.163.45, 3.91.119.203 and 54.197.62.209 via IAD and EWR; 54.200.43.232, 35.165.205.14 and 34.216.81.234 via PDX); 137.117.33.109 and 168.62.173.153 never. None of 62 requests met Browser Integrity Check. The parse, the account gate and the ICCID line pin held on real bodies. Four `HELLO`s from four wakes got four distinct request ids. A callback is 564 bytes plus the frame's base64 |
+| B6 | fail | No resend after a 403 or a 503: one more attempt 1.15 to 1.69 s later (median 1.26 s, from another address in 5 of 17 pairs), then nothing for the three hours the tail stayed up (5.1, 12). Our replay of a stored callback answered 200 `duplicate`. An uplink sent one second after the listener was deleted never arrived. The rotation script's registration was refused 401 96 s after its login (8.5). After each re-registration ThingSpace sent a password other than the registered one for 13 min 55 s and 9 min 27 s (8.4) |
+| B7 | fail, fixed | Every frame dovecote built (four `SHADOW`, two `STATUS`) refused 400 `AdjacentNullCharacters`. Frames free of adjacent NULs, sent directly with dovecote's tag, arrived whole with raw bytes at `recv` and verified tags: a 14-byte `STATUS` 3.61 s after the API call, a 1358-byte `SHADOW` 4.20 s, a 54-byte one 1.62 s, each reported `Delivered`. 1359 bytes refused `TooLong`. Section 7's text header and hex tag remove every NUL |
+| B8 | partial | NCS's 30-minute TAU refused `+CME ERROR: 50`; 190 minutes granted with a 60 s active time (14.1). Inside the active time a `STATUS` arrived by paging 8.75 s after the API call. A downlink sent while the device slept went `Queued`, was not delivered at its next wake, and went `DeliveryFailed` 30 minutes later (its `maximumDeliveryTime` was not recorded; the probe's sender defaults to 600 s); another was never received across six wakes (D13). `RAI_NO_DATA` accepted on the raw socket |
+| B9 | pass | Both contexts active; an HTTPS GET over CID 0 beside the open raw socket answered (404, 737 bytes), and NIDD sends kept working |
+| B10 | pass at the carrier | Twelve 37-byte frames in six minutes: all accepted, one RRC connection each, each a callback 0.58 to 1.13 s later, no drop and no rate control. At the Worker 7 were stored and 5 refused 403 for a stale password and lost (8.4) |
+
+Latency. Uplink, from `send()` returning to the first callback at the Worker, 38 samples: median
+1.12 s, 90th percentile 2.21 s, maximum 6.81 s; from PSM sleep, median 2.21 s. The route's
+synchronous work took 29 to 1077 ms. Downlink, from the API call to the probe's receive, over the
+four delivered: median 3.91 s, 1.62 to 8.75 s.
+
 Not exercised live: the login latch. One deliberately wrong password spends a real strike on the
 account's contact record; the unit tests cover it.
 
@@ -1760,7 +1786,8 @@ shadow, and a report folded into the cache when it is confirmed
 - Release the radio with RAI half a second after the last frame of a wake, well inside Verizon's
   5 seconds [NUG]. Never hold the connection for a reply: NB-IoT latency makes a round trip
   through the SCEF, ThingSpace and dovecote too slow for that window, so replies arrive by paging
-  during the PSM active time, or are buffered by the network to the next wake [NIDD].
+  during the PSM active time. The network's buffering to the next wake [NIDD] did not deliver on
+  the bench (B8, D13), so a reply is sent while the device's own wake still holds it paged.
 - PSM and eDRX set explicitly at every init, and the grant checked. The modem keeps `AT+CPSMS`
   and `AT+CEDRXS` in NVM across images and a full erase (B8): the bench board came up on eDRX
   with a 163.84 s cycle and PSM off, left by an earlier image, and Phase 0 was granted a 0 s
@@ -2004,13 +2031,14 @@ last. No Postgres migration at any step.
 | D3 | The SDK, and the licence statement | **Depend on the patched SDK**, pinned by revision, accepted per crate in `about.toml`; and **state pidgeiot's licence explicitly** in `README.md:80` and each crate's `license` field. `AGPL-3.0-only` matches what the dovecote binary effectively is once it links the SDK; "or later" also works | Vendor the three calls (about 150 lines over `worker::Fetch`): no new crates, no licence table, but a fork of the owner's client |
 | D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired in intent, but the example worker is still deployed and public, with unauthenticated routes that read the listener password and send to any line (task 0.5) | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
 | D5 | A second UWS user for staging and dev | **Yes, if the account allows one**: then no staging mistake can spend production's lockout budget | One shared user: the latch still caps it at one strike per environment, two or three of Verizon's five |
-| D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download | NIDD only: no remote firmware path at all; a bad build is a site visit |
+| D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download, and B9 proved it works beside the Non-IP PDN. The bench SIM's plan carries IP data, but 250 KB a month, less than one signed application image (319 to 489 KB), so field plans need a larger IP allowance for firmware | NIDD only: no remote firmware path at all; a bad build is a site visit |
 | D7 | Downlink delivery window (`maximumDeliveryTime`) | **86400 seconds**: covers seven PSM periods at the 190-minute TAU the bench was granted, and a push that lapses is re-sent on the next uplink | Longer lets superseded shadows pile up for a burst on wake; shorter than the device's sleep fails every push |
 | D8 | Confirm every converged shadow report with `STATUS STORED` | **Yes**: one extra downlink per shadow change keeps the library's rule that a report is the one confirmed call | No reply when converged: saves that downlink, and the device can no longer tell a stored report from a lost one |
 | D9 | Price NIDD | **No downlink metering in v1**, NIDD kept off the pricing and marketing pages until the carrier price is known, and the "every transport in the free tier" promise (`fancier/src/views/pricing.rs:544`) reviewed before NIDD is listed. Downlinks per organization are logged, so the decision will have data | Meter downlinks now, against a carrier price nobody has seen |
 | D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |
 | D11 | An automated check that `NiddService` still points at us | **Not in v1**: the runbook's step 2 at every deploy. Revisit when a paying NIDD device exists | Hourly from the existing cron: about 72 ThingSpace calls a day per environment, and the environment that does not hold the listener reads "drifted" forever |
 | D12 | Forged uplink by someone holding the listener password and posting from a Verizon address | **Accept for v1, with the line pin**: against such a forger the password is the only uplink secret (4.2), every API-credential holder can read it back [LIST], and it is rotated on any suspicion (8.4). They could store readings and shadow reports in a claimed pigeon whose IMEI and ICCID they know; they could never steer the device, whose downlink is signed | An uplink MAC keyed by the claim key plus a device sequence number on every frame: 12 more bytes an uplink and a replay window in `pigeon_nidd`, after which the claim key alone authenticates uplink and the listener password is only a filter |
+| D13 | A push to a sleeping device | **Re-send the owed `SHADOW` in answer to the device's next uplink**, which lands inside that wake's active time, instead of after the 86400 s window. B8: a push sent while the device slept went `Queued`, was not delivered at its next wake and failed 30 minutes later, while one sent inside the active time was paged in 8.75 s. Not implemented: the change is in `shadow_push_due` (`helpers/nidd.rs`), its truth table and 6.4 | Keep the rule: a sleeping device gets a new config a day late, or at its next shadow report |
 
 ## 17. Numbers
 
@@ -2076,8 +2104,8 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
 - **U1.** Any callback acknowledgement deadline. The brief's 2 seconds appears on none of [CB],
   [CBBP], [REG], [SEND] or [NIDD]; [CB] was re-read live on 2026-09-24 and states none. The web
   search budget was exhausted before a wider search. The design answers fast anyway and logs `ms=`.
-- **U2.** The callback's method, `Content-Type` and `User-Agent`, and whether the zone's Browser
-  Integrity Check challenges it (B5).
+- **U2.** Settled by B5: `POST`, `application/json`, `Verizon's callback service`, never
+  challenged by Browser Integrity Check in 62 requests.
 - **U3.** Partly settled. B5: four identical `HELLO`s from four wakes got four distinct request
   ids, so no device sequence byte is needed. B6: a refused callback draws one retry 1.2 to 1.7 s
   later and no five-minute resends, so backdating by attempt was dropped. Still unknown: whether
@@ -2096,21 +2124,25 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   deregisters first either way. Whether an uplink sent while no listener is registered (between
   steps 4 and 5) is archived or lost, and whether a resend carries the password it was first sent
   with (B6's rotation variant, 8.4). Whether a SOAP registration holds `NiddService` on this
-  account, which [LIST] cannot show.
+  account, which [LIST] cannot show. B6 settled two: deregister-then-register works, and an uplink
+  sent with no listener is lost. Which password the stale callbacks carried is unlogged; the
+  `password=previous` line settles it at the next rotation.
 - **U8.** Whether the account allows a second UWS user (D5), or a second account for staging.
 - **U9.** That the installed cargo-about honours a per-crate `accepted` table for a hyphenated
   crate name; its documentation says so, and task 1.8 settles it by running the script.
 - **U10.** That an id from `id_from_name` round-trips through `id_from_string` in the existing route
   macro (`dovecote/src/lib.rs:390`); both are `ObjectId` in worker 0.8.6, and tier 1 step 3 proves
   it.
-- **U11.** The bench SIM's plan, its `ConfigCreated` state, whether it carries IP data (the task
-  list's open U22), and Verizon NB-IoT coverage at the bench and at Massachusetts sites. The only
+- **U11.** Settled for the bench (B1 to B3): the line carries NIDD and 250 KB a month of IP data,
+  and Verizon NB-IoT serves the bench on band 13. Coverage at Massachusetts sites is still
+  unknown. The only
   claim on hand about US NB-IoT is an unsourced commit message in the departure board's history.
 - **U12.** That any version of `/home/justin/pigeon-nidd/nidd-test` ever ran: no capture exists,
   and the tree on disk does not build against the NCS it pins (reader map `device-and-origin.md`
   1.5).
-- **U13.** Whether `NRF_RAI_NO_DATA` is accepted on a raw socket, and how soon a downlink queued
-  while the device sleeps is delivered after it wakes (B8).
+- **U13.** Settled by B8: `NRF_RAI_NO_DATA` is accepted on a raw socket, and a downlink queued
+  while the device slept was not delivered at its next wake (D13). Whether a longer
+  `maximumDeliveryTime` changes that is untested.
 - **U14.** Whether a Hyperdrive connection opened from a Durable Object keeps it billed for up to 15
   minutes (section 17); the design keeps it off the uplink path either way.
 - **U15.** NIDD carrier pricing, per message or per byte.
@@ -2119,15 +2151,15 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   whom the account gate does not stop; whether any has already been released is unknown.
 - **U17.** Whether running customer lines on JES's account is permitted under the Terms (D2): owner
   and counsel, not engineering.
-- **U18.** Serving-network or APN rate control on `VZWSCEF` (B3, B10).
+- **U18.** None seen (B3, B10: twelve frames in six minutes, no drop, no rate-control event).
 - **U19.** The sizes of a departure payload (section 14.4) are an estimate, not a measurement.
 - **U20.** Whether the deployed `thingspace-sdk` example worker holds live ThingSpace credentials
   (its send route answered like the `api` build at `9d920a4` on 2026-09-24; nothing that would
   use a credential was called), and whether the 2023 middleware still runs anywhere with
   credentials. Task 0.5 settles both.
 - **U21.** Whether the IMEI in a callback is what the modem reported or the line's provisioned
-  record, and whether uplink callbacks' inner `deviceIds` always carry an ICCID or IMSI for the
-  line pin (B5).
+  record. B5 settled the other half: the inner `deviceIds` carry the ICCID, and the line pin took
+  it.
 - **U22.** Whether the ThingSpace portal can send NIDD messages, and which portal roles can:
   another holder of downlink, harmless to a device without the claim key's tag.
 
