@@ -1872,34 +1872,51 @@ shadow, and a report folded into the cache when it is confirmed
 ```kconfig
 config PIGEON_CONNECTOR_NIDD
   bool "Non-IP Data Delivery through the carrier (nRF91, NB-IoT)"
-  depends on NRF_MODEM_LIB && LTE_LINK_CONTROL
+  depends on NRF_MODEM_LIB
+  select LTE_LINK_CONTROL
   select LTE_LC_PDN_MODULE
-  select LTE_LC_RAI_MODULE
   select LTE_LC_PSM_MODULE
   select LTE_LC_EDRX_MODULE
+  select LTE_LC_RAI_MODULE
+  select PSA_CRYPTO
   select PSA_WANT_ALG_HMAC
+  select PSA_WANT_ALG_SHA_256
+  select PSA_WANT_KEY_TYPE_HMAC
   imply LTE_RAI_REQ
 
 if PIGEON_CONNECTOR_NIDD
-config PIGEON_NIDD_CLAIM_KEY          # string, 32 hex: what the dashboard's reveal names
+config PIGEON_NIDD_CLAIM_KEY          # string, 32 lowercase hex: what the dashboard's reveal names
 config PIGEON_NIDD_DEDICATED_CID      # bool, default y: Non-IP on a new CID, IP left on the
                                       # default one; n only on a NIDD-only plan, which then has
                                       # no IP at all and cannot enable FOTA
-config PIGEON_NIDD_RAI_IDLE_MS        # int, default 500: quiet time after an owed reply before
-                                      # releasing the radio
-config PIGEON_NIDD_REPLY_WAIT_SEC     # int, default 30: pigeon_shadow_report's wait
-config PIGEON_NIDD_SHADOW_WAIT_SEC    # int, default 60: the first pigeon_shadow_get's wait
+config PIGEON_NIDD_RAI_IDLE_MS        # int, default 500, range 0 to 5000: quiet time after an
+                                      # owed reply before releasing the radio
+config PIGEON_NIDD_REPLY_WAIT_SEC     # int, default 30, range 1 to 300: pigeon_shadow_report's wait
+config PIGEON_NIDD_SHADOW_WAIT_SEC    # int, default 60, range 1 to 600: the first
+                                      # pigeon_shadow_get's wait
 config PIGEON_NIDD_THREAD_STACK_SIZE  # int, default 2048
 endif
 ```
+
+As built (`~/pigeon` branch `nidd-transport`). `LTE_LINK_CONTROL` is selected, not depended on:
+a dependency is a Kconfig dependency loop back into the connector choice, since
+`NRF_MODEM_LIB_NET_IF` selects `LTE_LINK_CONTROL` and depends on the connection manager, whose
+selectors include `NET_SOCKETS`, which the CoAP connector's `COAP` selects. `PSA_WANT_ALG_HMAC`
+alone selects nothing; the probe needed `PSA_CRYPTO`, `PSA_WANT_ALG_SHA_256` and
+`PSA_WANT_KEY_TYPE_HMAC` beside it on TF-M, so the connector selects all four. `LTE_RAI_REQ` is
+implied so an application can still turn it off; with the RAI module in and it off, lte_lc writes
+`AT%RAI=0` at every modem init.
 
 Existing symbols (`pigeon/zephyr/Kconfig`): the CoAP prompt "CoAP over NIDD/Cellular" (`:16`)
 becomes "CoAP over DTLS or TLS", since nothing in pigeon's CoAP path touches NIDD;
 `PIGEON_FOTA` (`:525`) gains `|| (PIGEON_CONNECTOR_NIDD && PIGEON_NIDD_DEDICATED_CID)` and
 `PIGEON_FOTA_HTTPS_ENDPOINT` (`:584`) gains `PIGEON_CONNECTOR_NIDD`, the situation its help text
-already describes for MQTT; `PIGEON_TELEMETRY_BATCH` (`:1135`) gains `PIGEON_CONNECTOR_NIDD`, with
-its buffer defaulting to 1024 on NIDD; `PIGEON_LOG_UPLOAD` (`:456`) stays off NIDD in v1;
-`PIGEON_ENDPOINT`'s help (`:1282`) gains `nidd://VZWSCEF`. `pigeon/CMakeLists.txt` gains
+already describes for MQTT, and the `if` holding `PIGEON_HTTPS_SEC_TAG` and
+`PIGEON_HTTPS_NATIVE_TLS` (`:209`) widens to `(PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD) &&
+PIGEON_FOTA`, since the image fetch reads both; `PIGEON_TELEMETRY_BATCH` (`:1135`) gains
+`PIGEON_CONNECTOR_NIDD`, with its buffer defaulting to 1024 on NIDD; `PIGEON_LOG_UPLOAD`
+(`:456`) stays off NIDD in v1; `PIGEON_ENDPOINT`'s help (`:1282`) gains `nidd://VZWSCEF`.
+`pigeon/CMakeLists.txt` gains
 `zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_NIDD src/pigeon_nidd.c)`, and the
 `pigeon_https.c` condition (`:41`) gains `OR (CONFIG_PIGEON_CONNECTOR_NIDD AND CONFIG_PIGEON_FOTA)`.
 `pigeon.h` gains the enum value (`:17-21`), the events guard (`:528`) and
@@ -1917,53 +1934,94 @@ lower; the telemetry batch body fits 1272 bytes; `CONFIG_PIGEON_SHADOW_CONFIG_MA
 
 ### 14.3 `pigeon_nidd.c`
 
-- **Configure** (from `pigeon_init`, modem offline): with a dedicated CID, `lte_lc_pdn_ctx_create`,
-  else CID 0; then `lte_lc_pdn_ctx_configure(cid, <APN from the endpoint>, LTE_LC_PDN_FAM_NONIP,
-  NULL)`. Then PSM and eDRX, always written (14.1):
-  `lte_lc_psm_param_set(CONFIG_LTE_PSM_REQ_RPTAU, CONFIG_LTE_PSM_REQ_RAT)` and
-  `lte_lc_psm_req(true)`, and `lte_lc_edrx_req(IS_ENABLED(CONFIG_LTE_EDRX_REQ))`, which writes
-  eDRX off unless the application requested it. NCS's `CONFIG_LTE_PSM_REQ_RPTAU` default of 30
-  minutes was refused (B8), so a NIDD build sets it to `"00010011"`, 190 minutes, and the library's
-  documentation says so. After registration, log the grant from `LTE_LC_EVT_PSM_UPDATE` and
-  `LTE_LC_EVT_EDRX_UPDATE`, warning on a 0 s active time or an eDRX cycle longer than it.
-- **Start** (after registration): `lte_lc_pdn_activate` for a dedicated CID; `lte_lc_pdn_id_get`;
-  `zsock_socket(AF_PACKET, SOCK_RAW, 0)`; `SO_BINDTOPDN`, because a raw socket on a shared PDN
-  intercepts downlink meant for other sockets
+As built on `~/pigeon` branch `nidd-transport`; where the build departed from the first design,
+the reason is given in place.
+
+- **Configure** (from `pigeon_init`, modem offline): parse `nidd://<APN>` and import the claim key
+  into PSA, refusing anything but 32 lowercase hex characters (the form the reveal shows and
+  `HELLO` sends, so no case conversion exists). With a dedicated CID, first set CID 0 to
+  `LTE_LC_PDN_FAM_IPV4V6` with the subscription's APN, since an image without a dedicated context
+  may have left it Non-IP (the probe's order, proven in tier 2), then `lte_lc_pdn_ctx_create`;
+  else CID 0 with `lte_lc_pdn_default_ctx_events_enable`. Then `lte_lc_pdn_ctx_configure(cid,
+  <APN from the endpoint>, LTE_LC_PDN_FAM_NONIP, NULL)`. Then PSM and eDRX, always written
+  (14.1): `lte_lc_psm_req(true)` and `lte_lc_edrx_req(IS_ENABLED(CONFIG_LTE_EDRX_REQ))`, which
+  writes eDRX off unless the application requested it. There is no `lte_lc_psm_param_set` call:
+  lte_lc's modem-init hook already holds the application's `CONFIG_LTE_PSM_REQ_RPTAU` and `_RAT`
+  in whichever format the application chose, and a second write from the library would override
+  an application that sets them in seconds. NCS parses its own 30-minute default before pigeon's
+  Kconfig, so the library cannot re-default it; a NIDD application sets
+  `CONFIG_LTE_PSM_REQ_RPTAU="00010011"`, 190 minutes (B8), and the library's documentation says
+  so. A refused PSM or eDRX write is logged, naming the Kconfig to change, and never fails
+  `pigeon_init`: a power setting must not keep the device off the network. After registration,
+  log the grant from `LTE_LC_EVT_PSM_UPDATE` and `LTE_LC_EVT_EDRX_UPDATE`, warning on a 0 s
+  active time or an eDRX cycle longer than it, and log each RRC transition, since the carrier's
+  guideline counts radio accesses.
+- **Start** (after registration): `lte_lc_pdn_activate` for a dedicated CID, then a wait of up to
+  60 s for `LTE_LC_EVT_PDN_ACTIVATED` before `lte_lc_pdn_id_get`, because `AT+CGACT` answering is
+  not the PDN being up; `zsock_socket(AF_PACKET, SOCK_RAW, 0)`; `SO_BINDTOPDN`, because a raw
+  socket on a shared PDN intercepts downlink meant for other sockets
   (https://github.com/nrfconnect/sdk-nrfxlib/blob/main/nrf_modem/doc/sockets/raw_sockets.rst, read
-  by the readers on 2026-09-24), and `SO_KEEPOPEN` so it survives PDN re-establishment; the receive
-  thread; then `HELLO`. Log the IMEI once, so the operator can match it to the dashboard.
-- **Send** (`pigeon_nidd_send(type, body, len)`, one module mutex, bounded and answering `-EBUSY`
-  as the other connectors do): frame into a static 1273-byte buffer, `SO_RAI` to `NRF_RAI_ONGOING`,
-  `zsock_send`. When the reply owed to a `HELLO` or report arrives, a delayable work item sets
-  `NRF_RAI_NO_DATA` after `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet; a wake of telemetry alone
-  leaves the release to the network (14.1). B8 found `NRF_RAI_NO_DATA` accepted on a raw socket.
+  by the readers on 2026-09-24); `SO_KEEPOPEN` best-effort only, because the option exists on
+  mfw_nrf91x1 2.0.1 and later and mfw_nrf9151-ntn but not on the nRF9160's mfw 1.3.7, where a
+  socket whose PDN went down answers `ENETDOWN` and must be closed; the receive thread; then
+  `HELLO`. Log the IMEI once, so the operator can match it to the dashboard. An open that fails,
+  at start or later, is retried by the next send after a backoff of 60 s doubling to 1920 s, since
+  activating a PDN is a radio access; a `HELLO` that fails at start is sent before the next
+  billable frame. The next send after the PDN went down (a `DEACTIVATED` or detach event, or a
+  send answering `ENETDOWN` or `ENETUNREACH`) re-activates it and re-creates the socket, and one
+  after `LTE_LC_EVT_PDN_CTX_DESTROYED` (lte_lc frees every non-default context at `CFUN=0`)
+  re-creates the context first.
+- **Send** (one module mutex, bounded and answering `-EBUSY` as the other connectors do): refuse
+  a billable frame while unclaimed or paused before any radio access, send a `HELLO` still due
+  first, frame into a static 1273-byte buffer, `SO_RAI` to `RAI_ONGOING` (the socket layer's name
+  for `NRF_RAI_ONGOING`), `zsock_send`. Every send cancels a scheduled release. When the reply owed
+  to a `HELLO` or report arrives and nothing else is owed, a delayable work item sets
+  `RAI_NO_DATA` after `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet, unless that reply raised
+  `PIGEON_EVENT_SHADOW_UPDATE` for a version the application will report on the same connection;
+  a wake of telemetry alone leaves the release to the network (14.1). B8 found `RAI_NO_DATA`
+  accepted on a raw socket. The `lte_lc` handler never takes the mutex (atomics and log lines
+  only), because an lte_lc PDN call made under it completes on notifications delivered from the
+  handler's own context; the release work item takes it without waiting and skips when busy.
 - **Receive thread** (blocking `zsock_recv` into 1358 bytes): first the tag, the last 16
   characters, the hex of the first 8 bytes of HMAC-SHA256 over every byte before them keyed by
   `CONFIG_PIGEON_NIDD_CLAIM_KEY`, through PSA
-  Crypto, which the library already uses for SHA-256 (`pigeon/src/pigeon_psk.c:54-55`), with
-  `PSA_WANT_ALG_HMAC` (NCS v3.4.0 `zephyr/modules/mbedtls/Kconfig.psa.auto:81`) selected above; a
-  frame whose tag fails is dropped and logged, compared in constant time. Then the header's two
-  decimal integers up to its newline. Then: a `SHADOW` older
+  Crypto, which the library already uses for SHA-256 (`pigeon/src/pigeon_psk.c:54-55`); a frame
+  whose tag fails is dropped and logged, compared in constant time. Then the header's two decimal
+  integers up to its newline; a version above 2147483647 is dropped rather than wrapped into
+  `int32_t`, in a `SHADOW` header and in `STATUS STORED`'s argument alike. Then: a `SHADOW` older
   than the cached one is dropped except for its `current_version`; a newer one is cached (dropped
   and logged if its config exceeds `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1`), gives the shadow-wait
   semaphore and raises `PIGEON_EVENT_SHADOW_UPDATE`. A `current_version` at or above a pending
-  report confirms it, as does `STATUS STORED`. A `current_version` below the applied one means the
-  report was lost: report again. `STATUS PAUSED s` makes billable sends answer `-EAGAIN` for `s`
-  seconds, capped at 86400. `STATUS UNCLAIMED 0` sends one `HELLO` if none went in the last hour.
-  `STATUS UNCLAIMED 1`, the answer to a failed `HELLO`, makes billable sends answer `-EACCES` until
-  the next boot, the device's version of a 401. Anything else is ignored. `ENETDOWN` closes the
-  socket, raises `PIGEON_EVENT_DISCONNECTED`, and the next send re-creates it with backoff.
+  report confirms it, as does `STATUS STORED` with an argument at or above it, so a late
+  `STORED` for an older report cannot confirm a newer one. A `current_version` below the version
+  this boot reported means the report was lost: report again, unless it is still inside its
+  wait. `STATUS PAUSED s` makes billable sends answer `-EAGAIN` for `s` seconds, capped at 86400;
+  a newer `PAUSED` replaces the hold and `PAUSED 0` ends it. `STATUS UNCLAIMED 0` sends one
+  `HELLO` if none went in the last hour and leaves a waiting report pending, since the `HELLO`
+  re-claims and the application reports again at its next wake. `STATUS UNCLAIMED 1`, the answer
+  to a failed `HELLO`, makes billable sends answer `-EACCES` until the next boot, the device's
+  version of a 401. Anything else is ignored. A receive that ends closes the socket and raises
+  `PIGEON_EVENT_DISCONNECTED`; `PIGEON_EVENT_CONNECTED` is raised when the thread starts reading a
+  new socket. The event callback runs on this thread, so `pigeon_shadow_report` called from it
+  answers `-EDEADLK` at once rather than timing out on a reply the same thread must receive.
 
 | Transport call | Behaviour | Returns |
 |---|---|---|
 | `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`; `-EACCES` |
-| `pigeon_transport_upload_logs` | Not on NIDD in v1 | `-ENOTSUP` |
-| `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` (re-report next wake, harmless); `-EAGAIN`; `-EACCES` |
-| `pigeon_shadow_get` | The cached shadow; the first call after start waits up to `SHADOW_WAIT` for the `HELLO` reply | 0; `-EAGAIN` |
+| `pigeon_transport_upload_logs` | Not defined: `PIGEON_LOG_UPLOAD` cannot be enabled on NIDD, so nothing references it (the CoAP connector's precedent) | links nowhere |
+| `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` (re-report next wake, harmless); `-EAGAIN`; `-EACCES`; `-EDEADLK` from the event callback |
+| `pigeon_shadow_get` | A copy of the cached target; the first call after start waits up to `SHADOW_WAIT` for the `HELLO` reply. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
 
-Static RAM at defaults: a 1273-byte send buffer and a 1358-byte receive buffer, the cached configs
-(2 x 320), a 2048-byte stack; about 5.3 KB.
+Static RAM at defaults, measured on the `nidd_init` build: a 1273-byte send buffer and a
+1358-byte receive buffer, three 320-byte configs (the cached target, the last report, and
+`pigeon_shadow_get`'s copy, which keeps "valid until the next call" true while the receive thread
+rewrites the cache), a 2048-byte stack and about 450 bytes of thread, lock and state: 6112
+bytes.
+
+`CONFIG_PIGEON_WATCHDOG` is fed only by a delivered flush, so a NIDD application that enables it
+needs a timeout above its wake interval plus any `PAUSED` hold; the library cannot see the
+application's cadence, and `nidd_init` leaves it off.
 
 ### 14.4 With the departure board in mind
 
