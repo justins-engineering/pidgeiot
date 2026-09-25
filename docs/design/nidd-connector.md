@@ -72,7 +72,7 @@ Sources, each read on 2026-09-24:
 | "NIDD is capable of transporting up to 1500 bytes in a single transmission" | [NIDD] | The only published uplink figure. The bench modem refuses far less (B4: 1273 bytes accepted, 1283 refused), so the device caps an uplink frame at 1273 and batches; the platform accepts up to 1358 |
 | `maximumDeliveryTime` "allowed range is 2 secs -- 2592000 secs (30 days)" | [SEND] | Downlinks use 86400 s |
 | Unreachable device: "the data is buffered by the Verizon Network", a callback says it is buffered, and another says it "could not be delivered" once the window passes; statuses `Delivered`, `Queued`, `DeliveryFailed` | [NIDD], [SEND] | No reachability API; a lapsed push is re-sent on the device's next uplink |
-| Callbacks "must acknowledge receipt ... by sending back a 2xx status code"; unacknowledged ones are "resent by ThingSpace three more times at 5 minute intervals, for a total of 4 attempts", then archived 30 days and resendable through support by Request ID | [CB] | 2xx only after the durable handoff; 503 whenever a resend can succeed; de-duplication on `requestId` plus digest |
+| Callbacks "must acknowledge receipt ... by sending back a 2xx status code"; unacknowledged ones are "resent by ThingSpace three more times at 5 minute intervals, for a total of 4 attempts", then archived 30 days and resendable through support by Request ID | [CB] | Not what B6 observed: every refused callback (403 or 503) drew exactly one more attempt 1.2 to 1.7 s later, then nothing for three hours. So 2xx only after the durable handoff, a 503 is a lost uplink unless that one retry lands, and de-duplication on `requestId` plus digest absorbs the retry |
 | An acknowledgement deadline, the "2 seconds" in the brief | not found on [CB], [CBBP], [REG] or [SEND] (re-read live for [CB] on 2026-09-24) | Treated as a design target, not a contract: the synchronous path is one Postgres read, one DO hop of synchronous SQL and one enqueue, and every callback logs its latency (section 18, U1) |
 | Username and password travel "as plain text in the callback messages"; "ThingSpace will not interact with any sort of authentication system" | [CB] | The password is one of three gates, never the only one |
 | Callback username and password "Must be 40 characters or fewer" and must not be the UWS credentials | [REG] | A random 40-character alphanumeric password per environment |
@@ -410,7 +410,7 @@ curl -s -X POST https://api.pidgeiot.com/internal/thingspace/nidd \
 From an address outside the allowlist this answers `403`. The example is the shape ThingSpace
 sends, for replaying one against a local `wrangler dev`, whose allowlist is loopback.
 
-- `200`, empty body: processed, or deliberately dropped because a resend could not change the
+- `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a frame that is malformed,
   over a cap or of an unknown type, a delivery report, a configuration result, another account's
@@ -422,9 +422,11 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `413`: body over 8 KiB.
 - `503`: NIDD is not configured in this environment (the callback password or the account name
   is unset), or a store the uplink needs failed (the pigeon's Durable Object or the telemetry
-  queue). ThingSpace resends three more times at five-minute intervals, then archives the
-  callback for 30 days. A resend of a callback that was in fact stored is recognised by its
-  `requestId` and frame digest and never stored or billed twice.
+  queue). **The uplink is lost** unless ThingSpace's one retry, about a second later, succeeds:
+  ThingSpace documents three resends at five-minute intervals, but makes that single immediate
+  retry and no other. dovecote logs each such answer as lost with its `requestId`, the only
+  handle for a support resend from ThingSpace's archive. A retry of a callback that was in fact
+  stored is recognised by its `requestId` and frame digest and never stored or billed twice.
 ````
 
 Glance row, in document order after the `POST /internal/consent` row (`docs/api.md:103`), with the
@@ -446,36 +448,35 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
 3. `serde_json::from_str::<CallbackAuth>` (three fields, `password: Option<String>`,
    `request_id: Option<String>` renamed from `requestId` and `callback_count: Option<i64>` renamed
    from `callbackCount`): not JSON or no password is 400.
-4. `THINGSPACE_CALLBACK_PASSWORD` and `THINGSPACE_ACCOUNT_NAME` present and non-blank, or 503.
-   503 rather than 403, so a deploy gap loses nothing: ThingSpace resends and then archives (the
-   Stripe webhook precedent, `lib.rs:5368-5373`). Then `constant_time_eq` against the secret: 403
-   on mismatch. This check follows the parse so that the no-password, not-configured and
-   wrong-password lines each carry the body's request id and attempt
-   (`nidd_cb outcome= request= attempt=`), unverified but enough to match a refusal to
-   ThingSpace's next attempt (B6 could not).
+4. `THINGSPACE_CALLBACK_PASSWORD` and `THINGSPACE_ACCOUNT_NAME` present and non-blank, or 503: the
+   service is what is missing, not the caller's right to it (the Stripe webhook precedent,
+   `lib.rs:5368-5373`). It does not defer the callback: ThingSpace retries once at once and never
+   later (B6), so a deploy gap loses what arrives in it, and the route logs each loss. Then
+   `constant_time_eq` against the secret: 403 on mismatch. This check follows the parse so that the
+   no-password, not-configured and wrong-password lines each carry the body's request id and attempt
+   (`nidd_cb outcome= request= attempt=`), unverified but enough to match a refusal to ThingSpace's
+   next attempt (B6 could not).
 5. `serde_json::from_str::<NiddCallback>` (dovecote's own struct, `helpers/nidd.rs`, section 6.6):
    a body that authenticates but does not parse is logged with `CallbackAuth`'s `request_id` (or
    `none`) and the parse error's `e.classify()` and `e.column()` only, and answered 200.
 6. Dispatch on the `niddResponse` variant:
    - **Uplink.** `accountName` differs: 200 and a log line. `callback_imei(&callback)` finds no
-     IMEI, or the `message` is not standard base64, or it decodes to zero bytes: 200 and a log
-     line. Otherwise derive the object with `namespace.id_from_name(&nidd_object_name(&imei))`.
-     If byte 0 is a billable type (`TELEMETRY` or `SHADOW_REPORT`), run
-     `check_ingest_fuse(&ctx.env, &pigeon_id)` here, exactly where the HTTP telemetry route runs it
-     (`lib.rs:981-988`), raced against a one-second `Delay` in the pattern at
-     `dovecote/src/helpers/turnstile.rs:118-132`, and carry the answer as `X-Nidd-Ingest: paused`
-     or `open`. The race is needed because the fuse opens a Hyperdrive socket and runs an uncached
-     query with no deadline of its own (`dovecote/src/helpers/usage.rs:603-639`,
-     `dovecote/src/helpers/hyperdrive.rs:18-31`), before the acknowledgement, on every billable
-     callback, resends included. A timeout fails open and is logged, the fuse's own error rule
-     (`usage.rs:597-599`). Then `nidd_uplink_via_do(&obj_id, &frame, &request_id, callback_count,
-     ingest, line)` (new, in `helpers/pigeons.rs` beside `psk_lookup_via_do`, `:130`: a bare
-     internal POST of the raw frame bytes to `/pigeon/nidd/uplink` in the binary-safe style of
-     `proxy_binary_to_pigeon_do`, `:188`, carrying `X-Nidd-Request-Id`, `X-Nidd-Attempt`,
-     `X-Nidd-Ingest` and, when `callback_line` finds one, `X-Nidd-Line`, never a caller header).
-     DO 2xx is
-     200; DO 404 (no pigeon behind that IMEI) is 200 and a log line naming the derived pigeon id;
-     DO 5xx or a dispatch error is 503.
+     IMEI, or the `message` is not standard base64, or it decodes to zero bytes: 200 and a log line.
+     Otherwise derive the object with `namespace.id_from_name(&nidd_object_name(&imei))`. If byte 0
+     is a billable type (`TELEMETRY` or `SHADOW_REPORT`), run `check_ingest_fuse(&ctx.env,
+     &pigeon_id)` here, exactly where the HTTP telemetry route runs it (`lib.rs:981-988`), raced
+     against a one-second `Delay` in the pattern at `dovecote/src/helpers/turnstile.rs:118-132`, and
+     carry the answer as `X-Nidd-Ingest: paused` or `open`. The race is needed because the fuse
+     opens a Hyperdrive socket and runs an uncached query with no deadline of its own
+     (`dovecote/src/helpers/usage.rs:603-639`, `dovecote/src/helpers/hyperdrive.rs:18-31`), before
+     the acknowledgement, on every billable callback, resends included. A timeout fails open and is
+     logged, the fuse's own error rule (`usage.rs:597-599`). Then `nidd_uplink_via_do(&obj_id,
+     &frame, &request_id, ingest, line)` (new, in `helpers/pigeons.rs` beside `psk_lookup_via_do`,
+     `:130`: a bare internal POST of the raw frame bytes to `/pigeon/nidd/uplink` in the binary-safe
+     style of `proxy_binary_to_pigeon_do`, `:188`, carrying `X-Nidd-Request-Id`, `X-Nidd-Ingest`
+     and, when `callback_line` finds one, `X-Nidd-Line`, never a caller header). DO 2xx is 200; DO
+     404 (no pigeon behind that IMEI) is 200 and a log line naming the derived pigeon id; DO 5xx or
+     a dispatch error is 503, and a line naming the uplink as lost.
    - **Delivery report.** Log `requestId`, `status`, `reason` and the derived pigeon id. 200. No
      DO hop: nothing on the device's path depends on it (section 6.4).
    - **Configuration result.** Log `status` (`ConfigCreated`, or a failure with its `reason`) and
@@ -662,9 +663,8 @@ rows written.
 
 ### 6.2 `Pigeons`: dispatch
 
-One trusted-internal path in `fetch` (`:349-385`):
-`"/pigeon/nidd/uplink" => nidd_uplink(self, req).await`. Body: the raw frame bytes. Headers:
-`X-Nidd-Request-Id`, `X-Nidd-Attempt` (ThingSpace's `callbackCount`), `X-Nidd-Ingest` (`paused` or
+One trusted-internal path in `fetch` (`:349-385`): `"/pigeon/nidd/uplink" => nidd_uplink(self,
+req).await`. Body: the raw frame bytes. Headers: `X-Nidd-Request-Id`, `X-Nidd-Ingest` (`paused` or
 `open`), and `X-Nidd-Line` (the callback's ICCID or IMSI) when there is one. Its trust argument is
 the one `grant_acl_internal` (`:362`) and `write_telemetry_device` (`:370`) rest on: the DO has no
 public address, and the only caller is the callback route after all three of its gates.
@@ -675,8 +675,8 @@ Every read and write below is synchronous SQL. The only `await` before the respo
 enqueue in step 7, which is why the de-duplication key is recorded only after it succeeds, and why
 step 10 re-reads the row and applies this uplink's changes to the fresh copy: a dashboard write or
 another callback may have changed it during the await, and two synchronous statements cannot be
-interleaved. ThingSpace resends five minutes apart, so the same callback never arrives twice
-concurrently under its documented behaviour.
+interleaved. ThingSpace retries a refused callback once, 1.2 to 1.7 s after the refusal was
+answered (B6), so the same callback does not arrive twice concurrently.
 
 1. Read `pigeon_nidd` (defaults if absent). The `pigeons` row is read, with `one_row` (`:164`,
    never `SqlCursor::one()`), only when it is needed: for a `HELLO` (the claim key), while
@@ -717,15 +717,15 @@ concurrently under its documented behaviour.
    because a Hyperdrive connection opened from the DO may bill it for DO duration (section 17,
    U14).
 7. `TELEMETRY` (`0x01`): parse the rest of the frame as `capsules::TelemetryReportBody` (flat or
-   batched, `capsules/src/lib.rs:738`); apply `backdate` (section 6.6) with
-   `(attempt - 1).clamp(0, 3) * 300` seconds, since a resend arrives five minutes after the attempt
-   before it [CB] and without this a reading first stored on a resend is stamped as fresh; then
-   `ingest_telemetry(pigeons, body)` (6.7). `Stored`: record the key, 200. `Rejected` (malformed,
-   over a cap): record the key, 200 `rejected`, logged by the parse error's `e.classify()` and
-   `e.column()`, never its `Display`, which would quote the frame's values (5.1, step 7); step 8's
-   parse logs the same way. `Failed` (the merge or the enqueue): record nothing, 503, so the resend
-   redoes it; a merge that succeeded before a failed enqueue is simply re-applied with the same
-   values.
+   batched, `capsules/src/lib.rs:738`), then `ingest_telemetry(pigeons, body)` (6.7). No reading is
+   aged for its attempt: the only retry arrives about a second after the attempt before it (B6),
+   inside the resolution of a reading's own `age_secs`. `Stored`: record the key, 200. `Rejected`
+   (malformed, over a cap): record the key, 200 `rejected`, logged by the parse error's
+   `e.classify()` and `e.column()`, never its `Display`, which would quote the frame's values (5.1,
+   step 7); step 8's parse logs the same way. `Failed` (the merge or the enqueue): record nothing,
+   503, the honest answer, which the gateway logs as a lost uplink; if ThingSpace's one retry lands
+   it redoes the work, a merge that succeeded before a failed enqueue simply re-applied with the
+   same values.
 8. `SHADOW_REPORT` (`0x02`): parse `PigeonShadowReportRequest` (`capsules/src/lib.rs:493`). If
    `(current_version, current_config)` equals what is stored, it is the device repeating itself:
    record the key, no bill, reply as below. Otherwise `write_shadow_report` (`:1534`, synchronous
@@ -883,9 +883,6 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   id, `:`, and 16 hex characters pushed from a lookup table rather than `format!`.
 - `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64, `notice_due(&row,
   now)` (an hour since `notice_at`), and `shadow_push_due` (6.4).
-- `backdate(body, extra_secs) -> TelemetryReportBody`: a flat map becomes one reading with
-  `age_secs: Some(extra)`; each batch reading's `age_secs` grows by `extra`; a reading carrying
-  only `at` is left alone. The existing 24-hour clamp applies downstream.
 
 The frame layout is a contract with C code in `~/pigeon`, so its constants stay in dovecote rather
 than capsules, the reason the WebSocket frame cap sits in dovecote (`objects/ws.rs:4-11`), and
@@ -1055,10 +1052,9 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
 
 ### 7.4 Ordering, repeats and staleness
 
-- Frames can arrive out of order: each is its own callback, and a resend arrives five minutes
-  later [CB]. Readings carry their own `age_secs`, resolved against receipt and clamped to 24
-  hours; the resend backdating of 6.3 step 7 keeps a reading first stored on a resend at its real
-  time.
+- Frames can arrive out of order: each is its own callback. Readings carry their own `age_secs`,
+  resolved against receipt and clamped to 24 hours. ThingSpace's one retry comes about a second
+  after a refusal (B6), so a reading stored on it is stamped at its arrival and is not aged.
 - Once a frame's tag verifies, the device keeps the shadow with the highest `target_version` and
   ignores any `SHADOW` that is not newer, except to read its `current_version` as a confirmation. A
   burst of buffered pushes on wake therefore settles on the newest.
@@ -1598,9 +1594,9 @@ or "or later" is the owner's call (D3) and does not block this work.
 
 | # | Failure | What happens | Why that is acceptable |
 |---|---|---|---|
-| 1 | Callback password or account name unset (a deploy gap) | 503, logged | ThingSpace resends three times over 15 minutes, then archives 30 days, resendable through support by request id [CB] |
+| 1 | Callback password or account name unset (a deploy gap) | 503, logged as lost with its request id | Honest, and the uplink is lost: ThingSpace retries once at once and never later (B6). Recovery is a support resend by request id from the 30-day archive [CB], if that archive holds it. Deploy the secrets before the registration |
 | 2 | Callback from an address outside the allowlist | 403, address logged | Not ThingSpace |
-| 3 | Wrong callback password | 403, logged with the body's request id and attempt | The same resend and archive; fixing the Worker secret within 15 minutes, with the registration unchanged, loses nothing. A rotation is 8.4's case |
+| 3 | Wrong callback password | 403, logged with the body's request id and attempt | Lost, as in row 1: no resend follows the one immediate retry (B6). A rotation is 8.4's case |
 | 4 | Another ThingSpace customer's callback reaches us (their registration names our URL) | 200, dropped at the account gate, logged | A resend cannot change it |
 | 5 | Browser Integrity Check blocks ThingSpace's client | Nothing reaches the Worker, no log line at all | The Configuration Rule of 8.5 step 7 goes in before the first callback; tier 2 proves it |
 | 6 | Body over 8 KiB | 413 | Over three times the largest legitimate body |
@@ -1608,12 +1604,12 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 8 | Authenticated body of an unknown shape | 200, logged by `CallbackAuth`'s request id and the parse error's category and column | Nothing to do with it; a resend is identical |
 | 9 | IMEI no pigeon is bound to | DO 404, callback 200, logged by derived pigeon id | An unprovisioned line; a resend cannot help |
 | 10 | Pigeon not claimed, or a frame from a line other than the pinned one (device booted before its pigeon existed, stale claim key after a refresh, a SIM swap, a forger) | 200, frame dropped, `UNCLAIMED 0` (or `1` answering a failed `HELLO`) at most once an hour | The device sends `HELLO` again, or after a failed one stops billable sends until it reboots; nothing is stored or pushed |
-| 11 | ThingSpace resends a callback we stored (our 2xx lost or late) | De-duplication hit, 200 | Never stored or billed twice |
-| 12 | A reading first stored on a resend | Backdated by 300 s per earlier attempt, clamped | Keeps its real time |
-| 13 | Telemetry merge or enqueue fails | 503, key not recorded | The resend redoes it; the merge is idempotent |
-| 14 | Pigeon DO unreachable | 503 | The resend lands it |
+| 11 | ThingSpace retries a callback we stored (our 2xx lost or late), or support resends one | De-duplication hit, 200 | Never stored or billed twice |
+| 12 | A reading first stored on ThingSpace's retry | Stamped at its arrival, 1.2 to 1.7 s after the first attempt | Inside a reading's own resolution; nothing to correct |
+| 13 | Telemetry merge or enqueue fails | 503, key not recorded, logged as lost | Honest; the one immediate retry may land it, and the merge is idempotent. Otherwise lost, recoverable only by a support resend |
+| 14 | Pigeon DO unreachable | 503, logged as lost | As row 13 |
 | 15 | Fuse lookup fails, or takes over a second | Fail-open, logged: the existing rule inside `check_ingest_fuse`, and the gateway's race | A Postgres blip must not brick ingestion or hold the acknowledgement |
-| 16 | Account over its free-tier allowance | 200, dropped, `PAUSED 3600` at most once an hour | A 429 would buy three resends that meet the same fuse; the notice makes the device back off |
+| 16 | Account over its free-tier allowance | 200, dropped, `PAUSED 3600` at most once an hour | A 429 would buy a retry that meets the same fuse; the notice makes the device back off |
 | 17 | Malformed frame, unknown type, telemetry over a cap | 200, logged with type and length | A firmware bug; a resend is byte-identical |
 | 18 | Delivery report, configuration result | 200, logged | Nothing on the device's path depends on them |
 | 19 | Verizon refuses the login with an M2M error code, or the OAuth endpoint answers 400 or 401 | Latch set, ops email, every send 503 until a secret changes value or `THINGSPACE_LOGIN_EPOCH` is bumped | At most two strikes per credential set and epoch, with one environment configured, against Verizon's five; the epoch clears a false latch without a rotation |
@@ -1631,7 +1627,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 31 | dovecote rolled back past the Nidd release while a Nidd pigeon exists | Old code reads the row as an empty `Https` connector (`capsules/src/lib.rs:241`) | Task 0.4 ships first, so a rollback lands on a `refresh_token` that refuses rather than rewrites; the runbook rule stays: never roll back past the Nidd release with Nidd pigeons live |
 | 32 | A browser tab holding a pre-Nidd fancier bundle | The flock list fails to parse until reload | fancier deploys first |
 | 33 | `NiddService` re-registered elsewhere on the account | Uplink silently goes elsewhere | The runbook's step 2 at every deploy; D11 |
-| 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | A slow answer only causes a resend, which de-duplication absorbs |
+| 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | Whether a slow answer draws a retry is unmeasured; if it does, de-duplication absorbs it |
 | 35 | Carrier and ThingSpace see frame contents, and the claim key, which also keys the downlink tag, once per boot | Accepted for v1 | They carry every frame already. For uplink the key is no use without a Verizon source address and the listener password, which every API-credential holder can read back; that residual is D12. Application-layer encryption would cost bytes on every frame and is left out of v1 |
 | 36 | A secret reaching a log | No log line carries a body, frame, password, token, account name, IMEI, ICCID, IMSI or a serde error's `Display` | Reviewed across every `console_*!` in the change; a unit test proves a numeric IMEI never reaches the parse-error line |
 | 37 | Both deployed environments configured | Only during bring-up. At cutover staging loses its account name and API secrets, and `send` answers 503 wherever the allowlist is empty, so only the registered environment receives or sends | [CBBP] allows one endpoint per service per account, and [SEND] requires the listener for sending |
@@ -1664,8 +1660,7 @@ x86_64-unknown-linux-gnu`.
   `DeliveryFailed`; configuration `ConfigCreated` and a failure; no top-level `deviceIds`; no
   `callbackCount`; an unknown variant), as fixtures with placeholders where Verizon's examples carry
   credentials; `dedupe_key`; `remember` trimming at 64; `notice_due`; a truth table for
-  `shadow_push_due` (hold, lapse, unclaimed, converged, failed send); `backdate` (flat to one aged
-  reading, a batch shifted, an `at`-only reading untouched, attempt 1 a no-op).
+  `shadow_push_due` (hold, lapse, unclaimed, converged, failed send).
 - `objects/thingspace.rs`: the fingerprint changes when any one secret or the epoch changes and
   not otherwise; `classify_login` latches at once on an M2M error code and on an OAuth 400 or 401,
   answers a gateway `fault` (`900901`, `900902`) with one re-mint and retry, and counts every
@@ -1698,8 +1693,8 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    the line pinned, a `SHADOW` planned. A telemetry frame naming another ICCID: dropped as
    unclaimed, the claim kept; a good `HELLO` from that ICCID moves the pin.
 6. Flat and batched telemetry: values on the dashboard and history rows with the right ages (dev
-   writes history directly, `dovecote/src/objects/pigeons.rs:1906-1938`); `callbackCount: 3`
-   stores the reading 600 s older.
+   writes history directly, `dovecote/src/objects/pigeons.rs:1906-1938`); `callbackCount: 2`
+   stores the reading at its arrival, not aged for the attempt.
 7. The same body and `requestId` twice: one write, one billed reading.
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
    `STATUS STORED`. The same report again: not billed.
@@ -2085,11 +2080,11 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   search budget was exhausted before a wider search. The design answers fast anyway and logs `ms=`.
 - **U2.** The callback's method, `Content-Type` and `User-Agent`, and whether the zone's Browser
   Integrity Check challenges it (B5).
-- **U3.** Whether each uplink gets its own `requestId`, whether a resend keeps it, and whether
-  `callbackCount` counts 1 to 4 across resends (B5, B6). [SEND] defines `requestId` for downlink
-  callbacks only. If uplink request ids can repeat, byte-identical frames from different wakes
-  collide in the de-duplication key (6.3 step 2); B5's two-`HELLO` gate decides whether a device
-  sequence byte is needed. The backdating assumes the count.
+- **U3.** Partly settled. B5: four identical `HELLO`s from four wakes got four distinct request
+  ids, so no device sequence byte is needed. B6: a refused callback draws one retry 1.2 to 1.7 s
+  later and no five-minute resends, so backdating by attempt was dropped. Still unknown: whether
+  that retry carries `callbackCount` 2 (the refusal lines now log it, 5.1 step 4), and whether a
+  callback that times out rather than being refused is resent later.
 - **U4.** Settled by B4 and B7 for one modem: an nRF9160 on mfw 1.3.7 accepts a 1273-byte uplink
   and refuses 1283 in `send()`, 1274 to 1282 untested; ThingSpace counts 1358 before base64 and
   refuses 1359 (`TooLong`). Other modems and firmware are unmeasured.

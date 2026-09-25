@@ -5,9 +5,7 @@
 //! capsules, and docs/api.md is the authority both sides follow. Everything except `sign_frame`,
 //! which runs on WebCrypto, is exercised by the host-target tests.
 
-use capsules::{
-  NIDD_MAX_FRAME_BYTES, PigeonShadow, TelemetryBatch, TelemetryReading, TelemetryReportBody,
-};
+use capsules::{NIDD_MAX_FRAME_BYTES, PigeonShadow};
 use futures::future::{Either, select};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -35,8 +33,6 @@ pub const STATUS_UNCLAIMED: u8 = 0x02;
 
 /// The callback's request id, from the gateway to the pigeon's Durable Object.
 pub const HEADER_REQUEST_ID: &str = "X-Nidd-Request-Id";
-/// ThingSpace's `callbackCount`: which delivery attempt this is.
-pub const HEADER_ATTEMPT: &str = "X-Nidd-Attempt";
 /// `paused` when the gateway's free-tier fuse refused a billable frame, else `open`.
 pub const HEADER_INGEST: &str = "X-Nidd-Ingest";
 /// The line the uplink came from, when the callback named one.
@@ -62,8 +58,6 @@ const NIDD_PUSH_HOLD_SECS: i64 = 900;
 const NIDD_NOTICE_HOLD_SECS: i64 = 3600;
 /// De-duplication keys a pigeon remembers, oldest dropped first.
 const NIDD_SEEN_KEYS: usize = 64;
-/// ThingSpace resends an unacknowledged callback this many seconds after the attempt before.
-const NIDD_RESEND_SECS: i64 = 300;
 
 /// The fields read before a callback is trusted: the password to check, and the request id and
 /// attempt that name the callback in a log line, a refused one or one whose body does not parse
@@ -425,7 +419,8 @@ fn hex_pair(byte: u8) -> [u8; 2] {
 }
 
 /// The de-duplication key of one uplink: the request id and the first 16 hex characters of the
-/// frame's SHA-256. A ThingSpace resend repeats both halves.
+/// frame's SHA-256. ThingSpace's retry of a callback, and a support resend of one, repeat both
+/// halves.
 pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
   let digest = Sha256::digest(frame);
   let mut key = String::with_capacity(request_id.len() + 17);
@@ -549,45 +544,10 @@ pub async fn within<F: Future>(limit: Duration, future: F) -> Option<F::Output> 
   }
 }
 
-/// How much older than its arrival a reading first stored on this delivery attempt really is:
-/// each earlier attempt came five minutes before the next.
-pub fn resend_age_secs(attempt: i64) -> i64 {
-  (attempt - 1).clamp(0, 3) * NIDD_RESEND_SECS
-}
-
-/// Ages a telemetry body by `extra_secs`. A flat map becomes one reading of that age, and each
-/// batch reading's age grows by it; a reading that carries only `at` is absolute and left alone.
-/// The existing 24-hour clamp applies downstream.
-pub fn backdate(body: TelemetryReportBody, extra_secs: i64) -> TelemetryReportBody {
-  if extra_secs <= 0 {
-    return body;
-  }
-  match body {
-    TelemetryReportBody::Flat(metrics) => TelemetryReportBody::Batch(TelemetryBatch {
-      reports: vec![TelemetryReading {
-        at: None,
-        age_secs: Some(extra_secs),
-        metrics,
-      }],
-    }),
-    TelemetryReportBody::Batch(mut batch) => {
-      for reading in &mut batch.reports {
-        match (reading.age_secs, reading.at) {
-          (Some(age), _) => reading.age_secs = Some(age.max(0).saturating_add(extra_secs)),
-          (None, Some(_)) => {}
-          (None, None) => reading.age_secs = Some(extra_secs),
-        }
-      }
-      TelemetryReportBody::Batch(batch)
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use capsules::JsonString;
-  use std::collections::HashMap;
 
   const IMEI: &str = "490154203237518";
 
@@ -1125,66 +1085,5 @@ mod tests {
       ..lapsed
     };
     assert!(!shadow_push_due(&converged, now));
-  }
-
-  #[test]
-  fn resend_age_counts_earlier_attempts() {
-    assert_eq!(resend_age_secs(0), 0);
-    assert_eq!(resend_age_secs(1), 0);
-    assert_eq!(resend_age_secs(2), 300);
-    assert_eq!(resend_age_secs(4), 900);
-    assert_eq!(resend_age_secs(9), 900);
-  }
-
-  fn metrics() -> HashMap<String, String> {
-    HashMap::from([("uptime_s".to_string(), "85800".to_string())])
-  }
-
-  fn reading(at: Option<i64>, age_secs: Option<i64>) -> TelemetryReading {
-    TelemetryReading {
-      at,
-      age_secs,
-      metrics: metrics(),
-    }
-  }
-
-  #[test]
-  fn backdate_ages_a_flat_map_into_one_reading() {
-    let aged = backdate(TelemetryReportBody::Flat(metrics()), 600);
-    assert_eq!(
-      aged,
-      TelemetryReportBody::Batch(TelemetryBatch {
-        reports: vec![reading(None, Some(600))],
-      })
-    );
-  }
-
-  #[test]
-  fn backdate_shifts_a_batch_and_leaves_absolute_readings_alone() {
-    let batch = TelemetryReportBody::Batch(TelemetryBatch {
-      reports: vec![
-        reading(None, Some(300)),
-        reading(Some(1_700_000_000), None),
-        reading(None, None),
-        reading(Some(1_700_000_000), Some(0)),
-      ],
-    });
-    assert_eq!(
-      backdate(batch, 300),
-      TelemetryReportBody::Batch(TelemetryBatch {
-        reports: vec![
-          reading(None, Some(600)),
-          reading(Some(1_700_000_000), None),
-          reading(None, Some(300)),
-          reading(Some(1_700_000_000), Some(300)),
-        ],
-      })
-    );
-  }
-
-  #[test]
-  fn backdate_on_a_first_attempt_changes_nothing() {
-    let flat = TelemetryReportBody::Flat(metrics());
-    assert_eq!(backdate(flat.clone(), resend_age_secs(1)), flat);
   }
 }

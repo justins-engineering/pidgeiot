@@ -677,6 +677,17 @@ fn log_nidd_refusal(outcome: &str, request_id: &str, attempt: &str) {
   );
 }
 
+/// Names a callback answered 503 as lost. ThingSpace retries a refused callback once, about a
+/// second later, and never after, so unless that retry lands only a support resend by request id
+/// can recover it.
+fn log_nidd_loss(pigeon_id: &str, request_id: &str, attempt: &str) {
+  console_error!(
+    "nidd_cb lost pigeon={} request={} attempt={attempt}: answered 503, and no later resend comes",
+    or_none(pigeon_id),
+    or_none(request_id)
+  );
+}
+
 /// Undoes a Nidd create the Durable Object accepted but the route could not finish, and answers
 /// 503 so the operator retries. The id repeats after a delete, so a pigeon left standing would
 /// live over rows an earlier pigeon left under it and hold its IMEI against every retry.
@@ -741,10 +752,11 @@ fn log_nidd_callback(
 /// are not optional; the account gate is what stops another ThingSpace customer who registered
 /// this URL. Refusals are 403, **never 401**, which the dashboard reads as a lost session.
 ///
-/// A 2xx tells ThingSpace to stop resending, so it is answered only once a resend could not
-/// change the outcome: after the pigeon's Durable Object stored the uplink and enqueued its
-/// history, or for anything a resend would repeat identically. A store that failed, or a deploy
-/// with NIDD half configured, answers 503 so ThingSpace resends and then archives. Billing, the
+/// A 2xx says the callback is handled, so it is answered only once a retry could not change the
+/// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
+/// anything a retry would repeat identically. A store that failed, or a deploy with NIDD half
+/// configured, answers 503, which is the truth but loses the callback: ThingSpace retries once,
+/// about a second later, and never after, so each such answer is logged as lost. Billing, the
 /// Postgres sync and every downlink run in the Durable Object after it answers.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
@@ -806,12 +818,13 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       .with_cors(&cors);
   };
 
-  // 503 rather than 403: ThingSpace resends and then archives, so a deploy gap loses nothing.
+  // 503 rather than 403: the service is what is missing, not the caller's right to it.
   let (Some(expected_password), Some(account_name)) = (
     configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD"),
     configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME"),
   ) else {
     log_nidd_refusal("not_configured", &request_id, &attempt);
+    log_nidd_loss("", &request_id, &attempt);
     return Response::error("Service Unavailable: NIDD is not configured", 503)
       .unwrap()
       .with_cors(&cors);
@@ -837,6 +850,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
 
   let Ok(namespace) = ctx.durable_object("PIGEONS") else {
     console_error!("nidd_cb: PIGEONS binding unavailable");
+    log_nidd_loss("", &request_id, &attempt);
     return Response::error("Service Unavailable", 503)
       .unwrap()
       .with_cors(&cors);
@@ -847,6 +861,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       Ok(id) => Some(id),
       Err(e) => {
         console_error!("nidd_cb: deriving a pigeon id failed: {e}");
+        log_nidd_loss("", &request_id, &attempt);
         return Response::error("Service Unavailable", 503)
           .unwrap()
           .with_cors(&cors);
@@ -925,15 +940,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
   }
 
   let line = callback_line(&callback);
-  let dispatched = nidd_uplink_via_do(
-    &obj_id,
-    &frame,
-    &request_id,
-    auth.callback_count.unwrap_or(1),
-    paused,
-    line.as_deref(),
-  )
-  .await;
+  let dispatched = nidd_uplink_via_do(&obj_id, &frame, &request_id, paused, line.as_deref()).await;
   let stored = match dispatched {
     Ok(mut response) => {
       let status = response.status_code();
@@ -967,6 +974,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
     }
     Err(outcome) => {
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
+      log_nidd_loss(&pigeon_id, &request_id, &attempt);
       Response::error("Service Unavailable", 503)
         .unwrap()
         .with_cors(&cors)

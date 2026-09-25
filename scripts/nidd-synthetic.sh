@@ -550,7 +550,7 @@ uplink "TELEMETRY from ICCID2 after the move" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the new line is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 note_log "$m"
 
-step 6 "flat, batched and resent telemetry"
+step 6 "flat, batched and retried telemetry"
 m=$(mark)
 r=$(rid s6a)
 frame 01 '{"batt_mv":"3712","rsrp":"-97"}'
@@ -576,16 +576,17 @@ ages=$(jq -r '.[] | "\(.value) \(.reported_at)"' "$resp" | while read -r v t; do
 done)
 expect "three history rows, 600 s, 300 s and 0 s old (to the minute)" \
   "85800:600 86100:300 86400:0 " "$ages"
+# ThingSpace's only retry follows a refusal by about a second, so a later attempt is not aged.
 r=$(rid s6c)
 sent=$(date +%s)
 frame 01 '{"hum_pct":"41"}'
-uplink "flat TELEMETRY on callbackCount 3" "$r" 3 "$imei_a" "$iccid2"
-expect_log "the resent report is stored" "$m" "outcome=stored pigeon=$pigeon request=$r attempt=3"
+uplink "flat TELEMETRY on callbackCount 2" "$r" 2 "$imei_a" "$iccid2"
+expect_log "the retried report is stored" "$m" "outcome=stored pigeon=$pigeon request=$r attempt=2"
 api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=hum_pct&since=$(iso_ago 3600)"
 note "  $(jq -c '[.[] | {value, reported_at}]' "$resp")"
 age=$((sent - $(epoch "$(jq -r '.[0].reported_at' "$resp")")))
-expect "stored 600 s older (within 30 s)" yes \
-  "$( ((age >= 570 && age <= 630)) && echo yes || echo "no ($age s)")"
+expect "stored at its arrival, not backdated (within 30 s)" yes \
+  "$( ((age >= -30 && age <= 30)) && echo yes || echo "no ($age s)")"
 note_log "$m"
 
 step 7 "a resend of a stored uplink"

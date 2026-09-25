@@ -205,11 +205,10 @@ pub async fn nidd_uplink_via_do(
   stub: &worker::ObjectId<'_>,
   frame: &[u8],
   request_id: &str,
-  attempt: i64,
   paused: bool,
   line: Option<&str>,
 ) -> worker::Result<Response> {
-  use crate::helpers::nidd::{HEADER_ATTEMPT, HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
+  use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
 
   let stub = stub.get_stub().map_err(|e| {
     console_error!("Failed to get DO stub for pigeon {stub}: {e}");
@@ -219,7 +218,6 @@ pub async fn nidd_uplink_via_do(
   let mut init = RequestInit::default();
   init.with_method(worker::Method::Post);
   init.headers.set(HEADER_REQUEST_ID, request_id)?;
-  init.headers.set(HEADER_ATTEMPT, &attempt.to_string())?;
   init
     .headers
     .set(HEADER_INGEST, if paused { "paused" } else { "open" })?;

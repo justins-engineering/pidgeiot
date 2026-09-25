@@ -1,8 +1,8 @@
 use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddRow, NiddSqlRow, STATUS_PAUSED, STATUS_STORED,
-  STATUS_UNCLAIMED, Uplink, backdate, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
-  nidd_object_name, notice_due, parse_error_line, resend_age_secs, shadow_config_cap, shadow_frame,
-  shadow_push_due, sign_frame, status_frame,
+  STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
+  nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
+  sign_frame, status_frame,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -3048,27 +3048,24 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 }
 
 /// One NIDD uplink frame, from the ThingSpace callback route once its three gates passed. The
-/// body is the raw frame; the headers carry ThingSpace's request id and attempt, the gateway's
-/// free-tier answer, and the line the uplink came from.
+/// body is the raw frame; the headers carry ThingSpace's request id, the gateway's free-tier
+/// answer, and the line the uplink came from.
 ///
 /// Nothing from a device is stored, and nothing is sent to it, until it has claimed the pigeon
 /// with a `HELLO` carrying the claim key; the claim pins the line it came from. Every read and
 /// write is synchronous SQL except the telemetry enqueue, which is why the row is read again
 /// after it: a dashboard write or another callback may have changed it meanwhile. A repeat of a
-/// stored uplink (ThingSpace resends until acknowledged) is recognised by its request id and
-/// frame digest and never stored or billed twice.
+/// stored uplink (ThingSpace's one retry after an answer that was not a 2xx, or a support
+/// resend) is recognised by its request id and frame digest and never stored or billed twice.
 ///
-/// Answers 200 with the outcome as the body, 404 when no pigeon is here, and 5xx when a resend
-/// could succeed where this attempt did not. Billing, the Postgres sync and any downlink run
-/// after the response.
+/// Answers 200 with the outcome as the body, 404 when no pigeon is here, and 5xx when the store
+/// failed, which the gateway answers 503 and logs as lost: ThingSpace retries once at once and
+/// never later. Billing, the Postgres sync and any downlink run after the response.
 async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
-  use crate::helpers::nidd::{HEADER_ATTEMPT, HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
+  use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
 
   let header = |name: &str| req.headers().get(name).ok().flatten();
   let request_id = header(HEADER_REQUEST_ID).unwrap_or_default();
-  let attempt = header(HEADER_ATTEMPT)
-    .and_then(|a| a.parse::<i64>().ok())
-    .unwrap_or(1);
   let paused = header(HEADER_INGEST).as_deref() == Some("paused");
   let line = header(HEADER_LINE);
   let Ok(frame) = req.bytes().await else {
@@ -3164,9 +3161,6 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           "rejected"
         }
         Ok(body) => {
-          // A resend arrives five minutes after the attempt before it, so a reading first
-          // stored on one is older than its arrival.
-          let body = backdate(body, resend_age_secs(attempt));
           let result = ingest_telemetry(pigeons, body, "NIDD").await;
           // The enqueue awaited, so the row may have moved meanwhile.
           row = match read_nidd_row(&pigeons.sql) {
