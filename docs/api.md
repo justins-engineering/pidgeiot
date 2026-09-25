@@ -288,9 +288,9 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below; an uplink frame is accepted up to it, and the device library caps its own at the 1273 bytes the bench modem accepts; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
 | `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1319 bytes serialized at worst (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`); exactly, what one `SHADOW` frame carries at the version the write creates, up to 1337 | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
 | `POST /internal/thingspace/nidd`, bytes per body | 8 KiB | `lib.rs`, `413` over the cap |
-| NIDD downlink delivery window | 86400 s (ThingSpace's `maximumDeliveryTime`) | `objects/thingspace.rs`; a lapsed push is re-sent on the next uplink |
+| NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
 | NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
-| Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or reply |
+| Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or the next uplink's reply |
 | NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed |
 | Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
@@ -3415,41 +3415,48 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 | Event | Downlink |
 |---|---|
 | A shadow write raising `target_version`, push due | `SHADOW` |
-| A shadow write inside the hold window, or a pigeon not yet claimed | None; the next uplink or reply carries the newest target |
+| A shadow write inside the hold window, or a pigeon not yet claimed | None; the next uplink's reply carries the newest target |
 | A `HELLO` that matches | `SHADOW`, always: the device asked |
 | A shadow report from a device that is behind | `SHADOW` |
 | A shadow report from a converged device | `STATUS STORED <version>` |
-| Telemetry while a push is due (one that failed, lapsed or was held) | `SHADOW` |
+| Telemetry, or a billable frame while paused with no notice due, from a device still owed a shadow | `SHADOW`, unless the newest went out under 30 seconds ago and has not been reported missed |
 | A `HELLO` that does not match | `STATUS UNCLAIMED 1`, at most once an hour |
 | Any other frame from an unclaimed pigeon or an unpinned line | `STATUS UNCLAIMED 0`, at most once an hour |
 | A billable frame while the account is paused | `STATUS PAUSED 3600`, at most once an hour |
 | Telemetry from a converged device | None |
 
 - **Pushes are bounded.** At most one unsolicited `SHADOW` per 15 minutes per pigeon, so an
-  operator saving repeatedly does not flood a sleeping device; none at all while the device is
-  converged. A push that never left, or whose delivery window lapsed, is re-sent the next time the
-  device is known to be awake, and a device that cannot apply a config draws at most one re-push
-  a day.
-- **A sleeping device may miss a push.** Each downlink is sent with a delivery window
-  (`maximumDeliveryTime`) of 86400 seconds. A device in its PSM active time receives it by paging
-  within seconds, but ThingSpace's buffering did not deliver a frame queued while the device
-  slept at its next wake, reporting it `DeliveryFailed` 30 minutes on; a push lapsed that way is
-  re-sent on an uplink once its delivery window has passed. Pushes that do arrive in a burst
-  settle on the newest: the device keeps the shadow with the highest `target_version` and reads
-  any older `SHADOW` only for its `current_version`.
+  operator saving repeatedly does not flood a device; none at all while the device is converged.
+  A device that cannot apply a config draws at most one `SHADOW` per uplink, inside the
+  connection that uplink opened.
+- **The next uplink delivers what a push misses.** Every downlink is sent with a delivery window
+  (`maximumDeliveryTime`) of 30 seconds. A frame sent while the device holds the connection its
+  own uplink opened arrives within seconds. One sent to a device holding no connection depends on
+  paging, and can be lost: on the bench, with PSM and eDRX off, two such pushes were paged 12.6
+  and 13.8 seconds after the send, when ThingSpace had already given up at about 10 seconds, and
+  a frame ThingSpace buffered was never delivered later. So any uplink from a device that is
+  behind draws the owed `SHADOW` as its reply, unless the newest went out under 30 seconds
+  earlier, and a `DeliveryFailed` or `Queued` delivery report marks the push pending, so the next
+  uplink carries it even within those 30 seconds. Hold the connection for that reply (see
+  [NIDD sizes and cadence](#nidd-sizes-and-cadence)).
+- **A `SHADOW` can arrive more than once**, as a repeated reply or a buffered push landing late.
+  The device keeps the shadow with the highest `target_version` and reads any other `SHADOW` only
+  for its `current_version`.
 - **A report always gets exactly one reply**, `SHADOW` or `STATUS STORED`. A report is confirmed
   by that `STATUS STORED`, or by a `SHADOW` whose `current_version` is at least the version
   reported. A `SHADOW` whose `current_version` is below what the device applied means the report
-  was lost, and the device reports again. Re-sending a report is harmless: an identical report is
-  neither rewritten nor billed.
+  was lost, and the device reports again, unless that report still awaits its reply: telemetry
+  sent before the report can draw the owed `SHADOW` first. Re-sending a report is harmless: an
+  identical report is neither rewritten nor billed.
 - **Frames can arrive out of order.** Each is its own callback. Readings carry their own
   `age_secs`, resolved against the time the callback arrives.
 - **Repeats are stored once.** ThingSpace retries a refused callback once, about a second later,
   and a support resend repeats one; uplink is de-duplicated on the callback's `requestId` plus a
   digest of the frame, over the last 64 uplinks per pigeon.
 - **The dashboard never waits on ThingSpace.** A shadow `PUT` answers before the frame is sent and
-  never fails because of it. Delivery reports are logged, not stored: the device's own
-  `current_version` is the convergence signal.
+  never fails because of it. A delivery report changes only whether the next uplink repeats the
+  push: `Delivered` means the network took the frame, not that the device has it, and the
+  device's own `current_version` is the convergence signal.
 
 ### NIDD sizes and cadence
 
@@ -3491,13 +3498,15 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   guideline for automated traffic. This is the application's obligation, not something the
   platform or the device library can enforce, since a paged downlink is an access the device
   cannot count ahead of time. A 15-minute wake is the floor; a 20-minute wake leaves one access an
-  hour for a downlink.
+  hour for a paged push, and a reply riding its uplink's connection costs none.
 - **Batch readings.** Take readings as often as needed and send them with their `age_secs` inside
   one `TELEMETRY` frame per wake. Billing counts readings either way.
-- **Release the radio promptly.** Verizon asks for the radio to be released within 5 seconds of
-  the last byte; release it with RAI shortly after the last frame of a wake. Never hold the
-  connection for a reply: a round trip through the SCEF, ThingSpace and dovecote is too slow for
-  that window, so replies arrive by paging during the PSM active time, or at the next wake.
+- **Hold the connection for the reply, then release it.** Any frame from a device that is behind
+  can draw a `SHADOW`, which is reliable only while the connection that frame opened is up; on the
+  bench each reply reached the device 1.1 to 4.7 seconds after its connection came up. So do not
+  request release with RAI right after sending. Request it once the reply to a `HELLO` or shadow
+  report has arrived; after a wake of telemetry alone, let the network release the connection,
+  which it did 2.7 to 5.3 seconds after the last byte, about the 5 seconds Verizon asks for.
 - **Set PSM and eDRX at every boot.** The modem keeps both across firmware images, so a device
   never inherits them. On Verizon NB-IoT a 30-minute periodic TAU was refused and 190 minutes
   accepted, granted with a 60-second active time; log what the network grants. Keep eDRX off,
@@ -3676,7 +3685,8 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a frame that is malformed,
-  over a cap or of an unknown type, a delivery report, a configuration result, another account's
+  over a cap or of an unknown type, a delivery report (a `DeliveryFailed` or `Queued` one first
+  marks the push it may have carried pending), a configuration result, another account's
   callback, or an authenticated body of a shape dovecote does not know.
 - `400`: the body is not JSON, or carries no `password`. ThingSpace keeps it in its 30-day
   archive, resendable through support once a parser is fixed.

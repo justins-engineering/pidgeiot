@@ -39,7 +39,7 @@ the alternative.
 | 6 | Size budget | 1358 bytes a frame in both directions at the platform; the device caps an uplink frame at the 1273 bytes the bench modem accepts, and batches. A Nidd pigeon's `target_config` always fits at 1319 bytes (up to 1337 while its versions are short), refused with 413 at the dashboard write. |
 | 7 | When to acknowledge | After the durable handoff (the DO's write plus the queue enqueue), never before. Billing, the Postgres sync and every downlink run after the response. |
 | 8 | Duplicates | De-duplicated in the pigeon's DO on `requestId` plus a frame digest, in the same row as the claim. A ThingSpace resend is never stored or billed twice. Whether identical frames from two wakes stay distinct depends on Verizon's request ids, a Phase 2 gate (B5). |
-| 9 | Downlink | A shadow write that raises `target_version` pushes one frame; `HELLO` and shadow reports get replies; a push that failed or lapsed is re-sent on the next uplink; at most one unsolicited push per 15 minutes. No downlink at all in the steady state. |
+| 9 | Downlink | A shadow write that raises `target_version` pushes one frame, at most one unsolicited push per 15 minutes; `HELLO` and shadow reports get replies, and so does any uplink from a device still owed a shadow, since only a frame sent while the device holds the connection its uplink opened reliably arrives (D13). Every downlink has a 30 s delivery window. No downlink at all in the steady state. |
 | 10 | Free-tier fuse | Checked at the gateway, as the HTTP telemetry route does, so the DO opens no Postgres connection on the uplink path; raced against a one-second timer, failing open. A paused device gets one `PAUSED` notice an hour. |
 | 11 | ThingSpace tokens | One `ThingSpaceSession` Durable Object per environment: tokens in its storage, logins single-flight behind a mutex, and a latch that stops after two failed logins per credential set and login epoch (Verizon locks the account after five). |
 | 12 | Postgres | No schema change and no migration. |
@@ -72,8 +72,8 @@ Sources, each read on 2026-09-24:
 | NIDD is enabled by choosing the NIDD price plan on Activate, Restore or Change Service Plan, and the application must "wait for this additional callback before sending or received NIDD messages" | [NIDD] | Provisioning is done in the ThingSpace portal before a pigeon is created; the `niddConfigResponse` callback is logged, not acted on |
 | "The maximum size of the data can be 10864 bit or 1358 bytes", base64 on the API | [SEND] | One 1358-byte budget per frame, counted decoded |
 | "NIDD is capable of transporting up to 1500 bytes in a single transmission" | [NIDD] | The only published uplink figure. The bench modem refuses far less (B4: 1273 bytes accepted, 1283 refused), so the device caps an uplink frame at 1273 and batches; the platform accepts up to 1358 |
-| `maximumDeliveryTime` "allowed range is 2 secs -- 2592000 secs (30 days)" | [SEND] | Downlinks use 86400 s |
-| Unreachable device: "the data is buffered by the Verizon Network", a callback says it is buffered, and another says it "could not be delivered" once the window passes; statuses `Delivered`, `Queued`, `DeliveryFailed` | [NIDD], [SEND] | No reachability API; a lapsed push is re-sent on the device's next uplink |
+| `maximumDeliveryTime` "allowed range is 2 secs -- 2592000 secs (30 days)" | [SEND] | Downlinks use 30 s (D7): nothing buffered was seen delivered later |
+| Unreachable device: "the data is buffered by the Verizon Network", a callback says it is buffered, and another says it "could not be delivered" once the window passes; statuses `Delivered`, `Queued`, `DeliveryFailed` | [NIDD], [SEND] | No reachability API, and on the bench nothing buffered reached a later wake or connection (B8, D13): the device's next uplink carries an owed push as its reply |
 | Callbacks "must acknowledge receipt ... by sending back a 2xx status code"; unacknowledged ones are "resent by ThingSpace three more times at 5 minute intervals, for a total of 4 attempts", then archived 30 days and resendable through support by Request ID | [CB] | Not what B6 observed: every refused callback (403 or 503) drew exactly one more attempt 1.2 to 1.7 s later, then nothing for three hours. So 2xx only after the durable handoff, a 503 is a lost uplink unless that one retry lands, and de-duplication on `requestId` plus digest absorbs the retry |
 | An acknowledgement deadline, the "2 seconds" in the brief | not found on [CB], [CBBP], [REG] or [SEND] (re-read live for [CB] on 2026-09-24) | Treated as a design target, not a contract: the synchronous path is one Postgres read, one DO hop of synchronous SQL and one enqueue, and every callback logs its latency (section 18, U1) |
 | Username and password travel "as plain text in the callback messages"; "ThingSpace will not interact with any sort of authentication system" | [CB] | The password is one of three gates, never the only one |
@@ -421,7 +421,8 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a frame that is malformed,
-  over a cap or of an unknown type, a delivery report, a configuration result, another account's
+  over a cap or of an unknown type, a delivery report (a `DeliveryFailed` or `Queued` one first
+  marks the push it may have carried pending), a configuration result, another account's
   callback, or an authenticated body of a shape dovecote does not know.
 - `400`: the body is not JSON, or carries no `password`. ThingSpace keeps it in its 30-day
   archive, resendable through support once a parser is fixed.
@@ -485,8 +486,10 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
      and, when `callback_line` finds one, `X-Nidd-Line`, never a caller header). DO 2xx is 200; DO
      404 (no pigeon behind that IMEI) is 200 and a log line naming the derived pigeon id; DO 5xx or
      a dispatch error is 503, and a line naming the uplink as lost.
-   - **Delivery report.** Log `requestId`, `status`, `reason` and the derived pigeon id. 200. No
-     DO hop: nothing on the device's path depends on it (section 6.4).
+   - **Delivery report.** Log `requestId`, `status`, `reason` and the derived pigeon id. 200. A
+     `DeliveryFailed` or `Queued` report first goes to the DO at `/pigeon/nidd/missed`, which
+     marks the owed push pending (6.4), and the line reads `outcome=pending` when one was owed; a
+     failed hop is logged and left to the push's delivery window.
    - **Configuration result.** Log `status` (`ConfigCreated`, or a failure with its `reason`) and
      the derived pigeon id. 200.
 7. Logging rule for the whole route: request ids, derived pigeon ids, statuses, sizes and latencies.
@@ -593,7 +596,7 @@ Changed text:
 - Rate & size limits (`:252`): rows for the NIDD frame (1358 bytes each way: the downlink held
   to it by the 413 below, the uplink by the device build), a Nidd `target_config` (1319 bytes at
   worst, 413), the
-  callback body (8 KiB, 413), the downlink delivery window (86400 s), status notices (one an hour
+  callback body (8 KiB, 413), the downlink delivery window (30 s), status notices (one an hour
   per pigeon), unsolicited pushes (one per 15 minutes per pigeon) and the de-duplication window
   (the last 64 uplinks per pigeon).
 
@@ -671,11 +674,13 @@ rows written.
 
 ### 6.2 `Pigeons`: dispatch
 
-One trusted-internal path in `fetch` (`:349-385`): `"/pigeon/nidd/uplink" => nidd_uplink(self,
-req).await`. Body: the raw frame bytes. Headers: `X-Nidd-Request-Id`, `X-Nidd-Ingest` (`paused` or
-`open`), and `X-Nidd-Line` (the callback's ICCID or IMSI) when there is one. Its trust argument is
-the one `grant_acl_internal` (`:362`) and `write_telemetry_device` (`:370`) rest on: the DO has no
-public address, and the only caller is the callback route after all three of its gates.
+Two trusted-internal paths in `fetch` (`:349-385`): `"/pigeon/nidd/uplink" => nidd_uplink(self,
+req).await` and `"/pigeon/nidd/missed" => nidd_missed(self)`, a delivery report's hop (6.4). The
+uplink's body is the raw frame bytes; its headers are `X-Nidd-Request-Id`, `X-Nidd-Ingest`
+(`paused` or `open`), and `X-Nidd-Line` (the callback's ICCID or IMSI) when there is one. Their
+trust argument is the one `grant_acl_internal` (`:362`) and `write_telemetry_device` (`:370`) rest
+on: the DO has no public address, and the only caller is the callback route after all three of its
+gates.
 
 ### 6.3 `Pigeons`: the uplink path, `nidd_uplink`
 
@@ -741,8 +746,10 @@ answered (B6), so the same callback does not arrive twice concurrently.
    `awaiting_version` becomes `target_version` if the device is behind, else 0. Reply: a `SHADOW`
    when `target_version > current_version`, else `STATUS STORED` carrying the version. The
    report is the one confirmed call in the device library, so it always gets exactly one reply.
-9. After a `TELEMETRY` or a report, if `shadow_push_due(&row, now)` (6.4) and no reply is already
-   planned, plan a `SHADOW`.
+9. After a `TELEMETRY`, stored or refused, and after a billable frame dropped while paused when
+   no notice is due, plan a `SHADOW` if `shadow_reply_due(&row, now)` (6.4): the reply goes out
+   while the connection the uplink opened is still up. `HELLO` and reports plan theirs in steps 4
+   and 8.
 10. Re-read `pigeon_nidd`, apply this uplink's changes to that copy (the key appended to `seen` and
     trimmed, and any claim, notice or push fields), write it once (upsert), respond 200, then hand
     the tail to `wasm_bindgen_futures::spawn_local` (the pattern at
@@ -775,30 +782,50 @@ gateway's `PUT /pigeons/:pigeon_id/shadow` only proxies (`dovecote/src/lib.rs:20
    in a `spawn_local` tail. The dashboard PUT never waits on ThingSpace and never fails because of
    it, the rule the WebSocket push already follows.
 
-**The push rule**, a pure function in `helpers/nidd.rs`:
+**The push rule**, two pure functions in `helpers/nidd.rs`, one per trigger:
 
 ```rust
-/// Whether an unsolicited shadow push is due: the device is claimed and behind, and either the
-/// newest target has not been sent and no push went out in the last hold window, or the last
-/// push's delivery window has passed without the device confirming it.
+/// Whether a dashboard write pushes the shadow unsolicited: the device is claimed and behind, the
+/// newest target has not been sent, and no `SHADOW` went out in the last hold window.
 pub fn shadow_push_due(row: &NiddRow, now: i64) -> bool {
   row.claimed_at.is_some()
     && row.awaiting_version != 0
-    && ((row.pushed_version < row.awaiting_version && now - row.pushed_at >= NIDD_PUSH_HOLD_SECS)
-      || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
+    && row.pushed_version < row.awaiting_version
+    && now - row.pushed_at >= NIDD_PUSH_HOLD_SECS
+}
+
+/// Whether an uplink from the claimed device draws the `SHADOW` it is owed as its reply, sent
+/// while that uplink's connection is up: the device is behind, and the newest target is unsent,
+/// held or pending, or went out longer ago than its delivery window without being confirmed.
+pub fn shadow_reply_due(row: &NiddRow, now: i64) -> bool {
+  row.claimed_at.is_some()
+    && row.awaiting_version != 0
+    && (row.pushed_version < row.awaiting_version || now - row.pushed_at > NIDD_MT_DELIVERY_SECS)
 }
 ```
 
-`NIDD_PUSH_HOLD_SECS` is 900 and `NIDD_MT_DELIVERY_SECS` is 86400, both private to dovecote.
+`NIDD_PUSH_HOLD_SECS` is 900 and `NIDD_MT_DELIVERY_SECS` is 30, dovecote's own; the second is
+also every downlink's `maximumDeliveryTime` (D7).
+
+Two rules because only a device that holds a connection reliably receives a push. In the B7
+retest, with PSM and eDRX off, two pushes to the RRC-idle device were paged 12.6 and 13.8 s after
+the send, after ThingSpace had already reported `DeliveryFailed` or `Queued` at about 10 s, and
+neither arrived later; every frame sent while the device held the connection its own uplink
+opened arrived whole (D13). So the dashboard's push stays a bounded best effort, and the reply to
+the device's next uplink is what delivers: any uplink from the claimed line draws the owed
+`SHADOW` unless the newest one went out inside its 30 s window and may still land. A `SHADOW`
+also refreshes `awaiting_version` from the shadow it carries, so a device that converged by
+another path stops being owed one.
 
 | Event | Downlink | Row change |
 |---|---|---|
 | Dashboard write raising `target_version`, push due | `SHADOW` | `awaiting_version`, `pushed_version`, `pushed_at` |
-| Dashboard write inside the hold window, or pigeon unclaimed | none; the next uplink or reply carries the newest | `awaiting_version` |
+| Dashboard write inside the hold window, or pigeon unclaimed | none; the next uplink's reply carries the newest | `awaiting_version` |
 | `HELLO` that matches | `SHADOW` always (the device asked) | `claimed_at`, `pushed_*`; `awaiting_version` = target if behind, else 0 |
 | Shadow report, device behind | `SHADOW` (the reply) | `awaiting_version` = target, `pushed_*` |
 | Shadow report, device converged | `STATUS STORED <version>` | `awaiting_version = 0` |
-| Telemetry, push due (a failed or lapsed push, or one held) | `SHADOW` | `pushed_*` |
+| Telemetry, or a billable frame while paused with no notice due, reply due (the newest target held, unsent, marked missed, or out over 30 s unconfirmed) | `SHADOW` (the reply) | `awaiting_version`, `pushed_*` |
+| `DeliveryFailed` or `Queued` report while the device is behind | none; the next uplink carries the push | `pushed_version = 0` (pending) |
 | `HELLO` that does not match | `STATUS UNCLAIMED 1`, signed with the presented key, at most one an hour | `notice_at` |
 | Other frame from an unclaimed pigeon or an unpinned line, or a billable frame while paused | `STATUS UNCLAIMED 0` or `STATUS PAUSED 3600`, at most one an hour | `notice_at` |
 | Converged device sending telemetry | none | none |
@@ -811,16 +838,28 @@ unreachable), the tail runs
 `UPDATE pigeon_nidd SET pushed_version = 0, pushed_at = 0 WHERE pushed_version = ?1 AND pushed_at = ?2`
 with the values it wrote, so a newer push planned meanwhile is left alone; that makes the push due
 again on the next uplink. An uplink that plans a `SHADOW` but cannot read the connector to address
-it zeroes `pushed_*` in its own row write instead, with the same effect. A 502 (ThingSpace refused the message itself; a 408 or 429 is a 503, 8.3)
-is logged and left: the same bytes would fail the same way, and the 86400-second rule retries it
-once a day at most. A failed `STATUS` is logged and dropped.
+it zeroes `pushed_*` in its own row write instead, with the same effect. A 502 (ThingSpace
+refused the message itself; a 408 or 429 is a 503, 8.3) is logged and left as sent: the same
+bytes would fail the same way, so the next uplink past the 30 s window tries again, a ThingSpace
+call and no radio access, until the config changes. A failed `STATUS` is logged and dropped.
+
+**Missed deliveries.** A `DeliveryFailed` report, or a `Queued` one (the network could not reach
+the device, and nothing it buffered was seen delivered later), is handed to the pigeon's DO at
+`/pigeon/nidd/missed`. `nidd_missed` marks the owed push pending with `NiddRow::mark_pending`:
+`pushed_version` becomes 0 and `pushed_at` stays, so the next uplink carries it even inside the
+30 s window while the missed push still holds back an unsolicited one. It answers `pending`, or
+`converged` when nothing is owed, and the callback's line reads `outcome=pending` or
+`outcome=logged`. A report does not name the frame it concerns, so a missed notice marks the push
+too, at the cost of one early re-send. `Delivered` reports and configuration results are only
+logged: `Delivered` means the network took the frame, not that the device has it (the B7 retest saw
+it up to 2.8 s before the device did), and the device's own reported version is the convergence
+signal. A lost report costs nothing the 30 s lapse does not recover.
 
 **What this bounds.** At most one unsolicited push per 15 minutes per pigeon, so an operator saving
-repeatedly does not flood a sleeping device; no downlink at all while converged; a push that
-expired (`DeliveryFailed`) or never left is re-sent the next time the device is known to be awake;
-and a device that cannot apply a config draws at most one re-push a day. Delivery reports are only
-logged at the gateway: the device's own `current_version` is the convergence signal, and routing
-reports into the DO would cost a hop and a row per report for nothing the rule above needs.
+repeatedly does not flood a device; no downlink at all while converged; a push that missed, never
+left or lapsed rides the device's next uplink; and a device that cannot apply a config draws at
+most one `SHADOW` per uplink, inside the connection that uplink opened, so no radio access is
+added.
 
 ### 6.5 `Pigeons`: connector arms
 
@@ -889,8 +928,9 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   `prj.local.conf`.
 - `dedupe_key(request_id, frame) -> String`: `String::with_capacity(request_id.len() + 17)`, the
   id, `:`, and 16 hex characters pushed from a lookup table rather than `format!`.
-- `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64, `notice_due(&row,
-  now)` (an hour since `notice_at`), and `shadow_push_due` (6.4).
+- `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64,
+  `NiddRow::mark_pending`, `notice_due(&row, now)` (an hour since `notice_at`), `shadow_push_due`,
+  `shadow_reply_due` and `delivery_missed` (6.4).
 
 The frame layout is a contract with C code in `~/pigeon`, so its constants stay in dovecote rather
 than capsules, the reason the WebSocket frame cap sits in dovecote (`objects/ws.rs:4-11`), and
@@ -1065,12 +1105,15 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
   after a refusal (B6), so a reading stored on it is stamped at its arrival and is not aged.
 - Once a frame's tag verifies, the device keeps the shadow with the highest `target_version` and
   ignores any `SHADOW` that is not newer, except to read its `current_version` as a confirmation. A
-  burst of buffered pushes on wake therefore settles on the newest.
+  repeated or late `SHADOW` therefore settles on the newest. Repeats are expected: any uplink from
+  a device that is behind draws the owed `SHADOW` once the last one is 30 s old or was reported
+  missed, and a push ThingSpace reported `Queued` may still land after its reply.
 - A report is confirmed by `STATUS STORED` or by a `SHADOW` whose `current_version` is at least the
   version reported. Re-sending a report is harmless: the write is the same, and an identical report
   is not billed.
 - A `SHADOW` whose `current_version` is below what the device applied tells the device its report
-  was lost; it reports again.
+  was lost; it reports again, unless a report of that version still awaits its reply, since
+  telemetry sent before the report can draw the owed `SHADOW` before the report is stored.
 
 ### 7.5 Budgets against one frame
 
@@ -1220,18 +1263,18 @@ without rotating a Verizon credential. The stored value is a salted digest of th
 epoch, never a secret.
 
 `send`, in order: `ensure_tokens`; `send_nidd` with `NiddMessage { account_name, device_ids:
-[DeviceID { id: imei, kind: "IMEI" }], maximum_delivery_time: 86400, message: frame_b64 }`; on
+[DeviceID { id: imei, kind: "IMEI" }], maximum_delivery_time: 30, message: frame_b64 }`; on
 200, parse `{"requestId"}`, set `session_used_at = now`, answer 200. A 401 fault drops the access
 token; an M2M error code containing the `.SessionToken.` segment drops the session, since [ERR]
 lists three (`REQUEST_FAILED.SessionToken.Expired`, `REQUEST_FAILED.SessionToken.Format` and
 `INPUT_INVALID.SessionToken.Invalid`), the last being the likely answer once another login has
 replaced the session; either way re-run `ensure_tokens` once and send once more, never looping. A
-429 or 408 answers 503 `unreachable`, like a 5xx or a network error, so the push is due again on the
-next uplink instead of a day later; the Terms reserve "limits on the number or rate of calls"
-[TOS]. Any other 4xx answers 502 with Verizon's `errorCode`. Before any of this, `send` answers 503
-`not_configured` when `THINGSPACE_CALLBACK_ALLOWED_IPS` is empty (8.2). Logged per call: path,
-HTTP status, Verizon error code, latency, pigeon id. Never a token, a body, a header value, a frame
-or an IMEI.
+429 or 408 answers 503 `unreachable`, like a 5xx or a network error, so the push is due again at
+once rather than after its delivery window; the Terms reserve "limits on the number or rate of
+calls" [TOS]. Any other 4xx answers 502 with Verizon's `errorCode`. Before any of this, `send`
+answers 503 `not_configured` when `THINGSPACE_CALLBACK_ALLOWED_IPS` is empty (8.2). Logged per
+call: path, HTTP status, Verizon error code, latency, pigeon id. Never a token, a body, a header
+value, a frame or an IMEI.
 
 [ERR] is https://thingspace.verizon.com/resources/documentation/connectivity/API_Reference/Synchronous_Error_Messages/
 (read by the readers on 2026-09-24).
@@ -1356,7 +1399,7 @@ account.
 - No reverse index: the uplink reaches its Durable Object by name (4.3), never through Postgres,
   so no NIDD path meets the Hyperdrive read-after-write trap (CLAUDE.md, Hyperdrive note).
 - Claim, de-duplication and push state are the device's own and live in its Durable Object (6.1).
-  Delivery reports are logged, not stored.
+  Delivery reports are logged, and a missed one only marks that state (6.4).
 - The only Postgres statement on the uplink path is the free-tier fuse at the gateway, the same
   `check_ingest_fuse` the HTTP telemetry route runs (`dovecote/src/lib.rs:981-988`), raced against
   one second there (5.1, step 6). Placing it at the gateway for a one-hop DO surface is the
@@ -1592,15 +1635,15 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 15 | Fuse lookup fails, or takes over a second | Fail-open, logged: the existing rule inside `check_ingest_fuse`, and the gateway's race | A Postgres blip must not brick ingestion or hold the acknowledgement |
 | 16 | Account over its free-tier allowance | 200, dropped, `PAUSED 3600` at most once an hour | A 429 would buy a retry that meets the same fuse; the notice makes the device back off |
 | 17 | Malformed frame, unknown type, telemetry over a cap | 200, logged with type and length | A firmware bug; a resend is byte-identical |
-| 18 | Delivery report, configuration result | 200, logged | Nothing on the device's path depends on them |
+| 18 | Delivery report, configuration result | 200, logged; a `DeliveryFailed` or `Queued` report first marks the owed push pending in the DO | The next uplink carries the push; nothing else on the device's path depends on them, and a report lost on the way is covered by the 30 s lapse |
 | 19 | Verizon refuses the login with an M2M error code, or the OAuth endpoint answers 400 or 401 | Latch set, ops email, every send 503 until a secret changes value or `THINGSPACE_LOGIN_EPOCH` is bumped | At most two strikes per credential set and epoch, with one environment configured, against Verizon's five; the epoch clears a false latch without a rotation |
 | 20 | Any other login without a session token (429, 5xx, a timeout, a gateway fault on the retry) | Counted; send 503; the second consecutive one latches | Its fate at Verizon is unknown, and an abandoned request may still have counted |
 | 21 | Session idle-expired or replaced, OAuth token expired or stale (a gateway `fault` on login or send) | One re-mint or re-login, one retry | Invisible to callers |
-| 22 | ThingSpace refuses a send (a 4xx other than 408 and 429) | 502, logged, not retried until the delivery window passes | The same bytes fail the same way; 408 and 429 are 503 and retried on the next uplink |
+| 22 | ThingSpace refuses a send (a 4xx other than 408 and 429) | 502, logged, tried again on the next uplink past the 30 s window | The same bytes fail the same way, which costs a ThingSpace call but no radio access per uplink until the config changes; 408 and 429 are 503 and retried on the next uplink |
 | 23 | Send fails on 503 (unconfigured, latched, unreachable) | `pushed_*` reset; re-sent on the next uplink | The device is known awake then |
-| 24 | Device asleep when a push is sent | B8: `Queued`, not delivered at the next wake, `DeliveryFailed` 30 minutes later; logged, and re-sent on an uplink once the 86400 s window has passed | Not acceptable as it stands: a sleeping device gets its config a day late. D13 |
-| 25 | Dashboard edits pile up while the device sleeps | One push per 15 minutes; the newest rides the next push or the report reply | Bounds carrier cost and radio accesses |
-| 26 | Buffered pushes delivered in a burst on wake | The device keeps the highest `target_version` | Device rule, section 14 |
+| 24 | Device asleep, or awake with no connection, when a push is sent | Lost. B8: `Queued`, not delivered at the next wake, `DeliveryFailed` 30 minutes later. B7 retest, PSM and eDRX off: paged 12.6 and 13.8 s after the send, after ThingSpace had reported `DeliveryFailed` or `Queued` at about 10 s, and never delivered. The report marks the push pending and the device's next uplink carries it as the reply | Every reply sent while the device held its uplink's connection arrived (D13) |
+| 25 | Dashboard edits pile up while the device sleeps | One push per 15 minutes; the newest rides the next push or the next uplink's reply | Bounds carrier cost and radio accesses |
+| 26 | The same or an older `SHADOW` arrives again (a repeated reply, a buffered push landing late) | The device keeps the highest `target_version` | Device rule, 7.4 |
 | 27 | `target_config` over what one `SHADOW` frame carries at the new version (never below 1319 bytes) | 413 at the PUT, nothing written | A target the device could never receive must not exist |
 | 28 | Two creates race for one IMEI | Both reach the same DO, which serializes them; the second answers 409 | Uniqueness without an index |
 | 29 | An account tries to register an IMEI it does not hold | Outside `NIDD_ALLOWED_ORG_IDS`: 403 before any IMEI lookup, so it can neither probe nor squat. Inside it (JES's own organizations): the rightful create answers 409, no data or downlink crosses, and the organization holding the pigeon deletes it | While D2 keeps NIDD to JES's devices, only JES can hold a Nidd pigeon; D1 is revisited before that changes |
@@ -1641,7 +1684,8 @@ x86_64-unknown-linux-gnu`.
   `DeliveryFailed`; configuration `ConfigCreated` and a failure; no top-level `deviceIds`; no
   `callbackCount`; an unknown variant), as fixtures with placeholders where Verizon's examples carry
   credentials; `dedupe_key`; `remember` trimming at 64; `notice_due`; a truth table for
-  `shadow_push_due` (hold, lapse, unclaimed, converged, failed send).
+  `shadow_push_due` and `shadow_reply_due` (hold, in flight, lapse, a push reported missed through
+  `mark_pending`, failed send, unclaimed, converged); `delivery_missed`.
 - `objects/thingspace.rs`: the fingerprint changes when any one secret or the epoch changes and
   not otherwise; `classify_login` latches at once on an M2M error code and on an OAuth 400 or 401,
   answers a gateway `fault` (`900901`, `900902`) with one re-mint and retry, and counts every
@@ -1678,8 +1722,11 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    stores the reading at its arrival, not aged for the attempt.
 7. The same body and `requestId` twice: one write, one billed reading.
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
-   `STATUS STORED`. The same report again: not billed.
-9. A dashboard write: `SHADOW` planned. A second within 900 s: held. An oversized one: 413.
+   `STATUS STORED`. The same report again: not billed. Telemetry from the converged device: no
+   reply.
+9. A dashboard write: `SHADOW` planned. A second within 900 s: held. An oversized one: 413. A
+   `DeliveryFailed` report while a version is owed: the push marked pending, and the next
+   telemetry's reply is the `SHADOW`.
 10. Token refresh: the next telemetry is refused as unclaimed.
 11. Delete, then recreate with the same IMEI: the old Postgres history for that id is gone before
     the new pigeon's first reading, and a log dictionary uploaded before the recreate answers 404.
@@ -1721,7 +1768,7 @@ risk:
 | B4 | Staging listener registered (8.5). Send 1, 17, 1358 and 1500 bytes | Which sizes arrive as callbacks, and their decoded lengths |
 | B5 | For one real uplink: method, `Content-Type`, `User-Agent`, source address among the eight, no BIC challenge, the IMEI's form and `kind` spelling in both lists, which other identifiers the inner list carries (ICCID, IMSI) for the line pin, `accountName` present, and device-send to DO-write latency from the two logs. Then the de-duplication gate: two identical `HELLO`s sent from two wakes | The parse of section 6.6, `imei_key` and `callback_line` match reality; both `HELLO`s reach the DO as new, with distinct request ids. If not, a device sequence byte enters the frame layout before task 3.1 |
 | B6 | **Replay by ThingSpace**: set staging's callback password wrong, send one frame, restore it within five minutes. Then **replay by us**: post the same callback again from the bench, built from the fields B5 recorded, with the same `requestId` and frame. Then **rotation**: rotate staging's listener (8.5 steps 3 to 5) while one uplink is being refused, and send one more between steps 4 and 5 | The resend arrives about five minutes later with the same `requestId` and `callbackCount` 2 and is stored once, backdated 300 s; our replay answers 200 `duplicate`; which password the rotated resend carries, and whether the uplink sent with no listener is archived, lost or delivered (8.4) |
-| B7 | **Downlink**: a Nidd pigeon for the bench IMEI, claimed by a probe `HELLO`; a dashboard write whose `target_config` is exactly 1341 bytes, so the `SHADOW` frame is 1358; the `STATUS STORED` reply to a probe report; each frame's tag checked by the probe; then one 1359-byte message sent directly through the ThingSpace API from the runbook shell (owner-approved) | Raw bytes, not base64, at `recv`; every tag verifies; `Delivered` callbacks; end-to-end latency; the 1359-byte send refused, and how |
+| B7 | **Downlink**: a Nidd pigeon for the bench IMEI, claimed by a probe `HELLO`; a dashboard write whose `target_config` is exactly 1337 bytes at single-digit versions, so the `SHADOW` frame is 1358; the `STATUS STORED` reply to a probe report; each frame's tag checked by the probe; then one 1359-byte message sent directly through the ThingSpace API from the runbook shell (owner-approved) | Raw bytes, not base64, at `recv`; every tag verifies; `Delivered` callbacks; end-to-end latency; the 1359-byte send refused, and how |
 | B8 | PSM (the NCS defaults, 30-minute TAU and 60-second active time) and RAI: a downlink sent inside the active time arrives by paging; one sent while asleep reports `Queued`, then `Delivered` at the next wake, and how long after; whether `NRF_RAI_NO_DATA` is accepted on a raw socket | Section 14's release and wait rules hold |
 | B9 | Only if B1 says IP: default context IP, Non-IP on a new CID bound to its PDN; an HTTPS GET to `api-staging.pidgeiot.com` while the raw socket is open | FOTA over the IP PDN is possible, and IP downlink is not swallowed by the raw socket |
 | B10 | Twelve frames inside six minutes | Any drops or rate-control events |
@@ -1739,7 +1786,7 @@ every absence below is one the tail could have recorded.
 | B4 | partial | 17, 687, 1022, 1189 and 1273 bytes delivered whole; 1283, 1294, 1315 and 1357 refused by `send()` with `EINVAL` before any radio access; 1274 to 1282 untested. The uplink cap is 1273 (7.5, 14.1) |
 | B5 | pass | `POST`, `application/json`, `User-Agent: Verizon's callback service`, HTTP/1.1, TLS 1.3, the listener credentials in the body and no `Authorization` header. Six of the eight published addresses (3.87.163.45, 3.91.119.203 and 54.197.62.209 via IAD and EWR; 54.200.43.232, 35.165.205.14 and 34.216.81.234 via PDX); 137.117.33.109 and 168.62.173.153 never. None of 62 requests met Browser Integrity Check. The parse, the account gate and the ICCID line pin held on real bodies. Four `HELLO`s from four wakes got four distinct request ids. A callback is 564 bytes plus the frame's base64 |
 | B6 | fail | No resend after a 403 or a 503: one more attempt 1.15 to 1.69 s later (median 1.26 s, from another address in 5 of 17 pairs), then nothing for the three hours the tail stayed up (5.1, 12). Our replay of a stored callback answered 200 `duplicate`. An uplink sent one second after the listener was deleted never arrived. The rotation script's registration was refused 401 96 s after its login (8.5). After each re-registration ThingSpace sent a password other than the registered one for 13 min 55 s and 9 min 27 s (8.4) |
-| B7 | fail, fixed | Every frame dovecote built (four `SHADOW`, two `STATUS`) refused 400 `AdjacentNullCharacters`. Frames free of adjacent NULs, sent directly with dovecote's tag, arrived whole with raw bytes at `recv` and verified tags: a 14-byte `STATUS` 3.61 s after the API call, a 1358-byte `SHADOW` 4.20 s, a 54-byte one 1.62 s, each reported `Delivered`. 1359 bytes refused `TooLong`. Section 7's text header and hex tag remove every NUL |
+| B7 | fail, fixed, retest pass | Every frame dovecote built (four `SHADOW`, two `STATUS`) refused 400 `AdjacentNullCharacters`. Frames free of adjacent NULs, sent directly with dovecote's tag, arrived whole with raw bytes at `recv` and verified tags: a 14-byte `STATUS` 3.61 s after the API call, a 1358-byte `SHADOW` 4.20 s, a 54-byte one 1.62 s, each reported `Delivered`. 1359 bytes refused `TooLong`. Section 7's text header and hex tag remove every NUL. Retest on that codec (2026-09-25, staging `71642edb`): every frame dovecote built reached the device whole with its tag verifying, four `SHADOW`s of 58 to 1358 bytes (the largest carrying a 1337-byte `target_config` at single-digit versions) and four `STATUS STORED`; a 1338-byte write was refused 413. Two of three unsolicited pushes, made while the device held no connection, were lost (D13) |
 | B8 | partial | NCS's 30-minute TAU refused `+CME ERROR: 50`; 190 minutes granted with a 60 s active time (14.1). Inside the active time a `STATUS` arrived by paging 8.75 s after the API call. A downlink sent while the device slept went `Queued`, was not delivered at its next wake, and went `DeliveryFailed` 30 minutes later (its `maximumDeliveryTime` was not recorded; the probe's sender defaults to 600 s); another was never received across six wakes (D13). `RAI_NO_DATA` accepted on the raw socket |
 | B9 | pass | Both contexts active; an HTTPS GET over CID 0 beside the open raw socket answered (404, 737 bytes), and NIDD sends kept working |
 | B10 | pass at the carrier | Twelve 37-byte frames in six minutes: all accepted, one RRC connection each, each a callback 0.58 to 1.13 s later, no drop and no rate control. At the Worker 7 were stored and 5 refused 403 for a stale password and lost (8.4) |
@@ -1781,13 +1828,17 @@ shadow, and a report folded into the cache when it is confirmed
   symbol; its only intervals are `PIGEON_LOG_UPLOAD_MAX_INTERVAL_MS`, `:514`, and
   `PIGEON_WS_PING_INTERVAL_SEC`, `:869`), and it does not enforce the limit, because a paged
   downlink is an access the library cannot count, so a spacing guard would misjudge in both
-  directions. The `nidd_init` sample's 20-minute wake leaves one access an hour for a downlink;
-  15 minutes is the floor.
-- Release the radio with RAI half a second after the last frame of a wake, well inside Verizon's
-  5 seconds [NUG]. Never hold the connection for a reply: NB-IoT latency makes a round trip
-  through the SCEF, ThingSpace and dovecote too slow for that window, so replies arrive by paging
-  during the PSM active time. The network's buffering to the next wake [NIDD] did not deliver on
-  the bench (B8, D13), so a reply is sent while the device's own wake still holds it paged.
+  directions. The `nidd_init` sample's 20-minute wake leaves one access an hour for a paged
+  push, and a reply rides its uplink's connection and costs none; 15 minutes is the floor.
+- Hold the connection for the reply, then release it. Any frame from a claimed device that is
+  behind draws the owed `SHADOW`, and only a frame sent while the device holds the connection its
+  uplink opened reliably arrives: in the B7 retest every reply did, 1.1 to 4.7 s after that
+  connection came up, while two pushes to the idle device were paged 12.6 and 13.8 s after the
+  send, after ThingSpace had given up (D13). So the transport never requests release right after
+  a send. Once the reply owed to a `HELLO` or report has arrived it sets `NRF_RAI_NO_DATA`; after
+  a wake of telemetry alone, which draws a reply only while the device is behind, it leaves the
+  release to the network, which let a connection go 2.7 to 5.3 s after its last downlink and 3.5
+  to 4.6 s after a plain uplink: about Verizon's 5 seconds [NUG].
 - PSM and eDRX set explicitly at every init, and the grant checked. The modem keeps `AT+CPSMS`
   and `AT+CEDRXS` in NVM across images and a full erase (B8): the bench board came up on eDRX
   with a 163.84 s cycle and PSM off, left by an earlier image, and Phase 0 was granted a 0 s
@@ -1834,7 +1885,8 @@ config PIGEON_NIDD_CLAIM_KEY          # string, 32 hex: what the dashboard's rev
 config PIGEON_NIDD_DEDICATED_CID      # bool, default y: Non-IP on a new CID, IP left on the
                                       # default one; n only on a NIDD-only plan, which then has
                                       # no IP at all and cannot enable FOTA
-config PIGEON_NIDD_RAI_IDLE_MS        # int, default 500: quiet time before releasing the radio
+config PIGEON_NIDD_RAI_IDLE_MS        # int, default 500: quiet time after an owed reply before
+                                      # releasing the radio
 config PIGEON_NIDD_REPLY_WAIT_SEC     # int, default 30: pigeon_shadow_report's wait
 config PIGEON_NIDD_SHADOW_WAIT_SEC    # int, default 60: the first pigeon_shadow_get's wait
 config PIGEON_NIDD_THREAD_STACK_SIZE  # int, default 2048
@@ -1882,9 +1934,9 @@ lower; the telemetry batch body fits 1272 bytes; `CONFIG_PIGEON_SHADOW_CONFIG_MA
   thread; then `HELLO`. Log the IMEI once, so the operator can match it to the dashboard.
 - **Send** (`pigeon_nidd_send(type, body, len)`, one module mutex, bounded and answering `-EBUSY`
   as the other connectors do): frame into a static 1273-byte buffer, `SO_RAI` to `NRF_RAI_ONGOING`,
-  `zsock_send`, then re-arm a delayable work item that sets `NRF_RAI_NO_DATA` after
-  `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet. If B8 shows `NRF_RAI_NO_DATA` refused on a raw socket,
-  every send uses `NRF_RAI_LAST` instead.
+  `zsock_send`. When the reply owed to a `HELLO` or report arrives, a delayable work item sets
+  `NRF_RAI_NO_DATA` after `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet; a wake of telemetry alone
+  leaves the release to the network (14.1). B8 found `NRF_RAI_NO_DATA` accepted on a raw socket.
 - **Receive thread** (blocking `zsock_recv` into 1358 bytes): first the tag, the last 16
   characters, the hex of the first 8 bytes of HMAC-SHA256 over every byte before them keyed by
   `CONFIG_PIGEON_NIDD_CLAIM_KEY`, through PSA
@@ -2032,13 +2084,13 @@ last. No Postgres migration at any step.
 | D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired in intent, but the example worker is still deployed and public, with unauthenticated routes that read the listener password and send to any line (task 0.5) | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
 | D5 | A second UWS user for staging and dev | **Yes, if the account allows one**: then no staging mistake can spend production's lockout budget | One shared user: the latch still caps it at one strike per environment, two or three of Verizon's five |
 | D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download, and B9 proved it works beside the Non-IP PDN. The bench SIM's plan carries IP data, but 250 KB a month, less than one signed application image (319 to 489 KB), so field plans need a larger IP allowance for firmware | NIDD only: no remote firmware path at all; a bad build is a site visit |
-| D7 | Downlink delivery window (`maximumDeliveryTime`) | **86400 seconds**: covers seven PSM periods at the 190-minute TAU the bench was granted, and a push that lapses is re-sent on the next uplink | Longer lets superseded shadows pile up for a burst on wake; shorter than the device's sleep fails every push |
+| D7 | Downlink delivery window (`maximumDeliveryTime`) | **30 seconds**, for pushes and replies alike. A push that misses the device's connection is not worth holding: nothing buffered was seen delivered later (B8's `Queued` push failed 30 minutes on; the B7 retest's, sent with 86400 s, reached none of the device's next three connections in 31 minutes), and the device's next uplink brings it as a reply. A reply lands 0.5 to 4 s after the send call | Longer holds nothing that has been seen to arrive, and lets a stale `SHADOW` land after a newer one (harmless, 7.4). A day-long window with a day-long re-push, as first designed, left a device that sends only telemetry waiting a day for its config |
 | D8 | Confirm every converged shadow report with `STATUS STORED` | **Yes**: one extra downlink per shadow change keeps the library's rule that a report is the one confirmed call | No reply when converged: saves that downlink, and the device can no longer tell a stored report from a lost one |
 | D9 | Price NIDD | **No downlink metering in v1**, NIDD kept off the pricing and marketing pages until the carrier price is known, and the "every transport in the free tier" promise (`fancier/src/views/pricing.rs:544`) reviewed before NIDD is listed. Downlinks per organization are logged, so the decision will have data | Meter downlinks now, against a carrier price nobody has seen |
 | D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |
 | D11 | An automated check that `NiddService` still points at us | **Not in v1**: the runbook's step 2 at every deploy. Revisit when a paying NIDD device exists | Hourly from the existing cron: about 72 ThingSpace calls a day per environment, and the environment that does not hold the listener reads "drifted" forever |
 | D12 | Forged uplink by someone holding the listener password and posting from a Verizon address | **Accept for v1, with the line pin**: against such a forger the password is the only uplink secret (4.2), every API-credential holder can read it back [LIST], and it is rotated on any suspicion (8.4). They could store readings and shadow reports in a claimed pigeon whose IMEI and ICCID they know; they could never steer the device, whose downlink is signed | An uplink MAC keyed by the claim key plus a device sequence number on every frame: 12 more bytes an uplink and a replay window in `pigeon_nidd`, after which the claim key alone authenticates uplink and the listener password is only a filter |
-| D13 | A push to a sleeping device | **Re-send the owed `SHADOW` in answer to the device's next uplink**, which lands inside that wake's active time, instead of after the 86400 s window. B8: a push sent while the device slept went `Queued`, was not delivered at its next wake and failed 30 minutes later, while one sent inside the active time was paged in 8.75 s. Not implemented: the change is in `shadow_push_due` (`helpers/nidd.rs`), its truth table and 6.4 | Keep the rule: a sleeping device gets a new config a day late, or at its next shadow report |
+| D13 | A push to a device holding no connection | **Implemented: any uplink from a device that is behind draws the owed `SHADOW` as its reply**, sent while the connection that uplink opened is still up (`shadow_reply_due`, 6.4); a `DeliveryFailed` or `Queued` report marks the push pending, and a push unconfirmed 30 s after it went out counts as lapsed. B7 retest, PSM and eDRX off: two unsolicited pushes to the RRC-idle device were paged 12.6 and 13.8 s after the send began, after ThingSpace had reported `DeliveryFailed` "Backend service error" at 10.4 s and `Queued` "Buffered, device not reachable" at 11.1 s; the paged connections carried nothing, and the buffered push reached none of the next three connections. The third push, made while a telemetry uplink held the connection, arrived 2.77 s after the send began, and every reply to an uplink arrived whole with its tag verifying. B8: a push sent while the device slept went `Queued` and failed 30 minutes later | Keep a day-long re-push: a device that sends only telemetry waits a day for its config, or its next shadow report |
 
 ## 17. Numbers
 
@@ -2082,14 +2134,16 @@ time, so the question never arises for the uplink path. The shadow-report tail s
 the DO, a few times per shadow change.
 
 **Downlinks per event:** 0 per steady-state uplink; 2 per shadow change (the push, then
-`STATUS STORED`); 1 per boot (the `HELLO` reply); at most 1 an hour while paused or unclaimed; at
-most 1 a day for a device that never converges. Each downlink is one ThingSpace `send_nidd`, plus
-an OAuth token at most hourly and a session login after 15 idle minutes. NIDD carrier pricing is
-not published on any page read [NIDD][SEND][CB].
+`STATUS STORED`), 3 when the push misses and the next uplink's reply carries it; 1 per boot (the
+`HELLO` reply); at most 1 an hour while paused or unclaimed; at most 1 per uplink for a device
+that never converges, inside the connection that uplink opened. Each downlink is one ThingSpace
+`send_nidd`, plus an OAuth token at most hourly and a session login after 15 idle minutes. NIDD
+carrier pricing is not published on any page read [NIDD][SEND][CB].
 
 **Radio accesses an hour**, the number Verizon's guideline limits to four [NUG]: 3 at the sample's
-20-minute wake, leaving one for a downlink; 4 at the 15-minute floor, so a shadow change
-in that hour goes over briefly; 120 for a departure board at its 30-second default.
+20-minute wake, leaving one for a paged push; 4 at the 15-minute floor, where a push's page goes
+over briefly and a reply, riding its uplink's connection, does not; 120 for a departure board at
+its 30-second default.
 
 **Bytes per frame** (section 7): a four-key batch of three readings 294; ten keys, one reading 188
 batched or 149 flat; a shadow report 78; a `HELLO` 33; a `SHADOW` 58 to 1358 with its tag, 179 with
@@ -2140,9 +2194,11 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
 - **U12.** That any version of `/home/justin/pigeon-nidd/nidd-test` ever ran: no capture exists,
   and the tree on disk does not build against the NCS it pins (reader map `device-and-origin.md`
   1.5).
-- **U13.** Settled by B8: `NRF_RAI_NO_DATA` is accepted on a raw socket, and a downlink queued
-  while the device slept was not delivered at its next wake (D13). Whether a longer
-  `maximumDeliveryTime` changes that is untested.
+- **U13.** Settled by B8 and the B7 retest: `NRF_RAI_NO_DATA` is accepted on a raw socket, and a
+  downlink ThingSpace buffered was never delivered later, neither at B8's next wake nor, sent with
+  an 86400 s `maximumDeliveryTime`, on the retest's next three connections (D13). Whether paging an
+  RRC-idle device can take longer than ThingSpace's roughly 10 s attempt in general, or did on
+  this cell, is unmeasured beyond those two pushes.
 - **U14.** Whether a Hyperdrive connection opened from a Durable Object keeps it billed for up to 15
   minutes (section 17); the design keeps it off the uplink path either way.
 - **U15.** NIDD carrier pricing, per message or per byte.
