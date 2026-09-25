@@ -20,7 +20,14 @@
 #   - any of their pigeons' shadow report-back (pigeon_shadow.updated_at,
 #     gated on current_version > 0 or current_config being non-empty, since
 #     updated_at alone also bumps on a dashboard-initiated shadow write and
-#     would otherwise count a config push as a device connecting).
+#     would otherwise count a config push as a device connecting), or
+#   - any of their pigeons' last_billable_activity, which every ingest
+#     surface stamps (telemetry, shadow report-backs, logs, WS, CoAP, MQTT).
+#     It is the latest activity, not the first, so it can only move the
+#     earliest-known moment earlier, never later: when it falls inside the
+#     7-day window the first activity did too. It also survives the
+#     retention sweep that prunes telemetry history by plan, which would
+#     otherwise let an old activation drop out of the all-time line.
 # A user is "activated" if that moment falls within 7 days of their signup.
 #
 # Caveat: a user's devices are found via flocks.user_id = identities.id.
@@ -201,7 +208,8 @@ WITH first_connected AS (
            FROM pigeon_shadow ps
           WHERE ps.id = p.id
             AND (ps.current_version > 0
-                 OR (ps.current_config IS NOT NULL AND ps.current_config <> '{}'::jsonb)))
+                 OR (ps.current_config IS NOT NULL AND ps.current_config <> '{}'::jsonb))),
+        p.last_billable_activity
       )
     ) AS first_connected_at
   FROM flocks f
