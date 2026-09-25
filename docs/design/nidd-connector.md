@@ -1113,7 +1113,9 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
   is not billed.
 - A `SHADOW` whose `current_version` is below what the device applied tells the device its report
   was lost; it reports again, unless a report of that version still awaits its reply, since
-  telemetry sent before the report can draw the owed `SHADOW` before the report is stored.
+  telemetry sent before the report can draw the owed `SHADOW` before the report is stored, or the
+  same `SHADOW` brings a newer target, since the application reports that one instead and the
+  older report could otherwise be stored after it.
 
 ### 7.5 Budgets against one frame
 
@@ -1863,7 +1865,12 @@ shadow, and a report folded into the cache when it is confirmed
   about 1158 bytes with its NUL, at 8 it is 1323 and at 9 it is 1488. So the build refuses a key
   count whose flat body could exceed the frame, 8 keys included (14.2), and `pigeon_nidd.c` never
   has to split pre-built JSON.
-- `HELLO` at every boot, and again after an `UNCLAIMED 0` notice (at most hourly). Nothing polls.
+- `HELLO` at every boot, again ahead of the next billable frame when one drew no reply within
+  `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC`, and after an `UNCLAIMED 0` notice (at most hourly). Nothing
+  polls: the repeat rides the connection that billable frame opens. A lost reply is not only a
+  lost claim: a pigeon converged at boot gets its target only in the `SHADOW` answering `HELLO`
+  (`shadow_reply_due` needs a push outstanding), so without the repeat it would run its built-in
+  defaults for the whole boot while the dashboard showed it converged.
 - Every platform frame's tag verified against the built-in claim key; a frame that fails is
   dropped and logged.
 
@@ -1892,8 +1899,8 @@ config PIGEON_NIDD_DEDICATED_CID      # bool, default y: Non-IP on a new CID, IP
 config PIGEON_NIDD_RAI_IDLE_MS        # int, default 500, range 0 to 5000: quiet time after an
                                       # owed reply before releasing the radio
 config PIGEON_NIDD_REPLY_WAIT_SEC     # int, default 30, range 1 to 300: pigeon_shadow_report's wait
-config PIGEON_NIDD_SHADOW_WAIT_SEC    # int, default 60, range 1 to 600: the first
-                                      # pigeon_shadow_get's wait
+config PIGEON_NIDD_SHADOW_WAIT_SEC    # int, default 60, range 1 to 600: how long
+                                      # pigeon_shadow_get waits for a HELLO's reply
 config PIGEON_NIDD_THREAD_STACK_SIZE  # int, default 2048
 endif
 ```
@@ -1952,7 +1959,9 @@ the reason is given in place.
   Kconfig, so the library cannot re-default it; a NIDD application sets
   `CONFIG_LTE_PSM_REQ_RPTAU="00010011"`, 190 minutes (B8), and the library's documentation says
   so. A refused PSM or eDRX write is logged, naming the Kconfig to change, and never fails
-  `pigeon_init`: a power setting must not keep the device off the network. After registration,
+  `pigeon_init`: a power setting must not keep the device off the network. A refused PSM request
+  also turns PSM off (`lte_lc_psm_req(false)`), since a refused `AT+CPSMS` leaves whatever an
+  earlier image wrote (B8), such as the 0 s active time Phase 0 was granted. After registration,
   log the grant from `LTE_LC_EVT_PSM_UPDATE` and `LTE_LC_EVT_EDRX_UPDATE`, warning on a 0 s
   active time or an eDRX cycle longer than it, and log each RRC transition, since the carrier's
   guideline counts radio accesses.
@@ -1963,14 +1972,16 @@ the reason is given in place.
   (https://github.com/nrfconnect/sdk-nrfxlib/blob/main/nrf_modem/doc/sockets/raw_sockets.rst, read
   by the readers on 2026-09-24); `SO_KEEPOPEN` best-effort only, because the option exists on
   mfw_nrf91x1 2.0.1 and later and mfw_nrf9151-ntn but not on the nRF9160's mfw 1.3.7, where a
-  socket whose PDN went down answers `ENETDOWN` and must be closed; the receive thread; then
-  `HELLO`. Log the IMEI once, so the operator can match it to the dashboard. An open that fails,
-  at start or later, is retried by the next send after a backoff of 60 s doubling to 1920 s, since
-  activating a PDN is a radio access; a `HELLO` that fails at start is sent before the next
-  billable frame. The next send after the PDN went down (a `DEACTIVATED` or detach event, or a
-  send answering `ENETDOWN` or `ENETUNREACH`) re-activates it and re-creates the socket, and one
-  after `LTE_LC_EVT_PDN_CTX_DESTROYED` (lte_lc frees every non-default context at `CFUN=0`)
-  re-creates the context first.
+  socket whose PDN went down answers `ENETDOWN` and must be closed; `SO_SNDTIMEO` of 30 s, because
+  every send holds the module mutex and the modem's default is no timeout; the receive thread; then
+  `HELLO`. Log the IMEI once, so the operator can match it to the dashboard. An open that fails, at
+  start or later, is retried by the next send after a backoff of 60 s doubling to 1920 s, since
+  activating a PDN is a radio access; a `HELLO` that fails at start, or draws no reply within
+  `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC`, is sent before the next billable frame. The next send after
+  the PDN went down (a `DEACTIVATED` or detach event, or a send answering `ENETDOWN` or
+  `ENETUNREACH`) re-activates it and re-creates the socket, and one after
+  `LTE_LC_EVT_PDN_CTX_DESTROYED` (lte_lc frees every non-default context at `CFUN=0`) re-creates the
+  context first.
 - **Send** (one module mutex, bounded and answering `-EBUSY` as the other connectors do): refuse
   a billable frame while unclaimed or paused before any radio access, send a `HELLO` still due
   first, frame into a static 1273-byte buffer, `SO_RAI` to `RAI_ONGOING` (the socket layer's name
@@ -1995,7 +2006,8 @@ the reason is given in place.
   report confirms it, as does `STATUS STORED` with an argument at or above it, so a late
   `STORED` for an older report cannot confirm a newer one. A `current_version` below the version
   this boot reported means the report was lost: report again, unless it is still inside its
-  wait. `STATUS PAUSED s` makes billable sends answer `-EAGAIN` for `s` seconds, capped at 86400;
+  wait or the same `SHADOW` brought a newer target, whose report the application sends instead
+  (7.4). `STATUS PAUSED s` makes billable sends answer `-EAGAIN` for `s` seconds, capped at 86400;
   a newer `PAUSED` replaces the hold and `PAUSED 0` ends it. `STATUS UNCLAIMED 0` sends one
   `HELLO` if none went in the last hour and leaves a waiting report pending, since the `HELLO`
   re-claims and the application reports again at its next wake. `STATUS UNCLAIMED 1`, the answer
@@ -2010,14 +2022,14 @@ the reason is given in place.
 | `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`; `-EACCES` |
 | `pigeon_transport_upload_logs` | Not defined: `PIGEON_LOG_UPLOAD` cannot be enabled on NIDD, so nothing references it (the CoAP connector's precedent) | links nowhere |
 | `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` (re-report next wake, harmless); `-EAGAIN`; `-EACCES`; `-EDEADLK` from the event callback |
-| `pigeon_shadow_get` | A copy of the cached target; the first call after start waits up to `SHADOW_WAIT` for the `HELLO` reply. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
+| `pigeon_shadow_get` | A copy of the cached target; with none cached, a call waits only while a `HELLO`'s reply is owed, up to `SHADOW_WAIT` after that `HELLO` (an `UNCLAIMED 1` ends the wait), and otherwise answers `-EAGAIN` at once, so a refused key or an oversize target does not stall every wake. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
 
 Static RAM at defaults, measured on the `nidd_init` build: a 1273-byte send buffer and a
 1358-byte receive buffer, three 320-byte configs (the cached target, the last report, and
 `pigeon_shadow_get`'s copy, which keeps "valid until the next call" true while the receive thread
-rewrites the cache), a 2048-byte stack and about 450 bytes of thread, lock and state: 6112
-bytes.
+rewrites the cache), a 2048-byte stack and about 410 bytes of thread, lock and state: 6053
+bytes, the sum of every `pigeon_nidd*` data and bss symbol by `nm -S`.
 
 `CONFIG_PIGEON_WATCHDOG` is fed only by a delivered flush, so a NIDD application that enables it
 needs a timeout above its wake interval plus any `PAUSED` hold; the library cannot see the

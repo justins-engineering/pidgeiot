@@ -3281,10 +3281,10 @@ contract a NIDD device follows; the surface has no HTTP route of its own.
   and built into the firmware. Until the device has claimed its pigeon, dovecote stores nothing it
   sends and sends it nothing but a rate-limited `STATUS UNCLAIMED` notice.
 - **`HELLO` claims.** The device sends `HELLO`, the key as 32 lowercase hex characters, at every
-  boot and again when told it is unclaimed. A match, compared in constant time, marks the pigeon
-  claimed and pins the line: the ICCID, or failing that the IMSI, that the callback names. A later
-  frame from a different line is dropped as if unclaimed, without clearing the claim; a good
-  `HELLO` from the new line moves the pin, which is how a SIM swap recovers.
+  boot, again when one drew no reply, and when told it is unclaimed. A match, compared in constant
+  time, marks the pigeon claimed and pins the line: the ICCID, or failing that the IMSI, that the
+  callback names. A later frame from a different line is dropped as if unclaimed, without clearing
+  the claim; a good `HELLO` from the new line moves the pin, which is how a SIM swap recovers.
 - **The key signs every platform frame** (see [NIDD frames](#nidd-frames)), so only dovecote can
   steer the device, even against another holder of the account's ThingSpace API credentials.
   The key crosses the carrier in the clear once per boot. That opens nothing by itself: a forged
@@ -3445,9 +3445,10 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 - **A report always gets exactly one reply**, `SHADOW` or `STATUS STORED`. A report is confirmed
   by that `STATUS STORED`, or by a `SHADOW` whose `current_version` is at least the version
   reported. A `SHADOW` whose `current_version` is below what the device applied means the report
-  was lost, and the device reports again, unless that report still awaits its reply: telemetry
-  sent before the report can draw the owed `SHADOW` first. Re-sending a report is harmless: an
-  identical report is neither rewritten nor billed.
+  was lost, and the device reports again, unless that report still awaits its reply (telemetry
+  sent before the report can draw the owed `SHADOW` first) or the same `SHADOW` brings a newer
+  target, whose report follows instead. Re-sending a report is harmless: an identical report is
+  neither rewritten nor billed.
 - **Frames can arrive out of order.** Each is its own callback. Readings carry their own
   `age_secs`, resolved against the time the callback arrives.
 - **Repeats are stored once.** ThingSpace retries a refused callback once, about a second later,
@@ -3517,7 +3518,11 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   accepted, granted with a 60-second active time; log what the network grants. Keep eDRX off,
   or its cycle shorter than the active time: a device in eDRX is paged only on its paging
   occasions, and a 163.84-second cycle can leave a 60-second active time with none.
-- **`HELLO` at every boot**, and again after a `STATUS UNCLAIMED 0`, at most hourly.
+- **`HELLO` at every boot**, again ahead of the next billable frame when one drew no reply within
+  the time a reply takes to arrive (30 seconds by the `pigeon` library's default), and after a
+  `STATUS UNCLAIMED 0`, at most hourly. A converged pigeon's target comes only in the `SHADOW`
+  answering its `HELLO`, so a device that loses that reply and never repeats the `HELLO` runs
+  without its target until a dashboard write.
 - **Verify every platform frame's tag** against the built-in claim key; drop and log one that
   fails.
 
