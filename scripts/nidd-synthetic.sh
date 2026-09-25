@@ -654,6 +654,14 @@ expect "the shadow is converged at 1" "1 1" \
 expect "nothing is owed" 0 "$(nidd_state "$pigeon" awaiting_version)"
 note_log "$m"
 
+m=$(mark)
+r=$(rid s8d)
+frame 01 '{"temp_c":"20.0"}'
+uplink "TELEMETRY from the converged device" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the telemetry is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect_no_log "and, nothing being owed, draws no reply" "$m" "nidd_dl .*pigeon=$pigeon"
+note_log "$m"
+
 step 9 "dashboard writes"
 m=$(mark)
 api a PUT "/pigeons/$pigeon/shadow" '{"target_config":{"telemetry_interval":600}}'
@@ -673,8 +681,8 @@ expect "a second write inside 900 s answers 200 at target_version 3" "200 3" \
   "$status $(jq -r .target_version "$resp")"
 expect_log "and, the first push never having left, plans a SHADOW again" "$m" \
   "nidd_dl kind=shadow .*pigeon=$pigeon"
-note "  In an environment that can send, the first push stays recorded and this write is held;"
-note "  shadow_push_due_truth_table covers the hold, and staging observes it (tier 2)."
+note "  In an environment that can send, the first push stays recorded and this write is held"
+note "  for the next uplink to carry; shadow_push_and_reply_truth_table covers the hold."
 note_log "$m"
 
 m=$(mark)
@@ -690,6 +698,26 @@ api a GET "/pigeons/$pigeon/shadow"
 expect "and changes nothing" 3 "$(jq -r .target_version "$resp")"
 api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"pad\":\"$(pad 1327)\"}}"
 expect "a 1337-byte target_config is accepted" "200 4" "$status $(jq -r .target_version "$resp")"
+expect_log "and plans its SHADOW" "$m" "nidd_dl kind=shadow .*pigeon=$pigeon"
+note_log "$m"
+
+# A delivery report that the push missed marks it pending, and the device's next uplink, which
+# finds it connected, carries it as the reply.
+m=$(mark)
+r=$(rid s9r)
+report_body niddMTDeliveryResponse DeliveryFailed "Backend service error" "$imei_a" "$iccid2" "$r"
+callback "(DeliveryFailed while version 4 is owed)"
+expect "a missed delivery answers 200" 200 "$status"
+expect_log "and marks the owed push pending" "$m" \
+  "nidd_cb kind=delivery outcome=pending status=DeliveryFailed .*pigeon=$pigeon request=$r"
+expect "pigeon_nidd: version 4 owed, its push pending" "4|0" \
+  "$(nidd_state "$pigeon" "awaiting_version, pushed_version")"
+r=$(rid s9t)
+frame 01 '{"temp_c":"20.5"}'
+uplink "TELEMETRY while version 4 is owed" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the telemetry is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect_log "and its reply is the owed SHADOW" "$m" \
+  "nidd_dl kind=shadow outcome=unavailable reason=not_configured pigeon=$pigeon"
 note_log "$m"
 
 step 10 "token refresh"
