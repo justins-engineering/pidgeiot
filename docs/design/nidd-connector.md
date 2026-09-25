@@ -1761,6 +1761,18 @@ shadow, and a report folded into the cache when it is confirmed
   5 seconds [NUG]. Never hold the connection for a reply: NB-IoT latency makes a round trip
   through the SCEF, ThingSpace and dovecote too slow for that window, so replies arrive by paging
   during the PSM active time, or are buffered by the network to the next wake [NIDD].
+- PSM and eDRX set explicitly at every init, and the grant checked. The modem keeps `AT+CPSMS`
+  and `AT+CEDRXS` in NVM across images and a full erase (B8): the bench board came up on eDRX
+  with a 163.84 s cycle and PSM off, left by an earlier image, and Phase 0 was granted a 0 s
+  active time for a PSM request (12 hours, 0 s) retained the same way. So the transport writes
+  both before attaching and never inherits them. NCS's default request, a 30-minute TAU, was
+  refused `+CME ERROR: 50` on Verizon NB-IoT, as were 1, 2 and 3 hours; a bare `AT+CPSMS=1` and
+  190 minutes (`00010011`) were accepted, and the network granted a TAU of 11400 s with a 60 s
+  active time. The transport logs the granted TAU and active time and warns on an active time of
+  0, which leaves no window in which a downlink can page the device. eDRX is written off unless
+  the application asks for it: a device in eDRX is paged only on its paging occasions, and with
+  a 163.84 s cycle a 60 s active time may hold none, so a push sent inside it would never be
+  paged. An application that enables eDRX keeps its cycle shorter than the active time.
 - Uplink frames capped at 1273 bytes, the largest the bench modem accepted (B4, mfw 1.3.7); it
   refused 1283 in `send()` with `EINVAL` before any radio access, and 1274 to 1282 are untested,
   so 1273 is the cap until a modem firmware measures more. dovecote accepts up to 1358 either way.
@@ -1785,6 +1797,8 @@ config PIGEON_CONNECTOR_NIDD
   depends on NRF_MODEM_LIB && LTE_LINK_CONTROL
   select LTE_LC_PDN_MODULE
   select LTE_LC_RAI_MODULE
+  select LTE_LC_PSM_MODULE
+  select LTE_LC_EDRX_MODULE
   select PSA_WANT_ALG_HMAC
   imply LTE_RAI_REQ
 
@@ -1826,7 +1840,13 @@ lower; the telemetry batch body fits 1272 bytes; `CONFIG_PIGEON_SHADOW_CONFIG_MA
 
 - **Configure** (from `pigeon_init`, modem offline): with a dedicated CID, `lte_lc_pdn_ctx_create`,
   else CID 0; then `lte_lc_pdn_ctx_configure(cid, <APN from the endpoint>, LTE_LC_PDN_FAM_NONIP,
-  NULL)`.
+  NULL)`. Then PSM and eDRX, always written (14.1):
+  `lte_lc_psm_param_set(CONFIG_LTE_PSM_REQ_RPTAU, CONFIG_LTE_PSM_REQ_RAT)` and
+  `lte_lc_psm_req(true)`, and `lte_lc_edrx_req(IS_ENABLED(CONFIG_LTE_EDRX_REQ))`, which writes
+  eDRX off unless the application requested it. NCS's `CONFIG_LTE_PSM_REQ_RPTAU` default of 30
+  minutes was refused (B8), so a NIDD build sets it to `"00010011"`, 190 minutes, and the library's
+  documentation says so. After registration, log the grant from `LTE_LC_EVT_PSM_UPDATE` and
+  `LTE_LC_EVT_EDRX_UPDATE`, warning on a 0 s active time or an eDRX cycle longer than it.
 - **Start** (after registration): `lte_lc_pdn_activate` for a dedicated CID; `lte_lc_pdn_id_get`;
   `zsock_socket(AF_PACKET, SOCK_RAW, 0)`; `SO_BINDTOPDN`, because a raw socket on a shared PDN
   intercepts downlink meant for other sockets
@@ -1896,14 +1916,14 @@ a way to address a downlink that is not a shadow; neither is in v1 (decision D10
 ### 14.5 Sample and estimate
 
 `pigeon-examples/nidd_init` (NCS workspace only, `circuitdojo_feather/nrf9160/ns`; never the
-nRF9151, which Verizon does not support): NB-IoT only,
-PSM at the NCS defaults, RAI, batched telemetry, a 20-minute wake that records readings and
-flushes (which is what keeps the sample inside 14.1's four accesses an hour), the claim key in
-`prj.local.conf`, and a `PIGEON_EVENT_SHADOW_UPDATE` handler that applies
-and reports. The probe of 13.2 stays beside it as the carrier-side diagnostic. `~/pigeon`'s docs
-gain the connector, and the frame table of section 7 with `docs/api.md` named as the authority, the
-way `loft` names it for `CoapPskLookup`. Estimate: 20 to 32 hours for the library, 4 to 8 for the
-sample, 8 to 16 on the bench.
+nRF9151, which Verizon does not support): NB-IoT only, PSM requested at 190 minutes and a 60-second
+active time (NCS's default 30 minutes was refused, B8) with eDRX written off, RAI, batched
+telemetry, a 20-minute wake that records readings and flushes (which is what keeps the sample inside
+14.1's four accesses an hour), the claim key in `prj.local.conf`, and a `PIGEON_EVENT_SHADOW_UPDATE`
+handler that applies and reports. The probe of 13.2 stays beside it as the carrier-side diagnostic.
+`~/pigeon`'s docs gain the connector, and the frame table of section 7 with `docs/api.md` named as
+the authority, the way `loft` names it for `CoapPskLookup`. Estimate: 20 to 32 hours for the
+library, 4 to 8 for the sample, 8 to 16 on the bench.
 
 ## 15. Sequencing and work breakdown
 
@@ -1985,7 +2005,7 @@ last. No Postgres migration at any step.
 | D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired in intent, but the example worker is still deployed and public, with unauthenticated routes that read the listener password and send to any line (task 0.5) | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
 | D5 | A second UWS user for staging and dev | **Yes, if the account allows one**: then no staging mistake can spend production's lockout budget | One shared user: the latch still caps it at one strike per environment, two or three of Verizon's five |
 | D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download | NIDD only: no remote firmware path at all; a bad build is a site visit |
-| D7 | Downlink delivery window (`maximumDeliveryTime`) | **86400 seconds**: covers 48 PSM periods at the NCS defaults, and a push that lapses is re-sent on the next uplink | Longer lets superseded shadows pile up for a burst on wake; shorter than the device's sleep fails every push |
+| D7 | Downlink delivery window (`maximumDeliveryTime`) | **86400 seconds**: covers seven PSM periods at the 190-minute TAU the bench was granted, and a push that lapses is re-sent on the next uplink | Longer lets superseded shadows pile up for a burst on wake; shorter than the device's sleep fails every push |
 | D8 | Confirm every converged shadow report with `STATUS STORED` | **Yes**: one extra downlink per shadow change keeps the library's rule that a report is the one confirmed call | No reply when converged: saves that downlink, and the device can no longer tell a stored report from a lost one |
 | D9 | Price NIDD | **No downlink metering in v1**, NIDD kept off the pricing and marketing pages until the carrier price is known, and the "every transport in the free tier" promise (`fancier/src/views/pricing.rs:544`) reviewed before NIDD is listed. Downlinks per organization are logged, so the decision will have data | Meter downlinks now, against a carrier price nobody has seen |
 | D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |

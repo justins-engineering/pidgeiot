@@ -3495,6 +3495,11 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   the last byte; release it with RAI shortly after the last frame of a wake. Never hold the
   connection for a reply: a round trip through the SCEF, ThingSpace and dovecote is too slow for
   that window, so replies arrive by paging during the PSM active time, or at the next wake.
+- **Set PSM and eDRX at every boot.** The modem keeps both across firmware images, so a device
+  never inherits them. On Verizon NB-IoT a 30-minute periodic TAU was refused and 190 minutes
+  accepted, granted with a 60-second active time; log what the network grants. Keep eDRX off,
+  or its cycle shorter than the active time: a device in eDRX is paged only on its paging
+  occasions, and a 163.84-second cycle can leave a 60-second active time with none.
 - **`HELLO` at every boot**, and again after a `STATUS UNCLAIMED 0`, at most hourly.
 - **Verify every platform frame's tag** against the built-in claim key; drop and log one that
   fails.
