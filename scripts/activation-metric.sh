@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Weekly activation metric: signup, then first device connected within 7
-# days. This is the Phase 0 growth prerequisite (growth-strategy doc,
-# "define and instrument the activation metric") - a cheap read against our
-# own Postgres, not a new analytics project.
+# Weekly activation metric: signup, then first device connected. This is
+# the Phase 0 growth prerequisite (growth-strategy doc, "define and
+# instrument the activation metric") - a cheap read against our own
+# Postgres, not a new analytics project.
 #
 # "Signup" is every row in the Kratos identities table whose address is not
 # ours (@jes.contact, the founders' accounts, and @pidgeiot.com, the domain the
@@ -28,7 +28,13 @@
 #     7-day window the first activity did too. It also survives the
 #     retention sweep that prunes telemetry history by plan, which would
 #     otherwise let an old activation drop out of the all-time line.
-# A user is "activated" if that moment falls within 7 days of their signup.
+# Activation is reported at three horizons: within 7 days of signup (the
+# "it just worked" signal), within 30 days (the one to watch: the first
+# device here is hardware that has to be bought, built and configured, so a
+# week is short), and ever. The median days from signup to first device is
+# reported over everyone who activated, since that is the number the docs
+# and samples can move. A week younger than a horizon is provisional for
+# that horizon: its window has not closed.
 #
 # Caveat: a user's devices are found via flocks.user_id = identities.id.
 # If Kratos identities are ever re-imported under new UUIDs (see CLAUDE.md's
@@ -41,7 +47,7 @@
 #   scripts/activation-metric.sh [weeks] [--csv]
 #
 # weeks defaults to 12. Run it weekly (Monday morning is fine) and log the
-# all-time signups/activated/rate line plus the freshest week's row.
+# all-time line plus the freshest week's row.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -220,8 +226,13 @@ per_user AS (
   SELECT
     s.identity_id,
     s.created_at,
+    fc.first_connected_at,
+    extract(epoch FROM (fc.first_connected_at - s.created_at)) / 86400 AS days_to_device,
     (fc.first_connected_at IS NOT NULL
-      AND fc.first_connected_at <= s.created_at + interval '7 days') AS activated
+      AND fc.first_connected_at <= s.created_at + interval '7 days') AS activated_7d,
+    (fc.first_connected_at IS NOT NULL
+      AND fc.first_connected_at <= s.created_at + interval '30 days') AS activated_30d,
+    (fc.first_connected_at IS NOT NULL) AS activated_ever
   FROM signups s
   LEFT JOIN first_connected fc ON fc.user_id = s.identity_id
 ),
@@ -237,7 +248,11 @@ weekly AS (
   SELECT
     w.week_start,
     count(u.identity_id) AS signups,
-    count(u.identity_id) FILTER (WHERE u.activated) AS activated_within_7d
+    count(u.identity_id) FILTER (WHERE u.activated_7d) AS activated_7d,
+    count(u.identity_id) FILTER (WHERE u.activated_30d) AS activated_30d,
+    count(u.identity_id) FILTER (WHERE u.activated_ever) AS activated_ever,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY u.days_to_device)
+      FILTER (WHERE u.activated_ever) AS median_days
   FROM weeks w
   LEFT JOIN per_user u
     ON date_trunc('week', u.created_at AT TIME ZONE 'utc') = w.week_start
@@ -247,17 +262,31 @@ all_time AS (
   SELECT
     NULL::timestamp AS week_start,
     count(*) AS signups,
-    count(*) FILTER (WHERE activated) AS activated_within_7d
+    count(*) FILTER (WHERE activated_7d) AS activated_7d,
+    count(*) FILTER (WHERE activated_30d) AS activated_30d,
+    count(*) FILTER (WHERE activated_ever) AS activated_ever,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY days_to_device)
+      FILTER (WHERE activated_ever) AS median_days
   FROM per_user
 )
 SELECT
   COALESCE(to_char(week_start, 'YYYY-MM-DD'), 'all-time') AS week_start,
   signups,
-  activated_within_7d,
+  activated_7d,
+  activated_30d,
+  activated_ever,
   CASE
     WHEN signups = 0 THEN 'n/a'
-    ELSE round(activated_within_7d::numeric / signups * 100, 1) || '%'
-  END AS activation_rate
+    ELSE round(activated_7d::numeric / signups * 100, 1) || '%'
+  END AS rate_7d,
+  CASE
+    WHEN signups = 0 THEN 'n/a'
+    ELSE round(activated_30d::numeric / signups * 100, 1) || '%'
+  END AS rate_30d,
+  CASE
+    WHEN median_days IS NULL THEN 'n/a'
+    ELSE round(median_days::numeric, 1)::text
+  END AS median_days_to_device
 FROM (
   SELECT * FROM weekly
   UNION ALL
