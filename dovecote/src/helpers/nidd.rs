@@ -5,7 +5,9 @@
 //! capsules, and docs/api.md is the authority both sides follow. Everything except `sign_frame`,
 //! which runs on WebCrypto, is exercised by the host-target tests.
 
-use capsules::{PigeonShadow, TelemetryBatch, TelemetryReading, TelemetryReportBody};
+use capsules::{
+  NIDD_MAX_FRAME_BYTES, PigeonShadow, TelemetryBatch, TelemetryReading, TelemetryReportBody,
+};
 use futures::future::{Either, select};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -16,11 +18,12 @@ use std::time::Duration;
 pub const FRAME_TELEMETRY: u8 = 0x01;
 /// Device to platform: a shadow report body, exactly as the HTTPS report route takes it.
 pub const FRAME_SHADOW_REPORT: u8 = 0x02;
-/// Device to platform: the 16 raw claim-key bytes, sent once per boot.
+/// Device to platform: the claim key as 32 lowercase hex characters, sent once per boot.
 pub const FRAME_HELLO: u8 = 0x04;
-/// Platform to device: `target_version`, `current_version`, raw `target_config`, tag.
+/// Platform to device: a header of `target_version` and `current_version`, the raw
+/// `target_config`, then the tag.
 pub const FRAME_SHADOW: u8 = 0x81;
-/// Platform to device: a status code, a `u32` argument, tag.
+/// Platform to device: a header of the status code and its argument, then the tag.
 pub const FRAME_STATUS: u8 = 0x82;
 
 /// `STATUS` code: the report was stored; the argument is the version stored.
@@ -39,10 +42,14 @@ pub const HEADER_INGEST: &str = "X-Nidd-Ingest";
 /// The line the uplink came from, when the callback named one.
 pub const HEADER_LINE: &str = "X-Nidd-Line";
 
-/// Bytes of HMAC-SHA256 that end every platform frame.
-pub const NIDD_TAG_BYTES: usize = 8;
-/// Bytes in a claim key, which a `HELLO` carries raw.
+/// Lowercase hex characters that end every platform frame: the first 8 bytes of HMAC-SHA256.
+pub const NIDD_TAG_CHARS: usize = 16;
+/// Bytes in a claim key, which a `HELLO` carries as twice as many hex characters.
 pub const NIDD_CLAIM_KEY_BYTES: usize = 16;
+/// Longest `SHADOW` header: two ten-digit versions, the space between them and the newline.
+const NIDD_SHADOW_HEADER_MAX: usize = 22;
+/// Longest `STATUS` header: a three-digit code, a ten-digit argument, the space and the newline.
+const NIDD_STATUS_HEADER_MAX: usize = 15;
 /// Largest callback body the route parses: over three times the largest legitimate one.
 pub const NIDD_CALLBACK_MAX_BYTES: usize = 8192;
 /// How long a `PAUSED` notice asks the device to hold its billable sends.
@@ -279,7 +286,7 @@ pub enum Uplink<'a> {
   Telemetry(&'a [u8]),
   /// A shadow report body.
   ShadowReport(&'a [u8]),
-  /// A `HELLO`'s body, meant to be the 16 claim-key bytes.
+  /// A `HELLO`'s body, meant to be the claim key's 32 hex characters.
   Hello(&'a [u8]),
   /// A type this build does not know, including the reserved log upload.
   Unknown(u8),
@@ -303,38 +310,85 @@ pub fn is_billable(frame_type: u8) -> bool {
   matches!(frame_type, FRAME_TELEMETRY | FRAME_SHADOW_REPORT)
 }
 
-/// An unsigned `SHADOW` frame: the two versions little-endian, then the raw `target_config`.
+// ThingSpace refuses a downlink holding two adjacent NUL bytes, so every platform frame is
+// NUL-free by construction: a nonzero type byte, a header of ASCII digits, a space and a newline,
+// JSON as serde_json writes it (every control character escaped), and a hex tag.
+
+/// A version as a header carries it. Only a misbehaving device reports a negative one, sent as 0.
+fn header_version(version: i32) -> u32 {
+  u32::try_from(version).unwrap_or(0)
+}
+
+/// Appends a header: two decimal integers, one space between them and a newline after.
+fn push_header(frame: &mut Vec<u8>, first: u32, second: u32) {
+  frame.extend_from_slice(first.to_string().as_bytes());
+  frame.push(b' ');
+  frame.extend_from_slice(second.to_string().as_bytes());
+  frame.push(b'\n');
+}
+
+/// Digits in `value` written in decimal.
+fn decimal_len(value: u32) -> usize {
+  value.checked_ilog10().map_or(1, |log| log as usize + 1)
+}
+
+/// The largest `target_config` one `SHADOW` frame carries at these versions: the frame less its
+/// type byte, header and tag. Never below `capsules::NIDD_MAX_TARGET_CONFIG_BYTES`, the cap at
+/// ten-digit versions.
+pub fn shadow_config_cap(target_version: i32, current_version: i32) -> usize {
+  let header =
+    decimal_len(header_version(target_version)) + decimal_len(header_version(current_version)) + 2;
+  NIDD_MAX_FRAME_BYTES - 1 - header - NIDD_TAG_CHARS
+}
+
+/// An unsigned `SHADOW` frame: the type byte, the versions header, then the raw `target_config`.
 pub fn shadow_frame(shadow: &PigeonShadow) -> Vec<u8> {
   let config = shadow.target_config.clone().into_inner();
-  let mut frame = Vec::with_capacity(9 + config.len() + NIDD_TAG_BYTES);
+  let mut frame = Vec::with_capacity(1 + NIDD_SHADOW_HEADER_MAX + config.len() + NIDD_TAG_CHARS);
   frame.push(FRAME_SHADOW);
-  frame.extend_from_slice(&shadow.target_version.to_le_bytes());
-  frame.extend_from_slice(&shadow.current_version.to_le_bytes());
+  push_header(
+    &mut frame,
+    header_version(shadow.target_version),
+    header_version(shadow.current_version),
+  );
   frame.extend_from_slice(config.as_bytes());
   frame
 }
 
-/// An unsigned `STATUS` frame.
+/// An unsigned `STATUS` frame: the type byte and a header of the code and its argument.
 pub fn status_frame(code: u8, arg: u32) -> Vec<u8> {
-  let mut frame = Vec::with_capacity(6 + NIDD_TAG_BYTES);
+  let mut frame = Vec::with_capacity(1 + NIDD_STATUS_HEADER_MAX + NIDD_TAG_CHARS);
   frame.push(FRAME_STATUS);
-  frame.push(code);
-  frame.extend_from_slice(&arg.to_le_bytes());
+  push_header(&mut frame, u32::from(code), arg);
   frame
 }
 
 /// Appends the frame's tag: the first 8 bytes of HMAC-SHA256 over the frame, keyed by the claim
-/// key. The device drops a platform frame whose tag does not verify.
+/// key, as 16 lowercase hex characters. The device drops a platform frame whose tag does not
+/// verify.
 pub async fn sign_frame(
   key: &[u8; NIDD_CLAIM_KEY_BYTES],
   mut frame: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
   let mac = super::stripe_webhook::hmac_sha256(key, &frame).await?;
-  let Some(tag) = mac.get(..NIDD_TAG_BYTES) else {
+  push_tag(&mut frame, &mac)?;
+  Ok(frame)
+}
+
+/// Appends the first 8 bytes of `mac` as hex, the half of `sign_frame` the host tests reach.
+fn push_tag(frame: &mut Vec<u8>, mac: &[u8]) -> Result<(), String> {
+  let Some(tag) = mac.get(..NIDD_TAG_CHARS / 2) else {
     return Err("HMAC shorter than a frame tag".into());
   };
-  frame.extend_from_slice(tag);
-  Ok(frame)
+  for &byte in tag {
+    frame.extend_from_slice(&hex_pair(byte));
+  }
+  Ok(())
+}
+
+/// The claim key a `HELLO` presents: its body as 32 hex characters. Anything else is `None`.
+pub fn hello_key(body: &[u8]) -> Option<[u8; NIDD_CLAIM_KEY_BYTES]> {
+  std::str::from_utf8(body).ok().and_then(claim_key_bytes)
 }
 
 /// A claim key's bytes from its stored 32-character hex form.
@@ -361,6 +415,14 @@ fn hex_value(digit: u8) -> Option<u8> {
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
+/// A byte as two lowercase hex digits.
+fn hex_pair(byte: u8) -> [u8; 2] {
+  [
+    HEX_DIGITS[usize::from(byte >> 4)],
+    HEX_DIGITS[usize::from(byte & 0x0f)],
+  ]
+}
+
 /// The de-duplication key of one uplink: the request id and the first 16 hex characters of the
 /// frame's SHA-256. A ThingSpace resend repeats both halves.
 pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
@@ -368,9 +430,8 @@ pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
   let mut key = String::with_capacity(request_id.len() + 17);
   key.push_str(request_id);
   key.push(':');
-  for byte in &digest[..8] {
-    key.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-    key.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+  for &byte in &digest[..8] {
+    key.extend(hex_pair(byte).map(char::from));
   }
   key
 }
@@ -781,34 +842,153 @@ mod tests {
     assert!(!is_billable(FRAME_HELLO) && !is_billable(0x03));
   }
 
+  /// The fixture key docs/api.md's exact bytes use: 16 zero bytes, never a real key.
+  const FIXTURE_KEY: [u8; NIDD_CLAIM_KEY_BYTES] = [0; NIDD_CLAIM_KEY_BYTES];
+
+  /// HMAC-SHA256 on the host target, so the tests reach a whole signed frame; dovecote itself
+  /// signs through WebCrypto.
+  fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut block = [0u8; 64];
+    block[..key.len()].copy_from_slice(key);
+    let pad = |byte: u8| block.map(|k| k ^ byte);
+    let inner = Sha256::new()
+      .chain_update(pad(0x36))
+      .chain_update(message)
+      .finalize();
+    Sha256::new()
+      .chain_update(pad(0x5c))
+      .chain_update(inner)
+      .finalize()
+      .to_vec()
+  }
+
+  fn signed(key: &[u8; NIDD_CLAIM_KEY_BYTES], mut frame: Vec<u8>) -> Vec<u8> {
+    let mac = hmac_sha256(key, &frame);
+    push_tag(&mut frame, &mac).unwrap();
+    frame
+  }
+
+  fn shadow(target_version: i32, current_version: i32, config: &str) -> PigeonShadow {
+    PigeonShadow {
+      target_version,
+      current_version,
+      target_config: JsonString::new(config.to_string()).unwrap(),
+      ..Default::default()
+    }
+  }
+
+  #[test]
+  fn the_host_hmac_matches_rfc_4231() {
+    // RFC 4231 test case 2.
+    let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+    let hex: Vec<u8> = mac.iter().flat_map(|&b| hex_pair(b)).collect();
+    assert_eq!(
+      hex,
+      b"5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+  }
+
   #[test]
   fn the_shadow_frame_matches_the_documented_bytes() {
-    let shadow = PigeonShadow {
-      target_version: 8,
-      current_version: 7,
-      target_config: JsonString::new(r#"{"telemetry_interval":900,"log":true}"#.to_string())
-        .unwrap(),
-      ..Default::default()
-    };
-    let mut expected = vec![0x81, 0x08, 0, 0, 0, 0x07, 0, 0, 0];
+    let frame = shadow_frame(&shadow(8, 7, r#"{"telemetry_interval":900,"log":true}"#));
+    let mut expected = b"\x818 7\n".to_vec();
     expected.extend_from_slice(br#"{"telemetry_interval":900,"log":true}"#);
-    let frame = shadow_frame(&shadow);
-    assert_eq!(frame.len(), 46);
     assert_eq!(frame, expected);
+
+    let whole = signed(&FIXTURE_KEY, frame);
+    assert_eq!(whole.len(), 58);
+    assert_eq!(&whole[42..], b"73ce8de7d438f541");
   }
 
   #[test]
   fn the_status_frames_match_the_documented_bytes() {
-    assert_eq!(status_frame(STATUS_STORED, 7), [0x82, 0x00, 0x07, 0, 0, 0]);
+    for (code, arg, expected) in [
+      (STATUS_STORED, 7, &b"\x820 7\ndb37ac5430ae1394"[..]),
+      (
+        STATUS_PAUSED,
+        NIDD_PAUSED_HOLD_SECS,
+        &b"\x821 3600\n1c273dd5d282365a"[..],
+      ),
+      (STATUS_UNCLAIMED, 0, &b"\x822 0\nedba557d1f9f3445"[..]),
+      (STATUS_UNCLAIMED, 1, &b"\x822 1\n6e3162e1b9f30649"[..]),
+    ] {
+      assert_eq!(signed(&FIXTURE_KEY, status_frame(code, arg)), expected);
+    }
+  }
+
+  #[test]
+  fn a_hello_carries_the_claim_key_as_hex() {
+    let mut frame = vec![FRAME_HELLO];
+    frame.extend_from_slice(b"00000000000000000000000000000000");
+    assert_eq!(frame.len(), 33);
+    let Uplink::Hello(body) = decode_uplink(&frame) else {
+      panic!("a HELLO decoded as another type");
+    };
+    assert_eq!(hello_key(body), Some(FIXTURE_KEY));
     assert_eq!(
-      status_frame(STATUS_PAUSED, NIDD_PAUSED_HOLD_SECS),
-      [0x82, 0x01, 0x10, 0x0e, 0, 0]
+      hello_key(b"00112233445566778899aabbccddeeff").map(|key| key[15]),
+      Some(0xff)
     );
-    assert_eq!(status_frame(STATUS_UNCLAIMED, 0), [0x82, 0x02, 0, 0, 0, 0]);
+
+    // The retired raw form, a short key and junk claim nothing.
+    assert_eq!(hello_key(&[0u8; 16]), None);
+    assert_eq!(hello_key(b"00112233445566778899aabbccddeef"), None);
+    assert_eq!(hello_key(b"00112233445566778899aabbccddeeg0"), None);
+  }
+
+  #[test]
+  fn no_platform_frame_holds_two_adjacent_nul_bytes() {
+    let keys = [
+      FIXTURE_KEY,
+      [0xff; NIDD_CLAIM_KEY_BYTES],
+      *b"0123456789abcdef",
+    ];
+    let versions = [i32::MIN, -1, 0, 1, 7, 255, 256, 65_535, 65_536, i32::MAX];
+    let configs = [r#"{}"#, r#"{"log":false}"#, r#"{"nul":"\u0000","n":0}"#];
+    let args = [0, 1, 7, 256, 3600, 65_536, u32::MAX];
+    let mut frames = Vec::new();
+    for key in &keys {
+      for &target in &versions {
+        for &current in &versions {
+          for config in configs {
+            frames.push(signed(key, shadow_frame(&shadow(target, current, config))));
+          }
+        }
+      }
+      for code in [STATUS_STORED, STATUS_PAUSED, STATUS_UNCLAIMED, u8::MAX] {
+        for arg in args {
+          frames.push(signed(key, status_frame(code, arg)));
+        }
+      }
+    }
+    for frame in &frames {
+      assert!(!frame.windows(2).any(|pair| pair == [0, 0]));
+      assert!(!frame.contains(&0), "a NUL-free frame cannot hold two");
+    }
+  }
+
+  #[test]
+  fn the_shadow_header_fits_its_budget() {
+    let widest = shadow_frame(&shadow(i32::MAX, i32::MAX, "{}"));
+    assert_eq!(widest.len(), 1 + NIDD_SHADOW_HEADER_MAX + 2);
+    let widest = status_frame(u8::MAX, u32::MAX);
+    assert_eq!(widest.len(), 1 + NIDD_STATUS_HEADER_MAX);
+
     assert_eq!(
-      status_frame(STATUS_UNCLAIMED, 1),
-      [0x82, 0x02, 0x01, 0, 0, 0]
+      shadow_config_cap(i32::MAX, i32::MAX),
+      capsules::NIDD_MAX_TARGET_CONFIG_BYTES
     );
+    assert_eq!(shadow_config_cap(8, 7), 1358 - 1 - 4 - 16);
+    assert_eq!(shadow_config_cap(10, 10), 1358 - 1 - 6 - 16);
+    assert_eq!(shadow_config_cap(1, -5), shadow_config_cap(1, 0));
+
+    // A config at the cap makes a frame of exactly the frame limit.
+    let config = format!(
+      r#"{{"pad":"{}"}}"#,
+      "x".repeat(shadow_config_cap(8, 8) - 10)
+    );
+    let whole = signed(&FIXTURE_KEY, shadow_frame(&shadow(8, 8, &config)));
+    assert_eq!(whole.len(), NIDD_MAX_FRAME_BYTES);
   }
 
   #[test]

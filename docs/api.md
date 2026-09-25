@@ -286,7 +286,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 | NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below, the uplink by the device build; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
-| `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1341 bytes serialized (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`) | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
+| `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1319 bytes serialized at worst (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`); exactly, what one `SHADOW` frame carries at the version the write creates, up to 1337 | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
 | `POST /internal/thingspace/nidd`, bytes per body | 8 KiB | `lib.rs`, `413` over the cap |
 | NIDD downlink delivery window | 86400 s (ThingSpace's `maximumDeliveryTime`) | `objects/thingspace.rs`; a lapsed push is re-sent on the next uplink |
 | NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
@@ -1552,10 +1552,10 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
   -d '{"target_config":{"telemetry_interval":60}}'
 ```
 
-- `413` "Payload Too Large: a NIDD pigeon's target_config must serialize to at most 1341
+- `413` "Payload Too Large: this NIDD pigeon's target_config must serialize to at most <n>
   bytes", for a `Nidd` pigeon, checked before anything is written. One downlink frame carries
   the whole `target_config`, and a config the device could never receive must not become its
-  target.
+  target. `<n>` is never below 1319; see [NIDD sizes and cadence](#nidd-sizes-and-cadence).
 
 For a `Nidd` pigeon a write that raises `target_version` also plans a `SHADOW` frame to the
 device, after the response; see [NIDD downlink and replies](#nidd-downlink-and-replies).
@@ -3280,11 +3280,11 @@ contract a NIDD device follows; the surface has no HTTP route of its own.
   16-byte claim key, returned once as `connector.Nidd.claim_key` (32 lowercase hex characters)
   and built into the firmware. Until the device has claimed its pigeon, dovecote stores nothing it
   sends and sends it nothing but a rate-limited `STATUS UNCLAIMED` notice.
-- **`HELLO` claims.** The device sends `HELLO`, the 16 raw key bytes, at every boot and again
-  when told it is unclaimed. A match, compared in constant time, marks the pigeon claimed and pins
-  the line: the ICCID, or failing that the IMSI, that the callback names. A later frame from a
-  different line is dropped as if unclaimed, without clearing the claim; a good `HELLO` from the
-  new line moves the pin, which is how a SIM swap recovers.
+- **`HELLO` claims.** The device sends `HELLO`, the key as 32 lowercase hex characters, at every
+  boot and again when told it is unclaimed. A match, compared in constant time, marks the pigeon
+  claimed and pins the line: the ICCID, or failing that the IMSI, that the callback names. A later
+  frame from a different line is dropped as if unclaimed, without clearing the claim; a good
+  `HELLO` from the new line moves the pin, which is how a SIM swap recovers.
 - **The key signs every platform frame** (see [NIDD frames](#nidd-frames)), so only dovecote can
   steer the device, even against another holder of the account's ThingSpace API credentials.
   The key crosses the carrier in the clear once per boot. That opens nothing by itself: a forged
@@ -3303,29 +3303,39 @@ A NIDD frame is the bytes the device hands `send()` on its raw socket, and the b
 base64 `message` field decodes to on either leg. Byte 0 is the type; the rest is the body. There
 is no length field (the carrier delivers whole messages), no version byte (a new shape is a new
 type) and no sequence number (replies name the shadow version they confirm, and resends are
-recognised by `requestId`). Versions are little-endian `i32`, the type `PigeonShadow` uses.
+recognised by `requestId`).
 
-Every platform frame ends in an 8-byte tag: the first 8 bytes of HMAC-SHA256 over every byte
-before it, keyed by the pigeon's 16-byte claim key. The device drops a platform frame whose tag
-does not verify against the key it was built with. Device frames carry no tag.
+**No frame holds a NUL byte.** ThingSpace's send API refuses any message holding two adjacent NUL
+bytes (`400 NiddService.INPUT_INVALID.Message.AdjacentNullCharacters`), so a platform frame's
+numbers travel as text: after the type byte comes a header of two unsigned decimal integers, one
+space between them and a newline after (`8 7\n`), at most 22 bytes. A version is 0 to
+2147483647, and a negative one, which only a misbehaving device can report, is sent as 0; a
+`STATUS` argument is 0 to 4294967295. The JSON a frame carries is serde_json's serialization,
+which escapes every control character. Device frames follow the same rule: `HELLO` carries the
+claim key as hex, and JSON holds no NUL.
+
+Every platform frame ends in a 16-character tag: the first 8 bytes of HMAC-SHA256 over every byte
+before it, keyed by the pigeon's 16-byte claim key, written as lowercase hex. The device drops a
+platform frame whose tag does not verify against the key it was built with. Device frames carry no
+tag.
 
 | Byte 0 | Name | Direction | Body |
 |---|---|---|---|
 | `0x01` | `TELEMETRY` | device to platform | UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry) body: the flat map or `{"reports":[...]}` |
 | `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) body |
 | `0x03` | reserved | device to platform | Log upload, not offered |
-| `0x04` | `HELLO` | device to platform | The 16 raw bytes of the claim key |
-| `0x81` | `SHADOW` | platform to device | `target_version` i32, `current_version` i32, then `target_config` as raw UTF-8 JSON up to the tag, then the 8-byte tag |
-| `0x82` | `STATUS` | platform to device | `code` u8, `arg` u32 little-endian, then the 8-byte tag |
+| `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
+| `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
+| `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
 | `0x83` | reserved | platform to device | Application data, not offered |
 
-`STATUS` codes:
+`STATUS` codes, written in the header in decimal:
 
 | Code | Name | `arg` | What the device does |
 |---|---|---|---|
-| `0x00` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
-| `0x01` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY` and `SHADOW_REPORT` that long, capped at 86400 |
-| `0x02` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops billable sends until its next boot; on `0`, sends `HELLO` again, at most hourly |
+| `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
+| `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY` and `SHADOW_REPORT` that long, capped at 86400 |
+| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops billable sends until its next boot; on `0`, sends `HELLO` again, at most hourly |
 
 Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x05` upward,
 new platform frames `0x84` upward. An unknown type is logged and dropped by dovecote and ignored
@@ -3338,7 +3348,7 @@ The frame constants live in dovecote (`dovecote/src/helpers/nidd.rs`) and in the
 not in `capsules`: the other side is C, the reason the WebSocket frame types stay in dovecote.
 This section is the authority both follow.
 
-**Exact bytes.** Byte 0 is shown first; the ASCII column is the JSON the body carries. The tags
+**Exact bytes.** Byte 0 is shown first; the ASCII column is the text the body carries. The tags
 below are computed with a fixture key of 16 zero bytes, never a real one.
 
 `TELEMETRY`, a batch of three readings taken five minutes apart and sent at one wake: 294 bytes,
@@ -3378,25 +3388,25 @@ below are computed with a fixture key of 16 zero bytes, never a real one.
 ```
 
 `SHADOW`, the push after a dashboard write: `target_version` 8, `current_version` 7 (the device is
-one behind). 54 bytes, the last 8 the tag; base64
-`gQgAAAAHAAAAeyJ0ZWxlbWV0cnlfaW50ZXJ2YWwiOjkwMCwibG9nIjp0cnVlfWcLAmOGFSt/`.
+one behind). 58 bytes, the last 16 the tag; base64
+`gTggNwp7InRlbGVtZXRyeV9pbnRlcnZhbCI6OTAwLCJsb2ciOnRydWV9NzNjZThkZTdkNDM4ZjU0MQ==`.
 
 ```text
-0000  81 08 00 00 00 07 00 00 00 7b 22 74 65 6c 65 6d  .........{"telem
-0010  65 74 72 79 5f 69 6e 74 65 72 76 61 6c 22 3a 39  etry_interval":9
-0020  30 30 2c 22 6c 6f 67 22 3a 74 72 75 65 7d 67 0b  00,"log":true}g.
-0030  02 63 86 15 2b 7f                                .c..+.
+0000  81 38 20 37 0a 7b 22 74 65 6c 65 6d 65 74 72 79  .8 7.{"telemetry
+0010  5f 69 6e 74 65 72 76 61 6c 22 3a 39 30 30 2c 22  _interval":900,"
+0020  6c 6f 67 22 3a 74 72 75 65 7d 37 33 63 65 38 64  log":true}73ce8d
+0030  65 37 64 34 33 38 66 35 34 31                    e7d438f541
 ```
 
 The small frames, whole, tagged with the same fixture key:
 
-| Frame | Bytes | Base64 |
-|---|---|---|
-| `STATUS STORED 7` | `82 00 07 00 00 00 ca 2f a8 6d 9c dc f1 9b` | `ggAHAAAAyi+obZzc8Zs=` |
-| `STATUS PAUSED 3600` | `82 01 10 0e 00 00 a2 c3 54 ea 81 03 e2 f9` | `ggEQDgAAosNU6oED4vk=` |
-| `STATUS UNCLAIMED 0` | `82 02 00 00 00 00 26 e5 e3 c7 3a 50 4c 3f` | `ggIAAAAAJuXjxzpQTD8=` |
-| `STATUS UNCLAIMED 1` | `82 02 01 00 00 00 c9 ea 3d 56 a9 82 ff 86` | `ggIBAAAAyeo9VqmC/4Y=` |
-| `HELLO` | `04` then the 16 key bytes, 17 in all | 24 characters |
+| Frame | Bytes | Layout | Base64 |
+|---|---|---|---|
+| `STATUS STORED 7` | 21 | `82 30 20 37 0a` (`0 7`, newline), then `db37ac5430ae1394` | `gjAgNwpkYjM3YWM1NDMwYWUxMzk0` |
+| `STATUS PAUSED 3600` | 24 | `82 31 20 33 36 30 30 0a` (`1 3600`, newline), then `1c273dd5d282365a` | `gjEgMzYwMAoxYzI3M2RkNWQyODIzNjVh` |
+| `STATUS UNCLAIMED 0` | 21 | `82 32 20 30 0a` (`2 0`, newline), then `edba557d1f9f3445` | `gjIgMAplZGJhNTU3ZDFmOWYzNDQ1` |
+| `STATUS UNCLAIMED 1` | 21 | `82 32 20 31 0a` (`2 1`, newline), then `6e3162e1b9f30649` | `gjIgMQo2ZTMxNjJlMWI5ZjMwNjQ5` |
+| `HELLO` | 33 | `04`, then the key's 32 hex characters | 44 characters |
 
 ### NIDD downlink and replies
 
@@ -3447,18 +3457,21 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 | `TELEMETRY`, batch of ten realistic keys, 1 / 3 / 4 / 6 / 7 readings | 188 / 540 / 716 / 1070 / 1247 | yes |
 | `TELEMETRY`, batch of ten realistic keys, 8 readings | 1424 | no |
 | `SHADOW_REPORT` at the library's largest report body | 385 | yes |
-| `HELLO` | 17 | yes |
-| `SHADOW` with `target_config` at its 1341-byte cap | 1358 | yes, by construction |
-| `SHADOW` carrying a firmware target (version, size, sha256) | 175 | yes |
-| `STATUS` | 14 | yes |
+| `HELLO` | 33 | yes |
+| `SHADOW` with `target_config` at its cap | 1358 | yes, by construction |
+| `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
+| `STATUS` | 21 to 30 | yes |
 
 - **1358 bytes a frame, both ways** (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64:
   Verizon's downlink cap of 10864 bits. The only uplink figure Verizon publishes is 1500 bytes per
   transmission; devices hold uplink to 1358 as well.
-- **`target_config` is capped at 1341 bytes** for a `Nidd` pigeon
-  (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`): the frame less the `SHADOW` header's 9 bytes and the
-  tag's 8. A larger config is refused `413` at the shadow `PUT`, since one frame carries the whole
-  config and one the device could never receive must not become its target.
+- **`target_config` must fit one `SHADOW` frame** for a `Nidd` pigeon: the frame less the type
+  byte, the version header and the tag's 16 characters. The header grows with the versions, so
+  the cap is counted at each write for the version it creates: 1337 bytes at single-digit
+  versions, and never below 1319 (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`, two ten-digit
+  versions), which always fits and which the dashboard holds a save to. A larger config is refused
+  `413` at the shadow `PUT`, since one frame carries the whole config and one the device could
+  never receive must not become its target.
 - **An uplink body is at most 1357 bytes** after the type byte. A device never splits a pre-built
   body to fit, so a build whose largest flat telemetry body could exceed that has to report fewer
   keys.

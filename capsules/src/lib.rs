@@ -663,9 +663,11 @@ pub const NIDD_APN: &str = "VZWSCEF";
 /// bytes per transmission.
 pub const NIDD_MAX_FRAME_BYTES: usize = 1358;
 
-/// Largest serialized `target_config` a Nidd pigeon accepts: one frame less the downlink shadow
-/// frame's 9-byte header and 8-byte HMAC tag, both laid out under docs/api.md's NIDD frames.
-pub const NIDD_MAX_TARGET_CONFIG_BYTES: usize = NIDD_MAX_FRAME_BYTES - 9 - 8;
+/// Largest serialized `target_config` a Nidd pigeon always accepts: one frame less the downlink
+/// `SHADOW` frame's type byte, its version header at its longest (22 bytes, two ten-digit
+/// versions) and its 16-character tag, all laid out under docs/api.md's NIDD frames. A write while
+/// the versions are shorter may carry a little more.
+pub const NIDD_MAX_TARGET_CONFIG_BYTES: usize = NIDD_MAX_FRAME_BYTES - 1 - 22 - 16;
 
 /// Whether `imei` is 15 ASCII digits whose last digit is the Luhn check over the first 14.
 /// Catches the single-digit slips an IMEI copied off a module label invites.

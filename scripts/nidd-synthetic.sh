@@ -194,8 +194,8 @@ callback() {
 # frame <type-hex> <body>: a device frame in $work/frame, the type byte then the body.
 frame() { { printf '%s' "$1" | xxd -r -p; printf '%s' "$2"; } >"$work/frame"; }
 
-# hello <claim-key-hex>: a HELLO frame, the type byte then the sixteen key bytes.
-hello() { { printf '\x04'; printf '%s' "$1" | xxd -r -p; } >"$work/frame"; }
+# hello <claim-key-hex>: a HELLO frame, the type byte then the key's 32 hex characters.
+hello() { { printf '\x04'; printf '%s' "$1"; } >"$work/frame"; }
 
 # uplink <label> <request-id> <attempt> <imei> <iccid>: posts $work/frame as ThingSpace's MO
 # callback; the line is named by the ICCID in the inner identifier list.
@@ -665,13 +665,17 @@ note_log "$m"
 
 m=$(mark)
 pad() { head -c "$1" /dev/zero | tr '\0' x; }
-api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"pad\":\"$(pad 1332)\"}}"
-expect "a 1342-byte target_config answers 413" 413 "$status"
-note "  $(cat "$resp")"
+# The write creates version 4, so the SHADOW header is "4 4" and a newline at its longest before
+# the next write: 1358 less the type byte, those 4 bytes and the 16-character tag leaves 1337.
+api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"pad\":\"$(pad 1328)\"}}"
+expect "a 1338-byte target_config answers 413" 413 "$status"
+expect "naming this pigeon's cap" \
+  "Payload Too Large: this NIDD pigeon's target_config must serialize to at most 1337 bytes" \
+  "$(cat "$resp")"
 api a GET "/pigeons/$pigeon/shadow"
 expect "and changes nothing" 3 "$(jq -r .target_version "$resp")"
-api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"pad\":\"$(pad 1331)\"}}"
-expect "a 1341-byte target_config is accepted" "200 4" "$status $(jq -r .target_version "$resp")"
+api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"pad\":\"$(pad 1327)\"}}"
+expect "a 1337-byte target_config is accepted" "200 4" "$status $(jq -r .target_version "$resp")"
 note_log "$m"
 
 step 10 "token refresh"

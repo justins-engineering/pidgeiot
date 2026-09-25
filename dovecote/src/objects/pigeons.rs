@@ -1,8 +1,8 @@
 use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddRow, NiddSqlRow, STATUS_PAUSED, STATUS_STORED,
-  STATUS_UNCLAIMED, Uplink, backdate, claim_key_bytes, decode_uplink, dedupe_key, nidd_object_name,
-  notice_due, parse_error_line, resend_age_secs, shadow_frame, shadow_push_due, sign_frame,
-  status_frame,
+  STATUS_UNCLAIMED, Uplink, backdate, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
+  nidd_object_name, notice_due, parse_error_line, resend_age_secs, shadow_config_cap, shadow_frame,
+  shadow_push_due, sign_frame, status_frame,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -2771,11 +2771,17 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
       None
     }
   };
-  if nidd.is_some() && config_str.len() > NIDD_MAX_TARGET_CONFIG_BYTES {
-    return Response::error(
-      "Payload Too Large: a NIDD pigeon's target_config must serialize to at most 1341 bytes",
-      413,
-    );
+  if nidd.is_some() {
+    let cap = nidd_config_cap(pigeons);
+    if config_str.len() > cap {
+      let cap = cap.to_string();
+      let mut message = String::with_capacity(84 + cap.len());
+      message
+        .push_str("Payload Too Large: this NIDD pigeon's target_config must serialize to at most ");
+      message.push_str(&cap);
+      message.push_str(" bytes");
+      return Response::error(message, 413);
+    }
   }
 
   match pigeons.sql.exec(
@@ -2837,6 +2843,22 @@ fn broadcast_shadow_update(pigeons: &Pigeons, shadow: &PigeonShadow) {
 struct PigeonIdRow {
   #[allow(dead_code)]
   id: String,
+}
+
+/// The largest `target_config` this Nidd pigeon's next write may carry. The `SHADOW` header
+/// grows with the versions, so it is counted at the version the write creates and at the device
+/// once it has converged on it, the longest header the push can carry until the next write.
+fn nidd_config_cap(pigeons: &Pigeons) -> usize {
+  match read_shadow(pigeons) {
+    Ok(before) => {
+      let next = before.target_version.saturating_add(1);
+      shadow_config_cap(next, before.current_version.max(next))
+    }
+    Err(e) => {
+      console_error!("Shadow UPDATE: shadow READ error: {e}");
+      NIDD_MAX_TARGET_CONFIG_BYTES
+    }
+  }
 }
 
 /// Whether this object already holds a pigeon.
@@ -3102,7 +3124,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       "rejected"
     }
     Uplink::Hello(presented) => {
-      let Ok(presented) = <[u8; NIDD_CLAIM_KEY_BYTES]>::try_from(presented) else {
+      let Some(presented) = hello_key(presented) else {
         return finish_nidd_uplink(pigeons, row, key, "rejected", identity, None, None);
       };
       let claim_key = identity.as_ref().and_then(|found| found.claim_key);
