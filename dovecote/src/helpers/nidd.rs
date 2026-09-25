@@ -65,8 +65,9 @@ const NIDD_SEEN_KEYS: usize = 64;
 /// ThingSpace resends an unacknowledged callback this many seconds after the attempt before.
 const NIDD_RESEND_SECS: i64 = 300;
 
-/// The two fields read before a callback is trusted: the password to check, and the request id
-/// that names the callback in a log line even when the rest of the body does not parse.
+/// The fields read before a callback is trusted: the password to check, and the request id and
+/// attempt that name the callback in a log line, a refused one or one whose body does not parse
+/// included, so a refusal can be matched to the attempt that follows it.
 #[derive(Deserialize)]
 pub struct CallbackAuth {
   /// The listener password ThingSpace sends in clear inside every callback.
@@ -75,11 +76,14 @@ pub struct CallbackAuth {
   /// ThingSpace's request id.
   #[serde(default, rename = "requestId")]
   pub request_id: Option<String>,
+  /// ThingSpace's `callbackCount`: which delivery attempt this is, from 1.
+  #[serde(default, rename = "callbackCount")]
+  pub callback_count: Option<i64>,
 }
 
 /// A ThingSpace `NiddService` callback, holding only what dovecote reads. `username` and
 /// `password` are deliberately absent, so a parsed callback never carries the credential; the
-/// request id is read once, by `CallbackAuth`, which also parses when this does not.
+/// request id and attempt are read once, by `CallbackAuth`, which also parses when this does not.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NiddCallback {
@@ -89,9 +93,6 @@ pub struct NiddCallback {
   /// `Delivered`, `Queued`, `DeliveryFailed`, `ConfigCreated`, or a failure status.
   #[serde(default)]
   pub status: Option<String>,
-  /// Which delivery attempt this is, from 1.
-  #[serde(default)]
-  pub callback_count: Option<i64>,
   /// What the callback reports.
   pub nidd_response: NiddResponse,
 }
@@ -640,7 +641,6 @@ mod tests {
     NiddCallback {
       device_ids: top,
       status: None,
-      callback_count: None,
       nidd_response: NiddResponse::Uplink(NiddUplink {
         account_name: None,
         message: None,
@@ -654,7 +654,6 @@ mod tests {
     let callback = parse(&uplink_body());
     assert_eq!(callback.kind(), "uplink");
     assert_eq!(callback.account_name(), Some("9999080353-00001"));
-    assert_eq!(callback.callback_count, Some(1));
     assert_eq!(callback_imei(&callback).as_deref(), Some(IMEI));
     let NiddResponse::Uplink(uplink) = &callback.nidd_response else {
       panic!("uplink parsed as another variant");
@@ -705,7 +704,8 @@ mod tests {
       {"accountName":"a","message":"AQ==","deviceIds":[{"kind":"IMSI"}]}}}"#;
     let callback = parse(body);
     assert!(callback.device_ids.is_empty());
-    assert_eq!(callback.callback_count, None);
+    let auth: CallbackAuth = serde_json::from_str(body).unwrap();
+    assert_eq!(auth.callback_count, None);
     assert_eq!(callback_imei(&callback), None);
   }
 
@@ -716,16 +716,22 @@ mod tests {
   }
 
   #[test]
-  fn callback_auth_reads_the_request_id() {
+  fn callback_auth_reads_the_request_id_and_attempt() {
     let auth: CallbackAuth = serde_json::from_str(&uplink_body()).unwrap();
     assert_eq!(auth.password.as_deref(), Some("pwd"));
     assert_eq!(
       auth.request_id.as_deref(),
       Some("a0fff7d6-6b30-45eb-84d7-0bc103d319c0")
     );
+    assert_eq!(auth.callback_count, Some(1));
+
+    // A body that is not a callback still names its attempt.
+    let refused: CallbackAuth =
+      serde_json::from_str(r#"{"requestId":"r","callbackCount":2,"niddResponse":7}"#).unwrap();
+    assert_eq!(refused.callback_count, Some(2));
 
     let bare: CallbackAuth = serde_json::from_str("{}").unwrap();
-    assert!(bare.password.is_none() && bare.request_id.is_none());
+    assert!(bare.password.is_none() && bare.request_id.is_none() && bare.callback_count.is_none());
   }
 
   #[test]

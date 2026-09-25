@@ -360,11 +360,13 @@ pass "setup complete"
 
 step 1 "callback gates"
 m=$(mark)
-report_body niddConfigResponse ConfigCreated "" "$imei_a" "$iccid1" "$(rid s1c)"
+r=$(rid s1c)
+report_body niddConfigResponse ConfigCreated "" "$imei_a" "$iccid1" "$r"
 callback "(password removed)"
 expect "password removed answers 503" 503 "$status"
 note "  $(head -c 200 "$resp")"
-expect_log "password removed logs not_configured" "$m" 'nidd_cb outcome=not_configured'
+expect_log "password removed logs not_configured with the request id and attempt" "$m" \
+  "nidd_cb outcome=not_configured request=$r attempt=1"
 note_log "$m"
 stop_wrangler
 
@@ -417,7 +419,8 @@ expect "a non-JSON body answers 400" 400 "$status"
 printf '{"requestId":"s1e"}' >"$work/body"
 callback "(no password)"
 expect "a body without a password answers 400" 400 "$status"
-expect_log "the wrong password is logged by outcome only" "$m" 'nidd_cb outcome=wrong_password'
+expect_log "the wrong password is logged by outcome, request id and attempt only" "$m" \
+  'nidd_cb outcome=wrong_password request=s1a attempt=none'
 note_log "$m"
 
 step 2 "Nidd create"

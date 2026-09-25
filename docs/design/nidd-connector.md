@@ -440,15 +440,19 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
 
 1. `is_allowed_thingspace_ip(&ctx.env, &req)` or 403, logging the refused address as
    `internal_psk_lookup` does (`lib.rs:491-497`).
-2. `THINGSPACE_CALLBACK_PASSWORD` and `THINGSPACE_ACCOUNT_NAME` present and non-blank, or 503
-   with a log line. 503 rather than 403, so a deploy gap loses nothing: ThingSpace resends and
-   then archives (the Stripe webhook precedent, `lib.rs:5368-5373`).
-3. `req.text()`, then over `NIDD_CALLBACK_MAX_BYTES` (8192) is 413, the contact route's pattern
+2. `req.text()`, then over `NIDD_CALLBACK_MAX_BYTES` (8192) is 413, the contact route's pattern
    (`lib.rs:3553-3563`). The largest legitimate body, a 1358-byte frame's base64 inside the
    564 bytes B5 measured around it, is under 2400 bytes (section 17).
-4. `serde_json::from_str::<CallbackAuth>` (two fields, `password: Option<String>` and
-   `request_id: Option<String>` renamed from `requestId`): not JSON or no password is 400.
-   `constant_time_eq` against the secret: 403 on mismatch.
+3. `serde_json::from_str::<CallbackAuth>` (three fields, `password: Option<String>`,
+   `request_id: Option<String>` renamed from `requestId` and `callback_count: Option<i64>` renamed
+   from `callbackCount`): not JSON or no password is 400.
+4. `THINGSPACE_CALLBACK_PASSWORD` and `THINGSPACE_ACCOUNT_NAME` present and non-blank, or 503.
+   503 rather than 403, so a deploy gap loses nothing: ThingSpace resends and then archives (the
+   Stripe webhook precedent, `lib.rs:5368-5373`). Then `constant_time_eq` against the secret: 403
+   on mismatch. This check follows the parse so that the no-password, not-configured and
+   wrong-password lines each carry the body's request id and attempt
+   (`nidd_cb outcome= request= attempt=`), unverified but enough to match a refusal to
+   ThingSpace's next attempt (B6 could not).
 5. `serde_json::from_str::<NiddCallback>` (dovecote's own struct, `helpers/nidd.rs`, section 6.6):
    a body that authenticates but does not parse is logged with `CallbackAuth`'s `request_id` (or
    `none`) and the parse error's `e.classify()` and `e.column()` only, and answered 200.
@@ -483,8 +487,9 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
    (serde_json 1, reproduced in `nidd/fix-serde-probe/` in the job directory). Every parse failure,
    of `CallbackAuth`, `NiddCallback` or a frame's body, logs `e.classify()` and `e.column()` only,
    through one helper (6.6). Every callback logs one line,
-   `nidd_cb kind= outcome= pigeon= attempt= ms=`, so `ms` can be watched against the unpublished
-   acknowledgement deadline.
+   `nidd_cb kind= outcome= pigeon= request= attempt= ms=`, so `ms` can be watched against the
+   unpublished acknowledgement deadline; one refused before it is trusted logs
+   `nidd_cb outcome= request= attempt=` (step 4).
 
 ### 5.2 Changed routes
 
@@ -1595,7 +1600,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 |---|---|---|---|
 | 1 | Callback password or account name unset (a deploy gap) | 503, logged | ThingSpace resends three times over 15 minutes, then archives 30 days, resendable through support by request id [CB] |
 | 2 | Callback from an address outside the allowlist | 403, address logged | Not ThingSpace |
-| 3 | Wrong callback password | 403 | The same resend and archive; fixing the Worker secret within 15 minutes, with the registration unchanged, loses nothing. A rotation is 8.4's case |
+| 3 | Wrong callback password | 403, logged with the body's request id and attempt | The same resend and archive; fixing the Worker secret within 15 minutes, with the registration unchanged, loses nothing. A rotation is 8.4's case |
 | 4 | Another ThingSpace customer's callback reaches us (their registration names our URL) | 200, dropped at the account gate, logged | A resend cannot change it |
 | 5 | Browser Integrity Check blocks ThingSpace's client | Nothing reaches the Worker, no log line at all | The Configuration Rule of 8.5 step 7 goes in before the first callback; tier 2 proves it |
 | 6 | Body over 8 KiB | 413 | Over three times the largest legitimate body |

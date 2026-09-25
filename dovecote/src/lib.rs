@@ -663,6 +663,20 @@ fn or_none(value: &str) -> &str {
   if value.is_empty() { "none" } else { value }
 }
 
+/// ThingSpace's `callbackCount` for a log field, or `none` when the body carried none.
+fn attempt_field(callback_count: Option<i64>) -> String {
+  callback_count.map_or_else(|| "none".to_string(), |count| count.to_string())
+}
+
+/// A NIDD callback refused before it was trusted. The request id and attempt are the body's own
+/// and unverified, logged so a refusal can be matched to ThingSpace's next attempt.
+fn log_nidd_refusal(outcome: &str, request_id: &str, attempt: &str) {
+  console_error!(
+    "nidd_cb outcome={outcome} request={} attempt={attempt}",
+    or_none(request_id)
+  );
+}
+
 /// Undoes a Nidd create the Durable Object accepted but the route could not finish, and answers
 /// 503 so the operator retries. The id repeats after a delete, so a pigeon left standing would
 /// live over rows an earlier pigeon left under it and hold its IMEI against every retry.
@@ -705,7 +719,7 @@ fn log_nidd_callback(
   outcome: &str,
   pigeon_id: &str,
   request_id: &str,
-  attempt: i64,
+  attempt: &str,
   started_ms: u64,
 ) {
   let ms = Date::now().as_millis().saturating_sub(started_ms);
@@ -759,17 +773,6 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
     return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
   }
 
-  // 503 rather than 403: ThingSpace resends and then archives, so a deploy gap loses nothing.
-  let (Some(expected_password), Some(account_name)) = (
-    configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD"),
-    configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME"),
-  ) else {
-    console_error!("nidd_cb outcome=not_configured: callback password or account name unset");
-    return Response::error("Service Unavailable: NIDD is not configured", 503)
-      .unwrap()
-      .with_cors(&cors);
-  };
-
   let Ok(raw) = req.text().await else {
     return Response::error("Bad Request: Failed to read body", 400)
       .unwrap()
@@ -794,17 +797,29 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         .with_cors(&cors);
     }
   };
+  let request_id = header_safe(auth.request_id);
+  let attempt = attempt_field(auth.callback_count);
   let Some(password) = auth.password else {
-    console_error!("nidd_cb outcome=bad_body: no password");
+    log_nidd_refusal("no_password", &request_id, &attempt);
     return Response::error("Bad Request: Missing password", 400)
       .unwrap()
       .with_cors(&cors);
   };
+
+  // 503 rather than 403: ThingSpace resends and then archives, so a deploy gap loses nothing.
+  let (Some(expected_password), Some(account_name)) = (
+    configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD"),
+    configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME"),
+  ) else {
+    log_nidd_refusal("not_configured", &request_id, &attempt);
+    return Response::error("Service Unavailable: NIDD is not configured", 503)
+      .unwrap()
+      .with_cors(&cors);
+  };
   if !constant_time_eq(password.as_bytes(), expected_password.as_bytes()) {
-    console_error!("nidd_cb outcome=wrong_password");
+    log_nidd_refusal("wrong_password", &request_id, &attempt);
     return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
   }
-  let request_id = header_safe(auth.request_id);
 
   let callback = match serde_json::from_str::<NiddCallback>(&raw) {
     Ok(callback) => callback,
@@ -818,7 +833,6 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       return Response::ok("").unwrap().with_cors(&cors);
     }
   };
-  let attempt = callback.callback_count.unwrap_or(1);
   let kind = callback.kind();
 
   let Ok(namespace) = ctx.durable_object("PIGEONS") else {
@@ -850,7 +864,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       "foreign_account",
       &pigeon_id,
       &request_id,
-      attempt,
+      &attempt,
       started,
     );
     return Response::ok("").unwrap().with_cors(&cors);
@@ -869,13 +883,13 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       outcome.push_str(status);
       outcome.push_str(" reason=");
       outcome.push_str(reason);
-      log_nidd_callback(kind, &outcome, &pigeon_id, &request_id, attempt, started);
+      log_nidd_callback(kind, &outcome, &pigeon_id, &request_id, &attempt, started);
       return Response::ok("").unwrap().with_cors(&cors);
     }
   };
 
   let Some(obj_id) = obj_id else {
-    log_nidd_callback(kind, "no_imei", "", &request_id, attempt, started);
+    log_nidd_callback(kind, "no_imei", "", &request_id, &attempt, started);
     return Response::ok("").unwrap().with_cors(&cors);
   };
   let frame = match uplink
@@ -890,7 +904,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         "bad_message",
         &pigeon_id,
         &request_id,
-        attempt,
+        &attempt,
         started,
       );
       return Response::ok("").unwrap().with_cors(&cors);
@@ -915,7 +929,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
     &obj_id,
     &frame,
     &request_id,
-    attempt,
+    auth.callback_count.unwrap_or(1),
     paused,
     line.as_deref(),
   )
@@ -948,11 +962,11 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       } else {
         &outcome
       };
-      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, attempt, started);
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
       Response::ok("").unwrap().with_cors(&cors)
     }
     Err(outcome) => {
-      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, attempt, started);
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
       Response::error("Service Unavailable", 503)
         .unwrap()
         .with_cors(&cors)
