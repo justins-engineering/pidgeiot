@@ -720,6 +720,39 @@ async fn undo_nidd_create(
   .with_cors(cors)
 }
 
+/// Has a Nidd pigeon's object mark the push it owes pending after a delivery report said a
+/// downlink missed the device: `pending` when something was owed, else `logged`. A failure is
+/// only logged, since the push's delivery window lapses into the same state.
+async fn mark_nidd_push_pending(obj_id: &worker::ObjectId<'_>, pigeon_id: &str) -> &'static str {
+  let dispatched = match (
+    obj_id.get_stub(),
+    Request::new("https://internal/pigeon/nidd/missed", Method::Post),
+  ) {
+    (Ok(stub), Ok(req)) => stub.fetch_with_request(req).await,
+    (Err(e), _) | (_, Err(e)) => Err(e),
+  };
+  match dispatched {
+    Ok(mut response) if response.status_code() == 200 => {
+      if response.text().await.is_ok_and(|body| body == "pending") {
+        "pending"
+      } else {
+        "logged"
+      }
+    }
+    Ok(response) => {
+      console_error!(
+        "nidd_cb: pigeon {pigeon_id} answered {} to a missed downlink",
+        response.status_code()
+      );
+      "logged"
+    }
+    Err(e) => {
+      console_error!("nidd_cb: marking a missed downlink failed for pigeon {pigeon_id}: {e}");
+      "logged"
+    }
+  }
+}
+
 /// The one line every NIDD callback logs. Never a body, password, frame, account name, IMEI,
 /// ICCID or IMSI: only what kind of callback it was, what became of it (for a delivery report or
 /// configuration result, its status and reason too), the derived pigeon id, ThingSpace's request
@@ -762,7 +795,8 @@ fn log_nidd_callback(
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
     CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, PasswordMatch,
-    callback_imei, callback_line, is_billable, match_callback_password, parse_error_line, within,
+    callback_imei, callback_line, delivery_missed, is_billable, match_callback_password,
+    parse_error_line, within,
   };
   use base64::Engine as _;
   use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -898,14 +932,22 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
 
   let uplink = match &callback.nidd_response {
     NiddResponse::Uplink(uplink) => uplink,
-    // Nothing on the device's path depends on these: its own reported version is the
+    // A downlink that missed the device leaves the push it owes pending for its next uplink;
+    // nothing else in a report bears on the device's path, whose own reported version is the
     // convergence signal.
     NiddResponse::Delivery(report) | NiddResponse::Config(report) => {
+      let missed = matches!(callback.nidd_response, NiddResponse::Delivery(_))
+        && delivery_missed(callback.status.as_deref());
+      let verb = match &obj_id {
+        Some(obj_id) if missed => mark_nidd_push_pending(obj_id, &pigeon_id).await,
+        _ => "logged",
+      };
       let status = header_safe(callback.status.clone());
       let reason = header_safe(report.reason.clone().map(|r| r.replace(' ', "_")));
       let (status, reason) = (or_none(&status), or_none(&reason));
-      let mut outcome = String::with_capacity(22 + status.len() + reason.len());
-      outcome.push_str("logged status=");
+      let mut outcome = String::with_capacity(verb.len() + 16 + status.len() + reason.len());
+      outcome.push_str(verb);
+      outcome.push_str(" status=");
       outcome.push_str(status);
       outcome.push_str(" reason=");
       outcome.push_str(reason);

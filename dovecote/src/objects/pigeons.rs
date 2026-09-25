@@ -423,6 +423,7 @@ impl DurableObject for Pigeons {
       // Trusted-internal like `/pigeon/acl/grant`: this DO has no public address, and the only
       // caller is the ThingSpace callback route after all three of its gates.
       "/pigeon/nidd/uplink" => nidd_uplink(self, req).await,
+      "/pigeon/nidd/missed" => nidd_missed(self),
       _ => Response::error("Not Found", 404),
     }
   }
@@ -3269,6 +3270,36 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     stored_report,
     downlink,
   )
+}
+
+/// A delivery report said a downlink missed this pigeon's device, so the push it owes becomes
+/// pending and the device's next uplink carries it. The report does not name the frame, so a
+/// missed notice marks it too, which costs at most one early re-send. Answers `pending`, or
+/// `converged` when nothing is owed.
+fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
+  let mut row = match read_nidd_row(&pigeons.sql) {
+    Ok(row) => row,
+    Err(e) => {
+      console_error!(
+        "NIDD missed: state READ error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  if !row.mark_pending() {
+    return Response::ok("converged");
+  }
+  match write_nidd_row(&pigeons.sql, &row) {
+    Ok(()) => Response::ok("pending"),
+    Err(e) => {
+      console_error!(
+        "NIDD missed: state WRITE error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      Response::error("Internal Server Error", 500)
+    }
+  }
 }
 
 /// Records the uplink's key and whatever it changed in one write, answers with the outcome, and

@@ -487,9 +487,10 @@ pub struct NiddRow {
   pub line_id: Option<String>,
   /// The newest `target_version` the device has not confirmed; 0 when converged.
   pub awaiting_version: i32,
-  /// The `target_version` of the last `SHADOW` sent; 0 after a send that never reached ThingSpace.
+  /// The `target_version` of the last `SHADOW` sent; 0 while a push is pending, because its send
+  /// never reached ThingSpace or a delivery report said a downlink missed the device.
   pub pushed_version: i32,
-  /// When that `SHADOW` was sent; 0 after a send that never reached ThingSpace.
+  /// When the last `SHADOW` was sent; 0 after a send that never reached ThingSpace.
   pub pushed_at: i64,
   /// When the last `PAUSED` or `UNCLAIMED` notice went out.
   pub notice_at: i64,
@@ -531,6 +532,23 @@ impl NiddRow {
   pub fn seen_json(&self) -> String {
     serde_json::to_string(&self.seen).unwrap_or_else(|_| "[]".to_string())
   }
+
+  /// Marks the owed push pending, so the next uplink carries it even inside its delivery window.
+  /// `pushed_at` stays, so the missed push still holds back an unsolicited one. Answers whether
+  /// anything is owed.
+  pub fn mark_pending(&mut self) -> bool {
+    if self.awaiting_version == 0 {
+      return false;
+    }
+    self.pushed_version = 0;
+    true
+  }
+}
+
+/// Whether a delivery report says a downlink missed the device: it failed, or the network could
+/// not reach the device and buffered it, which the bench never saw delivered later.
+pub fn delivery_missed(status: Option<&str>) -> bool {
+  matches!(status, Some("DeliveryFailed" | "Queued"))
 }
 
 /// Whether a `PAUSED` or `UNCLAIMED` notice may go out: at most one an hour per pigeon.
@@ -550,8 +568,8 @@ pub fn shadow_push_due(row: &NiddRow, now: i64) -> bool {
 }
 
 /// Whether an uplink from the claimed device draws the `SHADOW` it is owed as its reply, sent
-/// while that uplink's connection is up: the device is behind, and the newest target is unsent or
-/// held, or went out longer ago than its delivery window without being confirmed.
+/// while that uplink's connection is up: the device is behind, and the newest target is unsent,
+/// held or pending, or went out longer ago than its delivery window without being confirmed.
 pub fn shadow_reply_due(row: &NiddRow, now: i64) -> bool {
   row.claimed_at.is_some()
     && row.awaiting_version != 0
@@ -1144,6 +1162,14 @@ mod tests {
     assert!(!shadow_push_due(&lapsed, now));
     assert!(!shadow_push_due(&lapsed, now + 86_400));
 
+    // A delivery report said the in-flight push missed: the next uplink carries it at once, and
+    // the missed push still holds a dashboard write back for its 15 minutes.
+    let mut pending = in_flight.clone();
+    assert!(pending.mark_pending());
+    assert!(shadow_reply_due(&pending, now));
+    assert!(!shadow_push_due(&pending, now));
+    assert!(shadow_push_due(&pending, pending.pushed_at + 900));
+
     // A send that never reached ThingSpace: due again for both.
     let unsent = NiddRow {
       pushed_version: 0,
@@ -1167,5 +1193,17 @@ mod tests {
       assert!(!shadow_push_due(&row, now));
       assert!(!shadow_reply_due(&row, now));
     }
+    let mut converged = NiddRow::default();
+    assert!(!converged.mark_pending());
+    assert_eq!(converged, NiddRow::default());
+  }
+
+  #[test]
+  fn only_a_failed_or_buffered_delivery_counts_as_missed() {
+    assert!(delivery_missed(Some("DeliveryFailed")));
+    assert!(delivery_missed(Some("Queued")));
+    assert!(!delivery_missed(Some("Delivered")));
+    assert!(!delivery_missed(Some("ConfigFailed")));
+    assert!(!delivery_missed(None));
   }
 }
