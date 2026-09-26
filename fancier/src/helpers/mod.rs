@@ -10,7 +10,7 @@ mod ory_webauthn;
 pub use ory_webauthn::invoke_webauthn_trigger;
 
 mod ory_error;
-pub use ory_error::{DisplayError, view_network_error};
+pub use ory_error::{DisplayError, adopting_session, view_network_error};
 
 mod lang;
 pub use lang::set_lang;
@@ -32,7 +32,9 @@ mod session_end;
 pub use session_end::{session_lost, watch_session_expiry};
 
 mod session_start;
-pub use session_start::{adopt_kratos_session, kratos_return_to, kratos_settings_handoff};
+pub use session_start::{
+  adopt_kratos_session, kratos_return_to, kratos_settings_handoff, session_already_available,
+};
 
 mod return_to;
 pub use return_to::{clear_return_to, stash_return_to, take_return_to};

@@ -28,6 +28,14 @@ pub fn view_network_error(e: &impl core::fmt::Debug) -> Element {
   }
 }
 
+/// Shown for the moment a login or registration page spends handing a
+/// browser that is already signed in to the route that adopts its session.
+pub fn adopting_session() -> Element {
+  rsx! {
+    p { class: "text-center animate-pulse", "You're already signed in. Opening your dashboard..." }
+  }
+}
+
 impl DisplayError for ResponseContent<CreateBrowserRegistrationFlowError> {
   fn view_response_content(self) -> Element {
     if let Some(ent) = self.entity {

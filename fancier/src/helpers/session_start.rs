@@ -100,9 +100,18 @@ fn is_settings_handoff(path: &str, flow: Option<&str>) -> bool {
   matches!(path.trim_end_matches('/'), "/settings") && flow.is_some()
 }
 
+/// Whether a Kratos error body is its refusal to start a login or
+/// registration flow because this browser already holds a valid session.
+///
+/// That refusal is not an error to the person reading it: they are signed
+/// in, and the dashboard is where they meant to go.
+pub fn session_already_available(body: &str) -> bool {
+  body.contains("\"session_already_available\"")
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{is_settings_handoff, session_handoff_url};
+  use super::{is_settings_handoff, session_already_available, session_handoff_url};
 
   #[test]
   fn the_hand_back_names_the_origin_it_started_from() {
@@ -114,6 +123,16 @@ mod tests {
       session_handoff_url("http://localhost:4455", false),
       "http://localhost:4455/session/local?state=false"
     );
+  }
+
+  #[test]
+  fn kratos_refusing_a_flow_for_a_live_session_is_recognised() {
+    let body = r#"{"error":{"id":"session_already_available","code":400,"status":"Bad Request","reason":"A valid session was detected and thus login is not possible.","message":"The request was malformed or contained invalid parameters"}}"#;
+    assert!(session_already_available(body));
+    // Any other refusal still renders as the error it is.
+    let other = r#"{"error":{"id":"security_csrf_violation","code":400,"status":"Bad Request","message":"A security violation was detected."}}"#;
+    assert!(!session_already_available(other));
+    assert!(!session_already_available(""));
   }
 
   #[test]

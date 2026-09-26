@@ -1,6 +1,7 @@
 use crate::components::{Alert, FormBuilder, TermsNotice};
 use crate::helpers::{
-  DisplayError, extract_ui_messages, kratos_return_to, url_query_param, view_network_error,
+  DisplayError, adopting_session, extract_ui_messages, kratos_return_to, session_already_available,
+  url_query_param, view_network_error,
 };
 use crate::{Configuration, Create, Route};
 use dioxus::prelude::*;
@@ -28,6 +29,7 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
   // its arms: a hook called from one arm would shift this scope's hook
   // indices as the flow resolves.
   let terms_ok = use_signal(|| false);
+  let nav = use_navigator();
 
   // 1. Fetch or initialize the flow natively
   let get_flow = use_resource(move || {
@@ -56,6 +58,12 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
             // use_resource's future does not rerun on the post-replace
             // rerender, so that approach hangs forever.
           }
+          Err(ory_kratos_client_wasm::apis::Error::ResponseError(res))
+            if session_already_available(&res.content) =>
+          {
+            nav.replace(Route::SetSessionCookie { state: true });
+            return Err(adopting_session());
+          }
           Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
             return Err(res.view_response_content());
           }
@@ -79,6 +87,15 @@ pub fn RegisterFlow(flow: Option<String>) -> Element {
       .await
       {
         Ok(res) => Ok(res),
+        // Already signed in, perhaps with the verification mail still
+        // unread: adopt that session instead of showing Kratos's refusal,
+        // which offers no way out.
+        Err(ory_kratos_client_wasm::apis::Error::ResponseError(res))
+          if session_already_available(&res.content) =>
+        {
+          nav.replace(Route::SetSessionCookie { state: true });
+          Err(adopting_session())
+        }
         Err(ory_kratos_client_wasm::apis::Error::ResponseError(res)) => {
           Err(res.view_response_content())
         }
