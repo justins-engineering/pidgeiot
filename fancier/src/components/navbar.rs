@@ -123,6 +123,11 @@ pub fn Navbar() -> Element {
                       "Organizations"
                     }
                   }
+                  // The public link row hides once signed in, and this is
+                  // where an account goes to upgrade.
+                  li {
+                    Link { to: Route::PricingPage {}, "Plans & Pricing" }
+                  }
                   li {
                     Link { to: Route::SettingsFlow { flow: None },
                       "Settings"
@@ -312,6 +317,17 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Organizations"
+                }
+              }
+              li {
+                Link {
+                  to: Route::PricingPage {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdTag,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "Plans & Pricing"
                 }
               }
               li {
