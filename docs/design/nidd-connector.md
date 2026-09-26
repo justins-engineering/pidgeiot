@@ -770,7 +770,12 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
     `count_billable_messages(env, id, 1)` and `update_shadow_pg_db` exactly as
     `handle_ws_shadow_report` does today (`:1797-1828`). The downlink goes first because it must
     reach the device inside the connection the uplink opened (row 24), and neither Postgres call
-    has a deadline.
+    has a deadline. What that order costs: the send has no overall bound (the session's login wait
+    and retry), so the bill is stamped when it ends and at a period boundary can land in the next
+    period; an object reset during the send loses the report's bill and sync, an undercount and
+    never a second bill; and a dashboard shadow write synced during the send can be overwritten in
+    the Postgres mirror by the report's older copy until the next shadow write. The DO stays
+    authoritative, and the dashboard's detail reads go through it.
     Neither the re-read nor the write can fail a stored frame, since a retry could only store
     and bill it twice. A failed re-read after step 7 decided is logged and answers 200
     with the outcome, writing and sending nothing: the pre-await copy could undo a push planned
