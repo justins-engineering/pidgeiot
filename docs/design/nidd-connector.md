@@ -766,9 +766,11 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
     Durable Objects" (https://developers.cloudflare.com/durable-objects/api/state/, read
     2026-09-24), so `spawn_local` is the spelling that says what happens. The tail owns clones of
     `env`, the `SqlStorage` handle (`Clone`, worker 0.8.6 `src/sql.rs:179`) and the pigeon id, and
-    runs, in order: for a newly stored report, `count_billable_messages(env, id, 1)` and
-    `update_shadow_pg_db` exactly as `handle_ws_shadow_report` does today (`:1797-1828`); then the
-    planned downlink, if any (6.4).
+    runs, in order: the planned downlink, if any (6.4); then, for a newly stored report,
+    `count_billable_messages(env, id, 1)` and `update_shadow_pg_db` exactly as
+    `handle_ws_shadow_report` does today (`:1797-1828`). The downlink goes first because it must
+    reach the device inside the connection the uplink opened (row 24), and neither Postgres call
+    has a deadline.
     Neither the re-read nor the write can fail a stored frame, since a retry could only store
     and bill it twice. A failed re-read after step 7 decided is logged and answers 200
     with the outcome, writing and sending nothing: the pre-await copy could undo a push planned
@@ -1674,7 +1676,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 38 | A downlink frame not from dovecote (any holder of the API credentials, a replayed old frame) | The device drops a frame whose tag fails; a replayed `SHADOW` loses to a newer version; a replayed `PAUSED` holds at most 86400 s | The claim key is kept in the pigeon's DO and the firmware, never in Postgres (section 9) or a log |
 | 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
-| 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still bills and syncs a stored report and sends the planned reply, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost |
+| 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still sends the planned reply and bills and syncs a stored report, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost |
 
 ## 13. Tests and the staging verification plan
 

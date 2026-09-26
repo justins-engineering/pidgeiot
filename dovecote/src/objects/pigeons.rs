@@ -3350,9 +3350,11 @@ fn finish_nidd_uplink(
   Response::ok(outcome)
 }
 
-/// Runs what an uplink or a dashboard write leaves for after the response, in order: the bill
-/// and Postgres sync of a newly stored shadow report, then the planned downlink. The object
-/// stays active while this I/O is pending; `waitUntil` has no effect in a Durable Object.
+/// Runs what an uplink or a dashboard write leaves for after the response, in order: the planned
+/// downlink, then the bill and Postgres sync of a newly stored shadow report. The downlink goes
+/// first because it must reach the device while the uplink's connection is still up, and neither
+/// Postgres call is bounded. The object stays active while this I/O is pending; `waitUntil` has
+/// no effect in a Durable Object.
 fn spawn_nidd_tail(
   pigeons: &Pigeons,
   identity: Option<NiddIdentity>,
@@ -3366,13 +3368,12 @@ fn spawn_nidd_tail(
   let sql = pigeons.sql.clone();
   let pigeon_id = pigeons.state.id().to_string();
   wasm_bindgen_futures::spawn_local(async move {
+    if let (Some(downlink), Some(identity)) = (downlink, identity) {
+      send_nidd_downlink(&env, &sql, &pigeon_id, &identity, downlink).await;
+    }
     if let Some(shadow) = stored_report {
       sync_shadow_report(&env, &pigeon_id, &shadow).await;
     }
-    let (Some(downlink), Some(identity)) = (downlink, identity) else {
-      return;
-    };
-    send_nidd_downlink(&env, &sql, &pigeon_id, &identity, downlink).await;
   });
 }
 
