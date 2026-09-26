@@ -185,11 +185,10 @@ fn FlockCard(flock: Flock) -> Element {
           }
 
           div { class: "flex flex-col space-y-3",
+            // No plan row: flocks.service_plan is written "free" at creation
+            // and nothing updates it, so it would name the free tier on a
+            // paid organization's flocks too.
             div { class: "flex flex-col space-y-2 text-sm",
-              div {
-                span { class: "font-bold", "Plan: " }
-                span { class: "text-base-content/70", "{flock.service_plan.to_owned()}" }
-              }
               div {
                 span { class: "font-bold", "Updated: " }
                 span { class: "text-base-content/70",
