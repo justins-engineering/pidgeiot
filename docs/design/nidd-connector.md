@@ -1191,8 +1191,8 @@ second environment able to send could push its own shadow, with a `target_versio
 set, to a physical device whose reports go elsewhere; with API credentials it could also read the
 other's listener password back [LIST]. So one environment is NIDD-configured at a time: `send`
 answers 503 `not_configured` whenever `THINGSPACE_CALLBACK_ALLOWED_IPS` is empty, at cutover
-staging loses its account name and API secrets, not only its allowlist (8.5), and dev never holds
-ThingSpace API secrets.
+staging loses its account name, API secrets and callback password, not only its allowlist (8.5),
+and dev never holds ThingSpace API secrets.
 
 `NIDD_ALLOWED_ORG_IDS` is the create gate of 4.6: comma-separated organization ids, empty denying
 every Nidd create. `THINGSPACE_LOGIN_EPOCH` is folded into the login latch's fingerprint (8.3);
@@ -1394,12 +1394,12 @@ by running the script again, and 24 hours after any run that set
 eight addresses into production's `[vars]` allowlist and JES's organization ids into its
 `NIDD_ALLOWED_ORG_IDS`, and deploy; run the script with `env_flag=()` and the URL
 `https://api.pidgeiot.com/internal/thingspace/nidd`, then steps 7 and 8; then delete staging's
-`THINGSPACE_ACCOUNT_NAME` and its four API secrets (`wrangler secret delete <NAME> --env
-staging`), set its allowlist back to `""`, and deploy staging. From then on staging has NIDD off
-entirely: a Nidd create answers 403, a callback 503, a send 503 `not_configured`, and staging's
-credentials can neither reach a production device nor read production's listener password. The
-synthetic suite runs on dev after cutover, and on staging again only with a second ThingSpace
-account.
+`THINGSPACE_ACCOUNT_NAME`, its four API secrets and its callback password (`wrangler secret delete
+<NAME> --env staging`), set its allowlist back to `""`, and deploy staging. From then on staging
+has NIDD off entirely: a Nidd create answers 403, a callback 403 at the empty allowlist, a send 503
+`not_configured`, and staging's credentials can neither reach a production device nor read
+production's listener password. The synthetic suite runs on dev after cutover, and on staging
+again only with a second ThingSpace account.
 
 ## 9. Postgres
 
@@ -1670,7 +1670,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | A callback unanswered after about 4 s draws a retry while it runs (13.3, where one attempt took 4.96 s); the retry waits for the first attempt and answers `duplicate` once it stored |
 | 35 | Carrier and ThingSpace see frame contents, and the claim key, which also keys the downlink tag, once per boot | Accepted for v1 | They carry every frame already. For uplink the key is no use without a Verizon source address and the listener password, which every API-credential holder can read back; that residual is D12. Application-layer encryption would cost bytes on every frame and is left out of v1 |
 | 36 | A secret reaching a log | No log line carries a body, frame, password, token, account name, IMEI, ICCID, IMSI or a serde error's `Display` | Reviewed across every `console_*!` in the change; a unit test proves a numeric IMEI never reaches the parse-error line |
-| 37 | Both deployed environments configured | Only during bring-up. At cutover staging loses its account name and API secrets, and `send` answers 503 wherever the allowlist is empty, so only the registered environment receives or sends | [CBBP] allows one endpoint per service per account, and [SEND] requires the listener for sending |
+| 37 | Both deployed environments configured | Only during bring-up. At cutover staging loses its account name, API secrets and callback password, and `send` answers 503 wherever the allowlist is empty, so only the registered environment receives or sends | [CBBP] allows one endpoint per service per account, and [SEND] requires the listener for sending |
 | 38 | A downlink frame not from dovecote (any holder of the API credentials, a replayed old frame) | The device drops a frame whose tag fails; a replayed `SHADOW` loses to a newer version; a replayed `PAUSED` holds at most 86400 s | The claim key is kept in the pigeon's DO and the firmware, never in Postgres (section 9) or a log |
 | 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |

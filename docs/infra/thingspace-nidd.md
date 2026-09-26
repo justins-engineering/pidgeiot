@@ -296,14 +296,15 @@ the same floor at its first NIDD deploy.
    and deploy fancier, then dovecote.
 3. Run the registration script with `env_flag=()` and
    `url=https://api.pidgeiot.com/internal/thingspace/nidd`, then steps 7 and 8.
-4. Take NIDD off staging entirely: delete its account name and its four API secrets with
-   `bunx wrangler secret delete <NAME> --env staging` for each, set its
+4. Take NIDD off staging entirely: delete its account name, its four API secrets and its callback
+   password (and `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, if still set) with
+   `(cd dovecote && bunx wrangler secret delete <NAME> --env staging)` for each, set its
    `THINGSPACE_CALLBACK_ALLOWED_IPS` back to `""`, and deploy staging.
 
-From then on a Nidd create on staging answers `403`, a callback `503`, and a send
-`503 not_configured`, and staging's credentials can neither reach a production device nor read
-production's listener password back. Synthetic callback tests run on dev after cutover, and on
-staging again only with a second ThingSpace account.
+From then on a Nidd create on staging answers `403`, a callback `403` (the empty allowlist refuses
+it before anything else is read), and a send `503 not_configured`, and staging's credentials can
+neither reach a production device nor read production's listener password back. Synthetic callback
+tests run on dev after cutover, and on staging again only with a second ThingSpace account.
 
 ## Rotation
 
