@@ -519,13 +519,22 @@ impl NiddRow {
     self.seen.iter().any(|seen| seen == key)
   }
 
-  /// Records an uplink's key, forgetting the oldest beyond the window.
+  /// Records an uplink's key once, forgetting the oldest beyond the window. A key already held
+  /// is left in place, so an uplink that claimed its key before awaiting can record it again.
   pub fn remember(&mut self, key: String) {
+    if self.has_seen(&key) {
+      return;
+    }
     self.seen.push(key);
     if self.seen.len() > NIDD_SEEN_KEYS {
       let excess = self.seen.len() - NIDD_SEEN_KEYS;
       self.seen.drain(..excess);
     }
+  }
+
+  /// Releases a key claimed for an uplink that was not stored, so ThingSpace's retry can store it.
+  pub fn forget(&mut self, key: &str) {
+    self.seen.retain(|seen| seen != key);
   }
 
   /// `seen` as the JSON text the table stores.
@@ -1090,6 +1099,19 @@ mod tests {
     }
     .into();
     assert_eq!(stored.seen, row.seen);
+  }
+
+  #[test]
+  fn a_key_is_remembered_once_and_released_alone() {
+    let mut row = NiddRow::default();
+    row.remember("a".to_string());
+    row.remember("b".to_string());
+    row.remember("a".to_string());
+    assert_eq!(row.seen, ["a", "b"]);
+    row.forget("a");
+    assert_eq!(row.seen, ["b"]);
+    row.forget("a");
+    assert_eq!(row.seen, ["b"]);
   }
 
   #[test]
