@@ -555,7 +555,9 @@ note_log "$m"
 step 4 "telemetry before HELLO"
 m=$(mark)
 r=$(rid s4)
+r4=$r
 telemetry '{"temp_c":"20.5"}'
+cp "$work/frame" "$work/frame-s4"
 uplink "TELEMETRY before HELLO" "$r" 1 "$imei_a" "$iccid1"
 expect "answers 200" 200 "$status"
 expect_log "the uplink is dropped as unclaimed" "$m" \
@@ -602,6 +604,29 @@ expect_log "a SHADOW is planned" "$m" \
   "nidd_dl kind=shadow outcome=unavailable reason=not_configured pigeon=$pigeon"
 expect "claimed and pinned to ICCID1" "1|1" \
   "$(nidd_state "$pigeon" "claimed_at IS NOT NULL, line_id = '$iccid1'")"
+note_log "$m"
+
+# Callbacks arrive out of order, so a TELEMETRY sent after a wake's HELLO can be processed before
+# it and dropped as unclaimed, unjudged. The carrier's copy of that send arriving after the claim
+# is its only second chance: it must be stored, once, while a resend of the dropped callback
+# itself stays a duplicate.
+m=$(mark)
+cp "$work/frame-s4" "$work/frame"
+uplink "step 4's TELEMETRY resent under its own request id" "$r4" 1 "$imei_a" "$iccid1"
+expect_log "the dropped callback resent is still a duplicate" "$m" \
+  "outcome=duplicate pigeon=$pigeon request=$r4"
+r=$(rid s5r)
+uplink "step 4's TELEMETRY under a new request id, the claim made" "$r" 1 "$imei_a" "$iccid1"
+expect "the copy after the claim answers 200" 200 "$status"
+expect_log "and is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+r2=$(rid s5s)
+uplink "step 4's TELEMETRY under a third request id" "$r2" 1 "$imei_a" "$iccid1"
+expect_log "a further copy is a repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r2"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=temp_c&since=$(iso_ago 3600)"
+expect "one history row, step 4's reading" "1 20.5" \
+  "$(jq length "$resp") $(jq -r '.[0].value' "$resp")"
+note "  Billing: dev bills telemetry on no surface; the one history row stands for the one"
+note "  enqueue a deployed environment bills, and neither the duplicate nor the repeat enqueues."
 note_log "$m"
 
 m=$(mark)
@@ -827,6 +852,47 @@ api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=loops&since=$(iso_ag
 expect "two history rows, one per send" 2 "$(jq length "$resp")"
 note "  Billing: dev bills telemetry on no surface; the history rows stand for the enqueues a"
 note "  deployed environment bills, one per send, and a repeat is never enqueued."
+note_log "$m"
+
+# The second delivery can also land while the first is still inside its enqueue, held here inside
+# its history write as the retry above was. It must wait for the first delivery, then answer
+# repeat, rather than find nothing under its own request id and store the send again.
+m=$(mark)
+r=$(rid s7p)
+r2=$(rid s7q)
+telemetry '{"rounds":"1"}'
+uplink_body "$r" 1 "$imei_a" "$iccid2" >"$work/body-first"
+uplink_body "$r2" 1 "$imei_a" "$iccid2" >"$work/body-again"
+hold_history
+note "> POST /internal/thingspace/nidd the first delivery (request $r), not awaited"
+post_async "$work/body-first" "$work/status-first"
+first=$!
+expect "the first delivery is held inside its history write" yes \
+  "$(insert_held && echo yes || echo no)"
+note "> POST /internal/thingspace/nidd the same frame under a new request id ($r2), not awaited"
+post_async "$work/body-again" "$work/status-again"
+again=$!
+expect_no_log "the second delivery waits for the first, unanswered while it is held" "$m" \
+  "request=$r2"
+expect "only the first delivery's insert waits on the lock, and nothing is stored yet" "1 0" \
+  "$(sql "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+    WHERE c.relname = 'pigeon_telemetry_history' AND NOT l.granted;") $(log_since "$m" |
+    grep -c "outcome=stored pigeon=$pigeon" || true)"
+release_history
+wait "$first" "$again" || true
+expect "both deliveries answer 200" "200 200" \
+  "$(cat "$work/status-first") $(cat "$work/status-again")"
+expect_log "released, the first delivery is stored" "$m" \
+  "outcome=stored pigeon=$pigeon request=$r attempt=1"
+expect_log "and the second answers repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r2"
+expect "one stored, one repeat" "1 1" \
+  "$(log_since "$m" | grep -c "outcome=stored pigeon=$pigeon" || true) $(log_since "$m" |
+    grep -c "outcome=repeat pigeon=$pigeon" || true)"
+expect "pigeon_nidd records both request ids" "1|1" \
+  "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0, instr(seen, '$r2:') > 0")"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=rounds&since=$(iso_ago 3600)"
+expect "one history row" 1 "$(jq length "$resp")"
+note "  Billing: the one history row stands for the one enqueue a deployed environment bills."
 note_log "$m"
 
 m=$(mark)
