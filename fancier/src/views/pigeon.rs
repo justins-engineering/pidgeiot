@@ -9,6 +9,7 @@ use crate::helpers::device_credentials;
 use crate::helpers::firmware_repush;
 use crate::helpers::gps_track;
 use crate::helpers::move_flock;
+use crate::models::AlertVariant;
 use crate::{Route, api};
 use capsules::{
   Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon,
@@ -17,7 +18,7 @@ use capsules::{
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTerminal, LdX};
+use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdInfo, LdTerminal, LdX};
 use uuid::Uuid;
 
 #[component]
@@ -138,6 +139,30 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 }
               }
               div { class: "w-full flex flex-col items-center justify-between gap-4 my-2 md:my-4",
+                // A pigeon that has never reported has one job left, and the
+                // rest of the page is about devices that already run. Waits for
+                // the telemetry read, so a pigeon that has reported never
+                // flashes it.
+                if telemetry_latest().is_some() && last_seen.is_none()
+                    && pd.pigeon.suspended_at.is_none()
+                {
+                  section { id: "pigeon-first-report", class: "w-full",
+                    div {
+                      role: "status",
+                      class: "alert alert-soft {AlertVariant::Info.theme_classes()}",
+                      Icon { icon: LdInfo, title: "Next step" }
+                      span {
+                        "This pigeon hasn't reported yet. Put its endpoint and token into a device build (the samples read them from prj.local.conf) and run it; "
+                        Link {
+                          class: "link font-semibold",
+                          to: Route::GettingStartedPage {},
+                          "the getting-started guide"
+                        }
+                        " walks through it with a simulated device, no board needed."
+                      }
+                    }
+                  }
+                }
                 section { id: "pigeonInfo",
                   PigeonInfo { pigeon: pd.pigeon.clone() }
                 }
