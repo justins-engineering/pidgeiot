@@ -803,7 +803,8 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
 /// Creates this pigeon in its fresh Durable Object: the row, the creator's owner ACL and an empty
 /// shadow, with every connector credential minted here. The body's connector only names the
 /// variant, except a `Nidd` connector's IMEI, which must name this very object: a second create
-/// for one IMEI lands here too and answers 409.
+/// for one IMEI lands here too and answers 409. A failure after the first row is written removes
+/// what was written.
 async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let Ok(Some(user_id)) = req.headers().get("X-User-Id") else {
     return Response::error("Request missing 'X-User-Id'", 400);
@@ -931,7 +932,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return clear_failed_create(pigeons);
       }
     },
     Err(e) => {
@@ -945,7 +946,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     vec![user_id.into()],
   ) {
     console_error!("Pigeon ACL create execution error: {e}");
-    return Response::error("Internal Server Error", 500);
+    return clear_failed_create(pigeons);
   }
 
   let shadow = match pigeons.sql.exec(
@@ -956,12 +957,12 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       Ok(s) => PigeonShadow::from(s),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return clear_failed_create(pigeons);
       }
     },
     Err(e) => {
       console_error!("Pigeon shadow create execution error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return clear_failed_create(pigeons);
     }
   };
 
@@ -982,6 +983,22 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     .with_status(201)
     .with_header("Location", &location)?
     .from_json(&response)
+}
+
+/// Removes what a failed `create` wrote after its `pigeons` INSERT and answers 500. The three
+/// statements share no transaction, and a Nidd pigeon's IMEI names this object, so a row left
+/// here would answer every retry 409 while no Postgres row lists the pigeon. Nothing awaits
+/// between the INSERT and here, so these rows are this create's own; the shadow cascades.
+fn clear_failed_create(pigeons: &Pigeons) -> Result<Response> {
+  for statement in ["DELETE FROM pigeon_acl;", "DELETE FROM pigeons;"] {
+    if let Err(e) = pigeons.sql.exec(statement, None) {
+      console_error!(
+        "Pigeon create: cleanup failed for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+    }
+  }
+  Response::error("Internal Server Error", 500)
 }
 
 /// Mints this pigeon a new token, and a new PSK or claim key for the variants that carry one,

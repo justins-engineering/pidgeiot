@@ -1447,7 +1447,9 @@ served. So leftovers are made unreachable by construction:
   organization's ACL grant, the parse of the DO's answer), the route undoes the create through the
   DO's own `/pigeon/delete`, as the new owner, and answers 503, so no pigeon ever exists over an
   id whose leftovers were not cleared. This is the one place the best-effort mirror rule gives
-  way, and only for this reason; the operator retries.
+  way, and only for this reason; the operator retries. A create the DO itself fails after its
+  first INSERT removes its own rows before answering 500, and a create whose dispatch to the DO
+  fails answers 503 without an undo (row 42).
 - The log-dictionary GET (`dovecote/src/lib.rs:2823-2891`) answers 404 when the R2 object's
   `uploaded()` time predates the pigeon's `created_at`, which the DO's authorization check
   (`/pigeon/authz/check`, `dovecote/src/objects/pigeons.rs:375`) returns in a response header and
@@ -1677,6 +1679,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
 | 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still sends the planned reply and bills and syncs a stored report, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost |
+| 42 | A Nidd create fails inside the DO after its `pigeons` INSERT (the row's read-back, the ACL or the shadow insert), or its dispatch to the DO fails | Inside the DO: the rows it wrote are deleted and it answers 500, so the IMEI is free for the retry. A dispatch error: 503, the derived pigeon id logged, nothing undone. If the create had landed, the pigeon has no Postgres row, so no list shows it, and every retry answers 409 until its creator, given that id from the log, deletes it (`DELETE /pigeons/:pigeon_id`) | The dispatch error may have hidden a 409 for a pigeon that already held the IMEI, and an undo as this principal would delete it wherever `is_owner` admits an organization owner or admin. The residual needs a transport failure after the DO committed; a failed clean-up inside the DO is logged by pigeon id too |
 
 ## 13. Tests and the staging verification plan
 

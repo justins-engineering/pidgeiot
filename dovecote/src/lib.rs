@@ -1958,7 +1958,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         }
       };
 
-      let Ok(do_response) = proxy_to_pigeon_do(
+      let do_response = match proxy_to_pigeon_do(
         req,
         &principal.user_id,
         principal.org_roles_header(),
@@ -1966,10 +1966,26 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         "/create",
       )
       .await
-      else {
-        return Response::error("Internal Server Error", 500)
+      {
+        Ok(do_response) => do_response,
+        // The create may have landed with its answer lost, or the answer lost may have been a
+        // 409 for a pigeon that already held the IMEI, which this principal's undo could delete.
+        // So nothing is undone: if it landed, a retry answers 409 and the pigeon is deleted by the
+        // id logged here.
+        Err(e) if nidd_imei.is_some() => {
+          console_error!("Nidd create: dispatch failed for pigeon {obj_id}: {e}");
+          return Response::error(
+            "Service Unavailable: the pigeon's object did not answer; try again",
+            503,
+          )
           .unwrap()
           .with_cors(&cors);
+        }
+        Err(_) => {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
       };
       if do_response.status_code() >= 400 {
         return do_response.with_cors(&cors);

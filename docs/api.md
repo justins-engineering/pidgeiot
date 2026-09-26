@@ -1135,9 +1135,14 @@ enabled in this environment" when this deployment has no ThingSpace account conf
 allowlisted, checked before the IMEI is looked at; `409` "Conflict: a pigeon with this IMEI
 already exists"; `503` "Service Unavailable: the pigeon could not be recorded; try again" when a
 step after the pigeon's creation fails (its Postgres record or the organization's access grant),
-in which case the create is undone, so a retry starts clean. The `201` body's `connector.Nidd`
-carries `endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like the token, the
-claim key is shown only here and by `token/refresh`.
+in which case the create is undone, so a retry starts clean; `503` "Service Unavailable: the
+pigeon's object did not answer; try again" when the create could not reach the pigeon's Durable
+Object or lost its answer. That one is not undone, because the lost answer may have been a `409`
+for a pigeon that already holds the IMEI. If a retry then answers `409` and none of your pigeons
+lists that IMEI, the first create landed unlisted: support has its pigeon id from the failure's
+log line, and a `DELETE /pigeons/:pigeon_id` by its creator frees the IMEI. The `201` body's
+`connector.Nidd` carries `endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like
+the token, the claim key is shown only here and by `token/refresh`.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flock/pigeons \
