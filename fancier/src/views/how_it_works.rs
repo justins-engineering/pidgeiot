@@ -28,7 +28,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdKeyRound, class: "size-8 stroke-primary", title: "Key icon" }
           },
           title: "Provision the device and get its key",
-          body: "Create a flock, then create a pigeon inside it. That call mints the device's identity: its own Ed25519 keypair, generated server-side inside the isolated Durable Object that will later verify it. The private key signs exactly one bearer token and is then discarded; only the public key is ever written to storage, and it never leaves the object that checks against it. The token itself is 69 bytes of binary (a version byte, a 4-byte expiry, and a 64-byte signature), not a JWT, and it carries no device id at all: the binding to a specific pigeon comes from which pigeon's stored public key verifies the signature. The response is the only time the token is ever returned, so save it then.",
+          body: "Create a flock, then create a pigeon inside it. That call mints the device's identity: its own Ed25519 keypair, generated server-side inside the isolated Durable Object that will later verify it. The private key signs exactly one bearer token and is then discarded; the object verifies against the public key alone, and that key never leaves it. The token itself is 69 bytes of binary (a version byte, a 4-byte expiry, and a 64-byte signature), not a JWT, and it carries no device id at all: the binding to a specific pigeon comes from which pigeon's stored public key verifies the signature. The response is the only time the token is ever returned, so save it then.",
           code: Some("POST /flock/pigeons\n{\"flock_id\":\"…\",\"name\":\"Coop Sensor 1\",\n \"connector\":{\"Https\":{\"endpoint\":\"\",\"token\":\"\"}}}\n\n201 Created  →  connector.Https.token  (shown once)"),
         }
 
@@ -38,7 +38,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdRadio, class: "size-8 stroke-primary", title: "Radio icon" }
           },
           title: "Pick a transport that suits the hardware",
-          body: "The same device API is reachable four ways. Plain HTTPS is the simplest and works anywhere. A device on mains power or WiFi can instead hold one long-lived WebSocket, so config reaches it the instant you push it rather than at the next poll: same credential, same routes, just a persistent channel. And for hardware too constrained to carry a full HTTPS stack, a pigeon can be given a CoAP connector instead: a dedicated terminator speaks both DTLS/UDP and RFC 8323 TLS/TCP, each authenticated by its own per-device pre-shared key, and proxies into the very same ingestion API. MQTT is the fourth: a broker on port 8883 takes either a certificate handshake, with the device token as the CONNECT password, or a TLS-PSK one, and turns every publish into that same ingestion call, while the pigeon's target config arrives as a retained message rather than a poll. There is no unencrypted path on any of the four.",
+          body: "The same device API is reachable four ways. Plain HTTPS is the simplest and works anywhere. A device on mains power or WiFi can instead hold one long-lived WebSocket, so config reaches it the instant you push it rather than at the next poll: same credential, same telemetry and shadow, just a persistent channel. And for hardware too constrained to carry a full HTTPS stack, a pigeon can be given a CoAP connector instead: a dedicated terminator speaks both DTLS/UDP and RFC 8323 TLS/TCP, either one authenticated by the device's own pre-shared key, and proxies into the very same ingestion API. MQTT is the fourth: a broker on port 8883 takes either a certificate handshake, with the device token as the CONNECT password, or a TLS-PSK one, and turns every publish into that same ingestion call, while the pigeon's target config arrives as a retained message rather than a poll. There is no unencrypted path on any of the four.",
           code: None,
         }
 
@@ -48,7 +48,7 @@ pub fn HowItWorksPage() -> Element {
             Icon { icon: LdSend, class: "size-8 stroke-primary", title: "Send icon" }
           },
           title: "The device reports telemetry",
-          body: "A report is a flat JSON object of string key/value pairs: no nesting, no schema for us to enforce, and no types to negotiate ahead of time. In production the gateway verifies the bearer token, queues the report and answers 202 immediately, so a device on a slow cellular link isn't holding a socket open waiting on a database write. Values come back out as strings, with a parsed numeric alongside them wherever the value happens to be a number, so numeric series can be plotted without a cast.",
+          body: "A reading is a flat JSON object of string key/value pairs: no nesting, no schema for us to enforce, and no types to negotiate ahead of time. A report carries one reading, or a batch of them, each able to say how many seconds ago it was taken. In production the gateway verifies the bearer token, queues the report and answers 202 immediately, so a device on a slow cellular link isn't holding a socket open waiting on a database write. Values come back out as strings, with a parsed numeric alongside them wherever the value happens to be a number, so numeric series can be plotted without a cast.",
           code: Some("POST /device/pigeons/<id>/telemetry\nAuthorization: Bearer <device_token>\n{\"temp_c\":\"21.5\",\"battery_v\":\"3.9\"}\n\n202 Accepted"),
         }
 
@@ -80,7 +80,7 @@ pub fn HowItWorksPage() -> Element {
           "You can run all five without owning hardware"
         }
         p { class: "text-lg text-base-content/70 mb-8 leading-relaxed",
-          "The device library builds for Zephyr's native_sim target, so the whole path above runs on your own machine in about ten minutes."
+          "The device library builds for Zephyr's native_sim target, so the whole path above, firmware updates aside, runs on your own machine in about ten minutes."
         }
         div { class: "flex flex-col sm:flex-row gap-4 justify-center items-center",
           Link {
