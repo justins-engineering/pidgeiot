@@ -336,6 +336,10 @@ fn Answer(question: String, body: String, children: Element) -> Element {
 
 #[component]
 pub fn PricingPage() -> Element {
+  // A signed-in visitor already has the free tier, and the sign-up form
+  // would only refuse them.
+  let signed_in = (use_context::<Session>().state)().is_authenticated();
+
   rsx! {
     section { id: "pricing-hero", class: "px-4 md:px-10 pt-16 pb-12 bg-base-200 border-b border-base-300",
       div { class: "max-w-6xl mx-auto",
@@ -368,10 +372,18 @@ pub fn PricingPage() -> Element {
             ],
             featured: true,
             cta: rsx! {
-              Link {
-                class: "btn btn-primary w-full font-bold",
-                to: Route::RegisterFlow { flow: None },
-                "Start free"
+              if signed_in {
+                Link {
+                  class: "btn btn-primary w-full font-bold",
+                  to: Route::Dashboard {},
+                  "Open your dashboard"
+                }
+              } else {
+                Link {
+                  class: "btn btn-primary w-full font-bold",
+                  to: Route::RegisterFlow { flow: None },
+                  "Start free"
+                }
               }
             },
           }
@@ -575,11 +587,17 @@ pub fn PricingPage() -> Element {
           "Start there, and upgrade from your organization page when a fleet outgrows it."
         }
         div { class: "flex flex-col sm:flex-row justify-center gap-4",
-          Link {
-            class: "btn btn-lg btn-glow font-bold",
-            to: Route::RegisterFlow { flow: None },
-            Icon { icon: LdPlay, class: "mr-2", title: "Start free" }
-            "Start free"
+          if signed_in {
+            Link { class: "btn btn-lg btn-glow font-bold", to: Route::Dashboard {},
+              "Open your dashboard"
+            }
+          } else {
+            Link {
+              class: "btn btn-lg btn-glow font-bold",
+              to: Route::RegisterFlow { flow: None },
+              Icon { icon: LdPlay, class: "mr-2", title: "Start free" }
+              "Start free"
+            }
           }
           Link { class: "btn btn-lg btn-outline font-bold", to: Route::DemoPage {},
             "Try the live demo"
