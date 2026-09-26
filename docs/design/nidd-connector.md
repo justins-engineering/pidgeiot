@@ -897,12 +897,12 @@ added.
   `connector_without_secrets(&Connector) -> Connector` in `dovecote/src/helpers/pigeons.rs`, which
   `strip_secrets` and the two Postgres writers call, the writers for `Nidd` only (section 9).
 - `get_device_psk_internal` (`:1058`): unchanged; `psk()` is `None`, so 404.
-- **Rollback guard, shipped first and alone.** `refresh_token` reads the connector through
-  `From<PigeonRow>`, whose `unwrap_or_default()` (`capsules/src/lib.rs:241`) turns an unknown
-  variant into an empty `Https` connector, which the refresh would then write back, destroying the
-  IMEI. Task 0.4 makes `refresh_token` parse the stored `connector` text itself and answer 500
-  "stored connector unreadable" when it fails. Deployed before the Nidd release, it makes a later
-  rollback land on code that refuses rather than rewrites.
+- **Rollback guard.** `refresh_token` reads the connector through `From<PigeonRow>`, whose
+  `unwrap_or_default()` (`capsules/src/lib.rs:241`) turns an unknown variant into an empty `Https`
+  connector, which the refresh would then write back, destroying the IMEI. Task 0.4 makes
+  `refresh_token` parse the stored `connector` text itself and answer 500 "stored connector
+  unreadable" when it fails. It ships with the Nidd release rather than before it: that release is
+  the rollback floor (row 31), so no rollback can land on code without the guard.
 
 ### 6.6 `dovecote/src/helpers/nidd.rs`
 
@@ -1664,7 +1664,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 28 | Two creates race for one IMEI | Both reach the same DO, which serializes them; the second answers 409 | Uniqueness without an index |
 | 29 | An account tries to register an IMEI it does not hold | Outside `NIDD_ALLOWED_ORG_IDS`: 403 before any IMEI lookup, so it can neither probe nor squat. Inside it (JES's own organizations): the rightful create answers 409, no data or downlink crosses, and the organization holding the pigeon deletes it | While D2 keeps NIDD to JES's devices, only JES can hold a Nidd pigeon; D1 is revisited before that changes |
 | 30 | Delete, then the same IMEI registered again | Same DO id; the mirror insert deletes any leftover in its own transaction, a failed transaction or any other failure after the DO's 201 undoes the create, and a dictionary older than the pigeon is never served | The seconds-long queue window of section 9 is the residual |
-| 31 | dovecote rolled back past the Nidd release while a Nidd pigeon exists | Old code reads the row as an empty `Https` connector (`capsules/src/lib.rs:241`) | Task 0.4 ships first, so a rollback lands on a `refresh_token` that refuses rather than rewrites; the runbook rule stays: never roll back past the Nidd release with Nidd pigeons live |
+| 31 | dovecote rolled back past the Nidd release | Refused: the release applies Durable Object migration `v2` (`ThingSpaceSession`), and Cloudflare refuses a rollback across a Durable Object class change. Older code would read a Nidd row as an empty `Https` connector (`capsules/src/lib.rs:241`) | The release's first production deploy is the rollback floor; recovery after it is a forward redeploy that keeps the class exported, the runbook's cutover rule |
 | 32 | A browser tab holding a pre-Nidd fancier bundle | The flock list fails to parse until reload | fancier deploys first |
 | 33 | `NiddService` re-registered elsewhere on the account | Uplink silently goes elsewhere | The runbook's step 2 at every deploy; D11 |
 | 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | A callback unanswered after about 4 s draws a retry while it runs (13.3, where one attempt took 4.96 s); the retry waits for the first attempt and answers `duplicate` once it stored |
@@ -2195,7 +2195,7 @@ Phase 0, the gate and the rollback guard:
 | 0.1 | owner | B1 in the ThingSpace portal: plan, `ConfigCreated`, account name, IP data, the current `NiddService` holder | 0.5 to 1 | none |
 | 0.2 | pigeon-examples | `nidd_probe` (13.2) | 4 to 8 | none |
 | 0.3 | bench | B2, B3 | 2 to 4 | 0.1, 0.2 |
-| 0.4 | pidgeiot | `refresh_token` refuses an unparseable stored connector (6.5); deployed alone, staging then production | 1 to 2 | none |
+| 0.4 | pidgeiot | `refresh_token` refuses an unparseable stored connector (6.5); ships with the Nidd release, the rollback floor (row 31) | 1 to 2 | none |
 | 0.5 | owner | Done: the SDK's example worker deployment and its KV namespace deleted, the UWS password and the OAuth key pair rotated, and `secrets.env` updated. Its default `api` build (`thingspace-sdk-rust/examples/cf-worker/wasm-serv/Cargo.toml:38`) serves listener list, register and deregister, a device list and `send_nidd` with no authentication (`src/lib.rs:25-29`), and the list returns every listener password [LIST] | 1 to 2 | none |
 
 Phase 1, the platform, on branch `nidd-connector`:
@@ -2243,11 +2243,12 @@ Totals: 65 to 105 engineering hours for the platform through a proven staging lo
 2); 36 to 62 for the device library and production (Phases 3 and 4); 101 to 167 in all. Owner: 3.5
 to 7 hours.
 
-Order of deploys: 0.5 first, done; 0.4 alone; the Phase 0 gate; the SDK patch pushed
-and pinned; fancier with the variant (staging, and production before any production Nidd pigeon);
-dovecote with the NIDD code but NIDD off (no `THINGSPACE_ACCOUNT_NAME`), which changes nothing
-observable; staging secrets, registration and tier 2; the device library and tier 3; production
-last. No Postgres migration at any step.
+Order of deploys: 0.5 first, done; the Phase 0 gate; the SDK patch pushed and pinned; fancier with
+the variant (staging, and production before any production Nidd pigeon); dovecote with the NIDD
+code, 0.4 among it, but NIDD off (no `THINGSPACE_ACCOUNT_NAME`), which changes nothing observable
+but is the rollback floor, since its Durable Object migration `v2` bars any rollback to an earlier
+version (row 31); staging secrets, registration and tier 2; the device library and tier 3;
+production last. No Postgres migration at any step.
 
 ## 16. Decisions for the owner
 

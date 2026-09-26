@@ -283,6 +283,13 @@ Then, outside the script:
 
 Each step on the owner's word.
 
+**The first production deploy of dovecote with the NIDD code is the rollback floor**, whether it
+is step 2's or an earlier one with NIDD off. It applies Durable Object migration `v2`, which adds
+the `ThingSpaceSession` class, and Cloudflare refuses to roll a Worker back across a Durable
+Object class change. From that deploy on, recovery is a forward redeploy that keeps the class
+exported, never `wrangler rollback` and never a deploy of code without the class. Staging crossed
+the same floor at its first NIDD deploy.
+
 1. Put production's API secrets (section 1 with `env_flag=()`).
 2. Commit Verizon's callback addresses into production's `[vars]`
    `THINGSPACE_CALLBACK_ALLOWED_IPS` and JES's organization ids into its `NIDD_ALLOWED_ORG_IDS`,
