@@ -197,6 +197,20 @@ callback() {
 # frame <type-hex> <body>: a device frame in $work/frame, the type byte then the body.
 frame() { { printf '%s' "$1" | xxd -r -p; printf '%s' "$2"; } >"$work/frame"; }
 
+# A device numbers its TELEMETRY frames: the type byte, a send sequence and a newline, then the
+# body. Each frame the suite builds is a new send and takes the next number; ten digits, so every
+# header is 11 bytes and the size checks below hold on every run.
+next_seq=$((1000000000 + RANDOM * 32768 + RANDOM))
+# telemetry <body> [sequence]: a TELEMETRY frame in $work/frame, the next sequence unless given.
+telemetry() {
+  local seq=${2-}
+  if [[ -z $seq ]]; then
+    seq=$next_seq
+    next_seq=$((next_seq + 1))
+  fi
+  { printf '\x01%s\n' "$seq"; printf '%s' "$1"; } >"$work/frame"
+}
+
 # hello <claim-key-hex>: a HELLO frame, the type byte then the key's 32 hex characters.
 hello() { { printf '\x04'; printf '%s' "$1"; } >"$work/frame"; }
 
@@ -541,7 +555,7 @@ note_log "$m"
 step 4 "telemetry before HELLO"
 m=$(mark)
 r=$(rid s4)
-frame 01 '{"temp_c":"20.5"}'
+telemetry '{"temp_c":"20.5"}'
 uplink "TELEMETRY before HELLO" "$r" 1 "$imei_a" "$iccid1"
 expect "answers 200" 200 "$status"
 expect_log "the uplink is dropped as unclaimed" "$m" \
@@ -592,14 +606,14 @@ note_log "$m"
 
 m=$(mark)
 r=$(rid s5d)
-frame 01 '{"temp_c":"21.0"}'
+telemetry '{"temp_c":"21.0"}'
 uplink "TELEMETRY naming ICCID2" "$r" 1 "$imei_a" "$iccid2"
 expect_log "another line's frame is dropped as unclaimed" "$m" \
   "outcome=unclaimed pigeon=$pigeon request=$r"
 expect "the claim and its pin are kept" "1|1" \
   "$(nidd_state "$pigeon" "claimed_at IS NOT NULL, line_id = '$iccid1'")"
 r=$(rid s5e)
-frame 01 '{"temp_c":"21.5"}'
+telemetry '{"temp_c":"21.5"}'
 uplink "TELEMETRY from ICCID1" "$r" 1 "$imei_a" "$iccid1"
 expect_log "the pinned line's frame is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 api a GET "/pigeons/$pigeon/telemetry"
@@ -611,11 +625,11 @@ uplink "HELLO with the right key from ICCID2" "$r" 1 "$imei_a" "$iccid2"
 expect_log "a good HELLO from ICCID2 claims again" "$m" "outcome=claimed pigeon=$pigeon request=$r"
 expect "the pin moved to ICCID2" 1 "$(nidd_state "$pigeon" "line_id = '$iccid2'")"
 r=$(rid s5g)
-frame 01 '{"temp_c":"22.0"}'
+telemetry '{"temp_c":"22.0"}'
 uplink "TELEMETRY from ICCID1 after the move" "$r" 1 "$imei_a" "$iccid1"
 expect_log "the old line is now dropped" "$m" "outcome=unclaimed pigeon=$pigeon request=$r"
 r=$(rid s5h)
-frame 01 '{"temp_c":"22.5"}'
+telemetry '{"temp_c":"22.5"}'
 uplink "TELEMETRY from ICCID2 after the move" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the new line is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 note_log "$m"
@@ -624,7 +638,7 @@ note_log "$m"
 # body carries the right password; none may be stored or leave a de-duplication key.
 step 1 "callback gates, against a claimed pigeon"
 m=$(mark)
-frame 01 '{"gate_probe":"1"}'
+telemetry '{"gate_probe":"1"}'
 # gate_body <request-id> <jq filter> <imei>: $work/frame as an uplink from ICCID2, then the filter.
 gate_body() { uplink_body "$1" 1 "$3" "$iccid2" | jq -c "$2" >"$work/body"; }
 inner=.niddResponse.niddMONotificationResponse
@@ -678,7 +692,7 @@ note_log "$m"
 step 6 "flat, batched and retried telemetry"
 m=$(mark)
 r=$(rid s6a)
-frame 01 '{"batt_mv":"3712","rsrp":"-97"}'
+telemetry '{"batt_mv":"3712","rsrp":"-97"}'
 uplink "flat TELEMETRY" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the flat report is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 api a GET "/pigeons/$pigeon/telemetry"
@@ -687,11 +701,12 @@ expect "the dashboard shows batt_mv and rsrp" "3712|-97" \
     (.[] | select(.key == "rsrp") | .value)] | join("|")' "$resp")"
 r=$(rid s6b)
 sent=$(date +%s)
-frame 01 "$(printf '%s' '{"reports":[{"age_secs":600,"metrics":{"uptime_s":"85800","rsrp":"-97",' \
+telemetry "$(printf '%s' '{"reports":[{"age_secs":600,"metrics":{"uptime_s":"85800","rsrp":"-97",' \
   '"batt_mv":"3712","temp_c":"21.5"}},{"age_secs":300,"metrics":{"uptime_s":"86100",' \
   '"rsrp":"-98","batt_mv":"3711","temp_c":"21.4"}},{"age_secs":0,"metrics":{"uptime_s":' \
-  '"86400","rsrp":"-97","batt_mv":"3711","temp_c":"21.4"}}]}')"
-expect "the batch is the design's 294-byte frame 1" 294 "$(wc -c <"$work/frame")"
+  '"86400","rsrp":"-97","batt_mv":"3711","temp_c":"21.4"}}]}')" 3141592653
+expect "the batch is the design's 305-byte frame 1, byte for byte" "305 4de851f1be23b5ba" \
+  "$(wc -c <"$work/frame") $(sha256sum "$work/frame" | cut -c1-16)"
 uplink "batched TELEMETRY (frame 1)" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the batch is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=uptime_s&since=$(iso_ago 3600)"
@@ -704,7 +719,7 @@ expect "three history rows, 600 s, 300 s and 0 s old (to the minute)" \
 # ThingSpace's only retry follows a refusal by about a second, so a later attempt is not aged.
 r=$(rid s6c)
 sent=$(date +%s)
-frame 01 '{"hum_pct":"41"}'
+telemetry '{"hum_pct":"41"}'
 uplink "flat TELEMETRY on callbackCount 2" "$r" 2 "$imei_a" "$iccid2"
 expect_log "the retried report is stored" "$m" "outcome=stored pigeon=$pigeon request=$r attempt=2"
 api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=hum_pct&since=$(iso_ago 3600)"
@@ -715,26 +730,26 @@ expect "stored at its arrival, not backdated (within 30 s)" yes \
 # pad <n> <char>: n copies of the character.
 pad() { printf '%*s' "$1" '' | tr ' ' "$2"; }
 r=$(rid s6d)
-frame 01 "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 334 b)\"}"
+telemetry "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 323 b)\"}"
 expect "the frame is at the 1358-byte cap" 1358 "$(wc -c <"$work/frame")"
 uplink "TELEMETRY at the frame cap" "$r" 1 "$imei_a" "$iccid2"
 expect_log "a frame at the cap is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 r=$(rid s6e)
-frame 01 "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 335 c)\"}"
+telemetry "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 324 c)\"}"
 expect "the frame is one byte over the cap" 1359 "$(wc -c <"$work/frame")"
 uplink "TELEMETRY one byte over the frame cap" "$r" 1 "$imei_a" "$iccid2"
 expect "answers 200" 200 "$status"
 expect_log "a frame over the cap is dropped as malformed" "$m" \
   "outcome=bad_message pigeon=$pigeon request=$r"
 api a GET "/pigeons/$pigeon/telemetry"
-expect "pad_b keeps the value from the frame at the cap" 334 \
+expect "pad_b keeps the value from the frame at the cap" 323 \
   "$(jq -r '.[] | select(.key == "pad_b") | .value | length' "$resp")"
 note_log "$m"
 
 step 7 "a resend of a stored uplink, and a retry that overlaps its first attempt"
 m=$(mark)
 r=$(rid s7)
-frame 01 '{"steps":"7"}'
+telemetry '{"steps":"7"}'
 uplink "TELEMETRY" "$r" 1 "$imei_a" "$iccid2"
 uplink "the same body and request id again" "$r" 1 "$imei_a" "$iccid2"
 expect "the repeat answers 200" 200 "$status"
@@ -752,7 +767,7 @@ note_log "$m"
 # stand-in for the enqueue, while the retry arrives; the retry must wait for it, not store.
 m=$(mark)
 r=$(rid s7o)
-frame 01 '{"laps":"1"}'
+telemetry '{"laps":"1"}'
 uplink_body "$r" 1 "$imei_a" "$iccid2" >"$work/body-first"
 uplink_body "$r" 2 "$imei_a" "$iccid2" >"$work/body-retry"
 hold_history
@@ -784,6 +799,53 @@ expect "one stored, one duplicate" "1 1" \
 api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=laps&since=$(iso_ago 3600)"
 expect "one history row" 1 "$(jq length "$resp")"
 note "  Billing: the one history row stands for the one enqueue a deployed environment bills."
+note_log "$m"
+
+# The carrier can deliver one send twice, and ThingSpace posts each delivery under a request id of
+# its own, minutes apart. The second is known by the frame's digest, which the send sequence keeps
+# unique to one send: the same readings sent again carry the next number and are stored again.
+step 7 "a carrier re-delivery under a new request id, and a malformed sequence header"
+m=$(mark)
+r=$(rid s7c)
+telemetry '{"loops":"1"}'
+uplink "TELEMETRY" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the first delivery is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+r2=$(rid s7d)
+uplink "the same frame under a new request id, the first settled" "$r2" 1 "$imei_a" "$iccid2"
+expect "the re-delivery answers 200" 200 "$status"
+expect_log "and is recognised as a repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r2"
+expect_no_log "and, nothing being owed, draws no reply" "$m" "nidd_dl .*pigeon=$pigeon"
+expect "pigeon_nidd records both request ids" "1|1" \
+  "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0, instr(seen, '$r2:') > 0")"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=loops&since=$(iso_ago 3600)"
+expect "one history row" 1 "$(jq length "$resp")"
+r=$(rid s7e)
+telemetry '{"loops":"1"}'
+uplink "the same readings as the next send" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the next send is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=loops&since=$(iso_ago 3600)"
+expect "two history rows, one per send" 2 "$(jq length "$resp")"
+note "  Billing: dev bills telemetry on no surface; the history rows stand for the enqueues a"
+note "  deployed environment bills, one per send, and a repeat is never enqueued."
+note_log "$m"
+
+m=$(mark)
+r=$(rid s7h)
+frame 01 '{"loops":"2"}'
+uplink "TELEMETRY with no sequence header, as a build before the sequence sends" "$r" 1 \
+  "$imei_a" "$iccid2"
+expect "a missing sequence header answers 400" 400 "$status"
+expect_log "and is logged as malformed" "$m" "outcome=malformed pigeon=$pigeon request=$r"
+expect "and keeps no key" 0 "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0")"
+r=$(rid s7i)
+telemetry '{"loops":"2"}' 4294967296
+uplink "TELEMETRY whose sequence is past a u32" "$r" 1 "$imei_a" "$iccid2"
+expect "a sequence past a u32 answers 400" 400 "$status"
+expect_log "and is logged as malformed" "$m" "outcome=malformed pigeon=$pigeon request=$r"
+expect_no_log "neither is logged as lost" "$m" "nidd_cb lost pigeon=$pigeon"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=loops&since=$(iso_ago 3600)"
+expect "neither is stored" "2 0" \
+  "$(jq length "$resp") $(jq '[.[] | select(.value == "2")] | length' "$resp")"
 note_log "$m"
 
 step 8 "shadow reports"
@@ -827,7 +889,7 @@ note_log "$m"
 
 m=$(mark)
 r=$(rid s8d)
-frame 01 '{"temp_c":"20.0"}'
+telemetry '{"temp_c":"20.0"}'
 uplink "TELEMETRY from the converged device" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the telemetry is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
 expect_no_log "and, nothing being owed, draws no reply" "$m" "nidd_dl .*pigeon=$pigeon"
@@ -884,9 +946,19 @@ expect_log "and marks the owed push pending" "$m" \
 expect "pigeon_nidd: version 4 owed, its push pending" "4|0" \
   "$(nidd_state "$pigeon" "awaiting_version, pushed_version")"
 r=$(rid s9t)
-frame 01 '{"temp_c":"20.5"}'
+telemetry '{"temp_c":"20.5"}'
 uplink "TELEMETRY while version 4 is owed" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the telemetry is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect_log "and its reply is the owed SHADOW" "$m" \
+  "nidd_dl kind=shadow outcome=unavailable reason=not_configured pigeon=$pigeon"
+note_log "$m"
+
+# A re-delivery shows the device awake as any uplink does, so it carries a SHADOW still owed; dev
+# never sends, so the one just planned is marked unsent and is due again.
+m=$(mark)
+r=$(rid s9u)
+uplink "the same frame under a new request id while version 4 is owed" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the re-delivery is a repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r"
 expect_log "and its reply is the owed SHADOW" "$m" \
   "nidd_dl kind=shadow outcome=unavailable reason=not_configured pigeon=$pigeon"
 note_log "$m"
@@ -904,7 +976,7 @@ expect "the IMEI and endpoint are kept" "$imei_a nidd://VZWSCEF" \
 expect "pigeon_nidd: unclaimed and unpinned" "1|1" \
   "$(nidd_state "$pigeon" "claimed_at IS NULL, line_id IS NULL")"
 r=$(rid s10a)
-frame 01 '{"temp_c":"23.0"}'
+telemetry '{"temp_c":"23.0"}'
 uplink "TELEMETRY after the refresh" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the next telemetry is refused as unclaimed" "$m" \
   "outcome=unclaimed pigeon=$pigeon request=$r"
@@ -1018,7 +1090,7 @@ note_log "$m"
 
 m=$(mark)
 r=$(rid s13b)
-frame 01 '{"temp_c":"24.0"}'
+telemetry '{"temp_c":"24.0"}'
 uplink "TELEMETRY while paused" "$r" 1 "$imei_a" "$iccid2"
 expect "answers 200" 200 "$status"
 expect_log "the uplink is dropped as paused" "$m" "outcome=paused pigeon=$pigeon request=$r"
@@ -1028,7 +1100,7 @@ note_log "$m"
 
 m=$(mark)
 r=$(rid s13c)
-frame 01 '{"temp_c":"24.5"}'
+telemetry '{"temp_c":"24.5"}'
 uplink "TELEMETRY while paused, again" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the second is dropped as paused too" "$m" "outcome=paused pigeon=$pigeon request=$r"
 r=$(rid s13d)
@@ -1043,7 +1115,7 @@ expect "nothing was stored while paused" 0 \
 sql "$usage_restore" >/dev/null
 usage_restore=""
 r=$(rid s13e)
-frame 01 '{"temp_c":"25.0"}'
+telemetry '{"temp_c":"25.0"}'
 uplink "TELEMETRY after the allowance is restored" "$r" 1 "$imei_a" "$iccid2"
 expect_log "ingest resumes" "$m" "outcome=stored pigeon=$pigeon request=$r"
 note_log "$m"
@@ -1060,7 +1132,7 @@ start_wrangler failing --var "NIDD_ALLOWED_ORG_IDS:$org_a" --var DEVICE_API_HOST
 step 7 "a store that fails keeps no key, so ThingSpace's retry can store the uplink"
 m=$(mark)
 r=$(rid s7f)
-frame 01 '{"splits":"1"}'
+telemetry '{"splits":"1"}'
 uplink "TELEMETRY while the telemetry store fails" "$r" 1 "$imei_a" "$iccid2"
 expect "the failed store answers 503" 503 "$status"
 expect_log "and is logged as lost" "$m" "nidd_cb lost pigeon=$pigeon request=$r attempt=1"
