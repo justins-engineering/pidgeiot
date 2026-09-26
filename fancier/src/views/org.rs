@@ -690,6 +690,11 @@ fn BillingPanel(
         span { class: "block text-xs text-base-content/50",
           "{o.connected_device_count} connected this period, and only these count toward billing"
         }
+        // The plan covers org-owned flocks only; a personal flock keeps the
+        // free tier's cap until it is moved in.
+        span { class: "block text-xs text-base-content/50",
+          "Personal flocks stay on the free tier until moved in here with \"Transfer to org\" on the flock's page."
+        }
       }
 
       if let Some(notice) = change_notice.read().as_ref() {

@@ -180,7 +180,10 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
 fn name_org_prompt(plan: BillingPlan) -> String {
   const HEAD: &str = "A plan is billed to an organization, and you don't have one yet. Name it \
                       and we'll take you straight to ";
-  const TAIL: &str = " checkout.";
+  // Personal flocks stay on the free tier whatever the org buys, and a
+  // free account at its cap would otherwise pay and still be refused.
+  const TAIL: &str = " checkout. Flocks you already have stay on the free tier until you move \
+                      each one in with \"Transfer to org\" on its page.";
   let plan = plan.as_str();
   let mut prompt = String::with_capacity(HEAD.len() + plan.len() + TAIL.len());
   prompt.push_str(HEAD);
@@ -618,7 +621,8 @@ mod name_org_prompt_tests {
     assert_eq!(
       name_org_prompt(BillingPlan::Builder),
       "A plan is billed to an organization, and you don't have one yet. Name it and we'll take \
-       you straight to builder checkout."
+       you straight to builder checkout. Flocks you already have stay on the free tier until you \
+       move each one in with \"Transfer to org\" on its page."
     );
   }
 
