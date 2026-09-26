@@ -1732,7 +1732,11 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
 `dovecote/.dev.vars` without echoing it, and sets a `User-Agent`:
 
 1. Wrong password 403; allowlist emptied 403; password removed 503; an 8193-byte body 413; a
-   non-JSON body 400.
+   non-JSON body 400. Once step 5 has claimed a pigeon, uplinks with the right password that
+   would otherwise reach it: another account's `accountName`, or none, 200 `foreign_account`; no
+   IMEI in either identifier list, 200 `no_imei`; a missing, empty or non-base64 `message`, 200
+   `bad_message`; and an IMEI no pigeon holds, 200 `no_pigeon`, its object left without NIDD
+   state. None is stored or leaves a de-duplication key.
 2. Create a Nidd pigeon with a valid test IMEI: 201 with a claim key. Again: 409. A bad check
    digit: 400. With `THINGSPACE_ACCOUNT_NAME` unset: 403. From an organization outside
    `NIDD_ALLOWED_ORG_IDS`, and from a personal flock: 403 for that same IMEI, never 409. The

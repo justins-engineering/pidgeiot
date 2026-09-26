@@ -315,6 +315,7 @@ imei_a="$(luhn_imei "00$(digits 12)")"
 imei_q="$(luhn_imei "00$(digits 12)")"
 imei_x="$(luhn_imei "00$(digits 12)")"
 imei_num="$(luhn_imei "49$(digits 12)")"
+imei_n="$(luhn_imei "00$(digits 12)")"
 imei_bad="${imei_a:0:14}$(((${imei_a:14:1} + 1) % 10))"
 iccid1="8914800000$(digits 10)"
 iccid2="8914800000$(digits 10)"
@@ -414,7 +415,7 @@ flock_b=$flock_id
 api a POST /flocks '{"name":"NIDD synthetic personal flock"}'
 flock_p=$(jq -r .id "$resp")
 note "  org A $org_a flock $flock_a; org B $org_b flock $flock_b; personal flock $flock_p"
-note "  IMEIs: A $imei_a, Q $imei_q, X $imei_x, as a JSON number $imei_num"
+note "  IMEIs: A $imei_a, Q $imei_q, X $imei_x, N $imei_n (no pigeon), as a JSON number $imei_num"
 pass "setup complete"
 
 step 1 "callback gates"
@@ -617,6 +618,61 @@ r=$(rid s5h)
 frame 01 '{"temp_c":"22.5"}'
 uplink "TELEMETRY from ICCID2 after the move" "$r" 1 "$imei_a" "$iccid2"
 expect_log "the new line is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+note_log "$m"
+
+# Step 1's gates again, now that a claimed pigeon on ICCID2 would store what passes them. Each
+# body carries the right password; none may be stored or leave a de-duplication key.
+step 1 "callback gates, against a claimed pigeon"
+m=$(mark)
+frame 01 '{"gate_probe":"1"}'
+# gate_body <request-id> <jq filter> <imei>: $work/frame as an uplink from ICCID2, then the filter.
+gate_body() { uplink_body "$1" 1 "$3" "$iccid2" | jq -c "$2" >"$work/body"; }
+inner=.niddResponse.niddMONotificationResponse
+r=$(rid s1f)
+gate_body "$r" "$inner.accountName = \"nidd-synthetic-foreign-account\"" "$imei_a"
+callback "(another account's accountName)"
+expect "another account's accountName answers 200" 200 "$status"
+expect_log "and is logged as foreign_account" "$m" \
+  "nidd_cb kind=uplink outcome=foreign_account pigeon=$pigeon request=$r"
+expect "and keeps no key" 0 "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0")"
+r=$(rid s1g)
+gate_body "$r" "del($inner.accountName)" "$imei_a"
+callback "(no accountName)"
+expect "no accountName answers 200" 200 "$status"
+expect_log "and is logged as foreign_account" "$m" \
+  "nidd_cb kind=uplink outcome=foreign_account pigeon=$pigeon request=$r"
+expect "and keeps no key" 0 "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0")"
+r=$(rid s1i)
+gate_body "$r" "del(.deviceIds) | $inner.deviceIds |= map(select(.kind != \"IMEI\"))" "$imei_a"
+callback "(no IMEI in either identifier list)"
+expect "an uplink naming no IMEI answers 200" 200 "$status"
+expect_log "and is logged as no_imei" "$m" \
+  "nidd_cb kind=uplink outcome=no_imei pigeon=none request=$r"
+for message in missing blank junk; do
+  r=$(rid "s1m-$message")
+  case $message in
+  missing) gate_body "$r" "del($inner.message)" "$imei_a" ;;
+  blank) gate_body "$r" "$inner.message = \"\"" "$imei_a" ;;
+  junk) gate_body "$r" "$inner.message = \"not*base64!\"" "$imei_a" ;;
+  esac
+  callback "($message message)"
+  expect "a $message message answers 200" 200 "$status"
+  expect_log "and is logged as bad_message" "$m" \
+    "nidd_cb kind=uplink outcome=bad_message pigeon=$pigeon request=$r"
+  expect "and keeps no key" 0 "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0")"
+done
+r=$(rid s1n)
+gate_body "$r" . "$imei_n"
+callback "(an IMEI no pigeon holds)"
+expect "an uplink for an IMEI no pigeon holds answers 200" 200 "$status"
+expect_log "and is logged as no_pigeon" "$m" \
+  "nidd_cb kind=uplink outcome=no_pigeon pigeon=[0-9a-f]{64} request=$r"
+nobody=$(log_since "$m" | sed -n "s/.*outcome=no_pigeon pigeon=\([0-9a-f]*\) request=$r .*/\1/p")
+expect "its object keeps no NIDD state" 0 \
+  "$(sqlite3 -readonly "$do_state/$nobody.sqlite" 'SELECT count(*) FROM pigeon_nidd;' 2>&1)"
+api a GET "/pigeons/$pigeon/telemetry"
+expect "the claimed pigeon stored none of them" 0 \
+  "$(jq '[.[] | select(.key == "gate_probe")] | length' "$resp")"
 note_log "$m"
 
 step 6 "flat, batched and retried telemetry"
@@ -1023,7 +1079,7 @@ note_log "$m"
 
 step 14 "after the thirteen: what the logs never hold"
 leaks=$(cat "$ev"/wrangler-*.log | grep -cFf <(printf '%s\n' "$cb_password" "$account" \
-  "${claim_keys[@]}" "$imei_a" "$imei_q" "$iccid1" "$iccid2" | awk 'length >= 8') || true)
+  "${claim_keys[@]}" "$imei_a" "$imei_q" "$imei_n" "$iccid1" "$iccid2" | awk 'length >= 8') || true)
 expect "no password, account name, claim key, IMEI or ICCID in any wrangler log" 0 "$leaks"
 stop_wrangler
 
