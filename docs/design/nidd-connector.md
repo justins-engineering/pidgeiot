@@ -2196,7 +2196,7 @@ Phase 0, the gate and the rollback guard:
 | 0.2 | pigeon-examples | `nidd_probe` (13.2) | 4 to 8 | none |
 | 0.3 | bench | B2, B3 | 2 to 4 | 0.1, 0.2 |
 | 0.4 | pidgeiot | `refresh_token` refuses an unparseable stored connector (6.5); ships with the Nidd release, the rollback floor (row 31) | 1 to 2 | none |
-| 0.5 | owner | Done: the SDK's example worker deployment and its KV namespace deleted, the UWS password and the OAuth key pair rotated, and `secrets.env` updated. Its default `api` build (`thingspace-sdk-rust/examples/cf-worker/wasm-serv/Cargo.toml:38`) serves listener list, register and deregister, a device list and `send_nidd` with no authentication (`src/lib.rs:25-29`), and the list returns every listener password [LIST] | 1 to 2 | none |
+| 0.5 | owner | Done: the SDK's example worker deployment and its KV namespace deleted, and the UWS password and the OAuth key pair rotated. Its default `api` build (`thingspace-sdk-rust/examples/cf-worker/wasm-serv/Cargo.toml:38`) serves listener list, register and deregister, a device list and `send_nidd` with no authentication (`src/lib.rs:25-29`), and the list returns every listener password [LIST] | 1 to 2 | none |
 
 Phase 1, the platform, on branch `nidd-connector`:
 
