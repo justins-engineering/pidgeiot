@@ -328,6 +328,8 @@ pub struct PigeonTelemetryEndpointUpdateRequest {
   pub telemetry_endpoint: Option<TelemetryEndpoint>,
 }
 
+/// Body of `POST /flock/pigeons`. The connector names the variant; its contents are ignored,
+/// except a `Nidd` connector's `imei`, which binds the pigeon to its modem.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct PigeonCreateRequest {
   pub flock_id: Uuid,
@@ -538,49 +540,81 @@ pub struct MqttConfig {
   pub tls_psk_secret: Option<String>,
 }
 
+/// NIDD connector: the device's traffic rides Verizon ThingSpace's Non-IP Data Delivery, so the
+/// carrier terminates the radio side. Uplink reaches dovecote as a ThingSpace callback and
+/// downlink leaves through ThingSpace's API; no PidgeIoT terminator is involved.
+///
+/// `imei` binds the carrier's callbacks to this pigeon and fixes its id. `claim_key` is what the
+/// device presents once per boot to prove it was built for this pigeon. `token` never rides
+/// NIDD: it authorizes the HTTPS device routes, which a board reaches only over a second, IP PDN.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
+#[serde(default)]
+pub struct NiddConfig {
+  /// `nidd://VZWSCEF`: the APN the Non-IP PDN attaches to, written as a URI so the device
+  /// library can check the scheme against the transport it was built with.
+  pub endpoint: String,
+  /// Bearer token for the HTTPS device routes. Empty on every read route.
+  pub token: String,
+  /// The modem's 15-digit IMEI, supplied at create and fixed for the pigeon's life.
+  pub imei: String,
+  /// 32 lowercase hex characters (16 bytes). Returned by create and token refresh only, and
+  /// never a TLS-PSK. It also keys the HMAC tag on every platform frame the device receives.
+  pub claim_key: Option<String>,
+}
+
+/// A pigeon's transport and the credentials it carries, externally tagged on the wire
+/// (`{"Https":{...}}`).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Connector {
   Https(HttpsConfig),
   Coap(CoapConfig),
   Mqtt(MqttConfig),
+  /// Verizon ThingSpace Non-IP Data Delivery. The minimum create body is
+  /// `{"Nidd":{"imei":"<imei>"}}`; every other field defaults.
+  Nidd(NiddConfig),
 }
 
 impl Connector {
   /// The device bearer token, whichever transport carries it. Every
   /// variant has one: the transport differs, the credential that
-  /// authorizes the device's upstream requests does not. Empty on any
-  /// `Pigeon` that came back from a read route, which strip secrets.
+  /// authorizes the device's upstream requests does not. For `Nidd` it
+  /// authorizes only the HTTPS device routes; the carrier and the claim key
+  /// authenticate the NIDD path. Empty on any `Pigeon` that came back from
+  /// a read route, which strip secrets.
   pub fn token(&self) -> &str {
     match self {
       Connector::Https(c) => &c.token,
       Connector::Coap(c) => &c.token,
       Connector::Mqtt(c) => &c.token,
+      Connector::Nidd(c) => &c.token,
     }
   }
 
   /// The TLS-PSK pair as `(identity, secret)`, for the variants that mint
   /// one. `None` for `Https`, whose transport authenticates the platform
-  /// with its own certificate and the device with the bearer token alone,
-  /// and for any connector read back with its secrets stripped.
+  /// with its own certificate and the device with the bearer token alone;
+  /// for `Nidd`, whose claim key is not a TLS-PSK and must never reach a
+  /// terminator; and for any connector read back with its secrets stripped.
   pub fn psk(&self) -> Option<(&str, &str)> {
     let (identity, secret) = match self {
       Connector::Coap(c) => (&c.tls_psk_identity, &c.tls_psk_secret),
       Connector::Mqtt(c) => (&c.tls_psk_identity, &c.tls_psk_secret),
-      Connector::Https(_) => return None,
+      Connector::Https(_) | Connector::Nidd(_) => return None,
     };
     Some((identity.as_deref()?, secret.as_deref()?))
   }
 
-  /// The address the device dials, whichever transport carries it. Unlike
-  /// the token and the PSK this is not a secret and survives every read
-  /// route, but it still belongs beside them wherever a device is being
-  /// provisioned: it is the other half of what has to be baked into a
-  /// build.
+  /// The address the device dials (for `Nidd`, the APN it attaches to),
+  /// whichever transport carries it. Unlike the token and the PSK this is
+  /// not a secret and survives every read route, but it still belongs
+  /// beside them wherever a device is being provisioned: it is the other
+  /// half of what has to be baked into a build.
   pub fn endpoint(&self) -> &str {
     match self {
       Connector::Https(c) => &c.endpoint,
       Connector::Coap(c) => &c.endpoint,
       Connector::Mqtt(c) => &c.endpoint,
+      Connector::Nidd(c) => &c.endpoint,
     }
   }
 }
@@ -615,6 +649,49 @@ pub const MQTT_TOPIC_LOGS: &str = "pigeon/logs";
 /// Durable Object's own live shadow, republished when `target_version`
 /// changes.
 pub const MQTT_TOPIC_SHADOW_TARGET: &str = "pigeon/shadow/target";
+
+// --- NIDD wire contract ---
+//
+// The halves of the NIDD contract `~/pigeon` mirrors, the way `pigeonhole` mirrors the MQTT
+// topics above. The frame layout itself lives in docs/api.md, which both sides follow.
+
+/// APN of Verizon's NIDD service, and the authority of every minted `nidd://` endpoint.
+pub const NIDD_APN: &str = "VZWSCEF";
+
+/// Largest NIDD frame dovecote sends or accepts: Verizon's downlink cap of 10864 bits, counted
+/// before base64. The modem's own uplink ceiling is lower (1273 bytes accepted, 1283 refused, on
+/// an nRF9160 with mfw 1.3.7), so the device library holds its frames to 1273; docs/api.md states
+/// that cap.
+pub const NIDD_MAX_FRAME_BYTES: usize = 1358;
+
+/// Largest serialized `target_config` a Nidd pigeon always accepts: one frame less the downlink
+/// `SHADOW` frame's type byte, its version header at its longest (22 bytes, two ten-digit
+/// versions) and its 16-character tag, all laid out under docs/api.md's NIDD frames. A write while
+/// the versions are shorter may carry a little more.
+pub const NIDD_MAX_TARGET_CONFIG_BYTES: usize = NIDD_MAX_FRAME_BYTES - 1 - 22 - 16;
+
+/// Whether `imei` is 15 ASCII digits whose last digit is the Luhn check over the first 14.
+/// Catches the single-digit slips an IMEI copied off a module label invites.
+pub fn imei_is_valid(imei: &str) -> bool {
+  let bytes = imei.as_bytes();
+  if bytes.len() != 15 || !bytes.iter().all(u8::is_ascii_digit) {
+    return false;
+  }
+  let sum: u32 = bytes
+    .iter()
+    .rev()
+    .enumerate()
+    .map(|(i, b)| {
+      let d = u32::from(b - b'0');
+      match i % 2 {
+        0 => d,
+        _ if d * 2 > 9 => d * 2 - 9,
+        _ => d * 2,
+      }
+    })
+    .sum();
+  sum.is_multiple_of(10)
+}
 
 impl Default for Connector {
   fn default() -> Self {
@@ -753,6 +830,15 @@ mod connector_tests {
     })
   }
 
+  fn nidd(claim_key: Option<&str>) -> Connector {
+    Connector::Nidd(NiddConfig {
+      endpoint: "nidd://VZWSCEF".to_string(),
+      token: "tok".to_string(),
+      imei: "490154203237518".to_string(),
+      claim_key: claim_key.map(str::to_string),
+    })
+  }
+
   #[test]
   fn every_variant_reports_its_endpoint() {
     assert_eq!(
@@ -777,6 +863,7 @@ mod connector_tests {
       .endpoint(),
       "mqtts://mqtt.pidgeiot.com:8883"
     );
+    assert_eq!(nidd(None).endpoint(), "nidd://VZWSCEF");
   }
 
   #[test]
@@ -784,6 +871,59 @@ mod connector_tests {
     assert_eq!(coap(Some("abc"), Some("hex")).psk(), Some(("abc", "hex")));
     // What a read route hands back: the identity survives, the secret does not.
     assert_eq!(coap(Some("abc"), None).psk(), None);
+  }
+
+  #[test]
+  fn a_nidd_connector_round_trips() {
+    let full = nidd(Some("00112233445566778899aabbccddeeff"));
+    let json = serde_json::to_string(&full).unwrap();
+    assert_eq!(serde_json::from_str::<Connector>(&json).unwrap(), full);
+
+    // The minimum create body: everything but the IMEI is minted server-side.
+    let minimal = serde_json::from_str::<Connector>(r#"{"Nidd":{"imei":"490154203237518"}}"#);
+    assert_eq!(
+      minimal.unwrap(),
+      Connector::Nidd(NiddConfig {
+        imei: "490154203237518".to_string(),
+        ..NiddConfig::default()
+      })
+    );
+  }
+
+  #[test]
+  fn a_nidd_pigeon_row_parses() {
+    // A connector the build cannot parse reads back as the default `Https`
+    // without a word, so the stored form has to survive the row conversion.
+    let row = serde_json::from_value::<PigeonRow>(serde_json::json!({
+      "id": "abc",
+      "flock_id": Uuid::nil(),
+      "connector": r#"{"Nidd":{"endpoint":"nidd://VZWSCEF","token":"","imei":"490154203237518","claim_key":null}}"#,
+      "token_expires_at": 0.0,
+      "updated_at": 0.0,
+      "created_at": 0.0,
+    }))
+    .unwrap();
+    let Connector::Nidd(config) = Pigeon::from(row).connector else {
+      panic!("a stored Nidd connector should not fall back to the default");
+    };
+    assert_eq!(config.imei, "490154203237518");
+    assert_eq!(config.endpoint, "nidd://VZWSCEF");
+  }
+
+  #[test]
+  fn nidd_has_no_psk() {
+    // The claim key must never reach a terminator as if it were one.
+    assert_eq!(nidd(Some("00112233445566778899aabbccddeeff")).psk(), None);
+  }
+
+  #[test]
+  fn imei_check_digit() {
+    assert!(imei_is_valid("490154203237518"));
+    assert!(!imei_is_valid("490154203237519"));
+    assert!(!imei_is_valid("49015420323751"));
+    assert!(!imei_is_valid("4901542032375180"));
+    assert!(!imei_is_valid("49015420323751a"));
+    assert!(!imei_is_valid(""));
   }
 }
 

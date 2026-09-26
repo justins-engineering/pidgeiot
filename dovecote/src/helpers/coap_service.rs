@@ -12,6 +12,37 @@ use worker::{Env, Request};
 /// `DEMO_PIGEON_IDS`).
 const COAP_SERVICE_ALLOWED_IPS_VAR: &str = "COAP_SERVICE_ALLOWED_IPS";
 
+/// The Worker var holding the comma-separated source addresses allowed to post ThingSpace
+/// callbacks: Verizon's published callback addresses, in the one environment that holds the
+/// `NiddService` registration. Its own var, never `COAP_SERVICE_ALLOWED_IPS`, which also opens
+/// the PSK route and exempts the terminator from the failed-auth limiter. Empty or unset denies
+/// every caller.
+const THINGSPACE_CALLBACK_ALLOWED_IPS_VAR: &str = "THINGSPACE_CALLBACK_ALLOWED_IPS";
+
+/// Whether this environment admits ThingSpace callbacks at all: its allowlist names at least one
+/// address. Only that environment may send NIDD downlinks, since Verizon allows one callback
+/// endpoint per service per account and a second sender could push shadows to a device whose
+/// reports go elsewhere.
+pub fn thingspace_callbacks_configured(env: &Env) -> bool {
+  env
+    .var(THINGSPACE_CALLBACK_ALLOWED_IPS_VAR)
+    .is_ok_and(|raw| names_an_address(&raw.to_string()))
+}
+
+/// Source-address gate on the ThingSpace callback route, the first of its three gates. The
+/// addresses are cloud addresses on a list Verizon calls changing, so this is a filter, not a
+/// secret: the callback password is checked after it.
+pub fn is_allowed_thingspace_ip(env: &Env, req: &Request) -> bool {
+  is_allowed_by(env, req, THINGSPACE_CALLBACK_ALLOWED_IPS_VAR)
+}
+
+/// Whether an allowlist admits anyone at all.
+fn names_an_address(raw: &str) -> bool {
+  raw
+    .split(',')
+    .any(|entry| entry.trim().parse::<IpAddr>().is_ok())
+}
+
 /// Network gate layered ahead of the `COAP_SERVICE_SECRET` check on the
 /// internal PSK route. The secret alone grants unscoped PSK resolution
 /// for every pigeon, so a leaked copy must not be usable from anywhere
@@ -23,7 +54,12 @@ const COAP_SERVICE_ALLOWED_IPS_VAR: &str = "COAP_SERVICE_ALLOWED_IPS";
 /// header denies; an unparseable allowlist entry is dropped, which can
 /// only ever shrink what's allowed, never widen it.
 pub fn is_allowed_coap_service_ip(env: &Env, req: &Request) -> bool {
-  let Ok(raw) = env.var(COAP_SERVICE_ALLOWED_IPS_VAR) else {
+  is_allowed_by(env, req, COAP_SERVICE_ALLOWED_IPS_VAR)
+}
+
+/// Whether `CF-Connecting-IP` appears in the allowlist held by the var `var`.
+fn is_allowed_by(env: &Env, req: &Request, var: &str) -> bool {
+  let Ok(raw) = env.var(var) else {
     return false;
   };
   let Some(peer) = req.headers().get("CF-Connecting-IP").ok().flatten() else {
@@ -62,7 +98,10 @@ fn canonical(addr: IpAddr) -> IpAddr {
 
 #[cfg(test)]
 mod tests {
-  use super::allowlist_matches;
+  use super::{allowlist_matches, names_an_address};
+
+  const VERIZON_CALLBACK_IPS: &str = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,\
+    54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234";
 
   #[test]
   fn matches_exact_v4_and_v6_entries() {
@@ -90,6 +129,17 @@ mod tests {
     assert!(!allowlist_matches("not-an-ip", "127.0.0.1"));
     assert!(!allowlist_matches("15.204.254.3", "15.204.254.4"));
     assert!(!allowlist_matches("15.204.254.3", "garbage"));
+  }
+
+  #[test]
+  fn the_thingspace_list_admits_exactly_verizons_addresses() {
+    assert!(names_an_address(VERIZON_CALLBACK_IPS));
+    for peer in VERIZON_CALLBACK_IPS.split(',') {
+      assert!(allowlist_matches(VERIZON_CALLBACK_IPS, peer.trim()));
+    }
+    assert!(!allowlist_matches(VERIZON_CALLBACK_IPS, "3.87.163.46"));
+    assert!(!names_an_address(""));
+    assert!(!names_an_address(" , not-an-ip"));
   }
 
   #[test]

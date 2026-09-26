@@ -453,20 +453,14 @@ pub fn FirmwareModal(
                                                       target_config: merged,
                                                   };
                                                   match api::pigeons::update_shadow(&pigeon_id, &req).await {
-                                                      Some(new_shadow) => {
+                                                      Ok(new_shadow) => {
                                                           assigning_id.set(None);
                                                           on_assigned.call(new_shadow);
                                                           on_close.call(());
                                                       }
-                                                      None => {
+                                                      Err(message) => {
                                                           assigning_id.set(None);
-                                                          assign_error
-                                                              .set(
-                                                                  Some(
-                                                                      "Failed to assign firmware -- dovecote rejected it, most likely because this pigeon's board and this image's board aren't both set and matching. Please try again."
-                                                                          .to_string(),
-                                                                  ),
-                                                              );
+                                                          assign_error.set(Some(message));
                                                       }
                                                   }
                                               }

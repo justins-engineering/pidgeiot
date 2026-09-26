@@ -99,6 +99,42 @@ head_sampling_rate = 1
 # derived from COAP_DEVICE_HOST: the name devices dial and the address
 # the terminator egresses from are independent facts (NAT, a future
 # load balancer) even though today both are the same VPS.
+#
+# THINGSPACE_CALLBACK_ALLOWED_IPS (all three [vars]/[env.*.vars] blocks) --
+# comma-separated source addresses allowed to post POST
+# /internal/thingspace/nidd, Verizon ThingSpace's NiddService callback
+# (helpers/coap_service.rs). Verizon's published callback addresses in the
+# ONE environment that holds the NiddService registration, empty elsewhere:
+# Verizon allows one callback endpoint per service per account, and an
+# empty list also stops that environment sending NIDD downlinks, so only
+# one environment can steer a device. Its own var, never
+# COAP_SERVICE_ALLOWED_IPS, which also opens the PSK route and exempts the
+# terminator from DEVICE_AUTH_FAIL_LIMITER. Empty/unset denies every
+# caller -- NOT "allow anything".
+#
+# NIDD_ALLOWED_ORG_IDS (all three blocks) -- comma-separated organization
+# ids whose flocks may create a Nidd pigeon. Every NIDD line rides JES's
+# one ThingSpace account, so only JES's own organizations are listed.
+# Empty/unset refuses every Nidd create, the DEMO_PIGEON_IDS convention.
+#
+# THINGSPACE_LOGIN_EPOCH (all three blocks) -- folded into the
+# ThingSpaceSession object's failed-login latch (objects/thingspace.rs).
+# Verizon locks the account after five failed logins, so the object stops
+# at two per credential set and epoch; bumping this is how a false latch
+# is cleared without rotating a Verizon credential.
+#
+# Companion Worker SECRETS (never here): THINGSPACE_PUBLIC_KEY and
+# THINGSPACE_PRIVATE_KEY (the OAuth key pair), THINGSPACE_UWS_USERNAME and
+# THINGSPACE_UWS_PASSWORD (the session login), THINGSPACE_ACCOUNT_NAME (the
+# billing account, which is also this environment's NIDD switch: unset
+# means the callback answers 503, a Nidd create 403, and nothing is sent)
+# THINGSPACE_CALLBACK_PASSWORD (the listener password registered with
+# NiddService, its own value per environment) and, for a day after a
+# rotation only, THINGSPACE_CALLBACK_PASSWORD_PREVIOUS (the password it
+# replaced, still accepted because ThingSpace keeps sending it for minutes
+# after the new one is registered). Set via `wrangler secret put <NAME>
+# --env <env>`; dev reads them from dovecote/.dev.vars and never holds the
+# four API secrets.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
@@ -127,6 +163,11 @@ GREPTIMEDB_ENDPOINT = ""
 # records). Must move with the VPS (the loft repo's
 # docs/infra/coap-terminator.md, "Internal PSK route allowlist").
 COAP_SERVICE_ALLOWED_IPS = "15.204.254.3,2604:2dc0:121::5be"
+# NIDD stays off in production until cutover (see the
+# THINGSPACE_CALLBACK_ALLOWED_IPS note above).
+THINGSPACE_CALLBACK_ALLOWED_IPS = ""
+NIDD_ALLOWED_ORG_IDS = ""
+THINGSPACE_LOGIN_EPOCH = "1"
 
 [[hyperdrive]]
 binding = "YugabyteDB"
@@ -260,7 +301,10 @@ namespace_id = "1013"
 simple = { limit = 10, period = 60 }
 
 [durable_objects]
-bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+bindings = [
+  { name = "PIGEONS", class_name = "Pigeons" },
+  { name = "THINGSPACE", class_name = "ThingSpaceSession" },
+]
 
 # Firmware image storage — signed MCUboot application binaries, ~300KB-1MB
 # each, capped at capsules::MAX_FIRMWARE_BYTES (2MB) on upload. DO SQLite
@@ -289,6 +333,11 @@ queue = "pidgeiot-telemetry"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
+
+# The per-environment ThingSpace session singleton (objects/thingspace.rs).
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ThingSpaceSession"]
 
 # Missing-heartbeat / device-state alert sweep -- absence-of-data
 # conditions can't be triggered by an ingest event by definition, since
@@ -360,6 +409,13 @@ GREPTIMEDB_ENDPOINT = ""
 # call staging's internal PSK route: empty is a deliberate deny-all, not
 # an oversight. A future staging terminator lists its egress here.
 COAP_SERVICE_ALLOWED_IPS = ""
+# Staging holds the NiddService registration during bring-up, so it admits
+# Verizon's callback addresses; at production cutover this goes back to
+# "" (see the THINGSPACE_CALLBACK_ALLOWED_IPS note above).
+THINGSPACE_CALLBACK_ALLOWED_IPS = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234"
+# JES's test organization, "NIDD tier 2 bench".
+NIDD_ALLOWED_ORG_IDS = "2d407cb2-9e01-4c12-9f6e-af4bd25900c4"
+THINGSPACE_LOGIN_EPOCH = "1"
 # `From:` for every mail this Worker sends (helpers/alerts.rs). A sending
 # domain is onboarded per environment and Cloudflare Email Service signs
 # only what it is authoritative for, so staging must not claim production's
@@ -374,7 +430,10 @@ MAIL_FROM_ADDRESS = "alerts@noreply-staging.pidgeiot.com"
 name = "EMAIL"
 
 [env.staging.durable_objects]
-bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+bindings = [
+  { name = "PIGEONS", class_name = "Pigeons" },
+  { name = "THINGSPACE", class_name = "ThingSpaceSession" },
+]
 
 [[env.staging.r2_buckets]]
 binding = "FIRMWARE_BUCKET"
@@ -466,6 +525,12 @@ DEMO_PIGEON_IDS = ""
 # normalized to 127.0.0.1 (a mapped `::ffff:127.0.0.1` is -- see
 # helpers/coap_service.rs).
 COAP_SERVICE_ALLOWED_IPS = "127.0.0.1,::1"
+# Loopback, so a replayed callback can be posted to `wrangler dev`.
+THINGSPACE_CALLBACK_ALLOWED_IPS = "127.0.0.1,::1"
+# Empty until a local test organization is created; add its id to test
+# Nidd creates.
+NIDD_ALLOWED_ORG_IDS = ""
+THINGSPACE_LOGIN_EPOCH = "1"
 # Local docker-compose GreptimeDB (docker-compose.yml's `greptimedb`
 # service) -- reachable directly, no Cloudflare Tunnel/Access in dev, and
 # no auth configured on the local instance either, so neither
@@ -481,7 +546,10 @@ name = "EMAIL"
 
 [env.dev.durable_objects]
 # the `class_name` uses the Rust struct identifier name
-bindings = [{ name = "PIGEONS", class_name = "Pigeons" }]
+bindings = [
+  { name = "PIGEONS", class_name = "Pigeons" },
+  { name = "THINGSPACE", class_name = "ThingSpaceSession" },
+]
 
 # `wrangler dev` (local mode, the default) emulates R2 buckets locally via
 # Miniflare regardless of whether `bucket_name` matches a real remote

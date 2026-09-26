@@ -101,6 +101,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /device/pigeons/:pigeon_id/ws`](#get-devicepigeonspigeon_idws) | device token | Device opens its persistent WebSocket |
 | [`GET /internal/device-psk/:pigeon_id`](#get-internaldevice-pskpigeon_id) | service secret required | Terminator resolves an identity to its PSK and token |
 | [`POST /internal/consent`](#post-internalconsent) | service secret required | Kratos reports a marketing-consent change |
+| [`POST /internal/thingspace/nidd`](#post-internalthingspacenidd) | ThingSpace callback credentials required | Verizon ThingSpace delivers a NIDD uplink, delivery report or line result |
 
 ## Two audiences, two auth models
 
@@ -112,9 +113,10 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | Sent as | `Cookie` header (`credentials: include` in `fetch`) | `Authorization: Bearer <token>` header |
 | Identity granularity | One Kratos identity, scoped per-pigeon by an ACL | One keypair per pigeon; the token proves control of *that* pigeon and nothing else |
 
-(There are also two [service-internal routes](#service-internal-api) — the transport
-terminators' PSK lookup and Kratos's consent hook — authenticated by a shared service secret,
-fitting neither column.)
+(There are also three [service-internal routes](#service-internal-api), fitting neither column:
+the transport terminators' PSK lookup and Kratos's consent hook, authenticated by a shared service
+secret, and Verizon ThingSpace's NIDD callback, which authenticates by source address, callback
+password and account rather than a shared service secret.)
 
 ### Dashboard authentication (Kratos session cookie)
 
@@ -187,12 +189,16 @@ keypair and overwrites `device_public_key`, so the old token's signature can nev
 the verification key *is* the revocation mechanism.
 
 The token is returned in a pigeon's `connector.Https.token` (or `connector.Coap.token` /
-`connector.Mqtt.token`, each alongside its `tls_psk_secret`) field, and **only** in the response to the route that just minted it — pigeon
+`connector.Mqtt.token`, each alongside its `tls_psk_secret`, or `connector.Nidd.token`, alongside
+its `claim_key`) field, and **only** in the response to the route that just minted it: pigeon
 create (`POST /flock/pigeons`) or token refresh (`POST /pigeons/:pigeon_id/token/refresh`).
 Every other route that returns a `Pigeon` (`GET /pigeons/:id`, `GET /pigeons/:id/detail`,
 `PUT /pigeons/:id`, `POST /pigeons/batch`) strips it to an empty string first
 (`strip_secrets`, `objects/pigeons.rs`) — treat that field as write-once, read-never after the
 initial mint.
+
+The PSK and a `Nidd` connector's claim key are the other write-once secrets: returned by the same
+two routes, stripped from every other read (`tls_psk_secret` blanked, `claim_key` null).
 
 A missing/malformed/expired/wrong-pigeon token gets `401 Unauthorized`, and so does a token for
 a pigeon that has since been **deleted** — the Durable Object stays addressable with its tables
@@ -279,6 +285,13 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `PUT /pigeons/:id/log-dictionary` — bytes per upload | 4 MiB (`capsules::MAX_LOG_DICTIONARY_BYTES`) | `lib.rs`, `413` over the cap |
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
+| NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below; an uplink frame is accepted up to it, and the device library caps its own at the 1273 bytes the bench modem accepts; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
+| `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1319 bytes serialized at worst (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`); exactly, what one `SHADOW` frame carries at the version the write creates, up to 1337 | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
+| `POST /internal/thingspace/nidd`, bytes per body | 8 KiB | `lib.rs`, `413` over the cap |
+| NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
+| NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
+| Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or the next uplink's reply |
+| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails. A telemetry frame is also matched by its digest alone, so the carrier's second delivery of one send, posted under a new `requestId`, is a repeat too, waiting like a retry if the first is still being stored; a copy first dropped as unclaimed does not count |
 | Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
@@ -1113,6 +1126,33 @@ survives the creator leaving). Body: `capsules::PigeonCreateRequest`
 `endpoint`/`token` you send are ignored and overwritten server-side (the DO mints its own
 device endpoint URL and credential).
 
+`connector` may also be `{"Nidd": {"imei": "<imei>"}}`. For `Nidd` the `imei` is read: it must
+be 15 digits ending in its Luhn check digit, and it fixes the pigeon's id for life, so a
+replaced modem is a new pigeon. Every other connector field is still ignored and minted
+server-side. New answers: `400` for an IMEI that fails the check; `403` "Forbidden: NIDD is not
+enabled in this environment" when this deployment has no ThingSpace account configured; `403`
+"Forbidden: NIDD is not enabled for this organization" when the flock's organization is not
+allowlisted, checked before the IMEI is looked at; `409` "Conflict: a pigeon with this IMEI
+already exists"; `503` "Service Unavailable: the pigeon could not be recorded; try again" when a
+step after the pigeon's creation fails (its Postgres record or the organization's access grant),
+in which case the create is undone, so a retry starts clean; `503` "Service Unavailable: the
+pigeon's object did not answer; try again" when the create could not reach the pigeon's Durable
+Object or lost its answer. That one is not undone, because the lost answer may have been a `409`
+for a pigeon that already holds the IMEI. If a retry then answers `409`, the first create may
+have landed without being listed. The pigeon id logged with the failure is the same either way,
+so support looks it up in Postgres: with no `pigeons` row the create landed, and a
+`DELETE /pigeons/:pigeon_id` by its creator frees the IMEI; a row may be a live pigeon, so the
+id is left alone. The `201` body's `connector.Nidd` carries `endpoint` (`nidd://VZWSCEF`),
+`token`, `imei` and `claim_key`; like the token, the claim key is shown only here and by
+`token/refresh`.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flock/pigeons \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"flock_id":"<flock_id>","name":"Field Sensor 1","connector":{"Nidd":{"imei":"<imei>"}}}'
+```
+
 **Device-count entitlement.** An account served at the free tier (no org, or an org whose
 subscription status isn't entitled) is capped at its included device count — creation past the
 cap answers `403` with an upgrade hint. Paid, entitled tiers are never refused here; devices
@@ -1142,7 +1182,17 @@ refusal shape are in [Per-tier limits](#per-tier-limits).
 > broker accepts a certificate handshake and a PSK handshake on one listener and a device may
 > arrive by either. The minted endpoint is `mqtts://<MQTT_DEVICE_HOST>:8883` with no path: a
 > topic names the resource, and the CONNECT handshake binds the session to one pigeon. See
-> [MQTT device surface](#mqtt-device-surface-via-the-pigeonhole-broker) below. `board` is optional — the pigeon's own
+> [MQTT device surface](#mqtt-device-surface-via-the-pigeonhole-broker) below.
+
+> **NIDD is terminated by the carrier, not by the edge Worker or a PidgeIoT service.** A `Nidd`
+> device attaches a Non-IP PDN on Verizon's `VZWSCEF` APN over NB-IoT; its uplink reaches dovecote
+> as a ThingSpace callback and its downlink leaves through ThingSpace's API. The minted endpoint
+> is `nidd://VZWSCEF`. No PSK is minted. The bearer token is minted as for every variant but never
+> rides NIDD; it serves the HTTPS device routes for a board that also holds an IP PDN. The device
+> proves it was built for this pigeon with the claim key. See
+> [NIDD device surface](#nidd-device-surface-via-verizon-thingspace).
+
+`board` is optional: the pigeon's own
 Zephyr `CONFIG_BOARD_TARGET` string, if known at provisioning time. Left unset, the pigeon can
 never be assigned firmware over the shadow route (see [Shadow](#shadow) above's fail-closed
 board-compatibility check) until it's tagged, either here or via a later `PUT`.
@@ -1188,13 +1238,18 @@ doubles as the path segment for every other pigeon route.
 restricts what the device may do: a pigeon's bearer token authenticates it on the HTTPS device
 routes, through `loft`, and as an MQTT CONNECT password alike, and any pigeon that minted a PSK
 pair can complete a PSK handshake with either terminator. The variant records how the pigeon was
-provisioned, and decides which endpoint and credentials the dashboard shows.
+provisioned, and decides which endpoint and credentials the dashboard shows. That holds for the
+three IP variants. A `Nidd` pigeon's uplink is authenticated by the SIM, the callback gates and
+the claim, and reaches only the pigeon its IMEI names; see
+[NIDD binding and claim](#nidd-binding-and-claim).
 
 #### `GET /pigeons/:pigeon_id`
 
 **Auth:** member
 
-Returns `capsules::Pigeon` with the connector token/PSK stripped.
+Returns `capsules::Pigeon` with the connector token/PSK stripped. For `Nidd`, `connector.Nidd`
+keeps `endpoint` and `imei`, with `token` empty and `claim_key` null; the same holds for every
+route that returns a stored pigeon.
 
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
@@ -1330,7 +1385,8 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/suspension \
 Wipes the pigeon's Durable Object storage (its ACL, shadow, telemetry, and log tables) and
 deletes its Postgres mirror row. Returns `200` with an empty body. As noted above, subsequent
 `GET`s against the same ID return `403`, not `404` — the Durable Object still exists, just
-empty.
+empty. For a `Nidd` pigeon the wipe includes its claim and downlink state, and its IMEI can be
+registered again; see [NIDD SIM changes and deletion](#nidd-sim-changes-and-deletion).
 
 #### `POST /pigeons/batch`
 
@@ -1365,6 +1421,9 @@ updated `capsules::Pigeon` with the new token visible in `connector.Https.token`
 `connector.Coap.token` / `connector.Mqtt.token` — save it now, it won't be shown again. For the
 PSK-bearing variants the refresh rotates `tls_psk_secret` in the same response, and the old PSK
 stops resolving through the [service-internal route](#service-internal-api) at once.
+
+For a `Nidd` pigeon the refresh also mints a new claim key and marks the pigeon unclaimed; the
+IMEI and endpoint are kept. The device is refused until it is rebuilt with the new key.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/pigeons/<pigeon_id>/token/refresh \
@@ -1499,6 +1558,14 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
   -H 'Content-Type: application/json' \
   -d '{"target_config":{"telemetry_interval":60}}'
 ```
+
+- `413` "Payload Too Large: this NIDD pigeon's target_config must serialize to at most <n>
+  bytes", for a `Nidd` pigeon, checked before anything is written. One downlink frame carries
+  the whole `target_config`, and a config the device could never receive must not become its
+  target. `<n>` is never below 1319; see [NIDD sizes and cadence](#nidd-sizes-and-cadence).
+
+For a `Nidd` pigeon a write that raises `target_version` also plans a `SHADOW` frame to the
+device, after the response; see [NIDD downlink and replies](#nidd-downlink-and-replies).
 
 **Firmware assignment (task #23) reuses this route** — there's no separate "assign firmware"
 endpoint. Merge a `firmware` key into `target_config` (see `capsules::FirmwareTarget`), using
@@ -3174,6 +3241,348 @@ so an `Mqtt` pigeon can be provisioned with real credentials before a broker exi
 
 ---
 
+## NIDD device surface (via Verizon ThingSpace)
+
+A `Nidd` pigeon's traffic never reaches a PidgeIoT listener. The device sends raw frames on a
+Non-IP PDN; the carrier's SCEF hands each one to Verizon ThingSpace, which posts it to dovecote as
+a [`POST /internal/thingspace/nidd`](#post-internalthingspacenidd) callback, and dovecote sends
+frames back through ThingSpace's send API. There is no terminator, no TLS and no bearer token on
+this path: the SIM authenticates the device to the carrier, three gates authenticate the callback,
+and a claim key built into the firmware binds the device to its pigeon. This section is the
+contract a NIDD device follows; the surface has no HTTP route of its own.
+
+### NIDD network and provisioning
+
+- **NB-IoT only.** Verizon serves NIDD to NB-IoT devices alone, so a NIDD build forces NB-IoT and
+  no LTE-M build can use it. The modem must also be one Verizon supports on its network: a board
+  Verizon does not support cannot carry a `Nidd` pigeon, however it is built.
+- **APN `VZWSCEF`** (`capsules::NIDD_APN`). The device attaches a Non-IP PDN there and indicates
+  control-plane CIoT optimization. The minted endpoint is `nidd://VZWSCEF`, written as a URI so
+  the device can check the scheme against the transport it was built with.
+- **The line comes first.** NIDD is enabled per line by choosing Verizon's NIDD price plan when the
+  line is activated, restored or moved to a new plan in ThingSpace, and the line must not send or
+  receive until a `niddConfigResponse` reports `ConfigCreated`. dovecote logs that callback and
+  acts on nothing in it, so provision the line, then create the pigeon.
+- **An IP PDN beside it is optional.** A plan that also carries IP data lets the device hold an IP
+  PDN beside `VZWSCEF`, and that is the only place the pigeon's bearer token is used: the HTTPS
+  device routes, of which firmware download is the one that matters. A NIDD-only line has no
+  remote firmware path.
+- **The IMEI binds the pigeon.** Create takes the modem's 15-digit IMEI, checked against its Luhn
+  digit (`capsules::imei_is_valid`), and derives the pigeon's id from it; see
+  [NIDD binding and claim](#nidd-binding-and-claim).
+- **One environment at a time.** Verizon allows one callback endpoint per service per account, so
+  only the environment holding the `NiddService` registration admits callbacks or sends. An
+  environment has NIDD on while it holds a ThingSpace account (`THINGSPACE_ACCOUNT_NAME`) and a
+  non-empty `THINGSPACE_CALLBACK_ALLOWED_IPS`, and only organizations listed in its
+  `NIDD_ALLOWED_ORG_IDS` may create a `Nidd` pigeon. `docs/infra/thingspace-nidd.md` is the
+  runbook for registering the listener and moving it between environments.
+
+### NIDD binding and claim
+
+- **The id is the IMEI's.** A `Nidd` pigeon's Durable Object is named `nidd:imei:<imei>`, so a
+  callback computes the same id from the IMEI it carries and reaches its pigeon with no index and
+  no Postgres read. A second create for the same IMEI therefore answers `409`, and the pigeon is
+  bound to its modem for life: a replaced modem is a new pigeon.
+- **The claim key.** An IMEI typed at create is an assertion, not proof. Create also mints a
+  16-byte claim key, returned once as `connector.Nidd.claim_key` (32 lowercase hex characters)
+  and built into the firmware. Until the device has claimed its pigeon, dovecote stores nothing it
+  sends and sends it nothing but a rate-limited `STATUS UNCLAIMED` notice.
+- **`HELLO` claims.** The device sends `HELLO`, the key as 32 lowercase hex characters, at every
+  boot, again when one drew no reply, and when told it is unclaimed. A match, compared in constant
+  time, marks the pigeon claimed and pins the line: the ICCID, or failing that the IMSI, that the
+  callback names. A later frame from a different line is dropped as if unclaimed, without clearing
+  the claim; a good `HELLO` from the new line moves the pin, which is how a SIM swap recovers.
+- **The key signs every platform frame** (see [NIDD frames](#nidd-frames)), so only dovecote can
+  steer the device, even against another holder of the account's ThingSpace API credentials.
+  The key crosses the carrier in the clear once per boot. That opens nothing by itself: a forged
+  `HELLO` also needs one of Verizon's callback addresses and the listener password.
+- **Device frames carry no tag.** After `HELLO`, uplink is authenticated by the callback gates and
+  the line pin. Against a sender able to post from one of Verizon's addresses, the listener
+  password is the one uplink secret, which is why it is rotated on any suspicion (the runbook);
+  such a sender could store readings in a claimed pigeon, never steer its device.
+- **The claim outlives the token.** A NIDD-only board has no path to take a new token, so the
+  claim does not expire with it. `token/refresh` mints a new claim key and marks the pigeon
+  unclaimed: the device is refused until it is rebuilt with the new key.
+
+### NIDD frames
+
+A NIDD frame is the bytes the device hands `send()` on its raw socket, and the bytes ThingSpace's
+base64 `message` field decodes to on either leg. Byte 0 is the type; the rest is the body. There
+is no length field (the carrier delivers whole messages) and no version byte (a new shape is a new
+type). Only `TELEMETRY` carries a sequence number; replies name the shadow version they confirm,
+and a callback's resends repeat its `requestId`.
+
+**No frame holds a NUL byte.** ThingSpace's send API refuses any message holding two adjacent NUL
+bytes (`400 NiddService.INPUT_INVALID.Message.AdjacentNullCharacters`), so a platform frame's
+numbers travel as text: after the type byte comes a header of two unsigned decimal integers, one
+space between them and a newline after (`8 7\n`), at most 22 bytes. A version is 0 to
+2147483647, and a negative one, which only a misbehaving device can report, is sent as 0; a
+`STATUS` argument is 0 to 4294967295. The JSON a frame carries is serde_json's serialization,
+which escapes every control character. Device frames follow the same rule: `HELLO` carries the
+claim key as hex, a `TELEMETRY` sequence is decimal text, and JSON holds no NUL.
+
+**A `TELEMETRY` frame opens with a send sequence**: after the type byte, one to ten decimal digits
+naming an unsigned 32-bit number and a newline (`3141592653\n`, at most 11 bytes), then the body.
+Start it at a random value at boot and add one per frame. The carrier can deliver one frame
+twice, and ThingSpace posts each delivery under a `requestId` of its own, so dovecote stores a
+telemetry frame it has already seen only once, matched by its bytes; the sequence is what keeps
+two sends of the same readings apart, and the random start does the same across reboots. A frame
+whose header does not parse is refused (`400` to ThingSpace) and never stored, so a device must
+send it. `HELLO` and `SHADOW_REPORT` carry none.
+
+Every platform frame ends in a 16-character tag: the first 8 bytes of HMAC-SHA256 over every byte
+before it, keyed by the pigeon's 16-byte claim key, written as lowercase hex. The device drops a
+platform frame whose tag does not verify against the key it was built with. Device frames carry no
+tag.
+
+| Byte 0 | Name | Direction | Body |
+|---|---|---|---|
+| `0x01` | `TELEMETRY` | device to platform | Header `<sequence>\n`, then UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry) body: the flat map or `{"reports":[...]}` |
+| `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) body |
+| `0x03` | reserved | device to platform | Log upload, not offered |
+| `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
+| `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
+| `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
+| `0x83` | reserved | platform to device | Application data, not offered |
+
+`STATUS` codes, written in the header in decimal:
+
+| Code | Name | `arg` | What the device does |
+|---|---|---|---|
+| `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
+| `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY` and `SHADOW_REPORT` that long, capped at 86400 |
+| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops billable sends until its next boot; on `0`, sends `HELLO` again, at most hourly |
+
+Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x05` upward,
+new platform frames `0x84` upward. An unknown type is logged and dropped by dovecote and ignored
+by the device. A `STATUS UNCLAIMED 1` is signed with the key the failed `HELLO` presented, so a
+device built with a stale key can still verify it, and a forger's `HELLO` draws a notice the real
+device rejects. Frames carry no nonce: a replayed `SHADOW` loses to a newer version, and a
+replayed `STATUS` repeats an effect the platform already chose.
+
+The frame constants live in dovecote (`dovecote/src/helpers/nidd.rs`) and in the device library,
+not in `capsules`: the other side is C, the reason the WebSocket frame types stay in dovecote.
+This section is the authority both follow.
+
+**Exact bytes.** Byte 0 is shown first; the ASCII column is the text the body carries. The tags
+below are computed with a fixture key of 16 zero bytes, never a real one.
+
+`TELEMETRY`, a batch of three readings taken five minutes apart and sent at one wake, send
+sequence 3141592653: 305 bytes, 408 characters of base64.
+
+```text
+0000  01 33 31 34 31 35 39 32 36 35 33 0a 7b 22 72 65  .3141592653.{"re
+0010  70 6f 72 74 73 22 3a 5b 7b 22 61 67 65 5f 73 65  ports":[{"age_se
+0020  63 73 22 3a 36 30 30 2c 22 6d 65 74 72 69 63 73  cs":600,"metrics
+0030  22 3a 7b 22 75 70 74 69 6d 65 5f 73 22 3a 22 38  ":{"uptime_s":"8
+0040  35 38 30 30 22 2c 22 72 73 72 70 22 3a 22 2d 39  5800","rsrp":"-9
+0050  37 22 2c 22 62 61 74 74 5f 6d 76 22 3a 22 33 37  7","batt_mv":"37
+0060  31 32 22 2c 22 74 65 6d 70 5f 63 22 3a 22 32 31  12","temp_c":"21
+0070  2e 35 22 7d 7d 2c 7b 22 61 67 65 5f 73 65 63 73  .5"}},{"age_secs
+0080  22 3a 33 30 30 2c 22 6d 65 74 72 69 63 73 22 3a  ":300,"metrics":
+0090  7b 22 75 70 74 69 6d 65 5f 73 22 3a 22 38 36 31  {"uptime_s":"861
+00a0  30 30 22 2c 22 72 73 72 70 22 3a 22 2d 39 38 22  00","rsrp":"-98"
+00b0  2c 22 62 61 74 74 5f 6d 76 22 3a 22 33 37 31 31  ,"batt_mv":"3711
+00c0  22 2c 22 74 65 6d 70 5f 63 22 3a 22 32 31 2e 34  ","temp_c":"21.4
+00d0  22 7d 7d 2c 7b 22 61 67 65 5f 73 65 63 73 22 3a  "}},{"age_secs":
+00e0  30 2c 22 6d 65 74 72 69 63 73 22 3a 7b 22 75 70  0,"metrics":{"up
+00f0  74 69 6d 65 5f 73 22 3a 22 38 36 34 30 30 22 2c  time_s":"86400",
+0100  22 72 73 72 70 22 3a 22 2d 39 37 22 2c 22 62 61  "rsrp":"-97","ba
+0110  74 74 5f 6d 76 22 3a 22 33 37 31 31 22 2c 22 74  tt_mv":"3711","t
+0120  65 6d 70 5f 63 22 3a 22 32 31 2e 34 22 7d 7d 5d  emp_c":"21.4"}}]
+0130  7d                                               }
+```
+
+`SHADOW_REPORT`, version 7 applied: 78 bytes, base64
+`AnsiY3VycmVudF9jb25maWciOnsidGVsZW1ldHJ5X2ludGVydmFsIjo5MDAsImxvZyI6ZmFsc2V9LCJjdXJyZW50X3ZlcnNpb24iOjd9`.
+
+```text
+0000  02 7b 22 63 75 72 72 65 6e 74 5f 63 6f 6e 66 69  .{"current_confi
+0010  67 22 3a 7b 22 74 65 6c 65 6d 65 74 72 79 5f 69  g":{"telemetry_i
+0020  6e 74 65 72 76 61 6c 22 3a 39 30 30 2c 22 6c 6f  nterval":900,"lo
+0030  67 22 3a 66 61 6c 73 65 7d 2c 22 63 75 72 72 65  g":false},"curre
+0040  6e 74 5f 76 65 72 73 69 6f 6e 22 3a 37 7d        nt_version":7}
+```
+
+`SHADOW`, the push after a dashboard write: `target_version` 8, `current_version` 7 (the device is
+one behind). 58 bytes, the last 16 the tag; base64
+`gTggNwp7InRlbGVtZXRyeV9pbnRlcnZhbCI6OTAwLCJsb2ciOnRydWV9NzNjZThkZTdkNDM4ZjU0MQ==`.
+
+```text
+0000  81 38 20 37 0a 7b 22 74 65 6c 65 6d 65 74 72 79  .8 7.{"telemetry
+0010  5f 69 6e 74 65 72 76 61 6c 22 3a 39 30 30 2c 22  _interval":900,"
+0020  6c 6f 67 22 3a 74 72 75 65 7d 37 33 63 65 38 64  log":true}73ce8d
+0030  65 37 64 34 33 38 66 35 34 31                    e7d438f541
+```
+
+The small frames, whole, tagged with the same fixture key:
+
+| Frame | Bytes | Layout | Base64 |
+|---|---|---|---|
+| `STATUS STORED 7` | 21 | `82 30 20 37 0a` (`0 7`, newline), then `db37ac5430ae1394` | `gjAgNwpkYjM3YWM1NDMwYWUxMzk0` |
+| `STATUS PAUSED 3600` | 24 | `82 31 20 33 36 30 30 0a` (`1 3600`, newline), then `1c273dd5d282365a` | `gjEgMzYwMAoxYzI3M2RkNWQyODIzNjVh` |
+| `STATUS UNCLAIMED 0` | 21 | `82 32 20 30 0a` (`2 0`, newline), then `edba557d1f9f3445` | `gjIgMAplZGJhNTU3ZDFmOWYzNDQ1` |
+| `STATUS UNCLAIMED 1` | 21 | `82 32 20 31 0a` (`2 1`, newline), then `6e3162e1b9f30649` | `gjIgMQo2ZTMxNjJlMWI5ZjMwNjQ5` |
+| `HELLO` | 33 | `04`, then the key's 32 hex characters | 44 characters |
+
+### NIDD downlink and replies
+
+Nothing polls. dovecote sends a frame through ThingSpace only in answer to one of these:
+
+| Event | Downlink |
+|---|---|
+| A shadow write raising `target_version`, push due | `SHADOW` |
+| A shadow write inside the hold window, or a pigeon not yet claimed | None; the next uplink's reply carries the newest target |
+| A `HELLO` that matches | `SHADOW`, always: the device asked |
+| A shadow report from a device that is behind | `SHADOW` |
+| A shadow report from a converged device | `STATUS STORED <version>` |
+| Telemetry (a repeat included), or a billable frame while paused with no notice due, from a device still owed a shadow | `SHADOW`, unless the newest went out under 30 seconds ago and has not been reported missed |
+| A `HELLO` that does not match | `STATUS UNCLAIMED 1`, at most once an hour |
+| Any other frame from an unclaimed pigeon or an unpinned line | `STATUS UNCLAIMED 0`, at most once an hour |
+| A billable frame while the account is paused | `STATUS PAUSED 3600`, at most once an hour |
+| Telemetry from a converged device | None |
+
+- **Pushes are bounded.** At most one unsolicited `SHADOW` per 15 minutes per pigeon, so an
+  operator saving repeatedly does not flood a device; none at all while the device is converged.
+  A device that cannot apply a config draws at most one `SHADOW` per uplink, inside the
+  connection that uplink opened.
+- **The next uplink delivers what a push misses.** Every downlink is sent with a delivery window
+  (`maximumDeliveryTime`) of 30 seconds. A frame sent while the device holds the connection its
+  own uplink opened arrives within seconds. One sent to a device holding no connection depends on
+  paging, and can be lost: on the bench, with PSM and eDRX off, two such pushes were paged 12.6
+  and 13.8 seconds after the send, when ThingSpace had already given up at about 10 seconds, and
+  a frame ThingSpace buffered was never delivered later. So any uplink from a device that is
+  behind draws the owed `SHADOW` as its reply, unless the newest went out under 30 seconds
+  earlier, and a `DeliveryFailed` or `Queued` delivery report marks the push pending, so the next
+  uplink carries it even within those 30 seconds. Hold the connection for that reply (see
+  [NIDD sizes and cadence](#nidd-sizes-and-cadence)).
+- **A `SHADOW` can arrive more than once**, as a repeated reply or a buffered push landing late.
+  The device keeps the shadow with the highest `target_version` and reads any other `SHADOW` only
+  for its `current_version`.
+- **A report that is stored, or repeats the stored one, gets exactly one reply**, `SHADOW` or
+  `STATUS STORED`. One the platform drops (paused, unclaimed, from another line, or unparseable) can
+  get no reply at all. A report is confirmed by that `STATUS STORED`, or by a `SHADOW` whose
+  `current_version` is at least the version reported. A `SHADOW` whose `current_version` is below
+  what the device applied means the report was lost, and the device reports again, unless that
+  report still awaits its reply (telemetry sent before the report can draw the owed `SHADOW` first)
+  or the same `SHADOW` brings a newer target, whose report follows instead. Re-sending a report is
+  harmless: an identical report is neither rewritten nor billed.
+- **Frames can arrive out of order.** Each is its own callback. Readings carry their own
+  `age_secs`, resolved against the time the callback arrives.
+- **Repeats are stored once.** ThingSpace retries a refused callback once, about a second later,
+  retries one it has had no answer to for about 4 s even while the first attempt still runs, and
+  a support resend repeats one; uplink is de-duplicated on the callback's `requestId` plus a
+  digest of the frame, over the last 64 uplinks per pigeon. The carrier can also deliver one
+  frame twice, which ThingSpace posts under a new `requestId`, two minutes later on the bench; a
+  `TELEMETRY` frame already received is answered as a repeat whatever its `requestId`, which is why
+  it carries a send sequence; one arriving while its first copy is still being stored waits for it,
+  and one whose first copy was dropped as unclaimed is judged afresh. A repeat is neither stored nor
+  billed, and, like any uplink from a device that is behind, carries the owed `SHADOW` when one is
+  due.
+- **The dashboard never waits on ThingSpace.** A shadow `PUT` answers before the frame is sent and
+  never fails because of it. A delivery report changes only whether the next uplink repeats the
+  push: `Delivered` means the network took the frame, not that the device has it, and the
+  device's own `current_version` is the convergence signal.
+
+### NIDD sizes and cadence
+
+Uplink frames are measured against 1273 bytes, the device's cap; platform frames against 1358.
+`TELEMETRY` sizes include a ten-digit send sequence, 11 bytes.
+
+| Frame | Size | Fits |
+|---|---|---|
+| `TELEMETRY`, flat, seven keys at the `pigeon` library's worst-case key and value sizes | 1169 | yes |
+| `TELEMETRY`, flat, eight keys at those sizes | 1334 | no |
+| `TELEMETRY`, flat, nine keys at those sizes | 1499 | no |
+| `TELEMETRY`, batch of ten realistic keys, 1 / 3 / 4 / 6 / 7 readings | 199 / 551 / 727 / 1081 / 1258 | yes |
+| `TELEMETRY`, batch of ten realistic keys, 8 readings | 1435 | no |
+| `SHADOW_REPORT` at the library's default `CONFIG_PIGEON_SHADOW_CONFIG_MAX` | 385 | yes |
+| `HELLO` | 33 | yes |
+| `SHADOW` with `target_config` at its cap | 1358 | yes, by construction |
+| `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
+| `STATUS` | 21 to 30 | yes |
+
+- **1358 bytes a frame, both ways, at the platform** (`capsules::NIDD_MAX_FRAME_BYTES`), counted
+  before base64: Verizon's downlink cap of 10864 bits. ThingSpace refuses a 1359-byte downlink
+  (`400 NiddService.INPUT_INVALID.Message.TooLong`), and dovecote accepts an uplink frame up to
+  1358 bytes.
+- **1273 bytes an uplink frame at the device.** The modem's ceiling is below Verizon's figures
+  (1500 bytes per transmission is the only uplink one it publishes): an nRF9160 on modem firmware
+  1.3.7 delivered 1273-byte frames whole and refused 1283 in `send()` with `EINVAL`, before any
+  radio access; 1274 to 1282 are untested. The `pigeon` library caps an uplink frame at 1273 bytes
+  and batches readings to fit.
+- **`target_config` must fit one `SHADOW` frame** for a `Nidd` pigeon: the frame less the type
+  byte, the version header and the tag's 16 characters. The header grows with the versions, so
+  the cap is counted at each write for the version it creates: 1337 bytes at single-digit
+  versions, and never below 1319 (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`, two ten-digit
+  versions), which always fits and which the dashboard holds a save to. A larger config is refused
+  `413` at the shadow `PUT`, since one frame carries the whole config and one the device could
+  never receive must not become its target.
+- **The `pigeon` library receives less than that.** It keeps a `target_config` of at most
+  `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1` bytes: 319 by default, and 1207 at most on a NIDD build,
+  where the same symbol bounds the shadow report. A larger config passes the `PUT`, but the device
+  drops it with a log line and never reports that version, so every uplink draws the same `SHADOW`
+  again until a smaller write replaces it.
+- **An uplink body is at most 1272 bytes** after the type byte, and a telemetry body at most 1261
+  after the longest send sequence. A device never splits a pre-built body to fit, so a build whose
+  largest flat telemetry body could exceed that has to report fewer keys: seven at the library's
+  worst-case sizes, where eight come to 1334 bytes a frame.
+- **At most four radio accesses an hour**, uplink and downlink together: Verizon's network usage
+  guideline for automated traffic. This is the application's obligation, not something the
+  platform or the device library can enforce, since a paged downlink is an access the device
+  cannot count ahead of time. A 15-minute wake is the floor; a 20-minute wake leaves one access an
+  hour for a paged push, and a reply riding its uplink's connection costs none.
+- **Batch readings.** Take readings as often as needed and send them with their `age_secs` inside
+  one `TELEMETRY` frame per wake. Billing counts readings either way.
+- **Hold the connection for the reply, then release it.** Any frame from a device that is behind
+  can draw a `SHADOW`, which is reliable only while the connection that frame opened is up; on the
+  bench each reply reached the device 1.1 to 4.7 seconds after its connection came up. So do not
+  request release with RAI right after sending. Request it once the reply to a `HELLO` or shadow
+  report has arrived; after a wake of telemetry alone, let the network release the connection,
+  which it did 2.7 to 5.3 seconds after the last byte, about the 5 seconds Verizon asks for.
+- **Set PSM and eDRX at every boot.** The modem keeps both across firmware images, so a device
+  never inherits them. On Verizon NB-IoT a 30-minute periodic TAU was refused and 190 minutes
+  accepted, granted with a 60-second active time; log what the network grants. Keep eDRX off,
+  or its cycle shorter than the active time: a device in eDRX is paged only on its paging
+  occasions, and a 163.84-second cycle can leave a 60-second active time with none.
+- **`HELLO` at every boot**, again ahead of the next billable frame when one drew no reply within
+  the time a reply takes to arrive (30 seconds by the `pigeon` library's default), and after a
+  `STATUS UNCLAIMED 0`, at most hourly. A converged pigeon's target comes only in the `SHADOW`
+  answering its `HELLO`, so a device that loses that reply and never repeats the `HELLO` runs
+  without its target until a dashboard write.
+- **Verify every platform frame's tag** against the built-in claim key; drop and log one that
+  fails.
+
+### NIDD billing and the free tier
+
+- **What bills.** One billable message per telemetry reading (a batch of M readings is M, as on
+  every surface) and per stored shadow report, once per send: a repeated callback, a telemetry
+  frame the carrier delivered twice, an identical report, a `HELLO` and every downlink are not
+  billed; downlinks are unmetered. A `Nidd` pigeon counts as a
+  connected device in any period in which it sent a billable message, like every other pigeon.
+- **The free-tier fuse** runs at the gateway, before the Durable Object, on `TELEMETRY` and
+  `SHADOW_REPORT` frames, as it does for the HTTP telemetry route. It fails open, including when
+  the check takes longer than one second. A paused account's billable frame is dropped, the
+  callback still answering `200` because a retry could not change the outcome, and the device
+  is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no `429` for a device to
+  read; the notice is its equivalent.
+
+### NIDD SIM changes and deletion
+
+- **A new modem is a new pigeon.** The IMEI fixes the pigeon's id, so delete the old pigeon,
+  create one for the new IMEI, and build the device with its claim key.
+- **A new SIM in the same device** needs nothing from the dashboard: the next `HELLO` from the new
+  line moves the line pin.
+- **`token/refresh`** mints a new token and a new claim key and marks the pigeon unclaimed; the
+  IMEI and endpoint are kept. The device's next `HELLO` draws `STATUS UNCLAIMED 1`, which stops
+  its billable sends until it reboots, and it stays refused until it is rebuilt with the new key.
+- **`DELETE /pigeons/:pigeon_id`** wipes the claim, the line pin and the de-duplication and push
+  state with the rest of the pigeon. The IMEI stops resolving and can be registered again. Doing
+  so reuses the same pigeon id, so create clears any Postgres rows and log dictionary an earlier
+  pigeon left under that id before the new one is mirrored.
+
+---
+
 ## Service-internal API
 
 ### PSK lookup
@@ -3207,7 +3616,8 @@ CORS-usable from a browser in any meaningful way; never called by devices or the
 
 - `401` missing bearer, `403` source address outside the allowlist or wrong/unconfigured
   secret.
-- `404` for an unknown identity or a pigeon whose connector mints no PSK (`Https`). Both
+- `404` for an unknown identity or a pigeon whose connector mints no PSK (`Https`, and `Nidd`,
+  whose claim key is not a PSK and never reaches a terminator). Both
   PSK-bearing variants (`Coap`, `Mqtt`) resolve, under either route name: which transport minted
   the pair says nothing about which terminator may resolve it, and both hold the same secret.
 - `400` for a string that cannot be a pigeon id at all (Durable Object ids embed a namespace
@@ -3269,6 +3679,72 @@ because a value the caller supplies is an assertion rather than a record.
   triggered it; the trait still carries the person's choice, and `docs/consent.md` describes
   the reconciliation.
 
+### ThingSpace NIDD callbacks
+
+#### `POST /internal/thingspace/nidd`
+
+**Auth:** ThingSpace callback credentials required
+
+Verizon ThingSpace's `NiddService` callback: every uplink from a `Nidd` pigeon
+(`niddMONotificationResponse`), every downlink delivery report (`niddMTDeliveryResponse`) and every
+line-configuration result (`niddConfigResponse`) arrives here. Not a device or dashboard route; the
+only legitimate caller is ThingSpace. Three gates, each failing closed: the source address
+(`CF-Connecting-IP`) must appear in the environment's `THINGSPACE_CALLBACK_ALLOWED_IPS` (Verizon's
+published callback addresses; empty means deny-all); the body's `password` must equal the
+`THINGSPACE_CALLBACK_PASSWORD` Worker secret, compared in constant time (for a day after a rotation,
+the password it replaced, `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, is accepted too, since ThingSpace
+keeps sending it for minutes); and `accountName` must be this environment's ThingSpace account.
+ThingSpace sends the password in clear text inside the body, which is why the other two gates are
+not optional. Any `Content-Type` is accepted, and the body is capped at 8 KiB before it is parsed.
+
+Body is ThingSpace's callback JSON, unchanged. An uplink:
+
+```json
+{"username": "pidgeiot", "password": "<callback_password>", "requestId": "<uuid>",
+ "deviceIds": [{"id": "<imei>", "kind": "IMEI"}],
+ "niddResponse": {"niddMONotificationResponse": {"accountName": "<account_name>",
+   "message": "<base64 frame>", "deviceIds": [{"id": "<imei>", "kind": "IMEI"}]}},
+ "callbackCount": 1, "maxCallbackThreshold": 4}
+```
+
+The pigeon is the one whose `connector.Nidd.imei` equals the IMEI among
+`niddMONotificationResponse.deviceIds`, falling back to the top-level `deviceIds`, with `kind`
+compared case-insensitively. `message` decodes to one frame; see [NIDD frames](#nidd-frames).
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/internal/thingspace/nidd \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"pidgeiot","password":"<callback_password>","requestId":"<uuid>","deviceIds":[{"id":"<imei>","kind":"IMEI"}],"niddResponse":{"niddMONotificationResponse":{"accountName":"<account_name>","message":"<base64 frame>","deviceIds":[{"id":"<imei>","kind":"IMEI"}]}},"callbackCount":1,"maxCallbackThreshold":4}'
+```
+
+From an address outside the allowlist this answers `403`. The example is the shape ThingSpace
+sends, for replaying one against a local `wrangler dev`, whose allowlist is loopback.
+
+- `200`, empty body: processed, or deliberately dropped because a retry could not change the
+  outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
+  over its free-tier allowance, a repeat of a callback already stored, a telemetry frame already
+  received under another `requestId` and not dropped as unclaimed there (the carrier delivered one
+  send twice), a frame whose body is malformed, over a cap or of an unknown type, a delivery report
+  (a `DeliveryFailed` or `Queued` one first marks the push it may have carried pending), a
+  configuration result, another account's callback, or an authenticated body of a shape dovecote
+  does not know.
+- `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` whose
+  sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable through
+  support once a parser is fixed; a `TELEMETRY` frame without a sequence is refused by design, so
+  a resend of one meets the same `400`.
+- `403`: source address outside the allowlist, or a wrong password. **Never `401`**, for the same
+  reason as [`POST /internal/consent`](#post-internalconsent).
+- `413`: body over 8 KiB.
+- `503`: NIDD is not configured in this environment (the callback password or the account name
+  is unset), or a store the uplink needs failed (the pigeon's Durable Object or the telemetry
+  queue). **The uplink is lost** unless ThingSpace's one retry, about a second later, succeeds:
+  ThingSpace documents three resends at five-minute intervals, but makes that single immediate
+  retry and no other. Each such answer is logged as lost with its `requestId`, the only handle
+  for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback that
+  was in fact stored is recognised by its `requestId` and frame digest and never stored or billed
+  twice, and one that arrives while the first attempt is still storing it waits for that
+  attempt's outcome.
+
 
 ---
 
@@ -3291,8 +3767,12 @@ Every request/response shape above is defined in `capsules/src/lib.rs`:
 - `PigeonAcl`, `PigeonAclUpdateRequest`
 - `PigeonShadow` / `PigeonShadowRow`, `PigeonShadowUpdateRequest`, `PigeonShadowReportRequest`,
   `JsonString`
-- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)` | `Mqtt(MqttConfig)`), `CoapPskLookup`
-  (service-internal, the `/internal/device-psk/:pigeon_id` response)
+- `Connector` (`Https(HttpsConfig)` | `Coap(CoapConfig)` | `Mqtt(MqttConfig)` |
+  `Nidd(NiddConfig)`), `CoapPskLookup` (service-internal, the `/internal/device-psk/:pigeon_id`
+  response)
+- `NIDD_APN`, `NIDD_MAX_FRAME_BYTES`, `NIDD_MAX_TARGET_CONFIG_BYTES`, `imei_is_valid`: the
+  halves of the NIDD contract the device mirrors, and the IMEI check both the dashboard and
+  dovecote apply at create
 - `ConsentHookPayload`, `ConsentKind`, `ConsentSource`, `MARKETING_CONSENT_LABEL`,
   `MAX_CONSENT_CONTEXT_BYTES` — `capsules/src/consent.rs`, which also holds the transition
   rule (`consent_transition`) the `/internal/consent` route applies; the notice version it
@@ -3320,4 +3800,6 @@ never appear over the wire — only their non-`Row` counterparts do.
 `fancier` (a Rust/Dioxus consumer), which is the whole reason `capsules` exists — but the only
 other consumer of the WS wire format is the `pigeon` device library, which is Zephyr/C, not Rust,
 so there's no second Rust crate to share these with. The wire shapes themselves (documented
-above) are still normative; only the Rust type definitions are dovecote-local.
+above) are still normative; only the Rust type definitions are dovecote-local. The
+[NIDD frame](#nidd-frames) constants are dovecote-local for the same reason
+(`dovecote/src/helpers/nidd.rs`).

@@ -17,6 +17,8 @@ A Cloudflare Workers runtime is HTTP-only, so the protocols that constrained dev
 - 📡 **[`loft`](https://github.com/justins-engineering/loft) (CoAP terminator):** `coaps://` over DTLS/UDP and `coaps+tcp://` over TLS/TCP on one port, pre-shared-key authentication, block-wise transfer.
 - 📬 **[`pigeonhole`](https://github.com/justins-engineering/pigeonhole) (MQTT broker):** MQTT 5 and 3.1.1 over TLS, certificate or pre-shared-key authentication, one session per device, the device shadow fed back as a retained message.
 
+📶 **NIDD (Verizon ThingSpace)** needs no terminator: the carrier delivers a device's Non-IP frames to `dovecote` as ThingSpace callbacks, and `dovecote` answers through ThingSpace's API. The frames are specified in [`docs/api.md`](docs/api.md#nidd-device-surface-via-verizon-thingspace), and registering the callback listener is the runbook in [`docs/infra/thingspace-nidd.md`](docs/infra/thingspace-nidd.md).
+
 🕊️ **Device library:** [`pigeon`](https://github.com/justins-engineering/pigeon) is the Zephyr RTOS client module devices run, with sample applications in [`pigeon-examples`](https://github.com/justins-engineering/pigeon-examples).
 
 📖 **API Reference:** the full `dovecote` HTTP surface (dashboard + device routes, auth models, request/response shapes) is documented in [`docs/api.md`](docs/api.md).
@@ -74,7 +76,7 @@ bunx mmdc -i assets/architecture.mmd -o assets/images/architecture.svg -b transp
 ```
 
 ## 🤝 Contributing
-PidgeIoT is open-source. Contributions to the dashboard, to core backend stability, and to the device library are all welcome. Protocol work belongs in the repository that owns the transport: CoAP in [`loft`](https://github.com/justins-engineering/loft), MQTT in [`pigeonhole`](https://github.com/justins-engineering/pigeonhole), on-device support in [`pigeon`](https://github.com/justins-engineering/pigeon). Cellular NIDD has no implementation anywhere yet and is open to anyone who wants it. Please open an issue before submitting major architectural pull requests.
+PidgeIoT is open-source. Contributions to the dashboard, to core backend stability, and to the device library are all welcome. Protocol work belongs in the repository that owns the transport: CoAP in [`loft`](https://github.com/justins-engineering/loft), MQTT in [`pigeonhole`](https://github.com/justins-engineering/pigeonhole), on-device support in [`pigeon`](https://github.com/justins-engineering/pigeon). NIDD through Verizon ThingSpace lives in `dovecote` itself, and its device side belongs in `pigeon`; other carriers' NIDD services are open to anyone who wants them. Please open an issue before submitting major architectural pull requests.
 
 ## 📜 License
-AGPL-3.0. See [`LICENSE`](LICENSE); third-party components are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+AGPL-3.0-only: the GNU Affero General Public License, version 3, without the "or any later version" option. Every crate in this workspace declares the same in its `license` field. See [`LICENSE`](LICENSE); third-party components are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

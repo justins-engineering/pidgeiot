@@ -1,4 +1,10 @@
-use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob};
+use crate::helpers::nidd::{
+  NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_PAUSED,
+  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
+  nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
+  shadow_reply_due, sign_frame, status_frame,
+};
+use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_CLOSE_PIGEON_DELETED, WS_CLOSE_TOKEN_REVOKED,
   WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
@@ -8,10 +14,11 @@ use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
-  MqttConfig, Pigeon, PigeonAcl, PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow,
-  PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest,
-  PigeonUpdateRequest, TelemetryEndpoint, unwrap_or_return_response,
+  MqttConfig, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, NiddConfig, Pigeon, PigeonAcl,
+  PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonFlockUpdateRequest,
+  PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
+  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -134,6 +141,17 @@ pub fn build_mqtt_endpoint(env: &Env) -> String {
   endpoint
 }
 
+/// Mints the `nidd://VZWSCEF` form: the APN a Nidd device's Non-IP PDN attaches to, written as
+/// a URI so the device library can check the scheme against the transport it was built with.
+/// No host: the carrier, not a PidgeIoT service, terminates the radio side.
+#[inline]
+pub fn build_nidd_endpoint() -> String {
+  let mut endpoint = String::with_capacity(7 + NIDD_APN.len());
+  endpoint.push_str("nidd://");
+  endpoint.push_str(NIDD_APN);
+  endpoint
+}
+
 #[durable_object]
 pub struct Pigeons {
   sql: SqlStorage,
@@ -146,6 +164,7 @@ pub struct Pigeons {
   // purpose -- a pending command has no meaning across a DO eviction
   // (there's no in-flight HTTP handler left to resolve).
   shell_waiters: RefCell<HashMap<String, oneshot::Sender<ShellOutputPayload>>>,
+  nidd_in_flight: NiddInFlight,
 }
 
 /// Carrier for a device's `shell_output` frame fields, handed from
@@ -338,11 +357,33 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_log_chunks table");
 
+    // A Nidd pigeon's claim, the push it owes its device, and the uplinks it has seen, in one
+    // row for the telemetry blob's billing reason: `id INTEGER PRIMARY KEY` is the rowid and
+    // carries no backing index, so an uplink costs one row read and one row written, plus a
+    // second read for telemetry, whose enqueue awaits. Never add an index here either. No
+    // foreign key to `pigeons`, so `delete` wipes it explicitly.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_nidd (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          claimed_at INTEGER,
+          line_id TEXT,
+          awaiting_version INTEGER NOT NULL DEFAULT 0,
+          pushed_version INTEGER NOT NULL DEFAULT 0,
+          pushed_at INTEGER NOT NULL DEFAULT 0,
+          notice_at INTEGER NOT NULL DEFAULT 0,
+          seen TEXT NOT NULL DEFAULT '[]'
+        );",
+        None,
+      )
+      .expect("created pigeon_nidd table");
+
     Pigeons {
       sql,
       state,
       env,
       shell_waiters: RefCell::new(HashMap::new()),
+      nidd_in_flight: NiddInFlight::default(),
     }
   }
 
@@ -381,6 +422,10 @@ impl DurableObject for Pigeons {
       "/pigeon/internal/psk" => get_device_psk_internal(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
       "/pigeon/shell/execute" => execute_shell_command(self, req).await,
+      // Trusted-internal like `/pigeon/acl/grant`: this DO has no public address, and the only
+      // caller is the ThingSpace callback route after all three of its gates.
+      "/pigeon/nidd/uplink" => nidd_uplink(self, req).await,
+      "/pigeon/nidd/missed" => nidd_missed(self),
       _ => Response::error("Not Found", 404),
     }
   }
@@ -623,27 +668,11 @@ fn is_owner(pigeons: &Pigeons, req: &Request) -> Result<(), Result<Response, wor
 }
 
 /// Strips every secret from a `Pigeon` before it leaves the DO via a GET
-/// route -- the connector token/PSK and the telemetry endpoint's
-/// `auth_token` are only ever returned by the request that sets them.
+/// route -- the connector token, PSK or claim key and the telemetry
+/// endpoint's `auth_token` are only ever returned by the request that sets
+/// them.
 fn strip_secrets(pigeon: &mut Pigeon) {
-  pigeon.connector = match pigeon.connector.clone() {
-    Connector::Https(c) => Connector::Https(HttpsConfig {
-      endpoint: c.endpoint,
-      token: String::new(),
-    }),
-    Connector::Coap(c) => Connector::Coap(CoapConfig {
-      endpoint: c.endpoint,
-      token: String::new(),
-      tls_psk_identity: c.tls_psk_identity,
-      tls_psk_secret: None,
-    }),
-    Connector::Mqtt(c) => Connector::Mqtt(MqttConfig {
-      endpoint: c.endpoint,
-      token: String::new(),
-      tls_psk_identity: c.tls_psk_identity,
-      tls_psk_secret: None,
-    }),
-  };
+  pigeon.connector = crate::helpers::connector_without_secrets(&pigeon.connector);
 
   if let Some(endpoint) = pigeon.telemetry_endpoint.as_mut() {
     endpoint.auth_token = None;
@@ -771,6 +800,11 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   })
 }
 
+/// Creates this pigeon in its fresh Durable Object: the row, the creator's owner ACL and an empty
+/// shadow, with every connector credential minted here. The body's connector only names the
+/// variant, except a `Nidd` connector's IMEI, which must name this very object: a second create
+/// for one IMEI lands here too and answers 409. A statement or read-back that fails after the
+/// first row is written removes what was written.
 async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let Ok(Some(user_id)) = req.headers().get("X-User-Id") else {
     return Response::error("Request missing 'X-User-Id'", 400);
@@ -840,6 +874,42 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         tls_psk_secret: Some(psk),
       })
     }
+    // The IMEI is the one field read from the request: it names this DO, so a callback carrying
+    // it reaches the pigeon with no index. The claim key proves a device was built for it.
+    Connector::Nidd(requested) => {
+      let imei = requested.imei;
+      if !capsules::imei_is_valid(&imei) {
+        return Response::error(
+          "Bad Request: IMEI must be 15 digits ending in its check digit",
+          400,
+        );
+      }
+      let named = pigeons.env.durable_object("PIGEONS").and_then(|namespace| {
+        namespace
+          .id_from_name(&nidd_object_name(&imei))
+          .map(|id| id.to_string())
+      });
+      if named.ok().as_deref() != Some(do_id.as_str()) {
+        console_error!("Nidd create reached an object its IMEI does not name: {do_id}");
+        return Response::error("Internal Server Error", 500);
+      }
+      if pigeon_exists(pigeons) {
+        return Response::error("Conflict: a pigeon with this IMEI already exists", 409);
+      }
+      let claim_key = match mint_device_psk() {
+        Ok(key) => key,
+        Err(e) => {
+          console_error!("NIDD claim key mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
+      Connector::Nidd(NiddConfig {
+        endpoint: build_nidd_endpoint(),
+        token: device_token,
+        imei,
+        claim_key: Some(claim_key),
+      })
+    }
   };
 
   let connector_json = serde_json::to_string(&server_connector).unwrap_or_default();
@@ -862,7 +932,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       Ok(p) => Pigeon::from(p),
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return clear_failed_create(pigeons);
       }
     },
     Err(e) => {
@@ -876,7 +946,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     vec![user_id.into()],
   ) {
     console_error!("Pigeon ACL create execution error: {e}");
-    return Response::error("Internal Server Error", 500);
+    return clear_failed_create(pigeons);
   }
 
   let shadow = match pigeons.sql.exec(
@@ -887,12 +957,12 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       Ok(s) => PigeonShadow::from(s),
       Err(e) => {
         console_error!("PigeonShadow deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return clear_failed_create(pigeons);
       }
     },
     Err(e) => {
       console_error!("Pigeon shadow create execution error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return clear_failed_create(pigeons);
     }
   };
 
@@ -915,6 +985,26 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     .from_json(&response)
 }
 
+/// Removes what a failed `create` wrote after its `pigeons` INSERT and answers 500. The three
+/// statements share no transaction, and a Nidd pigeon's IMEI names this object, so a row left
+/// here would answer every retry 409 while no Postgres row lists the pigeon. Nothing awaits
+/// between the INSERT and here, so these rows are this create's own; the shadow cascades.
+fn clear_failed_create(pigeons: &Pigeons) -> Result<Response> {
+  for statement in ["DELETE FROM pigeon_acl;", "DELETE FROM pigeons;"] {
+    if let Err(e) = pigeons.sql.exec(statement, None) {
+      console_error!(
+        "Pigeon create: cleanup failed for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+    }
+  }
+  Response::error("Internal Server Error", 500)
+}
+
+/// Mints this pigeon a new token, and a new PSK or claim key for the variants that carry one,
+/// revoking the old credentials; a Nidd pigeon is also unclaimed. Owner only. A stored connector
+/// this build cannot parse is refused with 500 rather than rebuilt, so a refresh can never
+/// overwrite what it does not understand.
 async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
@@ -929,12 +1019,12 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
   };
 
   // Read the current pigeon to keep its connector type.
-  let mut pigeon = match pigeons.sql.exec(
+  let row = match pigeons.sql.exec(
     &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
-      Ok(p) => Pigeon::from(p),
+      Ok(p) => p,
       Err(e) => {
         console_error!("Pigeon deserialization error: {e}");
         return Response::error("Internal Server Error", 500);
@@ -946,7 +1036,16 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
     }
   };
 
-  pigeon.connector = match &pigeon.connector {
+  // Parsed here, not through `From<PigeonRow>`, which reads a connector it does not know as an
+  // empty `Https` one. Writing that back would destroy a connector a newer build minted, which is
+  // exactly what a rollback past that build would otherwise do.
+  let Ok(stored_connector) = serde_json::from_str::<Connector>(&row.connector) else {
+    console_error!("Pigeon token refresh: stored connector unreadable");
+    return Response::error("Internal Server Error: stored connector unreadable", 500);
+  };
+  let mut pigeon = Pigeon::from(row);
+
+  pigeon.connector = match &stored_connector {
     Connector::Https(_) => {
       let endpoint = build_http_endpoint(&pigeons.env, &do_id);
       Connector::Https(HttpsConfig {
@@ -984,6 +1083,24 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
         tls_psk_secret: Some(psk),
       })
     }
+    // Unlike every other arm, kept rather than rebuilt: the IMEI binds the device to this
+    // object, and rebuilding it would unbind the device. The new claim key revokes the old
+    // build, as a new token revokes the other variants'.
+    Connector::Nidd(stored) => {
+      let claim_key = match mint_device_psk() {
+        Ok(key) => key,
+        Err(e) => {
+          console_error!("NIDD claim key mint error: {e}");
+          return Response::error("Internal Server Error", 500);
+        }
+      };
+      Connector::Nidd(NiddConfig {
+        endpoint: stored.endpoint.clone(),
+        token: device_token,
+        imei: stored.imei.clone(),
+        claim_key: Some(claim_key),
+      })
+    }
   };
 
   let connector_json = serde_json::to_string(&pigeon.connector).map_err(|e| {
@@ -1012,6 +1129,17 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       // on any close and re-authenticates with whatever token it currently
       // has, which is where a stale reconnect actually gets refused.
       close_device_sockets(pigeons, WS_CLOSE_TOKEN_REVOKED, "token revoked");
+
+      // The claim was made with the old key, so the device is refused until it is rebuilt.
+      if matches!(pigeon.connector, Connector::Nidd(_))
+        && let Err(e) = pigeons.sql.exec(
+          "UPDATE pigeon_nidd SET claimed_at = NULL, line_id = NULL;",
+          None,
+        )
+      {
+        console_error!("Pigeon token refresh: unclaiming failed: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
 
       match pigeons.sql.exec(
         &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
@@ -1090,8 +1218,8 @@ async fn get_device_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Res
 /// empty — so this wipes every row this DO owns instead. `pigeon_shadow`
 /// cascades via its foreign key; the tables scoped to this DO's single
 /// pigeon rather than keyed by pigeon id — `pigeon_acl`,
-/// `pigeon_telemetry_latest` and `pigeon_log_chunks` — have none, so each is
-/// cleared explicitly.
+/// `pigeon_telemetry_latest`, `pigeon_log_chunks` and `pigeon_nidd` — have
+/// none, so each is cleared explicitly.
 async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
@@ -1115,6 +1243,13 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   // here; the privacy policy promises a deleted device's logs go with it.
   if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_log_chunks;", None) {
     console_error!("Pigeon log delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // The claim and the uplinks seen go with the pigeon, so a recreate under the same IMEI
+  // starts unclaimed.
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_nidd;", None) {
+    console_error!("Pigeon NIDD state delete execution error: {e}");
     return Response::error("Internal Server Error", 500);
   }
 
@@ -1486,10 +1621,13 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
 /// with auth and write in one hop: this is the only point that is both
 /// after `is_authorized_device` -- so a caller without a device token
 /// never learns anything about the account's billing state -- and before
-/// the write. The WS surfaces have no gateway to check at all. The
-/// HTTP/CoAP telemetry route is the exception and keeps its own gateway
-/// check, since it verifies auth in a separate hop and never reaches these
-/// handlers.
+/// the write. The WS surfaces have no gateway to check at all. Two
+/// surfaces are checked at the gateway instead. The HTTP/CoAP telemetry
+/// route verifies auth in a separate hop and never reaches these handlers.
+/// The NIDD callback authenticates at the gateway and hands `nidd_uplink`
+/// the answer, because a Hyperdrive connection opened from this DO may keep
+/// it billed for duration, which on a device waking every 15 minutes would
+/// cost far more than the uplink itself.
 ///
 /// Fail-open lives inside `check_ingest_fuse`, along with the note
 /// on why Hyperdrive's result cache makes a per-report check affordable.
@@ -1806,35 +1944,32 @@ async fn handle_ws_shadow_report(pigeons: &Pigeons, report: &PigeonShadowReportR
     }
   };
 
-  let pigeon_id = pigeons.state.id().to_string();
+  sync_shadow_report(&pigeons.env, &pigeons.state.id().to_string(), &shadow).await;
+}
 
-  // An accepted report-back is one billable device message, matching the
-  // HTTP report-back route and the WS telemetry frame (whose tally rides
-  // the shared queue consumer). Same best-effort convention as the PG
-  // sync below: a failed tally undercounts, never disturbs the socket.
-  crate::helpers::count_billable_messages(&pigeons.env, &pigeon_id, 1).await;
+/// The tail of a stored device shadow report, for the surfaces with no gateway route after them
+/// (the WebSocket frame inline, NIDD after its acknowledgement): one billable message and the
+/// Postgres mirror. An accepted report-back is billed like the HTTP one and a telemetry reading.
+/// Best-effort like every mirror: a failed tally undercounts and a failed sync is logged.
+async fn sync_shadow_report(env: &Env, pigeon_id: &str, shadow: &PigeonShadow) {
+  crate::helpers::count_billable_messages(env, pigeon_id, 1).await;
 
-  match crate::helpers::get_db_client(&pigeons.env).await {
+  match crate::helpers::get_db_client(env).await {
     Ok(client) => {
-      if let Err(e) = crate::helpers::update_shadow_pg_db(client, &pigeon_id, &shadow).await {
-        console_error!("WS shadow report: PG sync failed for pigeon {pigeon_id}: {e}");
+      if let Err(e) = crate::helpers::update_shadow_pg_db(client, pigeon_id, shadow).await {
+        console_error!("Shadow report: PG sync failed for pigeon {pigeon_id}: {e}");
       }
     }
     Err(e) => {
       console_error!(
-        "WS shadow report: PG sync skipped for pigeon {pigeon_id}: Hyperdrive connection failed: {e}"
+        "Shadow report: PG sync skipped for pigeon {pigeon_id}: Hyperdrive connection failed: {e}"
       );
     }
   }
 }
 
-/// WS counterpart to the HTTP telemetry route. Merges into the DO's own
-/// latest-value store synchronously first (like every telemetry entry
-/// point), then either enqueues onto `TELEMETRY_QUEUE` for the shared
-/// consumer path (see `queue.rs`), or -- with no queue bound (dev) --
-/// writes history directly so WS telemetry doesn't silently skip what the
-/// HTTP route would have recorded. No auth round trip: the bearer token
-/// was verified once, at socket accept.
+/// WS counterpart to the HTTP telemetry route; the work is `ingest_telemetry`'s. No auth round
+/// trip: the bearer token was verified once, at socket accept.
 ///
 /// Takes both spellings of the frame (see `WsInboundFrame::Telemetry`): a
 /// flat `metrics` map, or a `reports` batch. The batch form is what makes
@@ -1857,26 +1992,54 @@ async fn handle_ws_telemetry(
   // A telemetry frame has no reply of its own (see `docs/api.md`), so an
   // over-cap frame is logged and dropped where the HTTP route would answer
   // 400. Dropping one frame beats closing a working socket over a report
-  // the device can simply send fewer keys or fewer readings in.
+  // the device can simply send fewer keys or fewer readings in. A failure
+  // was logged where it happened.
+  if let TelemetryOutcome::Rejected(message) = ingest_telemetry(pigeons, body, "WS").await {
+    console_error!(
+      "WS telemetry: rejected report from pigeon {}: {message}",
+      pigeons.state.id()
+    );
+  }
+}
+
+/// What became of a telemetry body handed to `ingest_telemetry`.
+enum TelemetryOutcome {
+  /// Merged into the latest-value store and handed on for history, alerts and billing.
+  Stored,
+  /// Refused whole, malformed or over a cap: sending it again cannot help.
+  Rejected(String),
+  /// The merge or the enqueue failed, so history, alerts and billing may be lost: worth a retry.
+  Failed,
+}
+
+/// Ingests a telemetry body for the surfaces that reach this DO with the device already
+/// authenticated (the WebSocket frame, a NIDD uplink). Merges into the DO's own latest-value
+/// store synchronously first (like every telemetry entry point), then either enqueues onto
+/// `TELEMETRY_QUEUE` for the shared consumer path (see `queue.rs`), or -- with no queue bound
+/// (dev) -- writes history directly so these surfaces don't silently skip what the HTTP route
+/// would have recorded. `source` names the surface in log lines.
+async fn ingest_telemetry(
+  pigeons: &Pigeons,
+  body: capsules::TelemetryReportBody,
+  source: &str,
+) -> TelemetryOutcome {
   let now_secs = (Date::now().as_millis() / 1000) as i64;
   let mut readings = match crate::helpers::readings_from_body(body, now_secs) {
     Ok(readings) => readings,
-    Err(message) => {
-      console_error!(
-        "WS telemetry: rejected report from pigeon {}: {message}",
-        pigeons.state.id()
-      );
-      return;
-    }
+    Err(message) => return TelemetryOutcome::Rejected(message),
   };
 
   // The merge captures each reading's previous values before overwriting
   // them. In the queue-bound branch below that capture rides the outgoing
   // `TelemetryMessage` -- recomputing it in `queue.rs`, after the write
   // just below, would see the *new* value where the previous one is
-  // needed, silently defeating RateOfChange for every WS-sourced report.
-  if write_telemetry_batch(pigeons, &mut readings).is_err() {
-    return;
+  // needed, silently defeating RateOfChange for every report ingested here.
+  if let Err(e) = write_telemetry_batch(pigeons, &mut readings) {
+    console_error!(
+      "{source} telemetry: merge failed for pigeon {}: {e}",
+      pigeons.state.id()
+    );
+    return TelemetryOutcome::Failed;
   }
 
   let pigeon_id = pigeons.state.id().to_string();
@@ -1887,8 +2050,8 @@ async fn handle_ws_telemetry(
       // field hits the serde-wasm-bindgen -> JS `Map` -> `JSON.stringify`
       // == `{}` bug (see `TelemetryMessage`).
       let Ok(readings_json) = serde_json::to_string(&readings) else {
-        console_error!("WS telemetry: failed to serialize readings for pigeon {pigeon_id}");
-        return;
+        console_error!("{source} telemetry: failed to serialize readings for pigeon {pigeon_id}");
+        return TelemetryOutcome::Failed;
       };
 
       let message = TelemetryMessage {
@@ -1901,23 +2064,25 @@ async fn handle_ws_telemetry(
       };
 
       if queue.send(message).await.is_err() {
-        console_error!("WS telemetry: enqueue failed for pigeon {pigeon_id}");
+        console_error!("{source} telemetry: enqueue failed for pigeon {pigeon_id}");
+        return TelemetryOutcome::Failed;
       }
+      TelemetryOutcome::Stored
     }
     Err(e) => {
       // A frame has no reply of its own, so the HTTP route's 500 has no
       // spelling here -- but the fault it exists to surface is the same
       // one, and taking the dev fallback silently in a deployed
-      // environment would move every WS report's history write back onto
-      // the socket's own critical path. Loud and dropped is what makes a
+      // environment would move every report's history write back onto
+      // the ingest's own critical path. Loud and dropped is what makes a
       // lost binding visible; the DO's own latest-value store was already
       // written above, so the dashboard still shows current values while
       // only history is missing.
       if !crate::helpers::is_local_dev(&pigeons.env) {
         console_error!(
-          "WS telemetry: TELEMETRY_QUEUE binding unavailable in a deployed environment ({e}); dropping the history write for pigeon {pigeon_id}"
+          "{source} telemetry: TELEMETRY_QUEUE binding unavailable in a deployed environment ({e}); dropping the history write for pigeon {pigeon_id}"
         );
-        return;
+        return TelemetryOutcome::Failed;
       }
 
       // No TELEMETRY_QUEUE bound in this environment (dev) -- match the
@@ -1926,15 +2091,16 @@ async fn handle_ws_telemetry(
       if let Err(e) =
         crate::helpers::write_telemetry_default_batch(&pigeons.env, &pigeon_id, &readings).await
       {
-        console_error!("WS telemetry: default write failed for pigeon {pigeon_id}: {e}");
+        console_error!("{source} telemetry: default write failed for pigeon {pigeon_id}: {e}");
       }
 
       // Best-effort, same as the default write above.
       if let Err(e) =
         crate::helpers::check_telemetry_alerts_batch(&pigeons.env, &pigeon_id, &readings).await
       {
-        console_error!("WS telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
+        console_error!("{source} telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
       }
+      TelemetryOutcome::Stored
     }
   }
 }
@@ -2314,12 +2480,31 @@ async fn read_telemetry_endpoint_device(pigeons: &Pigeons, _req: Request) -> Res
   })
 }
 
+#[derive(serde::Deserialize)]
+struct CreatedAtRow {
+  #[serde(deserialize_with = "capsules::deserialize_unix_float_to_i64")]
+  created_at: i64,
+}
+
 /// Bare ACL probe for gateway routes whose data lives outside this DO
 /// (telemetry history is in Postgres) but whose authorization still lives
-/// in this pigeon's local `pigeon_acl` table.
+/// in this pigeon's local `pigeon_acl` table. Answers with the pigeon's
+/// `created_at` in `PIGEON_CREATED_AT_HEADER`, so a route can refuse what
+/// an earlier pigeon under a repeated id left behind.
 async fn check_authorized(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
-  Response::ok("authorized")
+  let mut response = Response::ok("authorized")?;
+  let created_at = pigeons
+    .sql
+    .exec("SELECT created_at FROM pigeons LIMIT 1;", None)
+    .and_then(|cursor| cursor.to_array::<CreatedAtRow>());
+  if let Some(row) = created_at.ok().and_then(|rows| rows.into_iter().next()) {
+    response.headers_mut().set(
+      crate::helpers::PIGEON_CREATED_AT_HEADER,
+      &row.created_at.to_string(),
+    )?;
+  }
+  Ok(response)
 }
 
 /// Owner-level sibling of `check_authorized`, for a gateway write that has
@@ -2571,6 +2756,9 @@ async fn check_firmware_board_compat(
   }
 }
 
+/// The dashboard's shadow write. For a Nidd pigeon it also refuses a `target_config` one
+/// downlink frame cannot carry, and may push the new target (`plan_nidd_push`) without waiting
+/// on ThingSpace or failing because of it.
 async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
@@ -2594,6 +2782,28 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
+  // One downlink frame carries the whole target, so a config the device could never receive
+  // must not become its target.
+  let nidd = match read_nidd_identity(pigeons) {
+    Ok(identity) => identity,
+    Err(e) => {
+      console_error!("Shadow UPDATE: connector READ error: {e}");
+      None
+    }
+  };
+  if nidd.is_some() {
+    let cap = nidd_config_cap(pigeons);
+    if config_str.len() > cap {
+      let cap = cap.to_string();
+      let mut message = String::with_capacity(84 + cap.len());
+      message
+        .push_str("Payload Too Large: this NIDD pigeon's target_config must serialize to at most ");
+      message.push_str(&cap);
+      message.push_str(" bytes");
+      return Response::error(message, 413);
+    }
+  }
+
   match pigeons.sql.exec(
     "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
     vec![config_str.into()],
@@ -2607,6 +2817,9 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
           Ok(s) => {
             let shadow = PigeonShadow::from(s);
             broadcast_shadow_update(pigeons, &shadow);
+            if let Some(identity) = nidd {
+              plan_nidd_push(pigeons, identity, &shadow);
+            }
             Response::from_json(&shadow)
           }
           Err(e) => {
@@ -2646,9 +2859,650 @@ fn broadcast_shadow_update(pigeons: &Pigeons, shadow: &PigeonShadow) {
   }
 }
 
+#[derive(serde::Deserialize)]
+struct PigeonIdRow {
+  #[allow(dead_code)]
+  id: String,
+}
+
+/// The largest `target_config` this Nidd pigeon's next write may carry. The `SHADOW` header
+/// grows with the versions, so it is counted at the version the write creates and at the device
+/// once it has converged on it, the longest header the push can carry until the next write.
+fn nidd_config_cap(pigeons: &Pigeons) -> usize {
+  match read_shadow(pigeons) {
+    Ok(before) => {
+      let next = before.target_version.saturating_add(1);
+      shadow_config_cap(next, before.current_version.max(next))
+    }
+    Err(e) => {
+      console_error!("Shadow UPDATE: shadow READ error: {e}");
+      NIDD_MAX_TARGET_CONFIG_BYTES
+    }
+  }
+}
+
+/// Whether this object already holds a pigeon.
+fn pigeon_exists(pigeons: &Pigeons) -> bool {
+  pigeons
+    .sql
+    .exec("SELECT id FROM pigeons LIMIT 1;", None)
+    .and_then(|cursor| cursor.to_array::<PigeonIdRow>())
+    .is_ok_and(|rows| !rows.is_empty())
+}
+
+/// A Nidd pigeon's binding: the IMEI its downlinks are addressed to and the claim key that
+/// signs them. Never logged.
+struct NiddIdentity {
+  imei: String,
+  claim_key: Option<[u8; NIDD_CLAIM_KEY_BYTES]>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConnectorRow {
+  connector: String,
+}
+
+/// The NIDD binding of the pigeon in this object: `Ok(None)` when it holds no pigeon or one of
+/// another variant. The parse error is never logged: its `Display` would quote the connector.
+fn read_nidd_identity(pigeons: &Pigeons) -> Result<Option<NiddIdentity>> {
+  let cursor = pigeons
+    .sql
+    .exec("SELECT connector FROM pigeons LIMIT 1;", None)?;
+  let Some(row) = cursor.to_array::<ConnectorRow>()?.into_iter().next() else {
+    return Ok(None);
+  };
+  match serde_json::from_str::<Connector>(&row.connector) {
+    Ok(Connector::Nidd(config)) => Ok(Some(NiddIdentity {
+      claim_key: config.claim_key.as_deref().and_then(claim_key_bytes),
+      imei: config.imei,
+    })),
+    Ok(_) => Ok(None),
+    Err(_) => Err(worker::Error::RustError(
+      "stored connector unreadable".into(),
+    )),
+  }
+}
+
+/// `pigeon_nidd`, or an unclaimed default when this pigeon has none yet.
+fn read_nidd_row(sql: &SqlStorage) -> Result<NiddRow> {
+  let cursor = sql.exec(
+    "SELECT claimed_at, line_id, awaiting_version, pushed_version, pushed_at, notice_at, seen
+     FROM pigeon_nidd WHERE id = 1;",
+    None,
+  )?;
+  Ok(
+    cursor
+      .to_array::<NiddSqlRow>()?
+      .into_iter()
+      .next()
+      .map(NiddRow::from)
+      .unwrap_or_default(),
+  )
+}
+
+/// Writes `pigeon_nidd` in one upsert, which bills as the one row it writes.
+fn write_nidd_row(sql: &SqlStorage, row: &NiddRow) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_nidd
+       (id, claimed_at, line_id, awaiting_version, pushed_version, pushed_at, notice_at, seen)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       claimed_at = excluded.claimed_at,
+       line_id = excluded.line_id,
+       awaiting_version = excluded.awaiting_version,
+       pushed_version = excluded.pushed_version,
+       pushed_at = excluded.pushed_at,
+       notice_at = excluded.notice_at,
+       seen = excluded.seen;",
+    vec![
+      row.claimed_at.into(),
+      row.line_id.clone().into(),
+      row.awaiting_version.into(),
+      row.pushed_version.into(),
+      row.pushed_at.into(),
+      row.notice_at.into(),
+      row.seen_json().into(),
+    ],
+  )?;
+  Ok(())
+}
+
+/// A frame planned for a Nidd device, built and sent after the response.
+enum NiddDownlink {
+  /// The shadow as it stood when the push was recorded, with the time it was recorded at.
+  Shadow {
+    shadow: PigeonShadow,
+    pushed_at: i64,
+  },
+  /// A status notice; `key` signs it in place of the claim key, for a `HELLO` that presented
+  /// another one.
+  Status {
+    code: u8,
+    arg: u32,
+    key: Option<[u8; NIDD_CLAIM_KEY_BYTES]>,
+  },
+}
+
+/// Records a push of the current shadow in `row` and returns it, or `None` when the shadow
+/// cannot be read. Recorded before the send, so a second trigger meanwhile sees it outstanding.
+/// `awaiting_version` is taken from the same read, so a device that converged by another path
+/// stops being owed one.
+fn plan_shadow_push(pigeons: &Pigeons, row: &mut NiddRow, now: i64) -> Option<NiddDownlink> {
+  match read_shadow(pigeons) {
+    Ok(shadow) => {
+      row.awaiting_version = awaiting(&shadow);
+      row.pushed_version = shadow.target_version;
+      row.pushed_at = now;
+      Some(NiddDownlink::Shadow {
+        shadow,
+        pushed_at: now,
+      })
+    }
+    Err(e) => {
+      console_error!(
+        "NIDD: shadow READ error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      None
+    }
+  }
+}
+
+/// Records a notice in `row` when one is due, at most one an hour.
+fn plan_notice(
+  row: &mut NiddRow,
+  now: i64,
+  code: u8,
+  arg: u32,
+  key: Option<[u8; NIDD_CLAIM_KEY_BYTES]>,
+) -> Option<NiddDownlink> {
+  if !notice_due(row, now) {
+    return None;
+  }
+  row.notice_at = now;
+  Some(NiddDownlink::Status { code, arg, key })
+}
+
+/// The newest target the device has not confirmed, or 0 when it has.
+fn awaiting(shadow: &PigeonShadow) -> i32 {
+  if shadow.target_version > shadow.current_version {
+    shadow.target_version
+  } else {
+    0
+  }
+}
+
+/// After a dashboard write to a Nidd pigeon: records the new target as owed and, when a push is
+/// due, pushes it after the response. Never fails the write: the WebSocket push's rule.
+fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShadow) {
+  let now = (Date::now().as_millis() / 1000) as i64;
+  let mut row = match read_nidd_row(&pigeons.sql) {
+    Ok(row) => row,
+    Err(e) => {
+      console_error!(
+        "NIDD push: state READ error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      return;
+    }
+  };
+  let before = row.clone();
+  if awaiting(shadow) > row.awaiting_version {
+    row.awaiting_version = awaiting(shadow);
+  }
+  let downlink = shadow_push_due(&row, now).then(|| {
+    row.pushed_version = shadow.target_version;
+    row.pushed_at = now;
+    NiddDownlink::Shadow {
+      shadow: shadow.clone(),
+      pushed_at: now,
+    }
+  });
+  if row != before
+    && let Err(e) = write_nidd_row(&pigeons.sql, &row)
+  {
+    console_error!(
+      "NIDD push: state WRITE error for pigeon {}: {e}",
+      pigeons.state.id()
+    );
+    return;
+  }
+  spawn_nidd_tail(pigeons, Some(identity), None, downlink);
+}
+
+/// One NIDD uplink frame, from the ThingSpace callback route once its three gates passed. The
+/// body is the raw frame; the headers carry ThingSpace's request id, the gateway's free-tier
+/// answer, and the line the uplink came from.
+///
+/// Nothing from a device is stored, and nothing is sent to it, until it has claimed the pigeon
+/// with a `HELLO` carrying the claim key; the claim pins the line it came from. Every read and
+/// write is synchronous SQL except the telemetry enqueue, which is why the row is read again
+/// after it: a dashboard write or another callback may have changed it meanwhile. A repeat of an
+/// uplink (ThingSpace's retry after an answer that was not a 2xx or took over about 4 s, or a
+/// support resend) is recognised by its request id and frame digest and never stored or billed
+/// twice. The object serves the retry of a slow callback while the first attempt awaits its
+/// enqueue, so that retry waits for the first attempt: a repeat if it stored the uplink, stored
+/// here if it failed. A telemetry frame the carrier delivered twice arrives under a second
+/// request id, so it is recognised by its digest alone, which its send sequence makes unique to
+/// one send. It waits for an attempt storing the frame as a retry does, and is a repeat once that
+/// attempt decided; a copy dropped as unclaimed makes no repeat, since nothing judged it.
+///
+/// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
+/// not parse, 404 when no pigeon is here, and 5xx when the frame was not read or stored, which the
+/// gateway answers 503 and logs as lost: ThingSpace retries once at once and never later. Billing,
+/// the Postgres sync and any downlink run after the response.
+async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
+
+  let header = |name: &str| req.headers().get(name).ok().flatten();
+  let request_id = header(HEADER_REQUEST_ID).unwrap_or_default();
+  let paused = header(HEADER_INGEST).as_deref() == Some("paused");
+  let line = header(HEADER_LINE);
+  // Not 400: the gateway reads a 400 from here as a bad sequence header, which a retry cannot fix.
+  let Ok(frame) = req.bytes().await else {
+    return Response::error("Internal Server Error", 500);
+  };
+  let pigeon_id = pigeons.state.id().to_string();
+  let key = dedupe_key(&request_id, &frame);
+  // A `false` means the attempt failed; loop, since another waiting copy may claim it first.
+  let mut decided_elsewhere = false;
+  while let Some((same_key, attempt)) = pigeons.nidd_in_flight.wait(&key) {
+    if attempt.await.unwrap_or(false) {
+      if same_key {
+        return Response::ok("duplicate");
+      }
+      // Another delivery of the send: a repeat below, even if that attempt's key goes unrecorded.
+      decided_elsewhere = true;
+      break;
+    }
+  }
+  let now = (Date::now().as_millis() / 1000) as i64;
+
+  let mut row = match read_nidd_row(&pigeons.sql) {
+    Ok(row) => row,
+    Err(e) => {
+      console_error!("NIDD uplink: state READ error for pigeon {pigeon_id}: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  if row.has_seen(&key) {
+    return Response::ok("duplicate");
+  }
+
+  let uplink = decode_uplink(&frame);
+  // A claimed row implies a live pigeon, since `delete` wipes both, so the steady state skips
+  // this read; an unclaimed one must tell an unclaimed pigeon from none at all.
+  let mut identity = None;
+  if row.claimed_at.is_none() || matches!(uplink, Uplink::Hello(_)) {
+    match read_nidd_identity(pigeons) {
+      Ok(Some(found)) => identity = Some(found),
+      Ok(None) => return Response::error("Not Found", 404),
+      Err(e) => {
+        console_error!("NIDD uplink: connector READ error for pigeon {pigeon_id}: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    }
+  }
+
+  // A claim pinned to a line admits only callbacks naming that line; one made from a callback
+  // that named none admits any.
+  let on_claimed_line = row.claimed_at.is_some()
+    && row
+      .line_id
+      .as_ref()
+      .is_none_or(|pinned| line.as_deref() == Some(pinned.as_str()));
+
+  let mut downlink = None;
+  let mut stored_report = None;
+  let outcome = match uplink {
+    // Refused like a callback body that is not JSON, so ThingSpace's archive keeps the frame for
+    // a resend once a parser takes it.
+    Uplink::BadHeader => {
+      console_log!(
+        "NIDD uplink: dropped TELEMETRY len={} with a malformed header for pigeon {pigeon_id}",
+        frame.len()
+      );
+      return Response::error("Bad Request: malformed TELEMETRY sequence header", 400);
+    }
+    Uplink::Empty | Uplink::Unknown(_) => {
+      console_log!(
+        "NIDD uplink: dropped frame type={} len={} for pigeon {pigeon_id}",
+        frame.first().copied().unwrap_or(0),
+        frame.len()
+      );
+      "rejected"
+    }
+    Uplink::Hello(presented) => {
+      let Some(presented) = hello_key(presented) else {
+        return finish_nidd_uplink(pigeons, row, key, "rejected", identity, None, None);
+      };
+      let claim_key = identity.as_ref().and_then(|found| found.claim_key);
+      if claim_key.is_some_and(|expected| constant_time_eq(&expected, &presented)) {
+        row.claimed_at = Some(now);
+        row.line_id = line.clone();
+        // The device asked, so it always gets the shadow.
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+        "claimed"
+      } else {
+        // Signed with the key it presented, so a device built with a stale key can verify it
+        // and a forger's HELLO draws a notice the real device rejects.
+        downlink = plan_notice(&mut row, now, STATUS_UNCLAIMED, 1, Some(presented));
+        "unclaimed"
+      }
+    }
+    // Argument 0 asks for a HELLO, never for silence: callbacks arrive out of order, so this
+    // may answer a frame sent just before the same wake's successful HELLO.
+    _ if !on_claimed_line => {
+      downlink = plan_notice(&mut row, now, STATUS_UNCLAIMED, 0, None);
+      "unclaimed"
+    }
+    // One reply per uplink: the notice when due, since it is what quiets the device, else the
+    // shadow it is owed, sent while this uplink's connection is up.
+    Uplink::Telemetry(_) | Uplink::ShadowReport(_) if paused => {
+      downlink = plan_notice(&mut row, now, STATUS_PAUSED, NIDD_PAUSED_HOLD_SECS, None);
+      if downlink.is_none() && shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
+      "paused"
+    }
+    // Like any uplink it shows the device awake, so it still carries the owed shadow.
+    Uplink::Telemetry(_) if decided_elsewhere || row.has_seen_frame(&key) => {
+      if shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
+      "repeat"
+    }
+    Uplink::Telemetry(body) => {
+      let outcome = match serde_json::from_slice::<capsules::TelemetryReportBody>(body) {
+        Err(e) => {
+          console_log!(
+            "{} pigeon={pigeon_id}",
+            parse_error_line("NIDD uplink: telemetry rejected", &e)
+          );
+          "rejected"
+        }
+        Ok(body) => {
+          // Nothing awaited since the wait loop found no attempt, so none can hold the frame.
+          pigeons.nidd_in_flight.claim(&key);
+          let result = ingest_telemetry(pigeons, body, "NIDD").await;
+          // Before any early return below, or a waiting retry would never be answered.
+          let decided = !matches!(result, TelemetryOutcome::Failed);
+          pigeons.nidd_in_flight.settle(&key, decided);
+          let outcome = match result {
+            TelemetryOutcome::Failed => {
+              return Response::error("Service Unavailable: telemetry not stored", 503);
+            }
+            TelemetryOutcome::Rejected(message) => {
+              console_log!("NIDD uplink: telemetry rejected for pigeon {pigeon_id}: {message}");
+              "rejected"
+            }
+            TelemetryOutcome::Stored => "stored",
+          };
+          // The enqueue awaited, so the row may have moved meanwhile. A retry could not change a
+          // decided outcome, only store a stored frame twice, so a failed read answers it and
+          // writes nothing: the stale copy could undo a push planned during the await.
+          row = match read_nidd_row(&pigeons.sql) {
+            Ok(fresh) => fresh,
+            Err(e) => {
+              console_error!(
+                "NIDD uplink: state READ error for pigeon {pigeon_id} after {outcome}: {e}"
+              );
+              return Response::ok(outcome);
+            }
+          };
+          outcome
+        }
+      };
+      // Sent while this uplink's connection is up, since a push to an idle device can be lost. A
+      // refused frame still shows the device awake, and the owed config may fix its reporting.
+      if shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
+      outcome
+    }
+    Uplink::ShadowReport(body) => match serde_json::from_slice::<PigeonShadowReportRequest>(body) {
+      Err(e) => {
+        console_log!(
+          "{} pigeon={pigeon_id}",
+          parse_error_line("NIDD uplink: shadow report rejected", &e)
+        );
+        "rejected"
+      }
+      Ok(report) => {
+        let before = match read_shadow(pigeons) {
+          Ok(shadow) => shadow,
+          Err(e) => {
+            console_error!("NIDD uplink: shadow READ error for pigeon {pigeon_id}: {e}");
+            return Response::error("Internal Server Error", 500);
+          }
+        };
+        let repeat = before.current_version == report.current_version
+          && serde_json::from_str::<serde_json::Value>(&before.current_config.clone().into_inner())
+            .is_ok_and(|stored| stored == report.current_config);
+        let shadow = if repeat {
+          before
+        } else {
+          match write_shadow_report(pigeons, &report) {
+            Ok(shadow) => {
+              stored_report = Some(shadow.clone());
+              shadow
+            }
+            Err(e) => {
+              console_error!("NIDD uplink: shadow report WRITE error for pigeon {pigeon_id}: {e}");
+              return Response::error("Service Unavailable: shadow report not stored", 503);
+            }
+          }
+        };
+        // The report is the one confirmed call in the device library, so it always gets
+        // exactly one reply.
+        row.awaiting_version = awaiting(&shadow);
+        downlink = if shadow.target_version > shadow.current_version {
+          plan_shadow_push(pigeons, &mut row, now)
+        } else {
+          Some(NiddDownlink::Status {
+            code: STATUS_STORED,
+            arg: u32::try_from(shadow.current_version).unwrap_or(0),
+            key: None,
+          })
+        };
+        if repeat { "repeat" } else { "stored" }
+      }
+    },
+  };
+
+  if downlink.is_some() && identity.is_none() {
+    identity = match read_nidd_identity(pigeons) {
+      Ok(found) => found,
+      Err(e) => {
+        console_error!("NIDD uplink: connector READ error for pigeon {pigeon_id}: {e}");
+        None
+      }
+    };
+  }
+  // A push that cannot be sent is marked unsent, as a failed send is, so the next uplink sends
+  // it instead of waiting out the delivery window.
+  if identity.is_none() && matches!(downlink, Some(NiddDownlink::Shadow { .. })) {
+    row.pushed_version = 0;
+    row.pushed_at = 0;
+    downlink = None;
+  }
+  finish_nidd_uplink(
+    pigeons,
+    row,
+    key,
+    outcome,
+    identity,
+    stored_report,
+    downlink,
+  )
+}
+
+/// A delivery report said a downlink missed this pigeon's device, so the push it owes becomes
+/// pending and the device's next uplink carries it. The report does not name the frame, so a
+/// missed notice marks it too, which costs at most one early re-send. Answers `pending`, or
+/// `converged` when nothing is owed.
+fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
+  let mut row = match read_nidd_row(&pigeons.sql) {
+    Ok(row) => row,
+    Err(e) => {
+      console_error!(
+        "NIDD missed: state READ error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  if !row.mark_pending() {
+    return Response::ok("converged");
+  }
+  match write_nidd_row(&pigeons.sql, &row) {
+    Ok(()) => Response::ok("pending"),
+    Err(e) => {
+      console_error!(
+        "NIDD missed: state WRITE error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
+/// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
+/// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
+/// outcome and still runs the tail, so a stored report is billed and synced.
+fn finish_nidd_uplink(
+  pigeons: &Pigeons,
+  mut row: NiddRow,
+  key: String,
+  outcome: &str,
+  identity: Option<NiddIdentity>,
+  stored_report: Option<PigeonShadow>,
+  downlink: Option<NiddDownlink>,
+) -> Result<Response> {
+  // `unclaimed` drops a frame before any rule judged it, so a copy arriving once claimed still is.
+  row.remember(key, outcome != "unclaimed");
+  if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
+    console_error!(
+      "NIDD uplink: state WRITE error for pigeon {} after {outcome}: {e}",
+      pigeons.state.id()
+    );
+    if outcome != "stored" {
+      return Response::error("Internal Server Error", 500);
+    }
+  }
+  spawn_nidd_tail(pigeons, identity, stored_report, downlink);
+  Response::ok(outcome)
+}
+
+/// Runs what an uplink or a dashboard write leaves for after the response, in order: the planned
+/// downlink, then the bill and Postgres sync of a newly stored shadow report. The downlink goes
+/// first because it must reach the device while the uplink's connection is still up, and neither
+/// Postgres call is bounded. The object stays active while this I/O is pending; `waitUntil` has
+/// no effect in a Durable Object.
+fn spawn_nidd_tail(
+  pigeons: &Pigeons,
+  identity: Option<NiddIdentity>,
+  stored_report: Option<PigeonShadow>,
+  downlink: Option<NiddDownlink>,
+) {
+  if stored_report.is_none() && downlink.is_none() {
+    return;
+  }
+  let env = pigeons.env.clone();
+  let sql = pigeons.sql.clone();
+  let pigeon_id = pigeons.state.id().to_string();
+  wasm_bindgen_futures::spawn_local(async move {
+    if let (Some(downlink), Some(identity)) = (downlink, identity) {
+      send_nidd_downlink(&env, &sql, &pigeon_id, &identity, downlink).await;
+    }
+    if let Some(shadow) = stored_report {
+      sync_shadow_report(&env, &pigeon_id, &shadow).await;
+    }
+  });
+}
+
+/// Builds, signs and sends one downlink. A `SHADOW` that could not be sent is marked unpushed,
+/// unless a newer push was planned meanwhile, so it is due again at once; one ThingSpace refused
+/// is left as sent, since the same bytes would fail the same way. A failed notice is dropped.
+async fn send_nidd_downlink(
+  env: &Env,
+  sql: &SqlStorage,
+  pigeon_id: &str,
+  identity: &NiddIdentity,
+  downlink: NiddDownlink,
+) {
+  use crate::objects::thingspace::{SendOutcome, send};
+
+  let (kind, frame, key, pushed) = match downlink {
+    NiddDownlink::Shadow { shadow, pushed_at } => (
+      "shadow",
+      shadow_frame(&shadow),
+      identity.claim_key,
+      Some((shadow.target_version, pushed_at)),
+    ),
+    NiddDownlink::Status { code, arg, key } => (
+      "status",
+      status_frame(code, arg),
+      key.or(identity.claim_key),
+      None,
+    ),
+  };
+
+  let outcome = match key {
+    None => SendOutcome::Unavailable("no_claim_key".to_string()),
+    Some(key) => match sign_frame(&key, frame).await {
+      Ok(signed) => send(env, pigeon_id, &identity.imei, &signed).await,
+      Err(e) => {
+        console_error!("nidd_dl: signing failed for pigeon {pigeon_id}: {e}");
+        SendOutcome::Unavailable("sign_failed".to_string())
+      }
+    },
+  };
+
+  match &outcome {
+    SendOutcome::Sent(request_id) => {
+      console_log!("nidd_dl kind={kind} outcome=sent pigeon={pigeon_id} request={request_id}");
+    }
+    SendOutcome::Refused(reason) => {
+      console_error!("nidd_dl kind={kind} outcome=refused reason={reason} pigeon={pigeon_id}");
+    }
+    SendOutcome::Unavailable(reason) => {
+      console_error!("nidd_dl kind={kind} outcome=unavailable reason={reason} pigeon={pigeon_id}");
+      if let Some((version, pushed_at)) = pushed
+        && let Err(e) = sql.exec(
+          "UPDATE pigeon_nidd SET pushed_version = 0, pushed_at = 0
+           WHERE pushed_version = ? AND pushed_at = ?;",
+          vec![version.into(), pushed_at.into()],
+        )
+      {
+        console_error!("nidd_dl: marking the push unsent failed for pigeon {pigeon_id}: {e}");
+      }
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::host_without_port;
+  use super::{awaiting, build_nidd_endpoint, host_without_port};
+  use capsules::PigeonShadow;
+
+  #[test]
+  fn the_nidd_endpoint_names_verizons_apn() {
+    assert_eq!(build_nidd_endpoint(), "nidd://VZWSCEF");
+  }
+
+  #[test]
+  fn a_device_is_awaited_only_while_behind() {
+    let shadow = |target_version, current_version| PigeonShadow {
+      target_version,
+      current_version,
+      ..Default::default()
+    };
+    assert_eq!(awaiting(&shadow(8, 7)), 8);
+    assert_eq!(awaiting(&shadow(8, 8)), 0);
+    assert_eq!(awaiting(&shadow(7, 9)), 0);
+  }
 
   #[test]
   fn a_port_is_dropped_only_when_the_authority_carries_one() {

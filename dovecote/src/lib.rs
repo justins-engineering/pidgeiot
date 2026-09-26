@@ -1,3 +1,4 @@
+use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
   INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
@@ -10,27 +11,29 @@ use crate::helpers::{
   count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
   create_invite, create_organization, create_pigeon_alert, create_portal_session,
   create_user_flock, delete_alert_definition, delete_dashboard_state, delete_flock_if_empty,
-  delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
-  ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
-  fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
-  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
-  is_allowed_coap_service_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
+  delete_log_dictionary, delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit,
+  ensure_billing_tables, ensure_billing_usage_tables, ensure_business_details_columns,
+  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
+  get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
+  ingest_error_report, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
+  is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
   list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
   load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
-  notify_contact_submission, org_role_of, pigeon_move_shares_owner, plan_business_details,
-  proxy_binary_to_pigeon_do, proxy_to_pigeon_do, proxy_websocket_to_pigeon_do, psk_lookup_via_do,
-  query_telemetry_history_buckets_for_flock, query_telemetry_history_buckets_for_pigeon,
-  query_telemetry_history_for_flock, query_telemetry_history_for_pigeon,
-  raise_message_allowance_floor, readings_from_body, record_consent_event, record_terms_assent,
-  remove_member, reset_pigeon_alert_state, resolve_checkout_prices, revoke_invite, root_url,
-  send_feedback_email, send_invite_email, send_ops_email, sha256_hex, store_contact_submission,
-  store_dashboard_state, stripe_configured, sync_customer_tax_identity, update_alert_definition,
-  update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
-  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
-  verify_webhook_signature, webhook_action, write_business_details,
+  nidd_uplink_via_do, notify_contact_submission, org_role_of, pigeon_move_shares_owner,
+  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
+  query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
+  query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
+  record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
+  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
+  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
+  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
+  update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
+  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
+  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
+  write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::consent::{ConsentSource, TermsAssentStatus};
@@ -637,6 +640,418 @@ async fn internal_consent_record(
   }
 }
 
+/// A configured secret's value, or `None` when it is unset or only whitespace, the definition
+/// the other service-internal routes use.
+fn configured_secret(env: &Env, name: &str) -> Option<String> {
+  env
+    .secret(name)
+    .ok()
+    .map(|value| value.to_string())
+    .filter(|value| !value.trim().is_empty())
+}
+
+/// A request id fit for a header and a log line: printable ASCII, bounded. ThingSpace's are
+/// UUIDs; anything else is replaced by nothing rather than forwarded.
+fn header_safe(value: Option<String>) -> String {
+  value
+    .filter(|v| v.len() <= 128 && v.bytes().all(|b| b.is_ascii_graphic()))
+    .unwrap_or_default()
+}
+
+/// `value`, or `none` when it is empty, for a log field.
+fn or_none(value: &str) -> &str {
+  if value.is_empty() { "none" } else { value }
+}
+
+/// ThingSpace's `callbackCount` for a log field, or `none` when the body carried none.
+fn attempt_field(callback_count: Option<i64>) -> String {
+  callback_count.map_or_else(|| "none".to_string(), |count| count.to_string())
+}
+
+/// A NIDD callback refused before it was trusted. The request id and attempt are the body's own
+/// and unverified, logged so a refusal can be matched to ThingSpace's next attempt.
+fn log_nidd_refusal(outcome: &str, request_id: &str, attempt: &str) {
+  console_error!(
+    "nidd_cb outcome={outcome} request={} attempt={attempt}",
+    or_none(request_id)
+  );
+}
+
+/// Names a callback answered 503 as lost. ThingSpace retries a refused callback once, about a
+/// second later, and never after, so unless that retry lands only a support resend by request id
+/// can recover it.
+fn log_nidd_loss(pigeon_id: &str, request_id: &str, attempt: &str) {
+  console_error!(
+    "nidd_cb lost pigeon={} request={} attempt={attempt}: answered 503, and no later resend comes",
+    or_none(pigeon_id),
+    or_none(request_id)
+  );
+}
+
+/// Undoes a Nidd create the Durable Object accepted but the route could not finish, and answers
+/// 503 so the operator retries. The id repeats after a delete, so a pigeon left standing would
+/// live over rows an earlier pigeon left under it and hold its IMEI against every retry.
+async fn undo_nidd_create(
+  principal: &Principal,
+  obj_id: &worker::ObjectId<'_>,
+  cors: &worker::Cors,
+) -> worker::Result<Response> {
+  let undone = match Request::new("https://internal/pigeon/delete", Method::Delete) {
+    Ok(undo) => {
+      proxy_to_pigeon_do(
+        undo,
+        &principal.user_id,
+        principal.org_roles_header(),
+        obj_id,
+        "/delete",
+      )
+      .await
+    }
+    Err(e) => Err(e),
+  };
+  if !undone.is_ok_and(|resp| resp.status_code() < 400) {
+    console_error!("Nidd create: undo failed for pigeon {obj_id}");
+  }
+  Response::error(
+    "Service Unavailable: the pigeon could not be recorded; try again",
+    503,
+  )
+  .unwrap()
+  .with_cors(cors)
+}
+
+/// Has a Nidd pigeon's object mark the push it owes pending after a delivery report said a
+/// downlink missed the device: `pending` when something was owed, else `logged`. A failure is
+/// only logged, since the push's delivery window lapses into the same state.
+async fn mark_nidd_push_pending(obj_id: &worker::ObjectId<'_>, pigeon_id: &str) -> &'static str {
+  let dispatched = match (
+    obj_id.get_stub(),
+    Request::new("https://internal/pigeon/nidd/missed", Method::Post),
+  ) {
+    (Ok(stub), Ok(req)) => stub.fetch_with_request(req).await,
+    (Err(e), _) | (_, Err(e)) => Err(e),
+  };
+  match dispatched {
+    Ok(mut response) if response.status_code() == 200 => {
+      if response.text().await.is_ok_and(|body| body == "pending") {
+        "pending"
+      } else {
+        "logged"
+      }
+    }
+    Ok(response) => {
+      console_error!(
+        "nidd_cb: pigeon {pigeon_id} answered {} to a missed downlink",
+        response.status_code()
+      );
+      "logged"
+    }
+    Err(e) => {
+      console_error!("nidd_cb: marking a missed downlink failed for pigeon {pigeon_id}: {e}");
+      "logged"
+    }
+  }
+}
+
+/// The one line every NIDD callback logs. Never a body, password, frame, account name, IMEI,
+/// ICCID or IMSI: only what kind of callback it was, what became of it (for a delivery report or
+/// configuration result, its status and reason too), the derived pigeon id, ThingSpace's request
+/// id and attempt, and the latency, watched against an acknowledgement deadline Verizon does not
+/// publish.
+fn log_nidd_callback(
+  kind: &str,
+  outcome: &str,
+  pigeon_id: &str,
+  request_id: &str,
+  attempt: &str,
+  started_ms: u64,
+) {
+  let ms = Date::now().as_millis().saturating_sub(started_ms);
+  console_log!(
+    "nidd_cb kind={kind} outcome={outcome} pigeon={} request={} attempt={attempt} ms={ms}",
+    or_none(pigeon_id),
+    or_none(request_id),
+  );
+}
+
+/// `POST /internal/thingspace/nidd`: Verizon ThingSpace's `NiddService` callback, carrying every
+/// uplink from a `Nidd` pigeon, every downlink delivery report and every line-configuration
+/// result. Not a device or dashboard route; the only legitimate caller is ThingSpace.
+///
+/// Three gates, cheapest first, each failing closed: the source address against
+/// `THINGSPACE_CALLBACK_ALLOWED_IPS`, the body's `password` against the
+/// `THINGSPACE_CALLBACK_PASSWORD` secret in constant time (or, for a day after a rotation,
+/// `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`), and the inner `accountName` against
+/// `THINGSPACE_ACCOUNT_NAME`. ThingSpace sends the password in clear, which is why the other two
+/// are not optional; the account gate is what stops another ThingSpace customer who registered
+/// this URL. Refusals are 403, **never 401**, which the dashboard reads as a lost session.
+///
+/// A 2xx says the callback is handled, so it is answered only once a retry could not change the
+/// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
+/// anything a retry would repeat identically. A `TELEMETRY` frame whose sequence header does not
+/// parse answers 400, as a body that is not JSON does. A store that failed, or a deploy with NIDD
+/// half configured, answers 503, which is the truth but loses the callback: ThingSpace retries
+/// once, about a second later, and never after, so each such answer is logged as lost. It also
+/// retries a callback unanswered for about 4 s while the first attempt still runs; the Durable
+/// Object holds that retry until the first attempt has stored the uplink or failed. Billing, the
+/// Postgres sync and every downlink run in the Durable Object after it answers.
+async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+  use crate::helpers::nidd::{
+    CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, PasswordMatch,
+    callback_imei, callback_line, delivery_missed, is_billable, match_callback_password,
+    parse_error_line, within,
+  };
+  use base64::Engine as _;
+  use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+  /// ThingSpace's standard-alphabet base64, whether or not it pads.
+  const MESSAGE_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+  );
+  /// How long the free-tier fuse may hold the acknowledgement before it fails open.
+  const FUSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+  let cors = build_cors(&ctx.env, &req);
+  let started = Date::now().as_millis();
+
+  if !is_allowed_thingspace_ip(&ctx.env, &req) {
+    console_error!(
+      "ThingSpace callback from disallowed address {:?}",
+      req.headers().get("CF-Connecting-IP").ok().flatten()
+    );
+    return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+  }
+
+  let Ok(raw) = req.text().await else {
+    return Response::error("Bad Request: Failed to read body", 400)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  if raw.len() > NIDD_CALLBACK_MAX_BYTES {
+    console_error!("nidd_cb outcome=too_large size={}", raw.len());
+    return Response::error("Payload Too Large: callback body exceeds size cap", 413)
+      .unwrap()
+      .with_cors(&cors);
+  }
+
+  let auth = match serde_json::from_str::<CallbackAuth>(&raw) {
+    Ok(auth) => auth,
+    Err(e) => {
+      console_error!(
+        "{}",
+        parse_error_line("nidd_cb outcome=bad_body parse=auth", &e)
+      );
+      return Response::error("Bad Request: Invalid JSON", 400)
+        .unwrap()
+        .with_cors(&cors);
+    }
+  };
+  let request_id = header_safe(auth.request_id);
+  let attempt = attempt_field(auth.callback_count);
+  let Some(password) = auth.password else {
+    log_nidd_refusal("no_password", &request_id, &attempt);
+    return Response::error("Bad Request: Missing password", 400)
+      .unwrap()
+      .with_cors(&cors);
+  };
+
+  // 503 rather than 403: the service is what is missing, not the caller's right to it.
+  let (Some(expected_password), Some(account_name)) = (
+    configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD"),
+    configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME"),
+  ) else {
+    log_nidd_refusal("not_configured", &request_id, &attempt);
+    log_nidd_loss("", &request_id, &attempt);
+    return Response::error("Service Unavailable: NIDD is not configured", 503)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  let previous_password = configured_secret(&ctx.env, "THINGSPACE_CALLBACK_PASSWORD_PREVIOUS");
+  match match_callback_password(&password, &expected_password, previous_password.as_deref()) {
+    PasswordMatch::Current => {}
+    PasswordMatch::Previous => {
+      console_log!(
+        "nidd_cb password=previous request={} attempt={attempt}",
+        or_none(&request_id)
+      );
+    }
+    PasswordMatch::Neither => {
+      log_nidd_refusal("wrong_password", &request_id, &attempt);
+      return Response::error("Forbidden", 403).unwrap().with_cors(&cors);
+    }
+  }
+
+  let callback = match serde_json::from_str::<NiddCallback>(&raw) {
+    Ok(callback) => callback,
+    Err(e) => {
+      let shown_id = or_none(&request_id);
+      let mut context = String::with_capacity(53 + shown_id.len());
+      context.push_str("nidd_cb outcome=unknown_shape request=");
+      context.push_str(shown_id);
+      context.push_str(" parse=callback");
+      console_error!("{}", parse_error_line(&context, &e));
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+  let kind = callback.kind();
+
+  let Ok(namespace) = ctx.durable_object("PIGEONS") else {
+    console_error!("nidd_cb: PIGEONS binding unavailable");
+    log_nidd_loss("", &request_id, &attempt);
+    return Response::error("Service Unavailable", 503)
+      .unwrap()
+      .with_cors(&cors);
+  };
+  let imei = callback_imei(&callback);
+  let obj_id = match imei.as_deref() {
+    Some(imei) => match namespace.id_from_name(&nidd_object_name(imei)) {
+      Ok(id) => Some(id),
+      Err(e) => {
+        console_error!("nidd_cb: deriving a pigeon id failed: {e}");
+        log_nidd_loss("", &request_id, &attempt);
+        return Response::error("Service Unavailable", 503)
+          .unwrap()
+          .with_cors(&cors);
+      }
+    },
+    None => None,
+  };
+  let pigeon_id = obj_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+
+  // Not secret, since every holder of the API credentials sees it, but ThingSpace writes it:
+  // another customer's registration of this URL cannot carry ours.
+  if callback.account_name() != Some(account_name.as_str()) {
+    log_nidd_callback(
+      kind,
+      "foreign_account",
+      &pigeon_id,
+      &request_id,
+      &attempt,
+      started,
+    );
+    return Response::ok("").unwrap().with_cors(&cors);
+  }
+
+  let uplink = match &callback.nidd_response {
+    NiddResponse::Uplink(uplink) => uplink,
+    // A downlink that missed the device leaves the push it owes pending for its next uplink;
+    // nothing else in a report bears on the device's path, whose own reported version is the
+    // convergence signal.
+    NiddResponse::Delivery(report) | NiddResponse::Config(report) => {
+      let missed = matches!(callback.nidd_response, NiddResponse::Delivery(_))
+        && delivery_missed(callback.status.as_deref());
+      let verb = match &obj_id {
+        Some(obj_id) if missed => mark_nidd_push_pending(obj_id, &pigeon_id).await,
+        _ => "logged",
+      };
+      let status = header_safe(callback.status.clone());
+      let reason = header_safe(report.reason.clone().map(|r| r.replace(' ', "_")));
+      let (status, reason) = (or_none(&status), or_none(&reason));
+      let mut outcome = String::with_capacity(verb.len() + 16 + status.len() + reason.len());
+      outcome.push_str(verb);
+      outcome.push_str(" status=");
+      outcome.push_str(status);
+      outcome.push_str(" reason=");
+      outcome.push_str(reason);
+      log_nidd_callback(kind, &outcome, &pigeon_id, &request_id, &attempt, started);
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+
+  let Some(obj_id) = obj_id else {
+    log_nidd_callback(kind, "no_imei", "", &request_id, &attempt, started);
+    return Response::ok("").unwrap().with_cors(&cors);
+  };
+  let frame = match uplink
+    .message
+    .as_deref()
+    .map(|message| MESSAGE_BASE64.decode(message.trim()))
+  {
+    Some(Ok(frame)) if !frame.is_empty() && frame.len() <= capsules::NIDD_MAX_FRAME_BYTES => frame,
+    _ => {
+      log_nidd_callback(
+        kind,
+        "bad_message",
+        &pigeon_id,
+        &request_id,
+        &attempt,
+        started,
+      );
+      return Response::ok("").unwrap().with_cors(&cors);
+    }
+  };
+
+  // Checked here, as the HTTP telemetry route does, so the Durable Object opens no Postgres
+  // connection on the uplink path. The fuse has no deadline of its own and sits before the
+  // acknowledgement, so it is raced against a second and fails open, its own error rule.
+  let mut paused = false;
+  if is_billable(frame[0]) {
+    match within(FUSE_TIMEOUT, check_ingest_fuse(&ctx.env, &pigeon_id)).await {
+      Some(fuse) => paused = matches!(fuse, IngestFuse::Pause),
+      None => {
+        console_error!("nidd_cb: ingest fuse timed out for pigeon {pigeon_id} (failing open)")
+      }
+    }
+  }
+
+  let line = callback_line(&callback);
+  let dispatched = nidd_uplink_via_do(&obj_id, &frame, &request_id, paused, line.as_deref()).await;
+  let stored = match dispatched {
+    Ok(mut response) => {
+      let status = response.status_code();
+      let body = response.text().await.unwrap_or_default();
+      match status {
+        200..=299 => Ok(body),
+        // No pigeon behind that IMEI: an unprovisioned line, which a resend cannot help.
+        404 => Ok("no_pigeon".to_string()),
+        // A TELEMETRY sequence header that does not parse, refused like a body that is not JSON.
+        400 => {
+          log_nidd_callback(
+            kind,
+            "malformed",
+            &pigeon_id,
+            &request_id,
+            &attempt,
+            started,
+          );
+          return Response::error("Bad Request: malformed frame", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        _ => {
+          console_error!("nidd_cb: pigeon {pigeon_id} answered {status}");
+          Err("store_failed")
+        }
+      }
+    }
+    Err(e) => {
+      console_error!("nidd_cb: dispatch to pigeon {pigeon_id} failed: {e}");
+      Err("dispatch_failed")
+    }
+  };
+
+  match stored {
+    Ok(outcome) => {
+      let outcome = header_safe(Some(outcome));
+      let outcome = if outcome.is_empty() {
+        "stored"
+      } else {
+        &outcome
+      };
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
+      Response::ok("").unwrap().with_cors(&cors)
+    }
+    Err(outcome) => {
+      log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
+      log_nidd_loss(&pigeon_id, &request_id, &attempt);
+      Response::error("Service Unavailable", 503)
+        .unwrap()
+        .with_cors(&cors)
+    }
+  }
+}
+
 /// The Terms assent status both `/account/terms` routes answer with, read
 /// back from the row rather than assumed.
 ///
@@ -1228,6 +1643,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
     .post_async("/internal/consent", |req, ctx| async move {
       internal_consent_record(req, ctx).await
     })
+    // Verizon ThingSpace's NiddService callback: NIDD uplinks, delivery reports and line
+    // results. Gated by source address, callback password and account, never a session.
+    .post_async("/internal/thingspace/nidd", |req, ctx| async move {
+      nidd_callback(req, ctx).await
+    })
     .get_async("/flocks", |req, ctx: RouteContext<()>| async move {
       let cors = build_cors(&ctx.env, &req);
       let Ok(auth) = require_auth_session(&req, &ctx.env).await else {
@@ -1492,6 +1912,37 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .with_cors(&cors);
       }
 
+      // Every NIDD line rides JES's one ThingSpace account, so a Nidd pigeon needs NIDD
+      // configured here and an allowlisted organization, both checked before the IMEI is read:
+      // an account outside the list never learns from a 409 which IMEIs are taken.
+      let nidd_imei = match &payload.connector {
+        capsules::Connector::Nidd(requested) => {
+          if configured_secret(&ctx.env, "THINGSPACE_ACCOUNT_NAME").is_none() {
+            return Response::error("Forbidden: NIDD is not enabled in this environment", 403)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          if !flock
+            .org_id
+            .is_some_and(|org| nidd_org_allowed(&ctx.env, &org))
+          {
+            return Response::error("Forbidden: NIDD is not enabled for this organization", 403)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          if !capsules::imei_is_valid(&requested.imei) {
+            return Response::error(
+              "Bad Request: IMEI must be 15 digits ending in its check digit",
+              400,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          Some(requested.imei.clone())
+        }
+        _ => None,
+      };
+
       // Device-count entitlement, status-gated before plan inside
       // check_device_cap. A refusal blocks growth only -- existing devices
       // keep ingesting -- and the check fails open on lookup errors, so a
@@ -1506,28 +1957,79 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_cors(&cors);
       };
 
-      let obj_id = namespace.unique_id().map_err(|e| {
-        console_error!("Failed to create unique DO ID: {e}");
-        worker::Error::RustError("Internal Server Error".into())
-      })?;
+      // A Nidd pigeon's object is named by its IMEI, so a callback carrying the IMEI reaches it
+      // with no index, and a second create for the same IMEI lands in it and answers 409.
+      let obj_id = match &nidd_imei {
+        Some(imei) => namespace.id_from_name(&nidd_object_name(imei)),
+        None => namespace.unique_id(),
+      };
+      let obj_id = match obj_id {
+        Ok(obj_id) => obj_id,
+        Err(e) => {
+          console_error!("Failed to create DO ID: {e}");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+      };
 
-      let do_response =
-        proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/create").await?;
+      let do_response = match proxy_to_pigeon_do(
+        req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        "/create",
+      )
+      .await
+      {
+        Ok(do_response) => do_response,
+        // The create may have landed with its answer lost, or the answer lost may have been a
+        // 409 for a pigeon that already held the IMEI, which this principal's undo could delete.
+        // So nothing is undone: if it landed, a retry answers 409, and the id logged here is
+        // deleted only once Postgres shows no row for it, since a row may be a live pigeon.
+        Err(e) if nidd_imei.is_some() => {
+          console_error!("Nidd create: dispatch failed for pigeon {obj_id}: {e}");
+          return Response::error(
+            "Service Unavailable: the pigeon's object did not answer; try again",
+            503,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+        Err(_) => {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+      };
       if do_response.status_code() >= 400 {
         return do_response.with_cors(&cors);
       }
 
-      let pcr = parse_do_response::<PigeonDetail>(do_response).await?;
+      // From here on the Durable Object holds the pigeon, so a Nidd create that cannot finish
+      // is undone rather than left over its id's leftovers.
+      let Ok(pcr) = parse_do_response::<PigeonDetail>(do_response).await else {
+        if nidd_imei.is_some() {
+          return undo_nidd_create(&principal, &obj_id, &cors).await;
+        }
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
 
       // Org-owned flock: seed the org's own ACL row alongside the
       // creator's. The DO write is authoritative, not best-effort -- a
       // failed grant fails the request loudly (the pigeon exists with the
-      // creator as owner; retry via POST /pigeons/:id/acl).
+      // creator as owner; retry via POST /pigeons/:id/acl), except that a
+      // Nidd create is undone.
       let org_acl = match flock.org_id {
         Some(org) => {
           let org_id_str = org.to_string();
           let Ok(grant_resp) = grant_org_acl_via_do(&obj_id, &org_id_str).await else {
             console_error!("Org ACL grant dispatch failed for pigeon {}", pcr.pigeon.id);
+            if nidd_imei.is_some() {
+              return undo_nidd_create(&principal, &obj_id, &cors).await;
+            }
             return Response::error(
               "Internal Server Error: pigeon created but org access grant failed -- retry via POST /pigeons/:id/acl",
               500,
@@ -1541,6 +2043,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
               grant_resp.status_code(),
               pcr.pigeon.id
             );
+            if nidd_imei.is_some() {
+              return undo_nidd_create(&principal, &obj_id, &cors).await;
+            }
             return Response::error(
               "Internal Server Error: pigeon created but org access grant failed -- retry via POST /pigeons/:id/acl",
               500,
@@ -1556,13 +2061,28 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         None => None,
       };
 
-      match get_db_client(&ctx.env).await {
-        Ok(client) => {
-          if let Err(e) = insert_pigeon_pg_db(client, &pcr).await {
+      let mirrored = match get_db_client(&ctx.env).await {
+        Ok(client) => match insert_pigeon_pg_db(client, &pcr).await {
+          Ok(()) => true,
+          Err(e) => {
             console_error!("External DB Sync Error for pigeon {}: {e}", pcr.pigeon.id);
+            false
           }
+        },
+        Err(err) => {
+          console_error!("Sync skipped: Hyperdrive connection failed: {err}");
+          false
         }
-        Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
+      };
+
+      // A Nidd pigeon's mirror insert is also what clears an earlier pigeon's leftovers under
+      // its reused id, so it is the one mirror that may not fail quietly: the create is undone
+      // and the operator retries, and no pigeon answered 201 lives over leftovers it could read.
+      if nidd_imei.is_some() {
+        if !mirrored {
+          return undo_nidd_create(&principal, &obj_id, &cors).await;
+        }
+        delete_log_dictionary(&ctx.env, &pcr.pigeon.id).await;
       }
 
       // Best-effort PG mirror of the org ACL row (the client from the
@@ -2010,19 +2530,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
         }
 
-        // Best-effort cleanup of this pigeon's stored log dictionary --
-        // same fire-and-log convention as the PG sync above; a
-        // leftover R2 object is unreachable anyway once the ACL rows are
-        // gone (every log-dictionary route re-checks the ACL first).
-        match ctx.env.bucket("FIRMWARE_BUCKET") {
-          Ok(bucket) => {
-            let object_key = format!("log-dictionaries/{pigeon_id}.json");
-            if bucket.delete(&object_key).await.is_err() {
-              console_error!("R2 log dictionary cleanup failed for {object_key}");
-            }
-          }
-          Err(e) => console_error!("Cleanup skipped: FIRMWARE_BUCKET bind failed: {e}"),
-        }
+        // Best-effort, like the PG sync above. A Nidd pigeon's id comes back when its IMEI is
+        // created again, so a leftover is not unreachable by the ACL alone: the dictionary
+        // route's created_at check is what keeps it from the next pigeon.
+        delete_log_dictionary(&ctx.env, &pigeon_id).await;
 
         Response::empty()?.with_cors(&cors)
       },
@@ -2854,6 +3365,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             .unwrap()
             .with_cors(&cors);
         };
+        // Uploaded before this pigeon existed: an earlier pigeon's under the same id, which a
+        // Nidd pigeon's IMEI-derived id can have.
+        let uploaded_secs = (object.uploaded().as_millis() / 1000) as i64;
+        if access.created_at().is_some_and(|created| uploaded_secs < created) {
+          return Response::error("Not Found: No log dictionary uploaded for this pigeon", 404)
+            .unwrap()
+            .with_cors(&cors);
+        }
 
         let Some(body) = object.body() else {
           console_error!("R2 object body unexpectedly absent for {object_key}");

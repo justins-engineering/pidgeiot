@@ -1,9 +1,42 @@
-use capsules::{Connector, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow, TelemetryEndpoint};
+use capsules::{
+  CoapConfig, Connector, HttpsConfig, MqttConfig, NiddConfig, Pigeon, PigeonAcl, PigeonDetail,
+  PigeonShadow, TelemetryEndpoint,
+};
 use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
+
+/// A connector with every secret removed: the token, a PSK secret, and a Nidd pigeon's claim key,
+/// which signs every downlink for the device's life. What the read routes answer with. The PSK
+/// identity, the endpoint and the IMEI are provisioning facts, not secrets, and stay.
+pub fn connector_without_secrets(connector: &Connector) -> Connector {
+  match connector {
+    Connector::Https(c) => Connector::Https(HttpsConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+    }),
+    Connector::Coap(c) => Connector::Coap(CoapConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity.clone(),
+      tls_psk_secret: None,
+    }),
+    Connector::Mqtt(c) => Connector::Mqtt(MqttConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      tls_psk_identity: c.tls_psk_identity.clone(),
+      tls_psk_secret: None,
+    }),
+    Connector::Nidd(c) => Connector::Nidd(NiddConfig {
+      endpoint: c.endpoint.clone(),
+      token: String::new(),
+      imei: c.imei.clone(),
+      claim_key: None,
+    }),
+  }
+}
 
 /// Proof that this pigeon's ACL check (the DO's `/pigeon/authz/check`
 /// route, dispatched to `objects::pigeons::check_authorized`) has already
@@ -13,11 +46,24 @@ use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 /// from code that actually queried `pigeon_acl` and got a passing result.
 pub struct PigeonAccess {
   pigeon_id: String,
+  created_at: Option<i64>,
 }
+
+/// The header the DO's authorization probe answers with the pigeon's `created_at`, unix
+/// seconds, so a gateway route can tell data the pigeon owns from data an earlier pigeon left
+/// under the same id.
+pub const PIGEON_CREATED_AT_HEADER: &str = "X-Pigeon-Created-At";
 
 impl PigeonAccess {
   pub fn pigeon_id(&self) -> &str {
     &self.pigeon_id
+  }
+
+  /// When the pigeon was created, unix seconds: a Nidd pigeon's id repeats when its IMEI is
+  /// deleted and created again, and anything stored under the id before then is not its own.
+  /// `None` when the probe did not say, and for the demo allowlist.
+  pub fn created_at(&self) -> Option<i64> {
+    self.created_at
   }
 
   /// Alternate proof source for the public, unauthenticated demo routes
@@ -30,6 +76,7 @@ impl PigeonAccess {
   pub fn from_demo_allowlist(pigeon_id: &str) -> Self {
     Self {
       pigeon_id: pigeon_id.to_string(),
+      created_at: None,
     }
   }
 }
@@ -52,8 +99,15 @@ pub async fn check_pigeon_authz(
   if authz_resp.status_code() >= 400 {
     return Ok(Err(authz_resp));
   }
+  let created_at = authz_resp
+    .headers()
+    .get(PIGEON_CREATED_AT_HEADER)
+    .ok()
+    .flatten()
+    .and_then(|value| value.parse::<i64>().ok());
   Ok(Ok(PigeonAccess {
     pigeon_id: pigeon_id.to_string(),
+    created_at,
   }))
 }
 
@@ -140,6 +194,39 @@ pub async fn psk_lookup_via_do(stub: &worker::ObjectId<'_>) -> worker::Result<Re
       worker::Error::RustError("Internal Server Error".into())
     })?;
 
+  stub.fetch_with_request(do_req).await
+}
+
+/// Hands one NIDD uplink frame to its pigeon's Durable Object (`/pigeon/nidd/uplink`), raw bytes
+/// in the binary-safe style of `proxy_binary_to_pigeon_do`. The headers are built here, never
+/// copied from the caller: the callback route has already passed its three gates, which is what
+/// the DO's trusted-internal path rests on.
+pub async fn nidd_uplink_via_do(
+  stub: &worker::ObjectId<'_>,
+  frame: &[u8],
+  request_id: &str,
+  paused: bool,
+  line: Option<&str>,
+) -> worker::Result<Response> {
+  use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
+
+  let stub = stub.get_stub().map_err(|e| {
+    console_error!("Failed to get DO stub for pigeon {stub}: {e}");
+    worker::Error::RustError("Bad Request".into())
+  })?;
+
+  let mut init = RequestInit::default();
+  init.with_method(worker::Method::Post);
+  init.headers.set(HEADER_REQUEST_ID, request_id)?;
+  init
+    .headers
+    .set(HEADER_INGEST, if paused { "paused" } else { "open" })?;
+  if let Some(line) = line {
+    init.headers.set(HEADER_LINE, line)?;
+  }
+  init.body = Some(js_sys::Uint8Array::from(frame).into());
+
+  let do_req = Request::new_with_init("https://internal/pigeon/nidd/uplink", &init)?;
   stub.fetch_with_request(do_req).await
 }
 
@@ -339,6 +426,22 @@ pub async fn ensure_pigeons_suspended_column(client: &Client) -> worker::Result<
     })
 }
 
+/// The connector as the Postgres mirror stores it. A Nidd pigeon's is stored without secrets:
+/// its claim key signs every downlink for the device's life and nothing in Postgres reads it.
+/// The other variants' credentials are still mirrored as they are.
+fn mirrored_connector(connector: &Connector) -> String {
+  let mirrored = match connector {
+    Connector::Nidd(_) => connector_without_secrets(connector),
+    other => other.clone(),
+  };
+  serde_json::to_string(&mirrored).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Mirrors a newly created pigeon (row, creator's ACL, shadow) into Postgres in one
+/// transaction. A Nidd pigeon's id repeats when its IMEI is deleted and created again, and the
+/// delete route's cleanup is best-effort, so for one the transaction first deletes whatever an
+/// earlier pigeon left under the id; the cascades take its shadow, ACL, history and alerts. That
+/// is safe because the DO has just created this pigeon, so no live one holds the id.
 pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
   ensure_pigeons_board_column(&client).await?;
 
@@ -351,8 +454,19 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
   let shadow = &pcr.shadow;
   let acl = &pcr.acl;
 
-  let connector_json =
-    serde_json::to_string(&pigeon.connector).unwrap_or_else(|_| "{}".to_string());
+  if matches!(pigeon.connector, Connector::Nidd(_)) {
+    tx.execute_typed(
+      "DELETE FROM pigeons WHERE id = $1;",
+      &[(&pigeon.id, Type::TEXT)],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeons clean slate error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+  }
+
+  let connector_json = mirrored_connector(&pigeon.connector);
 
   tx.execute_typed(
     "INSERT INTO pigeons (id, flock_id, serial, name, tags, connector, board, updated_at, created_at)
@@ -436,7 +550,8 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
 /// rather than from `pigeon` because only the routes that mint credentials
 /// hold one worth mirroring -- everything else answers with a
 /// secret-stripped pigeon, and passing `None` leaves the column alone
-/// instead of blanking the mirror's copy of a live device's PSK.
+/// instead of blanking the mirror's copy of a live device's PSK. A Nidd
+/// connector is mirrored without its secrets (`mirrored_connector`).
 pub async fn update_pigeon_pg_db(
   client: Client,
   pigeon: &Pigeon,
@@ -444,8 +559,7 @@ pub async fn update_pigeon_pg_db(
 ) -> worker::Result<()> {
   ensure_pigeons_board_column(&client).await?;
 
-  let connector_json =
-    connector.map(|c| serde_json::to_string(c).unwrap_or_else(|_| "{}".to_string()));
+  let connector_json = connector.map(mirrored_connector);
 
   client
     .execute_typed(
@@ -593,6 +707,24 @@ pub async fn upsert_acl_pg_db(
   Ok(())
 }
 
+/// Best-effort removal of a pigeon's stored log dictionary from R2; a failure is logged. What
+/// keeps a leftover from being served is the dictionary route's `created_at` check, since a Nidd
+/// pigeon's id repeats and the ACL alone no longer makes the object unreachable.
+pub async fn delete_log_dictionary(env: &worker::Env, pigeon_id: &str) {
+  match env.bucket("FIRMWARE_BUCKET") {
+    Ok(bucket) => {
+      let mut object_key = String::with_capacity(22 + pigeon_id.len());
+      object_key.push_str("log-dictionaries/");
+      object_key.push_str(pigeon_id);
+      object_key.push_str(".json");
+      if bucket.delete(&object_key).await.is_err() {
+        console_error!("R2 log dictionary cleanup failed for {object_key}");
+      }
+    }
+    Err(e) => console_error!("Cleanup skipped: FIRMWARE_BUCKET bind failed: {e}"),
+  }
+}
+
 pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Result<()> {
   // CASCADE on the PG tables handles pigeon_acl and pigeon_shadow
   client
@@ -607,4 +739,45 @@ pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Res
     })?;
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::connector_without_secrets;
+  use capsules::{CoapConfig, Connector, NiddConfig};
+
+  #[test]
+  fn a_nidd_connector_keeps_its_binding_and_loses_its_secrets() {
+    let stripped = connector_without_secrets(&Connector::Nidd(NiddConfig {
+      endpoint: "nidd://VZWSCEF".to_string(),
+      token: "token".to_string(),
+      imei: "490154203237518".to_string(),
+      claim_key: Some("00112233445566778899aabbccddeeff".to_string()),
+    }));
+    assert_eq!(
+      stripped,
+      Connector::Nidd(NiddConfig {
+        endpoint: "nidd://VZWSCEF".to_string(),
+        token: String::new(),
+        imei: "490154203237518".to_string(),
+        claim_key: None,
+      })
+    );
+  }
+
+  #[test]
+  fn a_psk_connector_keeps_its_identity_and_loses_its_secret() {
+    let stripped = connector_without_secrets(&Connector::Coap(CoapConfig {
+      endpoint: "coaps://coap.pidgeiot.com/device/pigeons/abc".to_string(),
+      token: "token".to_string(),
+      tls_psk_identity: Some("abc".to_string()),
+      tls_psk_secret: Some("secret".to_string()),
+    }));
+    assert_eq!(stripped.token(), "");
+    assert_eq!(stripped.psk(), None);
+    let Connector::Coap(coap) = stripped else {
+      panic!("variant changed");
+    };
+    assert_eq!(coap.tls_psk_identity.as_deref(), Some("abc"));
+  }
 }

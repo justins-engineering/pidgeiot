@@ -36,8 +36,9 @@ TEMPLATE="fancier/scripts/oss-licenses.hbs"
 # fancier is the requirement (its wasm bundle is what ships to a browser);
 # dovecote's server-side tree is included too since it's cheap and reads
 # better than omission for an open platform. Both share one about.toml --
-# the accepted-license policy is a whole-project decision, not a per-crate
-# one.
+# the accepted-license policy is one whole-project list, plus one reviewed
+# per-crate exception at its end (the AGPL [thingspace-sdk] table), without
+# which this run refuses that crate and fails the release build.
 cargo about generate --config about.toml -m fancier/Cargo.toml \
   -o fancier/generated/oss-licenses.md "$TEMPLATE"
 cargo about generate --config about.toml -m dovecote/Cargo.toml \

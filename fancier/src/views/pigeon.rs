@@ -5,13 +5,15 @@ use crate::components::{
   TelemetryEndpointModal, TelemetryStatTiles, TrackWidget,
 };
 use crate::helpers::connection_state::{self, ConnectionState};
+use crate::helpers::device_credentials;
 use crate::helpers::firmware_repush;
 use crate::helpers::gps_track;
 use crate::helpers::move_flock;
 use crate::{Route, api};
 use capsules::{
-  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, Pigeon, PigeonAcl, PigeonDetail, PigeonShadow,
-  PigeonShadowUpdateRequest, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
+  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon,
+  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -467,6 +469,8 @@ fn PigeonInfo(pigeon: Pigeon) -> Element {
   }
 }
 
+/// How the pigeon was provisioned, and the one place its token (and any
+/// second write-once secret) can be rotated and read again.
 #[component]
 fn ConnectorInfo(
   pigeon_id: String,
@@ -483,9 +487,12 @@ fn ConnectorInfo(
     .unwrap_or_else(|_| "Invalid Format".to_string());
 
   let mut refreshed_token = use_signal(|| None::<String>);
-  // A refresh rotates a PSK-bearing connector's secret alongside its
-  // token, and this is the only moment either is readable.
-  let mut refreshed_psk = use_signal(|| None::<String>);
+  // A refresh rotates a PSK-bearing connector's secret, or a NIDD
+  // pigeon's claim key, alongside its token, and this is the only moment
+  // either is readable.
+  let mut refreshed_secret = use_signal(|| None::<String>);
+  let nidd = matches!(connector, Connector::Nidd(_));
+  let secret_heading = if nidd { "Claim Key" } else { "TLS PSK" };
   let mut is_refreshing = use_signal(|| false);
   let mut refresh_error = use_signal(|| Option::<String>::None);
   let mut confirm_refresh = use_signal(|| false);
@@ -499,7 +506,11 @@ fn ConnectorInfo(
       }
 
       p { class: "text-xs text-base-content/60 md:px-4",
-        "How this pigeon was provisioned, not a restriction on it: its token authenticates it on every device transport."
+        if nidd {
+          "Its NIDD frames are authenticated by the carrier and the claim key built into its firmware. The token serves only the HTTPS device routes, such as firmware downloads, on a board that also holds an IP PDN."
+        } else {
+          "How this pigeon was provisioned, not a restriction on it: its token authenticates it on every IP device transport."
+        }
       }
 
       div { class: "overflow-x-auto",
@@ -701,6 +712,66 @@ fn ConnectorInfo(
                       }
                     }
                 }
+                Connector::Nidd(config) => {
+                    let endpoint = config.endpoint.clone();
+                    let imei = config.imei.clone();
+                    rsx! {
+                      tr {
+                        th { "Protocol" }
+                        td { "NIDD (Verizon ThingSpace, NB-IoT)" }
+                        td {}
+                      }
+                      tr {
+                        th { "IMEI" }
+                        td {
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{imei}"
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&imei);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                      tr {
+                        th { "APN" }
+                        td {
+                          div { class: "font-mono bg-base-200 rounded px-2 w-fit", "{NIDD_APN}" }
+                        }
+                        td {}
+                      }
+                      tr {
+                        th { "Endpoint" }
+                        td {
+                          div {
+                            class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere sm:break-normal",
+                            "{endpoint}"
+                          }
+                        }
+                        td {
+                          button {
+                            class: "btn btn-square btn-ghost btn-sm",
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.navigator().clipboard().write_text(&endpoint);
+                                }
+                            },
+                            Icon { icon: LdCopy }
+                          }
+                        }
+                      }
+                    }
+                }
             }
             tr {
               th { "Token" }
@@ -746,9 +817,9 @@ fn ConnectorInfo(
                 }
               }
             }
-            if let Some(secret) = refreshed_psk() {
+            if let Some(secret) = refreshed_secret() {
               tr {
-                th { "TLS PSK" }
+                th { "{secret_heading}" }
                 td {
                   div { class: "flex flex-col gap-2",
                     div { class: "font-mono bg-warning/10 text-warning rounded px-2 py-1 w-fit text-xs",
@@ -798,7 +869,7 @@ fn ConnectorInfo(
             class: "btn btn-ghost btn-sm text-base-content/60",
             onclick: move |_| {
                 refreshed_token.set(None);
-                refreshed_psk.set(None);
+                refreshed_secret.set(None);
             },
             "I've Saved the Token"
           }
@@ -821,8 +892,11 @@ fn ConnectorInfo(
                       Some(connector) => {
                           is_refreshing.set(false);
                           refreshed_token.set(Some(connector.token().to_string()));
-                          refreshed_psk
-                              .set(connector.psk().map(|(_, secret)| secret.to_string()));
+                          refreshed_secret
+                              .set(
+                                  device_credentials::write_once_secret(&connector)
+                                      .map(|(_, secret)| secret.to_string()),
+                              );
                       }
                       None => {
                           is_refreshing.set(false);
@@ -837,6 +911,10 @@ fn ConnectorInfo(
           ", and any pre-shared key rotates with it. A device already in the field keeps "
           "failing every request until its firmware is rebuilt with the new token and "
           "reflashed on site."
+          if nidd {
+            " This pigeon's claim key rotates too, and the device is refused until it is "
+            "rebuilt with the new one."
+          }
         }
       }
     }
@@ -1143,19 +1221,11 @@ fn ShadowInfo(
                                     target_config,
                                 };
                                 match api::pigeons::update_shadow(&pigeon_id, &req).await {
-                                    Some(new_shadow) => {
+                                    Ok(new_shadow) => {
                                         repushed_version.set(Some(new_shadow.target_version));
                                         on_repushed.call(new_shadow);
                                     }
-                                    None => {
-                                        repush_error
-                                            .set(
-                                                Some(
-                                                    "Failed to re-push the firmware target. Please try again."
-                                                        .to_string(),
-                                                ),
-                                            );
-                                    }
+                                    Err(message) => repush_error.set(Some(message)),
                                 }
                             }
                             Err(err) => repush_error.set(Some(err)),
@@ -1365,8 +1435,9 @@ fn AclInfo(acl: PigeonAcl) -> Element {
 
 /// Client-side-only sanity cap on an uploaded `target_config` JSON file --
 /// dovecote's `PUT /pigeons/:id/shadow` enforces no size limit of its own on
-/// `target_config`, so this exists purely to give a friendly error instead
-/// of stuffing something absurd into the textarea below.
+/// an IP pigeon's `target_config` (a NIDD pigeon's is held to
+/// `NIDD_MAX_TARGET_CONFIG_BYTES`), so this exists purely to give a friendly
+/// error instead of stuffing something absurd into the textarea below.
 const MAX_SHADOW_UPLOAD_BYTES: u64 = 64 * 1024;
 
 /// Parses an uploaded `target_config` JSON file's text and, on success,
@@ -1392,9 +1463,29 @@ fn parse_shadow_upload(text: &str) -> Result<String, String> {
   }
 }
 
+/// The size dovecote holds a NIDD pigeon's `target_config` to: its compact
+/// serialization, whatever whitespace the editor holds. `None` while the
+/// editor's text is not valid JSON.
+fn compact_config_bytes(raw: &str) -> Option<usize> {
+  let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+  serde_json::to_string(&value)
+    .ok()
+    .map(|compact| compact.len())
+}
+
 #[cfg(test)]
 mod shadow_upload_tests {
-  use super::parse_shadow_upload;
+  use super::{compact_config_bytes, parse_shadow_upload};
+
+  #[test]
+  fn the_byte_count_is_compact_utf8_whatever_the_editor_holds() {
+    assert_eq!(
+      compact_config_bytes("{\n  \"log\": 3,\n  \"on\": true\n}"),
+      Some(19)
+    );
+    assert_eq!(compact_config_bytes("{\"s\":\"é\"}"), Some(10));
+    assert_eq!(compact_config_bytes("{not json"), None);
+  }
 
   #[test]
   fn accepts_a_json_object_and_pretty_prints_it() {
@@ -1442,6 +1533,9 @@ mod shadow_upload_tests {
   }
 }
 
+/// Edits the shadow's `target_config`, typed or loaded from a file. For a
+/// NIDD pigeon it counts the bytes against the one downlink frame the
+/// whole config has to fit; the server's 413 stays the authority.
 #[component]
 pub fn EditShadowModal(
   pigeon_id: String,
@@ -1460,6 +1554,15 @@ pub fn EditShadowModal(
   let mut is_saving = use_signal(|| false);
   let mut file_error = use_signal(|| Option::<String>::None);
   let mut loaded_file_name = use_signal(|| Option::<String>::None);
+
+  let nidd = pigeon_detail
+    .read()
+    .as_ref()
+    .is_some_and(|detail| matches!(detail.pigeon.connector, Connector::Nidd(_)));
+  let config_bytes = nidd
+    .then(|| compact_config_bytes(&json_input.read()))
+    .flatten();
+  let oversize = config_bytes.is_some_and(|bytes| bytes > NIDD_MAX_TARGET_CONFIG_BYTES);
 
   rsx! {
     dialog { class: "modal", id: "edit_shadow_modal",
@@ -1492,7 +1595,7 @@ pub fn EditShadowModal(
                           };
 
                           match crate::api::pigeons::update_shadow(&pigeon_id, &req).await {
-                              Some(new_shadow) => {
+                              Ok(new_shadow) => {
                                   if let Some(detail) = pigeon_detail.write().as_mut() {
                                       detail.shadow = new_shadow;
                                   }
@@ -1501,11 +1604,9 @@ pub fn EditShadowModal(
                                       r#"document.getElementById("edit_shadow_modal").close();"#,
                                   );
                               }
-                              None => {
+                              Err(message) => {
                                   is_saving.set(false);
-                                  submit_error.set(
-                                      Some("Failed to save shadow. Please try again.".to_string()),
-                                  );
+                                  submit_error.set(Some(message));
                               }
                           }
                       }
@@ -1603,6 +1704,16 @@ pub fn EditShadowModal(
                 },
               }
 
+              if let Some(bytes) = config_bytes {
+                p {
+                  class: "text-xs mt-1",
+                  class: if oversize { "text-error" } else { "text-base-content/60" },
+                  "{bytes} of {NIDD_MAX_TARGET_CONFIG_BYTES} bytes"
+                  if oversize {
+                    ". One NIDD downlink frame carries the whole config, so trim it to save."
+                  }
+                }
+              }
               // Not a daisyUI .label: it is white-space: nowrap, so the sentence
               // sets the modal's minimum width and runs off a phone screen.
               if let Some(err) = error_msg.read().as_ref() {
@@ -1621,7 +1732,7 @@ pub fn EditShadowModal(
             button {
               class: "btn btn-primary shadow-md min-w-[120px]",
               r#type: "submit",
-              disabled: error_msg.read().is_some() || is_saving(),
+              disabled: error_msg.read().is_some() || is_saving() || oversize,
               if is_saving() {
                 span { class: "loading loading-spinner loading-sm" }
               } else {

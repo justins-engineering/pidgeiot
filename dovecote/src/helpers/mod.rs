@@ -45,6 +45,8 @@ pub use billing::mark_webhook_event_processed;
 
 pub mod vies;
 
+pub mod nidd;
+
 mod business_details;
 pub use business_details::ensure_business_details_columns;
 pub use business_details::load_business_details;
@@ -75,11 +77,15 @@ pub use flocks::get_user_flocks;
 pub use flocks::pigeon_move_shares_owner;
 
 mod pigeons;
+pub use pigeons::PIGEON_CREATED_AT_HEADER;
 pub use pigeons::PigeonAccess;
 pub use pigeons::check_pigeon_authz;
+pub use pigeons::connector_without_secrets;
+pub use pigeons::delete_log_dictionary;
 pub use pigeons::delete_pigeon_pg_db;
 pub use pigeons::grant_org_acl_via_do;
 pub use pigeons::insert_pigeon_pg_db;
+pub use pigeons::nidd_uplink_via_do;
 pub use pigeons::proxy_binary_to_pigeon_do;
 pub use pigeons::proxy_to_pigeon_do;
 pub use pigeons::proxy_websocket_to_pigeon_do;
@@ -100,6 +106,8 @@ pub use retention::sweep_telemetry_history_retention;
 
 mod coap_service;
 pub use coap_service::is_allowed_coap_service_ip;
+pub use coap_service::is_allowed_thingspace_ip;
+pub use coap_service::thingspace_callbacks_configured;
 
 mod device_limits;
 pub use device_limits::DEVICE_FIRMWARE_LIMITER;
