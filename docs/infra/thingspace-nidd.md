@@ -347,9 +347,8 @@ What staging holds after bring-up and the tier 2 bench, by name only.
   rotation at 22:09Z ran clean. Both were followed by minutes of callbacks carrying a password
   other than the registered one, the reason for `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`.
 - **Organization allowlist.** Staging's `NIDD_ALLOWED_ORG_IDS` is
-  `2d407cb2-9e01-4c12-9f6e-af4bd25900c4` (organization "NIDD tier 2 bench"), passed with
-  `--var NIDD_ALLOWED_ORG_IDS:<id>` at each deploy. The committed staging value is `""`, so a deploy
-  without that `--var` closes Nidd create on staging again.
+  `2d407cb2-9e01-4c12-9f6e-af4bd25900c4` (organization "NIDD tier 2 bench"), committed in its
+  `[env.staging.vars]`, so a staging deploy needs no `--var` for it.
 - **Fixture identities** left in production Kratos, which serves staging, for the fixture purge:
   `staging-catch+nidd-a-9b1844@pidgeiot.com` (the staging synthetic suite's; owns nothing) and
   `staging-catch+nidd-t2-0d3660@pidgeiot.com` (the bench's; owns the tier 2 organization, its flock
@@ -396,7 +395,7 @@ What tier 3 left on staging and the bench, by name only.
   since: a retry that finds its key held by an attempt still awaiting the telemetry enqueue waits
   for that attempt's outcome, which tier 1 step 7 checks by holding a first attempt inside its
   history write and by failing a store. Staging keeps `b8158d7c`, without the fix, until the soak
-  ends; then deploy dovecote from the branch with the `--var` above, and leave the duplicate
+  ends; then deploy dovecote from the branch, and leave the duplicate
   readings as the record of the defect. Dev bills no telemetry, so staging is where the billing
   half shows: after the deploy each request id logs one `outcome=stored`, a retry overlapping its
   first attempt (only when a callback runs past about 4 s) logs `outcome=duplicate` with its

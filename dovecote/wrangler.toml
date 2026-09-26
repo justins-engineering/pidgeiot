@@ -413,8 +413,8 @@ COAP_SERVICE_ALLOWED_IPS = ""
 # Verizon's callback addresses; at production cutover this goes back to
 # "" (see the THINGSPACE_CALLBACK_ALLOWED_IPS note above).
 THINGSPACE_CALLBACK_ALLOWED_IPS = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234"
-# Empty until JES's test organization is chosen for bring-up.
-NIDD_ALLOWED_ORG_IDS = ""
+# JES's test organization, "NIDD tier 2 bench".
+NIDD_ALLOWED_ORG_IDS = "2d407cb2-9e01-4c12-9f6e-af4bd25900c4"
 THINGSPACE_LOGIN_EPOCH = "1"
 # `From:` for every mail this Worker sends (helpers/alerts.rs). A sending
 # domain is onboarded per environment and Cloudflare Email Service signs
