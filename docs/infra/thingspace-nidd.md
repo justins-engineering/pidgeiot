@@ -356,3 +356,23 @@ What staging holds after bring-up and the tier 2 bench, by name only.
   and the bench pigeon).
 - **Step 7** (the Browser Integrity Check rule) is not done; step 8 passed with real uplinks
   stored at 21:24Z and 22:23Z.
+
+## Staging record, 2026-09-25 (tier 3)
+
+What tier 3 left on staging and the bench, by name only.
+
+- **The bench pigeon's claim key was refreshed** (`POST /pigeons/:pigeon_id/token/refresh`) and the
+  Feather rebuilt with the new key, which went straight from the response into `nidd_init`'s
+  git-ignored `prj.local.conf`. The key in `nidd_probe`'s `prj.local.conf` is the old one and no
+  longer claims; the bearer token that refresh minted was not kept.
+- **The tier-2 organization's September usage row** (`billing_usage_periods`) was set to the free
+  tier's 300000 for about 30 minutes to exercise the ingest fuse, then restored to its value.
+- **The soak**, from 01:52Z on 2026-09-26: the Feather runs the bench build of `nidd_init` at a
+  20-minute wake (target `telemetry_interval` 1200) with the console captured and a tally
+  checking every reading against staging's history and billing; its paths and process ids are
+  in the tier-3 record.
+- **Sending from this runbook's shell to a device in PSM** needs the device awake: fire after its
+  uplink's RRC connection is up. Sent while the connection was still being set up, frames failed
+  (`DeliveryFailed` "Backend service error") or went `Queued` and were never delivered.
+- **ThingSpace retried a callback about 4 s after sending it** while the first attempt was still
+  running, and both were stored; the fix belongs in `nidd_uplink`'s de-dup (design 13.3).

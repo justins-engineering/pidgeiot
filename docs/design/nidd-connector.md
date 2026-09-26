@@ -1814,6 +1814,44 @@ frame with a corrupted tag, sent from the runbook shell, is dropped; FOTA over t
 passed. Then a 24-hour soak at the contract's cadence with every reading accounted for against the
 billing counter, and a field unit at a real site, which is also the NB-IoT coverage check.
 
+**Results, 2026-09-25.** The bench nRF9160 Feather ran `nidd_init` from `pigeon` `nidd-transport`
+and `pigeon-examples` `nidd-init`, built with a bench configuration that adds the AT shell and the
+library's debug log, against staging dovecote `b8158d7c`; `wrangler tail` stayed connected
+throughout. Every check passed on the device except the eDRX warning, which this network gave no
+chance to fire, and one sample defect found and fixed on the way (a report that timed out was
+repeated at once rather than at the next wake). What the text above does not carry:
+
+- **Timings.** `HELLO` goes out about 7 s after reset; its `SHADOW` came 1.4 to 3.1 s later, and a
+  report's `STORED` 1.2 to 2.5 s after the report, on the connection the `HELLO` or the wake
+  opened. An uplink from PSM saw its RRC connection 1.3 to 1.6 s after `send()` at most wakes,
+  5.2 s once and 35.7 s once; the modem held the frame and it arrived whole, but its readings were
+  stamped 35 s late, since `age_secs` resolves at receipt. One PDN activation after a re-attach
+  found no RRC connection within 30 s and failed; the next one worked.
+- **Replies and pushes after the connection closed** were paged inside the 60 s active time and
+  delivered, twice. A frame sent to a device in PSM went `Queued` or `DeliveryFailed` and was never
+  delivered later, including one sent 0.6 s before the device's own uplink connected.
+- **RAI.** `RAI_ONGOING` is accepted on the raw socket and does not lengthen a telemetry-only
+  connection (3.7 to 3.9 s, the probe's 3.5 to 4.6 s without it). After `RAI_NO_DATA` Verizon
+  released the radio 2.8 to 5.9 s later, about when its own inactivity timer would have.
+- **Sockets.** mfw 1.3.7 refuses `SO_KEEPOPEN` (`EINVAL`); `AT+CFUN=4` ends the blocking `recv` with
+  `ENETDOWN`, and later sends re-create the PDN and the socket with the 60 s, then 120 s backoff.
+  The close in `pigeon_nidd_stop()` ends that `recv`: a `reboot` target restarted the board about
+  2 s after its report went out. The receive thread peaked at 744 of 2048 bytes of stack.
+- **PSM and eDRX.** A 0 s active time is grantable (`CONFIG_LTE_PSM_REQ_RAT="00000000"`) and
+  draws the warning. Verizon granted no eDRX alongside PSM (`1001` requested, `+CEDRXRDP` empty),
+  so the warning for a cycle longer than the active time cannot fire on this network.
+- **ThingSpace retries a callback that has not answered in about 4 s**, even when the first attempt
+  then answers 200. On the bench a first attempt took 4.96 s, its retry arrived 4.0 s after it, and
+  both stored the same six readings and billed them, because `nidd_uplink` checks `seen` before
+  the telemetry enqueue awaits and records the key only after it. B6's one retry 1.2 to 1.7 s
+  after a refusal describes refusals only.
+- **The runbook shell** must fire after the device's RRC connection is up: of three frames sent
+  during the connection's setup from PSM, two failed at once and one was `Queued` and never
+  delivered; every frame sent after the console's `NIDD: radio connected` arrived.
+- **The soak** started at 01:52Z on 2026-09-26 on the refreshed key, at the sample's 20-minute
+  wake (target `telemetry_interval` 1200), with every reading tallied against staging's
+  history and billing every 30 minutes.
+
 ## 14. The device transport follow-on: `pigeon_nidd.c`
 
 A fourth connector in `~/pigeon`, `PIGEON_CONNECTOR_NIDD`, NCS and nRF91 only, in one new file,
