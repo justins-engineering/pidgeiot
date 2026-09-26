@@ -484,8 +484,9 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
      `:130`: a bare internal POST of the raw frame bytes to `/pigeon/nidd/uplink` in the binary-safe
      style of `proxy_binary_to_pigeon_do`, `:188`, carrying `X-Nidd-Request-Id`, `X-Nidd-Ingest`
      and, when `callback_line` finds one, `X-Nidd-Line`, never a caller header). DO 2xx is 200; DO
-     404 (no pigeon behind that IMEI) is 200 and a log line naming the derived pigeon id; DO 5xx or
-     a dispatch error is 503, and a line naming the uplink as lost.
+     404 (no pigeon behind that IMEI) is 200 and a log line naming the derived pigeon id; DO 400 (a
+     `TELEMETRY` sequence header that does not parse) is 400, logged `malformed`, not as lost; DO
+     5xx or a dispatch error is 503, and a line naming the uplink as lost.
    - **Delivery report.** Log `requestId`, `status`, `reason` and the derived pigeon id. 200. A
      `DeliveryFailed` or `Queued` report first goes to the DO at `/pigeon/nidd/missed`, which
      marks the owed push pending (6.4), and the line reads `outcome=pending` when one was owed; a
