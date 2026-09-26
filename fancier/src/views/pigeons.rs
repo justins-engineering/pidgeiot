@@ -610,7 +610,11 @@ fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
             "The token below is shown "
           }
           strong { "only once" }
-          ". Copy them into your device build now; they cannot be retrieved later. Refreshing this pigeon's token mints replacements and retires these."
+          if secret.is_some() {
+            ". Copy them into your device build now; they cannot be retrieved later. Refreshing this pigeon's token mints replacements and retires these."
+          } else {
+            ". Copy it into your device build now; it cannot be retrieved later. Refreshing this pigeon's token mints a replacement and retires this one."
+          }
         }
         for field in fields {
           CredentialRow {
