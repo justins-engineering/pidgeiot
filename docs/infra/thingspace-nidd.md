@@ -361,16 +361,33 @@ What staging holds after bring-up and the tier 2 bench, by name only.
 
 What tier 3 left on staging and the bench, by name only.
 
+- **Staging still runs dovecote `b8158d7c`** (branch tip `b99baca`) with the tier-2 organization
+  allowed by `--var`; tier 3 deployed nothing. The bench pigeon is converged at version 23,
+  `{"log":false,"telemetry_interval":1200}`.
 - **The bench pigeon's claim key was refreshed** (`POST /pigeons/:pigeon_id/token/refresh`) and the
   Feather rebuilt with the new key, which went straight from the response into `nidd_init`'s
   git-ignored `prj.local.conf`. The key in `nidd_probe`'s `prj.local.conf` is the old one and no
-  longer claims; the bearer token that refresh minted was not kept.
+  longer claims; the bearer token that refresh minted was not kept, so a FOTA test over the IP PDN
+  needs another refresh, which replaces the claim key again and means another rebuild.
 - **The tier-2 organization's September usage row** (`billing_usage_periods`) was set to the free
   tier's 300000 for about 30 minutes to exercise the ingest fuse, then restored to its value.
-- **The soak**, from 01:52Z on 2026-09-26: the Feather runs the bench build of `nidd_init` at a
-  20-minute wake (target `telemetry_interval` 1200) with the console captured and a tally
-  checking every reading against staging's history and billing; its paths and process ids are
-  in the tier-3 record.
+- **Duplicate readings.** Staging's history holds the bench pigeon's readings 51 to 56 twice, 4 s
+  apart, and that organization's September usage counts them twice, six messages too many: the
+  retried callback described below.
+- **The soak**, from 01:52Z on 2026-09-26 to about 02:53Z on 2026-09-27: the Feather runs the
+  bench build of `nidd_init` at a 20-minute wake (target `telemetry_interval` 1200) with the
+  console captured and a tally checking every reading against staging's history and billing; its
+  paths and process ids are in the tier-3 record.
+- **Pushes ThingSpace held.** Tier 2's worst-case push (request `c14dfcb8`), sent with the 86400 s
+  `maximumDeliveryTime` dovecote asked then, reported `DeliveryFailed` "timeout, could not deliver
+  data" at 02:26:58Z on 2026-09-26, a day after it was sent, never delivered. Tier 3's push of
+  version 13 (request `38c732da`, sent with the current 30 s) drew `Queued` at 18:36:57Z on 09-25
+  and no final report by 02:40Z the next day. A late report for either in the soak's tail is not a
+  soak event.
+- **`wrangler tail` can go deaf.** The first tier-3 tail stopped receiving at 00:55:37Z on 09-26
+  after a reconnect while its process stayed alive, and nothing reached it until it was restarted
+  35 minutes later. Staging's alert sweep logs every five minutes, so a tail silent for ten is dead:
+  restart it.
 - **Sending from this runbook's shell to a device in PSM** needs the device awake: fire after its
   uplink's RRC connection is up. Sent while the connection was still being set up, frames failed
   (`DeliveryFailed` "Backend service error") or went `Queued` and were never delivered.
