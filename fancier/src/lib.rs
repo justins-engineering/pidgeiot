@@ -230,17 +230,13 @@ fn AuthGuard() -> Element {
       }
     }
     AuthState::Unauthenticated => {
-      if (session.signed_out)() {
-        // A session that lapsed mid-visit lands on the login form, which
-        // says so, carrying the page it interrupted so signing back in
-        // resumes there. The bare 401 page is the honest answer only for
-        // someone who was never signed in at all -- shown after an
-        // expiry it reads as a bug rather than as a session ending.
-        crate::helpers::stash_return_to();
-        nav.replace(Route::LoginFlow { flow: None });
-      } else {
-        nav.replace(Route::Unauthorized {});
-      }
+      // Every signed-out visit to a gated page lands on the login form,
+      // carrying the page it asked for so signing in resumes there. A
+      // returning user cannot be told from a first visitor here: the hint
+      // cookie lapses with the session, and `signed_out` only exists in a
+      // tab that was open when it ended (the login form explains that case).
+      crate::helpers::stash_return_to();
+      nav.replace(Route::LoginFlow { flow: None });
       rsx! {}
     }
     AuthState::Pending => {
