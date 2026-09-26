@@ -656,6 +656,23 @@ note "  $(jq -c '[.[] | {value, reported_at}]' "$resp")"
 age=$((sent - $(epoch "$(jq -r '.[0].reported_at' "$resp")")))
 expect "stored at its arrival, not backdated (within 30 s)" yes \
   "$( ((age >= -30 && age <= 30)) && echo yes || echo "no ($age s)")"
+# pad <n> <char>: n copies of the character.
+pad() { printf '%*s' "$1" '' | tr ' ' "$2"; }
+r=$(rid s6d)
+frame 01 "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 334 b)\"}"
+expect "the frame is at the 1358-byte cap" 1358 "$(wc -c <"$work/frame")"
+uplink "TELEMETRY at the frame cap" "$r" 1 "$imei_a" "$iccid2"
+expect_log "a frame at the cap is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+r=$(rid s6e)
+frame 01 "{\"pad_a\":\"$(pad 1000 a)\",\"pad_b\":\"$(pad 335 c)\"}"
+expect "the frame is one byte over the cap" 1359 "$(wc -c <"$work/frame")"
+uplink "TELEMETRY one byte over the frame cap" "$r" 1 "$imei_a" "$iccid2"
+expect "answers 200" 200 "$status"
+expect_log "a frame over the cap is dropped as malformed" "$m" \
+  "outcome=bad_message pigeon=$pigeon request=$r"
+api a GET "/pigeons/$pigeon/telemetry"
+expect "pad_b keeps the value from the frame at the cap" 334 \
+  "$(jq -r '.[] | select(.key == "pad_b") | .value | length' "$resp")"
 note_log "$m"
 
 step 7 "a resend of a stored uplink, and a retry that overlaps its first attempt"

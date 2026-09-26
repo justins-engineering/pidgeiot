@@ -1743,7 +1743,8 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    unclaimed, the claim kept; a good `HELLO` from that ICCID moves the pin.
 6. Flat and batched telemetry: values on the dashboard and history rows with the right ages (dev
    writes history directly, `dovecote/src/objects/pigeons.rs:1906-1938`); `callbackCount: 2`
-   stores the reading at its arrival, not aged for the attempt.
+   stores the reading at its arrival, not aged for the attempt. A 1358-byte frame is stored, and a
+   1359-byte one answers 200 and is dropped as `bad_message`.
 7. The same body and `requestId` twice: one history row, the second answered `duplicate`. Then the
    same frame and `requestId` as two overlapping attempts, the first held inside its history write
    (dev's stand-in for the enqueue) by a table lock: the retry stays unanswered while the first is

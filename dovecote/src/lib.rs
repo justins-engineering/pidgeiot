@@ -967,7 +967,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
     .as_deref()
     .map(|message| MESSAGE_BASE64.decode(message.trim()))
   {
-    Some(Ok(frame)) if !frame.is_empty() => frame,
+    Some(Ok(frame)) if !frame.is_empty() && frame.len() <= capsules::NIDD_MAX_FRAME_BYTES => frame,
     _ => {
       log_nidd_callback(
         kind,
