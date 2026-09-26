@@ -126,6 +126,20 @@ wait_log() {
   return 1
 }
 
+# answer_ms <mark> <request-id> <attempt>: the gateway's latency for that callback, from its line.
+answer_ms() {
+  log_since "$1" | sed -n "s/.*nidd_cb .* request=$2 attempt=$3 ms=\([0-9]*\).*/\1/p" | head -1
+}
+
+# held_throughout <mark> <request-id> <attempt>: whether that callback took at least 2 s. A copy
+# posted before the release waits out the 3 s hold; one reaching the object after the first
+# attempt settled answers at once from `seen` and passes every other check.
+held_throughout() {
+  local ms
+  ms=$(answer_ms "$@")
+  if ((${ms:-0} >= 2000)); then echo yes; else echo "no (${ms:-no line} ms)"; fi
+}
+
 # --- evidence ---
 
 step_no=0
@@ -818,6 +832,7 @@ expect_log "released, the first attempt is stored" "$m" \
   "outcome=stored pigeon=$pigeon request=$r attempt=1"
 expect_log "and the retry answers duplicate" "$m" \
   "outcome=duplicate pigeon=$pigeon request=$r attempt=2"
+expect "the retry was in flight throughout the hold" yes "$(held_throughout "$m" "$r" 2)"
 expect "one stored, one duplicate" "1 1" \
   "$(log_since "$m" | grep -c "outcome=stored pigeon=$pigeon request=$r" || true) $(log_since "$m" |
     grep -c "outcome=duplicate pigeon=$pigeon request=$r" || true)"
@@ -885,6 +900,7 @@ expect "both deliveries answer 200" "200 200" \
 expect_log "released, the first delivery is stored" "$m" \
   "outcome=stored pigeon=$pigeon request=$r attempt=1"
 expect_log "and the second answers repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r2"
+expect "the second was in flight throughout the hold" yes "$(held_throughout "$m" "$r2" 1)"
 expect "one stored, one repeat" "1 1" \
   "$(log_since "$m" | grep -c "outcome=stored pigeon=$pigeon" || true) $(log_since "$m" |
     grep -c "outcome=repeat pigeon=$pigeon" || true)"
