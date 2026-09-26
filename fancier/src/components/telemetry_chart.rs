@@ -18,6 +18,7 @@
 // kinds that would otherwise lie (area, bar) carry the transform that
 // makes them true rather than being drawn naively over raw samples.
 use crate::helpers::svg_hover;
+use dioxus::html::geometry::PixelsVector2D;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
@@ -697,7 +698,16 @@ pub fn TelemetryChart(
           }
         }
       } else {
-        div { class: "w-full overflow-x-auto",
+        div {
+          class: "w-full overflow-x-auto",
+          // Where the canvas is wider than its box (a phone), open on the
+          // newest readings: the end of the series is what a live chart is
+          // for. The axis values and threshold names at the start are then
+          // the part a swipe away.
+          onmounted: move |e| async move {
+              let end = PixelsVector2D::new(CANVAS_W, 0.0);
+              let _ = e.scroll(end, ScrollBehavior::Instant).await;
+          },
           // A percentage places the tooltip, so its containing block has
           // to be the chart's own box, not the scroll area around it.
           div { class: "relative w-fit",
@@ -770,8 +780,7 @@ pub fn TelemetryChart(
                     stroke_dasharray: "5 4",
                   }
                   // Left-anchored: the right edge belongs to the series' own
-                  // end marker and direct label, and on a narrow viewport the
-                  // right edge is the part scrolled out of sight.
+                  // end marker and direct label.
                   text {
                     x: "{MARGIN_LEFT + 4.0}",
                     y: "{(y_of(r.value) - 4.0).max(MARGIN_TOP + 8.0)}",
