@@ -3960,7 +3960,7 @@ dependencies = [
 [[package]]
 name = "thingspace-sdk"
 version = "0.1.0"
-source = "git+file:///home/justin/thingspace-sdk-rust?rev=c4e6a76a20b5a9b1c15d64a25b952ffafa2c12ef#c4e6a76a20b5a9b1c15d64a25b952ffafa2c12ef"
+source = "git+https://github.com/justins-engineering/thingspace-sdk-rust?rev=7d44439058994a94cf447d1ffdd9be920d743f04#7d44439058994a94cf447d1ffdd9be920d743f04"
 dependencies = [
  "base64ct",
  "const_format",

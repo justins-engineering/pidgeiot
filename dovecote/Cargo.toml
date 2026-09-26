@@ -51,9 +51,8 @@ wasm-bindgen-futures = "0.4.75"
 time-tz = { version = "2", default-features = false, features = ["db"] }
 # JES's own Verizon ThingSpace client: the OAuth, session and NIDD send calls behind a Nidd
 # pigeon's downlink (objects/thingspace.rs). The callback is parsed by helpers/nidd.rs instead.
-# Pinned by revision, so the Worker compiles that commit and never a checkout's working tree; the
-# URL names the local clone because the revision is not on GitHub yet.
-thingspace-sdk = { git = "file:///home/justin/thingspace-sdk-rust", rev = "c4e6a76a20b5a9b1c15d64a25b952ffafa2c12ef", default-features = false, features = [
+# Pinned by revision, so the Worker compiles that commit and never a checkout's working tree.
+thingspace-sdk = { git = "https://github.com/justins-engineering/thingspace-sdk-rust", rev = "7d44439058994a94cf447d1ffdd9be920d743f04", default-features = false, features = [
   "worker",
 ] }
 
