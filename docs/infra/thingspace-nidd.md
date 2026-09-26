@@ -397,4 +397,7 @@ What tier 3 left on staging and the bench, by name only.
   for that attempt's outcome, which tier 1 step 7 checks by holding a first attempt inside its
   history write and by failing a store. Staging keeps `b8158d7c`, without the fix, until the soak
   ends; then deploy dovecote from the branch with the `--var` above, and leave the duplicate
-  readings as the record of the defect.
+  readings as the record of the defect. Dev bills no telemetry, so staging is where the billing
+  half shows: after the deploy each request id logs one `outcome=stored`, a retry overlapping its
+  first attempt (only when a callback runs past about 4 s) logs `outcome=duplicate` with its
+  `attempt=2`, and the organization's billed messages rise by exactly the readings sent.

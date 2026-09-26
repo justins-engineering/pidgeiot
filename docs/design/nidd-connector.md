@@ -1738,13 +1738,15 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
 6. Flat and batched telemetry: values on the dashboard and history rows with the right ages (dev
    writes history directly, `dovecote/src/objects/pigeons.rs:1906-1938`); `callbackCount: 2`
    stores the reading at its arrival, not aged for the attempt.
-7. The same body and `requestId` twice: one write, one billed reading. Then the same frame and
-   `requestId` as two overlapping attempts, the first held inside its history write (dev's
-   stand-in for the enqueue) by a table lock: the retry stays unanswered while the first is held,
-   and once released the first is stored and the retry answers `duplicate`, one history row. And
-   with every telemetry store failing (a non-loopback `DEVICE_API_HOST` makes dev count as
+7. The same body and `requestId` twice: one history row, the second answered `duplicate`. Then the
+   same frame and `requestId` as two overlapping attempts, the first held inside its history write
+   (dev's stand-in for the enqueue) by a table lock: the retry stays unanswered while the first is
+   held, and once released the first is stored and the retry answers `duplicate`, one history row.
+   And with every telemetry store failing (a non-loopback `DEVICE_API_HOST` makes dev count as
    deployed, and dev binds no queue): 503, logged as lost, no key kept; its retry, once the store
-   works, is stored.
+   works, is stored. Dev bills telemetry on no surface, so these checks count history rows; the
+   billing half, one billed message per reading sent, is checked on staging after the deploy (the
+   runbook's tier 3 record).
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
    `STATUS STORED`. The same report again: not billed. Telemetry from the converged device: no
    reply.
