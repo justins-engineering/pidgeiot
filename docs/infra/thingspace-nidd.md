@@ -393,8 +393,8 @@ What tier 3 left on staging and the bench, by name only.
   (`DeliveryFailed` "Backend service error") or went `Queued` and were never delivered.
 - **ThingSpace retried a callback about 4 s after sending it** while the first attempt was still
   running, and both were stored (PD1 of the tier 3 record, design 13.3). Fixed on the branch
-  since: `nidd_uplink` claims a telemetry frame's de-dup key before the enqueue and releases it on
-  a 503, which tier 1 step 7 checks by holding a first attempt inside its history write and by
-  failing a store. Staging keeps `b8158d7c`, without the fix, until the soak ends; then deploy
-  dovecote from the branch with the `--var` above, and leave the duplicate readings as the record
-  of the defect.
+  since: a retry that finds its key held by an attempt still awaiting the telemetry enqueue waits
+  for that attempt's outcome, which tier 1 step 7 checks by holding a first attempt inside its
+  history write and by failing a store. Staging keeps `b8158d7c`, without the fix, until the soak
+  ends; then deploy dovecote from the branch with the `--var` above, and leave the duplicate
+  readings as the record of the defect.

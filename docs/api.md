@@ -291,7 +291,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
 | NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
 | Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or the next uplink's reply |
-| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A telemetry frame's key is claimed before its enqueue, so a retry arriving while the first attempt runs is a repeat too, and released on a `503`, so the retry that answer asks for can store it |
+| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails |
 | Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
@@ -3710,9 +3710,9 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
   ThingSpace documents three resends at five-minute intervals, but makes that single immediate
   retry and no other. Each such answer is logged as lost with its `requestId`, the only handle
   for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback that
-  was stored, or is still being stored, is recognised by its `requestId` and frame digest and
-  never stored or billed twice; a `503` releases that recognition, so the retry it asks for can
-  land the uplink.
+  was in fact stored is recognised by its `requestId` and frame digest and never stored or billed
+  twice, and one that arrives while the first attempt is still storing it waits for that
+  attempt's outcome.
 
 
 ---

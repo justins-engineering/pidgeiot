@@ -434,9 +434,9 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
   queue). **The uplink is lost** unless ThingSpace's one retry, about a second later, succeeds:
   ThingSpace documents three resends at five-minute intervals, but makes that single immediate
   retry and no other. dovecote logs each such answer as lost with its `requestId`, the only
-  handle for a support resend from ThingSpace's archive. A retry of a callback that was stored,
-  or is still being stored, is recognised by its `requestId` and frame digest and never stored or
-  billed twice; a 503 releases that recognition, so the retry it asks for can land the uplink.
+  handle for a support resend from ThingSpace's archive. A retry of a callback that was in fact
+  stored is recognised by its `requestId` and frame digest and never stored or billed twice, and
+  one that arrives while the first attempt is still storing it waits for that attempt's outcome.
 ````
 
 Glance row, in document order after the `POST /internal/consent` row (`docs/api.md:103`), with the
@@ -686,12 +686,13 @@ gates.
 ### 6.3 `Pigeons`: the uplink path, `nidd_uplink`
 
 Every read and write below is synchronous SQL. The only `await` before the response is the queue
-enqueue in step 7, and the object serves other requests during it, ThingSpace's retry of this very
+enqueue in step 7, which is why the de-duplication key is recorded only after it succeeds, and why
+step 10 re-reads the row and applies this uplink's changes to the fresh copy: a dashboard write or
+another callback may have changed it during the await, and two synchronous statements cannot be
+interleaved. The object serves other requests during that await, ThingSpace's retry of this very
 callback among them: a callback still unanswered after about 4 s is retried while the first
-attempt runs (13.3). So step 7 claims the de-duplication key in the row before it awaits and
-releases it if the store fails, and step 10 re-reads the row and applies this uplink's changes to
-the fresh copy: a dashboard write or another callback may have changed it during the await, and
-two synchronous statements cannot be interleaved. A refused callback is retried once, 1.2 to
+attempt runs (13.3). So step 7 holds the key in memory while it awaits, and a retry that finds it
+there waits in step 2 for that attempt's outcome. A refused callback is retried once, 1.2 to
 1.7 s after the refusal was answered (B6).
 
 1. Read `pigeon_nidd` (defaults if absent). The `pigeons` row is read, with `one_row` (`:164`,
@@ -700,17 +701,19 @@ two synchronous statements cannot be interleaved. A refused callback is retried 
    gateway answers ThingSpace 200), and when a downlink is planned (the IMEI, and the claim key
    that signs the frame). A claimed row
    implies a live pigeon, since `delete` wipes both, so the steady-state path skips it.
-2. De-duplication key: `X-Nidd-Request-Id` plus the first 16 hex characters of the frame's
-   SHA-256 (`sha2` is already a dovecote dependency). A key already in `seen` answers 200
-   `duplicate` and writes nothing. A resend repeats both halves, so it is recognised. The key
-   keeps two uplinks apart only when their request ids or their bytes differ: [SEND] defines
-   `requestId` for downlink callbacks alone ("All of the callback messages have the same
-   requestId") and says nothing on uplink uniqueness, and several frames repeat byte for byte
-   across wakes (every boot's `HELLO`, a converged shadow report, a flat telemetry map whose values
-   have not changed). If an uplink request id ever repeats inside the 64-key window, the later
-   frame is dropped as a duplicate: a boot's `HELLO` gets no `SHADOW`, or a reading is lost. B5 is
-   the gate: two identical `HELLO`s sent from two wakes must both reach the DO as new. If they do
-   not, the frame layout gains a device sequence byte before task 3.1 fixes it.
+2. De-duplication key: `X-Nidd-Request-Id` plus the first 16 hex characters of the frame's SHA-256
+   (`sha2` is already a dovecote dependency). A key already in `seen` answers 200 `duplicate` and
+   writes nothing. A key an attempt holds in step 7 makes this one wait for it: `duplicate` once
+   that attempt stored or refused the frame, and on from step 1 once it failed. A resend repeats
+   both halves, so it is recognised. The key keeps two uplinks apart only when their request ids or
+   their bytes differ: [SEND] defines `requestId` for downlink callbacks alone ("All of the callback
+   messages have the same requestId") and says nothing on uplink uniqueness, and several frames
+   repeat byte for byte across wakes (every boot's `HELLO`, a converged shadow report, a flat
+   telemetry map whose values have not changed). If an uplink request id ever repeats inside the
+   64-key window, the later frame is dropped as a duplicate: a boot's `HELLO` gets no `SHADOW`, or a
+   reading is lost. B5 is the gate: two identical `HELLO`s sent from two wakes must both reach the
+   DO as new. If they do not, the frame layout gains a device sequence byte before task 3.1 fixes
+   it.
 3. Empty frame or unknown type byte: record the key, 200 `rejected`, one log line with the type
    byte and length only.
 4. `HELLO` (`0x04`): the 32 hex characters decoded and compared in constant time with the stored
@@ -733,17 +736,18 @@ two synchronous statements cannot be interleaved. A refused callback is retried 
    because a Hyperdrive connection opened from the DO may bill it for DO duration (section 17,
    U14).
 7. `TELEMETRY` (`0x01`): parse the rest of the frame as `capsules::TelemetryReportBody` (flat or
-   batched, `capsules/src/lib.rs:738`). Once it parses, claim the key (append it to `seen` and
-   write the row), then `ingest_telemetry(pigeons, body)` (6.7), so a retry arriving while the
-   enqueue awaits answers `duplicate`; a key recorded after the await let tier 3's retry store and
-   bill six readings twice (13.3). No reading is aged for its attempt: the retry that can store
-   follows a refusal by about a second (B6), inside the resolution of a reading's own `age_secs`.
-   `Stored`: 200. `Rejected` (malformed, over a cap): record the key, 200 `rejected`, logged by
-   the parse error's `e.classify()` and `e.column()`, never its `Display`, which would quote the
-   frame's values (5.1, step 7); step 8's parse logs the same way. `Failed` (the merge or the
-   enqueue): release the claim, 503, the honest answer, which the gateway logs as a lost uplink;
-   if ThingSpace's one retry lands it redoes the work, a merge that succeeded before a failed
-   enqueue simply re-applied with the same values.
+   batched, `capsules/src/lib.rs:738`). Once it parses, claim the key in memory (`NiddInFlight`,
+   6.6), `ingest_telemetry(pigeons, body)` (6.7), and settle the claim the moment it returns, which
+   answers every retry waiting in step 2. The claim never reaches `seen`, so it ends with the
+   attempt: an object reset inside the await leaves nothing to turn the retry away. No reading is
+   aged for its attempt: a retry that stores follows a refusal by about a second (B6), inside the
+   resolution of a reading's own `age_secs`, or follows a slow attempt that failed by a few seconds
+   (row 12). `Stored`: record the key, 200. `Rejected` (malformed, over a cap): record the key, 200
+   `rejected`, logged by the parse error's `e.classify()` and `e.column()`, never its `Display`,
+   which would quote the frame's values (5.1, step 7); step 8's parse logs the same way. `Failed`
+   (the merge or the enqueue): record nothing, 503, the honest answer, which the gateway logs as a
+   lost uplink; if ThingSpace's one retry lands it redoes the work, a merge that succeeded before a
+   failed enqueue simply re-applied with the same values.
 8. `SHADOW_REPORT` (`0x02`): parse `PigeonShadowReportRequest` (`capsules/src/lib.rs:493`). If
    `(current_version, current_config)` equals what is stored, it is the device repeating itself:
    record the key, no bill, reply as below. Otherwise `write_shadow_report` (`:1534`, synchronous
@@ -756,8 +760,7 @@ two synchronous statements cannot be interleaved. A refused callback is retried 
    while the connection the uplink opened is still up. `HELLO` and reports plan theirs in steps 4
    and 8.
 10. Re-read `pigeon_nidd`, apply this uplink's changes to that copy (the key appended to `seen` and
-    trimmed unless step 7 claimed it, and any claim, notice or push fields), write it once
-    (upsert), respond 200, then hand
+    trimmed, and any claim, notice or push fields), write it once (upsert), respond 200, then hand
     the tail to `wasm_bindgen_futures::spawn_local` (the pattern at
     `dovecote/src/helpers/hyperdrive.rs:41`).
     The Durable Object stays active while that I/O is pending, and `waitUntil` "has no effect in
@@ -769,8 +772,8 @@ two synchronous statements cannot be interleaved. A refused callback is retried 
     planned downlink, if any (6.4).
 
 Row cost of a steady-state telemetry uplink: `pigeon_nidd` two reads (before and after the
-enqueue) and two writes (the claim, then the uplink's changes), `pigeon_telemetry_latest` one read
-and one write. Nothing else. The claim's write is what catching an overlapping retry costs.
+enqueue) and one write, `pigeon_telemetry_latest` one read and one write. Nothing else: the claim
+lives in memory and costs no row.
 
 ### 6.4 `Pigeons`: downlink
 
@@ -935,9 +938,11 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   `prj.local.conf`.
 - `dedupe_key(request_id, frame) -> String`: `String::with_capacity(request_id.len() + 17)`, the
   id, `:`, and 16 hex characters pushed from a lookup table rather than `format!`.
-- `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64 and keeping a key
-  once, `NiddRow::forget(key)` releasing a claim, `NiddRow::mark_pending`, `notice_due(&row, now)`
-  (an hour since `notice_at`), `shadow_push_due`, `shadow_reply_due` and `delivery_missed` (6.4).
+- `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64,
+  `NiddRow::mark_pending`, `notice_due(&row, now)` (an hour since `notice_at`), `shadow_push_due`,
+  `shadow_reply_due` and `delivery_missed` (6.4).
+- `NiddInFlight`, a field of `Pigeons`: the telemetry uplinks being stored, by key, each with the
+  `oneshot` senders of the retries waiting on it (`claim`, `wait`, `settle`; 6.3 steps 2 and 7).
 
 The frame layout is a contract with C code in `~/pigeon`, so its constants stay in dovecote rather
 than capsules, the reason the WebSocket frame cap sits in dovecote (`objects/ws.rs:4-11`), and
@@ -1637,9 +1642,9 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 8 | Authenticated body of an unknown shape | 200, logged by `CallbackAuth`'s request id and the parse error's category and column | Nothing to do with it; a resend is identical |
 | 9 | IMEI no pigeon is bound to | DO 404, callback 200, logged by derived pigeon id | An unprovisioned line; a resend cannot help |
 | 10 | Pigeon not claimed, or a frame from a line other than the pinned one (device booted before its pigeon existed, stale claim key after a refresh, a SIM swap, a forger) | 200, frame dropped, `UNCLAIMED 0` (or `1` answering a failed `HELLO`) at most once an hour | The device sends `HELLO` again, or after a failed one stops billable sends until it reboots; nothing is stored or pushed |
-| 11 | ThingSpace retries a callback we stored or are still storing (our 2xx lost, or not sent within about 4 s), or support resends one | De-duplication hit, 200: a telemetry frame claims its key before the enqueue awaits, so a retry arriving during it matches | Never stored or billed twice |
-| 12 | A reading first stored on ThingSpace's retry | Stamped at its arrival, 1.2 to 1.7 s after the first attempt | Inside a reading's own resolution; nothing to correct |
-| 13 | Telemetry merge or enqueue fails | 503, the key's claim released, logged as lost | Honest; the one immediate retry may land it, and the merge is idempotent. Otherwise lost, recoverable only by a support resend |
+| 11 | ThingSpace retries a callback we stored or are still storing (our 2xx lost, or not sent within about 4 s), or support resends one | De-duplication hit, 200; a retry arriving while the first attempt awaits its enqueue waits for it and answers `duplicate` once it stored | Never stored or billed twice |
+| 12 | A reading first stored on ThingSpace's retry | Stamped at its arrival, 1.2 to 1.7 s after the first attempt, or, for a retry that waited out a slow first attempt that failed, once that attempt settled | Seconds against readings minutes apart; nothing to correct |
+| 13 | Telemetry merge or enqueue fails | 503, key not recorded, any waiting retry told to go on, logged as lost | Honest; the one immediate retry may land it, and the merge is idempotent. Otherwise lost, recoverable only by a support resend |
 | 14 | Pigeon DO unreachable | 503, logged as lost | As row 13 |
 | 15 | Fuse lookup fails, or takes over a second | Fail-open, logged: the existing rule inside `check_ingest_fuse`, and the gateway's race | A Postgres blip must not brick ingestion or hold the acknowledgement |
 | 16 | Account over its free-tier allowance | 200, dropped, `PAUSED 3600` at most once an hour | A 429 would buy a retry that meets the same fuse; the notice makes the device back off |
@@ -1660,13 +1665,13 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 31 | dovecote rolled back past the Nidd release while a Nidd pigeon exists | Old code reads the row as an empty `Https` connector (`capsules/src/lib.rs:241`) | Task 0.4 ships first, so a rollback lands on a `refresh_token` that refuses rather than rewrites; the runbook rule stays: never roll back past the Nidd release with Nidd pigeons live |
 | 32 | A browser tab holding a pre-Nidd fancier bundle | The flock list fails to parse until reload | fancier deploys first |
 | 33 | `NiddService` re-registered elsewhere on the account | Uplink silently goes elsewhere | The runbook's step 2 at every deploy; D11 |
-| 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | A callback unanswered after about 4 s draws a retry while it runs (13.3, where one attempt took 4.96 s); the key claimed before the enqueue makes that retry a duplicate |
+| 34 | Callback latency against an unpublished deadline | The synchronous path is one Postgres read bounded at one second, one DO hop and one enqueue; `ms=` logged per callback | A callback unanswered after about 4 s draws a retry while it runs (13.3, where one attempt took 4.96 s); the retry waits for the first attempt and answers `duplicate` once it stored |
 | 35 | Carrier and ThingSpace see frame contents, and the claim key, which also keys the downlink tag, once per boot | Accepted for v1 | They carry every frame already. For uplink the key is no use without a Verizon source address and the listener password, which every API-credential holder can read back; that residual is D12. Application-layer encryption would cost bytes on every frame and is left out of v1 |
 | 36 | A secret reaching a log | No log line carries a body, frame, password, token, account name, IMEI, ICCID, IMSI or a serde error's `Display` | Reviewed across every `console_*!` in the change; a unit test proves a numeric IMEI never reaches the parse-error line |
 | 37 | Both deployed environments configured | Only during bring-up. At cutover staging loses its account name and API secrets, and `send` answers 503 wherever the allowlist is empty, so only the registered environment receives or sends | [CBBP] allows one endpoint per service per account, and [SEND] requires the listener for sending |
 | 38 | A downlink frame not from dovecote (any holder of the API credentials, a replayed old frame) | The device drops a frame whose tag fails; a replayed `SHADOW` loses to a newer version; a replayed `PAUSED` holds at most 86400 s | The claim key is kept in the pigeon's DO and the firmware, never in Postgres (section 9) or a log |
 | 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
-| 40 | A retry answered `duplicate` while its first attempt ran, and that first attempt then fails | The first answers 503, releases the claim and is logged as lost; the retry was already answered 200 | Lost unless ThingSpace tries once more, which the release lets store. It needs an attempt both slower than about 4 s and failing |
+| 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
 
 ## 13. Tests and the staging verification plan
 
@@ -1693,9 +1698,9 @@ x86_64-unknown-linux-gnu`.
   level; `NiddCallback` over Verizon's documented bodies (MO; MT `Delivered`, `Queued`,
   `DeliveryFailed`; configuration `ConfigCreated` and a failure; no top-level `deviceIds`; no
   `callbackCount`; an unknown variant), as fixtures with placeholders where Verizon's examples carry
-  credentials; `dedupe_key`; `remember` trimming at 64 and keeping a key once; `forget`;
-  `notice_due`; a truth table for `shadow_push_due` and `shadow_reply_due` (hold, in flight, lapse,
-  a push reported missed through `mark_pending`, failed send, unclaimed, converged);
+  credentials; `dedupe_key`; `remember` trimming at 64; `NiddInFlight` answering each waiting
+  retry; `notice_due`; a truth table for `shadow_push_due` and `shadow_reply_due` (hold, in flight,
+  lapse, a push reported missed through `mark_pending`, failed send, unclaimed, converged);
   `delivery_missed`.
 - `objects/thingspace.rs`: the fingerprint changes when any one secret or the epoch changes and
   not otherwise; `classify_login` latches at once on an M2M error code and on an OAuth 400 or 401,
@@ -1733,10 +1738,11 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    stores the reading at its arrival, not aged for the attempt.
 7. The same body and `requestId` twice: one write, one billed reading. Then the same frame and
    `requestId` as two overlapping attempts, the first held inside its history write (dev's
-   stand-in for the enqueue) by a table lock: the retry answers `duplicate` while the first is
-   held, and once released the first is stored, one history row. And with every telemetry store
-   failing (a non-loopback `DEVICE_API_HOST` makes dev count as deployed, and dev binds no queue):
-   503, logged as lost, no key kept; its retry, once the store works, is stored.
+   stand-in for the enqueue) by a table lock: the retry stays unanswered while the first is held,
+   and once released the first is stored and the retry answers `duplicate`, one history row. And
+   with every telemetry store failing (a non-loopback `DEVICE_API_HOST` makes dev count as
+   deployed, and dev binds no queue): 503, logged as lost, no key kept; its retry, once the store
+   works, is stored.
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
    `STATUS STORED`. The same report again: not billed. Telemetry from the converged device: no
    reply.
@@ -1871,8 +1877,9 @@ the text above does not carry:
   then answers 200. On the bench a first attempt took 4.96 s, its retry arrived 4.0 s after it, and
   both stored the same six readings and billed them, because `nidd_uplink` checked `seen` before
   the telemetry enqueue awaited and recorded the key only after it. B6's one retry 1.2 to 1.7 s
-  after a refusal describes refusals only. Fixed since: the key is claimed before the enqueue and
-  released on a 503 (6.3 step 7), and tier 1 step 7 checks it.
+  after a refusal describes refusals only. Fixed since: a retry that finds its key held by an
+  attempt still awaiting the enqueue waits for that attempt's outcome (6.3 steps 2 and 7), and
+  tier 1 step 7 checks it.
 - **An oversize target** (320 bytes, one over what the default device keeps) passed the `PUT`,
   was dropped by the device, and came again in the reply to the next uplink, as `docs/api.md`
   says, until a small write replaced it.
@@ -2270,21 +2277,21 @@ Workers Paid (https://developers.cloudflare.com/hyperdrive/platform/pricing/, re
 review on 2026-09-24). The arithmetic is `nidd/synth/cost.py` in the job directory.
 
 **Per uplink, steady state:** one Worker request (the callback), one Durable Object request, three
-SQLite rows read and three written (`pigeon_nidd` read and written twice, the telemetry blob read
-and written once), one queue message, one Postgres query at the gateway (the fuse, uncached,
-section 9), and the queue consumer's existing history insert, billing tally and alert lookup. No
-downlink and no ThingSpace call.
+SQLite rows read and two written (`pigeon_nidd` read twice, the telemetry blob once, each written
+once), one queue message, one Postgres query at the gateway (the fuse, uncached, section 9), and
+the queue consumer's existing history insert, billing tally and alert lookup. No downlink and no
+ThingSpace call.
 
 **Per device-day on Cloudflare** (DO duration estimated at 100 ms active at 128 MB per uplink,
 CPU at 10 ms per uplink including the consumer; both estimates):
 
 | Cadence | Uplinks | Billable readings | Cloudflare cost per device-day | Per device-month |
 |---|---:|---:|---:|---:|
-| Readings every 5 minutes, sent every 15 (the guideline's ceiling) | 96 | 288 | $0.00048 | $0.014 |
-| One reading an hour | 24 | 24 | $0.00012 | $0.004 |
-| Readings every 5 minutes, unbatched (outside the guideline, for comparison) | 288 | 288 | $0.00144 | $0.043 |
+| Readings every 5 minutes, sent every 15 (the guideline's ceiling) | 96 | 288 | $0.00039 | $0.012 |
+| One reading an hour | 24 | 24 | $0.00010 | $0.003 |
+| Readings every 5 minutes, unbatched (outside the guideline, for comparison) | 288 | 288 | $0.00115 | $0.035 |
 
-At the first cadence, rows written ($0.00029) and queue operations ($0.00012) are most of it.
+At the first cadence, rows written ($0.00019) and queue operations ($0.00012) are most of it.
 Inside the included allowances (10 million Worker requests, 1 million DO requests, 50 million rows
 written and 1 million queue operations a month) all of it is zero until the fleet is in the
 thousands. Billing counts readings, so batching cuts our cost without cutting the customer's bill.
@@ -2293,7 +2300,7 @@ thousands. Billing counts readings, so batching cuts our cost without cutting th
 memory and causes it to incur duration charges for up to 15 minutes per connection"
 (https://developers.cloudflare.com/durable-objects/platform/pricing/). If a Hyperdrive connection
 opened from the pigeon's DO counts, an in-DO fuse on a device waking every 15 minutes would keep the
-object billed continuously: at most about 324,000 GB-s, some $4 per device-month, against the $0.014
+object billed continuously: at most about 324,000 GB-s, some $4 per device-month, against the $0.012
 above; 15 minutes is a ceiling, so this is an upper bound. The gateway is a Worker, billed by CPU
 time, so the question never arises for the uplink path. The shadow-report tail still opens one from
 the DO, a few times per shadow change.
