@@ -25,8 +25,8 @@ device-to-platform MQTT path against a broker on the same machine.
 
 - [Getting Started](https://pidgeiot.com/getting-started/): zero-to-telemetry
   in about ten minutes with a simulated device, no hardware required
-- [Documentation](https://pidgeiot.com/documentation/): concepts, namely flocks,
-  pigeons, tokens, shadows, telemetry, alerts, OTA firmware
+- [Documentation](https://pidgeiot.com/documentation/): the connect-a-device
+  steps, links to the source, and support
 - [API Reference](https://pidgeiot.com/api-reference/): the full HTTP
   surface: dashboard routes, device routes, auth models, WebSocket frames
   (markdown variant: https://pidgeiot.com/api-reference/index.md)

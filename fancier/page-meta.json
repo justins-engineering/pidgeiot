@@ -44,7 +44,7 @@
     },
     "/documentation/": {
       "title": "Documentation: Connect Your First Device | PidgeIoT",
-      "description": "How PidgeIoT works and how to connect a device: accounts, flocks, pigeons, tokens, shadows, telemetry, alerts, and over-the-air firmware updates."
+      "description": "How to connect a device to PidgeIoT: account, flock, pigeon and token, the transports, and where the API reference, the source and support live."
     },
     "/api-reference/": {
       "title": "API Reference: Dashboard & Device HTTP APIs | PidgeIoT",
