@@ -51,7 +51,7 @@
       "description": "The complete PidgeIoT HTTP surface: dashboard routes, device routes, Ed25519 bearer tokens, shadows, telemetry, logs, firmware, and WebSocket frames."
     },
     "/architecture/": {
-      "title": "Architecture: Edge-Native IoT, Rust End to End | PidgeIoT",
+      "title": "Architecture: Edge-Native IoT, Rust Backend | PidgeIoT",
       "description": "How PidgeIoT is built: Cloudflare Workers and Durable Objects at the edge, a WASM dashboard, managed PostgreSQL, and self-hosted Ory Kratos identity."
     },
     "/getting-started/": {

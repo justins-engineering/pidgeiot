@@ -102,7 +102,7 @@ flowchart TB
   Loft -- "device routes over HTTPS" --> Router
   Pigeonhole -- "device routes over HTTPS" --> Router
   Router -- "proxy_to_pigeon_do" --> DO_Pigeon
-  Router -- "X-User-Id" --> Kratos
+  Router -- "session check" --> Kratos
   Router -- "firmware upload / Range download" --> R2
   DO_Pigeon -- "best-effort sync" --> Hyperdrive
   Hyperdrive --> Postgres
