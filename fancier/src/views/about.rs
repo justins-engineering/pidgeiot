@@ -169,8 +169,10 @@ pub fn AboutUs() -> Element {
           }
           a {
             class: "btn btn-ghost btn-lg px-10 rounded-full border border-base-content/20 hover:border-base-content/40 hover:bg-transparent",
-            href: "https://discord.gg/W2vjtpeP",
-            "Join the Discord"
+            href: "https://github.com/justins-engineering",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            "Read the Source"
           }
         }
       }

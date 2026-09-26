@@ -89,13 +89,13 @@ pub fn OpenSourcePage() -> Element {
           ul { class: "list-disc ml-6 space-y-3",
             li {
               a { class: "link link-secondary", href: "https://lucide.dev", target: "_blank", rel: "noopener", "Lucide" }
-              " (ISC, with Feather-derived portions under MIT) -- every inline icon in this app except the GitHub, Discord and YouTube marks, including the bird mark standing in as the logo. Full notices in "
+              " (ISC, with Feather-derived portions under MIT) -- every inline icon in this app except the GitHub and YouTube marks, including the bird mark standing in as the logo. Full notices in "
               a { class: "link link-secondary", href: "https://github.com/justins-engineering/pidgeiot/blob/main/THIRD_PARTY_NOTICES.md", target: "_blank", rel: "noopener", "THIRD_PARTY_NOTICES.md" }
               "."
             }
             li {
               a { class: "link link-secondary", href: "https://fontawesome.com", target: "_blank", rel: "noopener", "Font Awesome Free" }
-              " (icons under CC BY 4.0) -- the GitHub, Discord and YouTube marks."
+              " (icons under CC BY 4.0) -- the GitHub and YouTube marks."
             }
             li {
               a { class: "link link-secondary", href: "https://daisyui.com", target: "_blank", rel: "noopener", "daisyUI" }

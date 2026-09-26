@@ -18,7 +18,7 @@ hand-maintained here.
 
 ## Lucide icons
 
-All inline UI icons except the GitHub, Discord and YouTube marks,
+All inline UI icons except the GitHub and YouTube marks,
 including the bird mark currently used as the stand-in logo, are from
 [Lucide](https://lucide.dev), bundled via the `dioxus-free-icons` crate.
 
@@ -67,7 +67,7 @@ The Feather-derived portions are additionally covered by:
 
 ## Font Awesome Free brand icons
 
-The GitHub, Discord and YouTube marks are Font Awesome Free 6.1.1 brand
+The GitHub and YouTube marks are Font Awesome Free 6.1.1 brand
 icons, bundled via the `dioxus-free-icons` crate. The icons are licensed
 under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the full
 terms are at https://fontawesome.com/license/free.

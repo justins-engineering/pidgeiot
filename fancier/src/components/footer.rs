@@ -3,7 +3,7 @@ use crate::views::STORIES;
 use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::fa_brands_icons::{FaDiscord, FaGithub, FaYoutube};
+use dioxus_free_icons::icons::fa_brands_icons::{FaGithub, FaYoutube};
 use dioxus_free_icons::icons::ld_icons::{LdBird, LdChevronRight};
 
 #[component]
@@ -41,16 +41,6 @@ pub fn Footer() -> Element {
                     icon: FaGithub,
                     class: "size-5",
                     title: "GitHub Logo",
-                  }
-                }
-                a {
-                  class: "btn btn-circle bg-base-100 hover:bg-[#E0E3FF] hover:text-[#5865F2] transition-all duration-300",
-                  href: "https://discord.gg/W2vjtpeP",
-                  aria_label: "PidgeIoT on Discord",
-                  Icon {
-                    icon: FaDiscord,
-                    class: "size-5",
-                    title: "Discord Logo",
                   }
                 }
                 a {
@@ -267,18 +257,6 @@ pub fn Footer() -> Element {
                         title: "Chevron right",
                       }
                       "GitHub"
-                    }
-                  }
-                  li {
-                    a {
-                      class: "text-base hover:text-primary transition-colors duration-300 flex items-center group",
-                      href: "https://discord.gg/W2vjtpeP",
-                      Icon {
-                        icon: LdChevronRight,
-                        class: "absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity",
-                        title: "Chevron right",
-                      }
-                      "Discord"
                     }
                   }
                 }
