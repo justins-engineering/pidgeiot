@@ -137,7 +137,7 @@ pub fn GettingStartedPage() -> Element {
           code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
             "native_sim"
           }
-          " swaps in host-socket networking and compiles as a plain native binary with your host's own C compiler, so no Zephyr SDK is needed. It does need a Linux machine (WSL 2 on Windows; native_sim does not run on macOS) with CMake and Ninja installed. See the "
+          " swaps in host-socket networking and compiles as a plain native binary with your host's own C compiler, so no Zephyr SDK is needed. It does need a Linux machine with CMake and Ninja installed: WSL 2 on Windows, and on a Mac a Linux virtual machine, because native_sim does not run on macOS itself. See the "
           a {
             class: "link link-secondary",
             href: "https://github.com/justins-engineering/pigeon-examples",
