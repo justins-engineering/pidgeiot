@@ -418,10 +418,11 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a telemetry frame already
-  received under another `requestId` (the carrier delivered one send twice), a frame whose body is
-  malformed, over a cap or of an unknown type, a delivery report (a `DeliveryFailed` or `Queued`
-  one first marks the push it may have carried pending), a configuration result, another
-  account's callback, or an authenticated body of a shape dovecote does not know.
+  received under another `requestId` and not dropped as unclaimed there (the carrier delivered one
+  send twice), a frame whose body is malformed, over a cap or of an unknown type, a delivery report
+  (a `DeliveryFailed` or `Queued` one first marks the push it may have carried pending), a
+  configuration result, another account's callback, or an authenticated body of a shape dovecote
+  does not know.
 - `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` whose
   sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable through
   support once a parser is fixed; a `TELEMETRY` frame without a sequence is refused by design, so
@@ -693,7 +694,8 @@ another callback may have changed it during the await, and two synchronous state
 interleaved. The object serves other requests during that await, ThingSpace's retry of this very
 callback among them: a callback still unanswered after about 4 s is retried while the first
 attempt runs (13.3). So step 7 holds the key in memory while it awaits, and a retry that finds it
-there waits in step 2 for that attempt's outcome. A refused callback is retried once, 1.2 to
+there waits in step 2 for that attempt's outcome, as does the carrier's second delivery of the
+frame under another request id. A refused callback is retried once, 1.2 to
 1.7 s after the refusal was answered (B6).
 
 1. Read `pigeon_nidd` (defaults if absent). The `pigeons` row is read, with `one_row` (`:164`,
@@ -704,8 +706,10 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
    implies a live pigeon, since `delete` wipes both, so the steady-state path skips it.
 2. De-duplication key: `X-Nidd-Request-Id` plus the first 16 hex characters of the frame's SHA-256
    (`sha2` is already a dovecote dependency). A key already in `seen` answers 200 `duplicate` and
-   writes nothing. A key an attempt holds in step 7 makes this one wait for it: `duplicate` once
-   that attempt stored or refused the frame, and on from step 1 once it failed. A resend repeats
+   writes nothing. An attempt holding this frame in step 7, found by the digest half
+   (`NiddInFlight::wait`, 6.6), makes this one wait for it: once that attempt stored or refused
+   the frame, `duplicate` under the same request id and `repeat` under another (step 7); on from
+   step 1 once it failed. A resend repeats
    both halves, so it is recognised. The key keeps two uplinks apart only when their request ids or
    their bytes differ: [SEND] defines `requestId` for downlink callbacks alone ("All of the callback
    messages have the same requestId") and says nothing on uplink uniqueness, and some frames
@@ -717,8 +721,9 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
    delivery under a request id of its own (the soak saw one `TELEMETRY` frame twice, 129 s apart,
    13.3). So a `TELEMETRY` frame is also matched by the digest half alone (`has_seen_frame`, 6.6)
    in step 7, which is safe because its send sequence (7.1) keeps two sends of the same readings
-   apart. `HELLO` is never matched that way, since every boot's is identical, and a repeated report
-   is recognised by its content in step 8.
+   apart; a key recorded unsettled (step 10) does not count. `HELLO` is never matched that way,
+   in `seen` or in memory, since every boot's is identical: only a `TELEMETRY` frame is ever held
+   in step 7. A repeated report is recognised by its content in step 8.
 3. Empty frame or unknown type byte: record the key, 200 `rejected`, one log line with the type
    byte and length only. A `TELEMETRY` frame whose sequence header does not parse (7.1): 400,
    nothing recorded or planned, one log line with the length; the gateway answers ThingSpace 400
@@ -728,7 +733,8 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
    a `SHADOW` reply. Mismatch: plan `STATUS UNCLAIMED` with argument 1, signed with the presented
    key (4.4), if a notice is due. Wrong length: no notice. Record the key, 200.
 5. Any other type while `claimed_at` is NULL, or naming a line other than a stored `line_id`: plan
-   `STATUS UNCLAIMED` with argument 0 if due, record the key, 200 `unclaimed`. The notice is how a
+   `STATUS UNCLAIMED` with argument 0 if due, record the key unsettled (step 10), 200
+   `unclaimed`. The notice is how a
    device that booted before its pigeon existed learns to send `HELLO` again. Argument 0 asks for
    a `HELLO`, never for silence: callbacks arrive out of order (7.4), so a notice planned for a
    frame processed before the same wake's `HELLO` can reach a device whose claim has just
@@ -742,13 +748,15 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
    and task 1.10 the paragraph: the NIDD callback is the second surface checked at the gateway,
    because a Hyperdrive connection opened from the DO may bill it for DO duration (section 17,
    U14).
-7. `TELEMETRY` (`0x01`): a key whose digest half is already in `seen` is the carrier's second
-   delivery of a send already handled: 200 `repeat`, nothing ingested, stored or billed, the key
-   recorded, and step 9's reply rule applied as to any uplink. Otherwise parse the body after the
+7. `TELEMETRY` (`0x01`): a key whose digest half is already in `seen`, recorded settled, is the
+   carrier's second delivery of a send already handled, and so is one that waited in step 2 for an
+   attempt under another request id that decided, even if that attempt's key then went
+   unrecorded (step 10): 200 `repeat`, nothing ingested, stored or billed, the key recorded, and
+   step 9's reply rule applied as to any uplink. Otherwise parse the body after the
    sequence header as `capsules::TelemetryReportBody` (flat or
    batched, `capsules/src/lib.rs:738`). Once it parses, claim the key in memory (`NiddInFlight`,
    6.6), `ingest_telemetry(pigeons, body)` (6.7), and settle the claim the moment it returns, which
-   answers every retry waiting in step 2. The claim never reaches `seen`, so it ends with the
+   answers every copy waiting in step 2. The claim never reaches `seen`, so it ends with the
    attempt: an object reset inside the await leaves nothing to turn the retry away. No reading is
    aged for its attempt: a retry that stores follows a refusal by about a second (B6), inside the
    resolution of a reading's own `age_secs`, or follows a slow attempt that failed by a few seconds
@@ -795,10 +803,17 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
     during the await. A failed write after a store is logged, answers 200 and still runs the
     tail, so a stored report is billed and synced. Any other failed write answers 500, and
     ThingSpace retries.
+    The key is recorded unsettled, one mark character after its digest, when the answer was
+    `unclaimed`, which drops a frame before any rule judged it: a `TELEMETRY` frame processed
+    before its wake's `HELLO` (step 5) meets exactly that, and the carrier's copy of it after the
+    claim is that send's only second chance. `has_seen` ignores the mark, so a retry or resend of
+    that callback is still a `duplicate`; the digest match skips the key, so the copy is judged
+    on its own. `paused` settles the send, since storing a copy once the fuse cleared would bill
+    a send row 16 refused.
 
 Row cost of a steady-state telemetry uplink: `pigeon_nidd` two reads (before and after the
 enqueue) and one write, `pigeon_telemetry_latest` one read and one write. Nothing else: the claim
-lives in memory and costs no row.
+lives in memory and costs no row, and the unsettled mark is one character inside `seen`.
 
 ### 6.4 `Pigeons`: downlink
 
@@ -965,12 +980,16 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   id, `:`, and 16 hex characters pushed from a lookup table rather than `format!`.
 - `decode_uplink(frame) -> Uplink`: the type byte, and for `TELEMETRY` the body after the sequence
   header, or `Uplink::BadHeader` when the header does not parse (7.1).
-- `NiddRow` (the table's row), `NiddRow::remember(key)` trimming `seen` to 64,
-  `NiddRow::has_seen_frame(key)`, a match on the digest half alone (6.3 steps 2 and 7),
+- `NiddRow` (the table's row), `NiddRow::remember(key, settled)` trimming `seen` to 64 and
+  marking a key whose answer settled nothing (6.3 step 10), `NiddRow::has_seen(key)` ignoring the
+  mark, `NiddRow::has_seen_frame(key)`, a match on the digest half alone that skips marked keys
+  (6.3 steps 2 and 7),
   `NiddRow::mark_pending`, `notice_due(&row, now)` (an hour since `notice_at`), `shadow_push_due`,
   `shadow_reply_due` and `delivery_missed` (6.4).
 - `NiddInFlight`, a field of `Pigeons`: the telemetry uplinks being stored, by key, each with the
-  `oneshot` senders of the retries waiting on it (`claim`, `wait`, `settle`; 6.3 steps 2 and 7).
+  `oneshot` senders of the copies waiting on it (`claim`, `wait`, `settle`; 6.3 steps 2 and 7).
+  `wait` finds the attempt by the digest half and says whether it holds the caller's own key, so
+  a retry answers `duplicate` and a second delivery `repeat`.
 
 The frame layout is a contract with C code in `~/pigeon`, so its constants stay in dovecote rather
 than capsules, the reason the WebSocket frame cap sits in dovecote (`objects/ws.rs:4-11`), and
@@ -1169,12 +1188,15 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
   `sent` line, one flush) and ThingSpace posted it under two request ids 129 s apart, the second at
   the instant of the device's reconnect, likely a retransmission after a lost acknowledgement;
   both were stored and billed (13.3). Its second delivery now answers `repeat`: the digest match
-  of 6.3 step 7, which the send sequence confines to one send. Nothing is stored or billed, and,
+  of 6.3 step 7, which the send sequence confines to one send, and, when it lands while the first
+  is still being stored, the wait of 6.3 step 2. Nothing is stored or billed, and,
   as for any uplink from a device that is behind, the owed `SHADOW` goes out if it is due: a
   re-delivery arrives while the device is connected, and the 30 s and pending rules above bound
-  it. A `HELLO` delivered twice draws a second `SHADOW`, which the version rule settles, and a
-  report delivered twice is a repeat answered once more (below), unless a newer report was stored
-  in between (row 43).
+  it. A first delivery dropped as unclaimed, as one processed before its wake's `HELLO` is
+  (row 39), settled nothing, so a copy arriving after the claim is stored, once. A `HELLO`
+  delivered twice draws a second `SHADOW`, which the version rule settles, and a report delivered
+  twice is a repeat answered once more (below), unless a newer report was stored in between
+  (row 43).
 - A report is confirmed by `STATUS STORED` or by a `SHADOW` whose `current_version` is at least the
   version reported. Re-sending the newest report is harmless: the write is the same, and an
   identical report is not billed.
@@ -1701,7 +1723,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 9 | IMEI no pigeon is bound to | DO 404, callback 200, logged by derived pigeon id | An unprovisioned line; a resend cannot help |
 | 10 | Pigeon not claimed, or a frame from a line other than the pinned one (device booted before its pigeon existed, stale claim key after a refresh, a SIM swap, a forger) | 200, frame dropped, `UNCLAIMED 0` (or `1` answering a failed `HELLO`) at most once an hour | The device sends `HELLO` again, or after a failed one stops billable sends until it reboots; nothing is stored or pushed |
 | 11 | ThingSpace retries a callback we stored or are still storing (our 2xx lost, or not sent within about 4 s), or support resends one | De-duplication hit, 200; a retry arriving while the first attempt awaits its enqueue waits for it and answers `duplicate` once it stored | Never stored or billed twice |
-| 12 | A reading first stored on ThingSpace's retry | Stamped at its arrival, 1.2 to 1.7 s after the first attempt, or, for a retry that waited out a slow first attempt that failed, once that attempt settled | Seconds against readings minutes apart; nothing to correct |
+| 12 | A reading first stored on a later copy: ThingSpace's retry, or the carrier's second delivery when the first was dropped as unclaimed or failed | Stamped at its arrival: a retry 1.2 to 1.7 s after the first attempt; a copy that waited out a slow first attempt that failed, once that attempt settled; a second delivery whenever the carrier re-delivered it (129 s after the send in the soak) | For a retry, seconds against readings minutes apart; nothing to correct. A second delivery stored this way shifts its readings by the carrier's delay, which the frame cannot state, since `age_secs` counts back from the send; it needs the first delivery lost or dropped |
 | 13 | Telemetry merge or enqueue fails | 503, key not recorded, any waiting retry told to go on, logged as lost | Honest; the one immediate retry may land it, re-applying the merged values unchanged, though its rate alerts diff against this attempt's newest values (6.3 step 7). Otherwise lost, recoverable only by a support resend |
 | 14 | Pigeon DO unreachable | 503, logged as lost | As row 13 |
 | 15 | Fuse lookup fails, or takes over a second | Fail-open, logged: the existing rule inside `check_ingest_fuse`, and the gateway's race | A Postgres blip must not brick ingestion or hold the acknowledgement |
@@ -1728,11 +1750,11 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 36 | A secret reaching a log | No log line carries a body, frame, password, token, account name, IMEI, ICCID, IMSI or a serde error's `Display` | Reviewed across every `console_*!` in the change; a unit test proves a numeric IMEI never reaches the parse-error line |
 | 37 | Both deployed environments configured | Only during bring-up. At cutover staging loses its account name, API secrets and callback password, and `send` answers 503 wherever the allowlist is empty, so only the registered environment receives or sends | [CBBP] allows one endpoint per service per account, and [SEND] requires the listener for sending |
 | 38 | A downlink frame not from dovecote (any holder of the API credentials, a replayed old frame) | The device drops a frame whose tag fails; a replayed `SHADOW` loses to a newer version; a replayed `PAUSED` holds at most 86400 s | The claim key is kept in the pigeon's DO and the firmware, never in Postgres (section 9) or a log |
-| 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
+| 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping. The frame is dropped with its key recorded unsettled, so a carrier copy of it after the claim is stored (6.3 step 10) | Only a failed `HELLO` draws argument 1 |
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
-| 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still sends the planned reply and bills and syncs a stored report, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost. So would a carrier re-delivery of a `TELEMETRY` frame (row 43), since its digest never reached `seen` |
+| 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still sends the planned reply and bills and syncs a stored report, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost. So would a carrier re-delivery of a `TELEMETRY` frame arriving after that attempt ended (row 43), since its digest never reached `seen`; one that waited for the attempt is a repeat |
 | 42 | A Nidd create fails inside the DO after its `pigeons` INSERT (the row's read-back, the ACL or the shadow insert), or its dispatch to the DO fails | Inside the DO: the rows it wrote are deleted and it answers 500, so the IMEI is free for the retry. A dispatch error: 503, the derived pigeon id logged, nothing undone. If the create had landed, the pigeon has no Postgres row, so no list shows it, and every retry answers 409 until its creator, given that id from the log once Postgres shows no `pigeons` row for it, deletes it (`DELETE /pigeons/:pigeon_id`); a row there may be a live pigeon that also answers 409, so the id is left alone | The dispatch error may have hidden a 409 for a pigeon that already held the IMEI, and an undo as this principal would delete it wherever `is_owner` admits an organization owner or admin. The residual needs a transport failure after the DO committed; a failed clean-up inside the DO is logged by pigeon id too. A landed but unlisted pigeon also sits over any leftovers of an earlier pigeon with its id, since neither the mirror insert's clean-up nor the dictionary delete ran: the earlier pigeon's telemetry history is served to the new creator, and the new pigeon's uplinks bill a leftover `pigeons` row's organization, or nobody without one, until the delete's Postgres sync clears them. Leftovers need an earlier delete whose best-effort clean-up failed too |
-| 43 | The carrier delivers one device send twice, and ThingSpace posts each delivery under its own request id (the soak: one `TELEMETRY` frame 129 s apart, the second at the device's reconnect, 13.3) | A `TELEMETRY` frame whose digest is in `seen` answers 200 `repeat`: nothing stored or billed, its request-id key recorded, the owed `SHADOW` sent if due (6.3 step 7, 7.4) | One send, one charge, as billing promises. Two residuals: a second delivery landing while the first is still inside its enqueue await is not held (`NiddInFlight` keys on the request id), and one arriving after 64 later uplinks from that pigeon (16 hours at the contract's four an hour) is stored again. A `HELLO` delivered twice draws a second `SHADOW`, which the version rule settles. A `SHADOW_REPORT` is compared with the stored shadow, not with `seen`, so one re-delivered after a newer report was stored writes its older version back and bills again, and the `SHADOW` it draws has the device report the newer version once more, billed again too |
+| 43 | The carrier delivers one device send twice, and ThingSpace posts each delivery under its own request id (the soak: one `TELEMETRY` frame 129 s apart, the second at the device's reconnect, 13.3) | A `TELEMETRY` frame whose digest is in `seen`, recorded settled, answers 200 `repeat`: nothing stored or billed, its request-id key recorded, the owed `SHADOW` sent if due (6.3 step 7, 7.4). One landing while the first delivery is still inside its enqueue await waits for it as a retry does and answers `repeat` once that attempt decided (6.3 step 2). A first delivery dropped as unclaimed settled nothing, so a copy after the claim is stored once (row 39) | One send, one charge, as billing promises. One residual: a second delivery arriving after 64 later uplinks from that pigeon (16 hours at the contract's four an hour) is stored again. A `HELLO` delivered twice draws a second `SHADOW`, which the version rule settles. A `SHADOW_REPORT` is compared with the stored shadow, not with `seen`, so one re-delivered after a newer report was stored writes its older version back and bills again, and the `SHADOW` it draws has the device report the newer version once more, billed again too |
 | 44 | A device reports a constant value, so two sends carry the same readings and, with `age_secs` 0, the same body | Each frame carries the next send sequence, so its digest differs and each is stored and billed | Without the sequence a digest match would drop every such send after the first as a repeat. The sequence starts at a random value each boot, so frames of two boots coincide only if their starts land within 64 sends of each other among 2^32 values and their readings match as well. The build refuses the timer random generator (14.2); an entropy read that fails at boot falls back to the cycle counter, which no build check can see |
 | 45 | A `TELEMETRY` frame whose sequence header does not parse (a build from before the sequence, a firmware bug) | 400, logged `malformed` with the length, nothing stored, no key; ThingSpace's one retry meets the same answer | Refused like row 7, but no parser will take it: a support resend meets the same 400, so the frame is lost. A device built before the sequence reports nothing until it is rebuilt, so the device and dovecote change together, the reflash straight after the deploy |
 
@@ -1764,10 +1786,11 @@ x86_64-unknown-linux-gnu`.
   credentials; `dedupe_key`; the `TELEMETRY` sequence header, parsed as the device writes it
   and refused in every malformed form, and frame 1 of 7.2 decoding to its body with its digest;
   `has_seen_frame` matching a second delivery under a new request id and not the next send;
-  `remember` trimming at 64; `NiddInFlight` answering each waiting
-  retry; `notice_due`; a truth table for `shadow_push_due` and `shadow_reply_due` (hold, in flight,
-  lapse, a push reported missed through `mark_pending`, failed send, unclaimed, converged);
-  `delivery_missed`.
+  a key remembered as `unclaimed`, read back from the table's JSON, still found by `has_seen` and
+  skipped by `has_seen_frame`; `remember` trimming at 64; `NiddInFlight` answering each waiting
+  retry, and a second delivery under another request id found by its digest; `notice_due`; a truth
+  table for `shadow_push_due` and `shadow_reply_due` (hold, in flight, lapse, a push reported missed
+  through `mark_pending`, failed send, unclaimed, converged); `delivery_missed`.
 - `objects/thingspace.rs`: the fingerprint changes when any one secret or the epoch changes and
   not otherwise; `classify_login` latches at once on an M2M error code and on an OAuth 400 or 401,
   answers a gateway `fault` (`900901`, `900902`) with one re-mint and retry, and counts every
@@ -1805,7 +1828,9 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    answers 503 `not_configured`, since dev never holds API secrets, and says so in the log).
 5. `HELLO` with a wrong key: still unclaimed, `UNCLAIMED 1` planned. With the right key: claimed,
    the line pinned, a `SHADOW` planned. A telemetry frame naming another ICCID: dropped as
-   unclaimed, the claim kept; a good `HELLO` from that ICCID moves the pin.
+   unclaimed, the claim kept; a good `HELLO` from that ICCID moves the pin. Step 4's telemetry
+   frame posted again once claimed: under its own request id `duplicate`, under a new one stored,
+   under a third `repeat`, one history row.
 6. Flat and batched telemetry: values on the dashboard and history rows with the right ages (dev
    writes history directly, `dovecote/src/objects/pigeons.rs:1906-1938`), frame 1 checked byte for
    byte by length and digest, every frame the suite builds carrying a ten-digit send sequence;
@@ -1820,11 +1845,12 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    deployed, and dev binds no queue): 503, logged as lost, no key kept; its retry, once the store
    works, is stored. The carrier's re-delivery: the same frame under a second request id after the
    first settled answers `repeat`, both request ids kept, no reply, one history row; the same
-   readings under the next sequence are stored as a second send. A frame with no sequence header
-   and one whose sequence is past a u32: 400, logged `malformed` and not as lost, no key, nothing
-   stored. Dev bills telemetry on no surface, so these checks count history rows; the
-   billing half, one billed message per reading sent, is checked on staging after the deploy (the
-   runbook's operating notes).
+   readings under the next sequence are stored as a second send. The same re-delivery while the
+   first delivery is held by the lock: unanswered while held, then `repeat`, one history row. A
+   frame with no sequence header and one whose sequence is past a u32: 400, logged `malformed` and
+   not as lost, no key, nothing stored. Dev bills telemetry on no surface, so these checks count
+   history rows; the billing half, one billed message per reading sent, is checked on staging after
+   the deploy (the runbook's operating notes).
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
    `STATUS STORED`. The same report again: not billed. Telemetry from the converged device: no
    reply.
@@ -1974,7 +2000,7 @@ the text above does not carry:
   billed 8. A fresh request id defeats the request-id key and the in-flight claim alike. One wake
   in 32 over the first 11 hours. Fixed since: every `TELEMETRY` frame carries the device's send
   sequence and a second delivery is matched by its digest, answered `repeat` (7.1, 7.4, row 43),
-  and tier 1 step 7 checks it.
+  also when it lands while the first is still being stored, and tier 1 steps 5 and 7 check it.
 - **An oversize target** (320 bytes, one over what the default device keeps) passed the `PUT`,
   was dropped by the device, and came again in the reply to the next uplink, as `docs/api.md`
   says, until a small write replaced it.

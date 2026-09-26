@@ -291,7 +291,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
 | NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
 | Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or the next uplink's reply |
-| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails. A telemetry frame is also matched by its digest alone, so the carrier's second delivery of one send, posted under a new `requestId`, is a repeat too |
+| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails. A telemetry frame is also matched by its digest alone, so the carrier's second delivery of one send, posted under a new `requestId`, is a repeat too, waiting like a retry if the first is still being stored; a copy first dropped as unclaimed does not count |
 | Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
@@ -3474,9 +3474,11 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
   a support resend repeats one; uplink is de-duplicated on the callback's `requestId` plus a
   digest of the frame, over the last 64 uplinks per pigeon. The carrier can also deliver one
   frame twice, which ThingSpace posts under a new `requestId`, two minutes later on the bench; a
-  `TELEMETRY` frame whose digest has been seen is answered as a repeat whatever its `requestId`,
-  which is why it carries a send sequence. A repeat is neither stored nor billed, and, like any
-  uplink from a device that is behind, carries the owed `SHADOW` when one is due.
+  `TELEMETRY` frame already received is answered as a repeat whatever its `requestId`, which is why
+  it carries a send sequence; one arriving while its first copy is still being stored waits for it,
+  and one whose first copy was dropped as unclaimed is judged afresh. A repeat is neither stored nor
+  billed, and, like any uplink from a device that is behind, carries the owed `SHADOW` when one is
+  due.
 - **The dashboard never waits on ThingSpace.** A shadow `PUT` answers before the frame is sent and
   never fails because of it. A delivery report changes only whether the next uplink repeats the
   push: `Delivered` means the network took the frame, not that the device has it, and the
@@ -3721,10 +3723,11 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a telemetry frame already
-  received under another `requestId` (the carrier delivered one send twice), a frame whose body is
-  malformed, over a cap or of an unknown type, a delivery report (a `DeliveryFailed` or `Queued`
-  one first marks the push it may have carried pending), a configuration result, another
-  account's callback, or an authenticated body of a shape dovecote does not know.
+  received under another `requestId` and not dropped as unclaimed there (the carrier delivered one
+  send twice), a frame whose body is malformed, over a cap or of an unknown type, a delivery report
+  (a `DeliveryFailed` or `Queued` one first marks the push it may have carried pending), a
+  configuration result, another account's callback, or an authenticated body of a shape dovecote
+  does not know.
 - `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` whose
   sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable through
   support once a parser is fixed; a `TELEMETRY` frame without a sequence is refused by design, so
