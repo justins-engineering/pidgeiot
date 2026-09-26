@@ -353,5 +353,6 @@ tests run on dev after cutover, and on staging again only with a second ThingSpa
 - **Deploy dovecote and reflash together when the frame layout changes.** A `TELEMETRY` frame
   carries the device's send sequence, and dovecote refuses one without it (`400`, logged
   `outcome=malformed`): a device built from `pigeon` before the sequence stores nothing until it
-  is rebuilt, and a dovecote from before it refuses a device built after it (the frames read as
-  malformed JSON, `outcome=rejected`).
+  is rebuilt, and what it sends meanwhile is lost, since a support resend meets the same `400`, so
+  reflash straight after the deploy. A dovecote from before it refuses a device built after it
+  (the frames read as malformed JSON, `outcome=rejected`).

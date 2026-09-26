@@ -3727,7 +3727,8 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
   account's callback, or an authenticated body of a shape dovecote does not know.
 - `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` whose
   sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable through
-  support once a parser is fixed.
+  support once a parser is fixed; a `TELEMETRY` frame without a sequence is refused by design, so
+  a resend of one meets the same `400`.
 - `403`: source address outside the allowlist, or a wrong password. **Never `401`**, for the same
   reason as [`POST /internal/consent`](#post-internalconsent).
 - `413`: body over 8 KiB.
