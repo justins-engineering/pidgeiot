@@ -1714,6 +1714,9 @@ x86_64-unknown-linux-gnu`.
   not otherwise; `classify_login` latches at once on an M2M error code and on an OAuth 400 or 401,
   answers a gateway `fault` (`900901`, `900902`) with one re-mint and retry, and counts every
   other outcome without a session token, a timeout included, latching on the second in a row;
+  the latch's rules apart from storage (`count_after_failure`, `held_failures`): two counted
+  failures in a row latch, a credential refusal latches at any count, an exempt or retried attempt
+  is not counted, and a count holds only for the credentials and epoch it was recorded against;
   `classify_send` drops the session on all three `.SessionToken.` codes of [ERR] and answers 503
   for 408, 429 and 5xx.
 - `helpers/coap_service.rs`: the existing allowlist tests (`:62-99`) keep passing, plus one for

@@ -140,6 +140,30 @@ struct LoginFailures {
   count: u32,
 }
 
+impl LoginFailures {
+  /// Whether logins are stopped.
+  fn latched(&self) -> bool {
+    self.count >= LOGIN_FAILURE_LIMIT
+  }
+}
+
+/// A stored count, when it was recorded against these exact credentials and epoch. Any changed
+/// secret value or a bumped epoch makes it `None`, which re-arms the latch.
+fn held_failures(stored: LoginFailures, creds: &Credentials) -> Option<LoginFailures> {
+  let salt = salt_bytes(&stored.salt)?;
+  (fingerprint(&salt, creds) == stored.fingerprint).then_some(stored)
+}
+
+/// The count one failed login leaves, given the count `held` against the same credentials (none
+/// after a success, which deletes it), or `None` when the attempt does not count.
+fn count_after_failure(held: Option<u32>, verdict: &LoginVerdict) -> Option<u32> {
+  match verdict {
+    LoginVerdict::Exempt | LoginVerdict::RetryWithFreshAccess => None,
+    LoginVerdict::Latch => Some(LOGIN_FAILURE_LIMIT),
+    LoginVerdict::Count => Some(held.unwrap_or(0) + 1),
+  }
+}
+
 /// How a ThingSpace call failed.
 #[derive(Debug, Clone, PartialEq)]
 enum CallFailure {
@@ -543,10 +567,7 @@ impl ThingSpaceSession {
     }
 
     let failures = self.read_failures(creds).await;
-    if failures
-      .as_ref()
-      .is_some_and(|f| f.count >= LOGIN_FAILURE_LIMIT)
-    {
+    if failures.as_ref().is_some_and(LoginFailures::latched) {
       return Err(Unavailable::Latched);
     }
 
@@ -677,12 +698,8 @@ impl ThingSpaceSession {
     verdict: LoginVerdict,
     failure: &CallFailure,
   ) -> Unavailable {
-    let latch_now = match verdict {
-      LoginVerdict::Exempt | LoginVerdict::RetryWithFreshAccess => {
-        return Unavailable::Unreachable;
-      }
-      LoginVerdict::Latch => true,
-      LoginVerdict::Count => false,
+    let Some(count) = count_after_failure(existing.as_ref().map(|f| f.count), &verdict) else {
+      return Unavailable::Unreachable;
     };
 
     let mut failures = existing.unwrap_or_else(|| {
@@ -695,11 +712,7 @@ impl ThingSpaceSession {
         count: 0,
       }
     });
-    failures.count = if latch_now {
-      LOGIN_FAILURE_LIMIT
-    } else {
-      failures.count + 1
-    };
+    failures.count = count;
     if let Err(e) = self
       .state
       .storage()
@@ -709,7 +722,7 @@ impl ThingSpaceSession {
       console_error!("thingspace_login: recording the failure count failed: {e}");
     }
 
-    if failures.count < LOGIN_FAILURE_LIMIT {
+    if !failures.latched() {
       return Unavailable::Unreachable;
     }
 
@@ -740,8 +753,7 @@ impl ThingSpaceSession {
         return None;
       }
     };
-    let salt = salt_bytes(&stored.salt)?;
-    (fingerprint(&salt, creds) == stored.fingerprint).then_some(stored)
+    held_failures(stored, creds)
   }
 
   /// The cached tokens; empty ones when none are stored or the read fails.
@@ -951,6 +963,66 @@ mod tests {
       classify_login(LoginStep::Session, &CallFailure::PreSend, false),
       LoginVerdict::Exempt
     );
+  }
+
+  /// A count as `record_failure` stores it for these credentials.
+  fn stored(creds: &Credentials, count: u32) -> LoginFailures {
+    let salt = [7u8; 16];
+    LoginFailures {
+      salt: hex(&salt),
+      fingerprint: fingerprint(&salt, creds),
+      count,
+    }
+  }
+
+  #[test]
+  fn the_second_counted_failure_in_a_row_latches() {
+    // No count held: the first failure, or the first after a success deleted the count.
+    let first = count_after_failure(None, &LoginVerdict::Count);
+    assert_eq!(first, Some(1));
+    assert!(!stored(&creds(), 1).latched());
+    let second = count_after_failure(first, &LoginVerdict::Count);
+    assert_eq!(second, Some(LOGIN_FAILURE_LIMIT));
+    assert!(stored(&creds(), LOGIN_FAILURE_LIMIT).latched());
+  }
+
+  #[test]
+  fn a_credential_refusal_latches_whatever_the_count() {
+    for held in [None, Some(0), Some(1)] {
+      assert_eq!(
+        count_after_failure(held, &LoginVerdict::Latch),
+        Some(LOGIN_FAILURE_LIMIT)
+      );
+    }
+  }
+
+  #[test]
+  fn an_exempt_or_retried_login_is_not_counted() {
+    for held in [None, Some(1)] {
+      assert_eq!(count_after_failure(held, &LoginVerdict::Exempt), None);
+      assert_eq!(
+        count_after_failure(held, &LoginVerdict::RetryWithFreshAccess),
+        None
+      );
+    }
+  }
+
+  #[test]
+  fn a_count_holds_only_for_the_credentials_it_was_recorded_against() {
+    let latched = || stored(&creds(), LOGIN_FAILURE_LIMIT);
+    assert!(held_failures(latched(), &creds()).is_some_and(|held| held.latched()));
+
+    let mut rotated = creds();
+    rotated.uws_password.push('x');
+    assert!(held_failures(latched(), &rotated).is_none());
+    let mut bumped = creds();
+    bumped.login_epoch = "2".to_string();
+    assert!(held_failures(latched(), &bumped).is_none());
+
+    // A salt that does not parse holds nothing.
+    let mut corrupt = latched();
+    corrupt.salt = "zz".to_string();
+    assert!(held_failures(corrupt, &creds()).is_none());
   }
 
   #[test]
