@@ -2280,25 +2280,28 @@ Queues $0.40 per million operations, three per message
 Workers Paid (https://developers.cloudflare.com/hyperdrive/platform/pricing/, read on
 2026-09-24).
 
-**Per uplink, steady state:** one Worker request (the callback), one Durable Object request, three
-SQLite rows read and two written (`pigeon_nidd` read twice, the telemetry blob once, each written
-once), one queue message, one Postgres query at the gateway (the fuse, uncached, section 9), and
-the queue consumer's existing history insert, billing tally and alert lookup. No downlink and no
-ThingSpace call.
+**Per uplink, steady state:** one Worker request (the callback), two Durable Object requests (the
+uplink, then the queue consumer's read of the pigeon's telemetry endpoint), four SQLite rows read
+and two written (`pigeon_nidd` read twice, the telemetry blob once, each written once, and the
+endpoint), one queue message, one Postgres query at the gateway (the fuse, uncached, section 9),
+and the queue consumer's existing history insert, billing tally and alert lookup. No downlink and
+no ThingSpace call.
 
 **Per device-day on Cloudflare** (DO duration estimated at 100 ms active at 128 MB per uplink,
 CPU at 10 ms per uplink including the consumer; both estimates):
 
 | Cadence | Uplinks | Billable readings | Cloudflare cost per device-day | Per device-month |
 |---|---:|---:|---:|---:|
-| Readings every 5 minutes, sent every 15 (the guideline's ceiling) | 96 | 288 | $0.00039 | $0.012 |
+| Readings every 5 minutes, sent every 15 (the guideline's ceiling) | 96 | 288 | $0.00040 | $0.012 |
 | One reading an hour | 24 | 24 | $0.00010 | $0.003 |
-| Readings every 5 minutes, unbatched (outside the guideline, for comparison) | 288 | 288 | $0.00115 | $0.035 |
+| Readings every 5 minutes, unbatched (outside the guideline, for comparison) | 288 | 288 | $0.00120 | $0.036 |
 
-At the first cadence, rows written ($0.00019) and queue operations ($0.00012) are most of it.
-Inside the included allowances (10 million Worker requests, 1 million DO requests, 50 million rows
-written and 1 million queue operations a month) all of it is zero until the fleet is in the
-thousands. Billing counts readings, so batching cuts our cost without cutting the customer's bill.
+At the first cadence, rows written ($0.00019) and queue operations ($0.00012) are most of it. The
+included allowances (10 million Worker requests, 1 million DO requests, 50 million rows written and
+1 million queue operations a month) cover that cadence's queue operations for about 116 devices, its
+DO requests for about 174, its Worker requests for about 3,470 and its rows written for about 8,680,
+before any other surface's traffic, which shares them; queue operations bind first. Billing counts
+readings, so batching cuts our cost without cutting the customer's bill.
 
 **Why the fuse sits at the gateway.** An active outbound connection "keeps a Durable Object in
 memory and causes it to incur duration charges for up to 15 minutes per connection"
