@@ -59,8 +59,8 @@
       "description": "Go from zero to live telemetry in about ten minutes using a simulated Zephyr device on your own machine: no board, no radio, no hardware required."
     },
     "/demo/": {
-      "title": "Live Demo: Real Device Data, No Signup | PidgeIoT",
-      "description": "Watch live telemetry from a real PidgeIoT device account right now: no signup, no mock data. Charts and latest values straight from the platform API."
+      "title": "Live Demo: A Real Account, No Signup | PidgeIoT",
+      "description": "Watch simulated sensor readings flow through a real PidgeIoT account right now, no signup. Charts and latest values straight from the platform API."
     },
     "/stories/": {
       "title": "Stories: Field Notes From the Fleet | PidgeIoT",

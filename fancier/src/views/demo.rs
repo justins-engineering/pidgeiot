@@ -65,7 +65,7 @@ const DEMO_READINGS: [(&str, &str, &str, ChartKind, &str); 5] = [
     "Soil Moisture",
     "%",
     ChartKind::Scatter,
-    "One mark per reading and nothing between them, so the spread of the samples and the gaps in reporting are both visible instead of being smoothed away by a line. Every dot here is a measurement that actually happened.",
+    "One mark per minute and nothing between them, so gaps in reporting stay visible instead of being smoothed away by a line. Each dot is the mean of that minute's readings, usually two.",
   ),
   (
     "light_lux",
@@ -209,7 +209,7 @@ pub fn DemoPage() -> Element {
           "A device reporting right now, with nothing between you and it."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
-          "Read-only, no signup, no mock data. This is a real pigeon on a real account, and what's below is the same telemetry pipeline your own devices would use."
+          "Read-only, no signup. The readings are simulated, but this is a real pigeon on a real account, and what's below is the same telemetry pipeline your own devices would use."
         }
         Link {
           class: "inline-flex items-center gap-1.5 mt-6 text-sm font-semibold text-primary hover:underline",
