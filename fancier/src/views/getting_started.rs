@@ -317,7 +317,7 @@ fn GettingStartedRecording() -> Element {
           // This still is likely the page's LCP element, so its size
           // directly moves mobile LCP -- keep it small.
           src: "/getting-started-poster.webp",
-          alt: "Recording still: a simulated pigeon shown Online in the PidgeIoT dashboard, with its telemetry.",
+          alt: "Recording still: a simulated pigeon's Latest readings in the PidgeIoT dashboard, three telemetry tiles (poll_count, reset_cause, uptime_s) each reported just now, under the caption \"Online, with telemetry\".",
           width: "1280",
           height: "720",
         }
