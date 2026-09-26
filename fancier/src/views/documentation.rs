@@ -55,7 +55,10 @@ pub fn DocumentationPage() -> Element {
           DocStep {
             number: "4",
             title: "Provision the device",
-            body: "Bake the pigeon's endpoint and token into your device build (see the pigeon library below). HTTPS, WebSocket, CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) and MQTT over TLS on port 8883 (certificate or per-device pre-shared key) are all live, so pick whichever transport fits the hardware.",
+            body: "Build the pigeon's endpoint and token into your device firmware as CONFIG_PIGEON_ENDPOINT and CONFIG_PIGEON_TOKEN (a pre-shared-key transport adds its key); the pigeon-examples samples read them from a git-ignored prj.local.conf. HTTPS, WebSocket, CoAP (DTLS/UDP or TLS/TCP, PSK-authenticated) and MQTT over TLS on port 8883 (certificate or per-device pre-shared key) are all live, so pick whichever transport fits the hardware. ",
+            Link { class: "link link-secondary", to: Route::GettingStartedPage {},
+              "The getting-started guide has the exact commands."
+            }
           }
           DocStep {
             number: "5",
@@ -190,8 +193,14 @@ pub fn DocumentationPage() -> Element {
   }
 }
 
+/// `children` continue the step's paragraph, for a step that ends in a link.
 #[component]
-fn DocStep(number: &'static str, title: &'static str, body: &'static str) -> Element {
+fn DocStep(
+  number: &'static str,
+  title: &'static str,
+  body: &'static str,
+  children: Element,
+) -> Element {
   rsx! {
     div { class: "flex gap-6 items-start text-left",
       div { class: "shrink-0 size-10 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-primary",
@@ -199,7 +208,7 @@ fn DocStep(number: &'static str, title: &'static str, body: &'static str) -> Ele
       }
       div {
         h3 { class: "text-xl font-bold mb-1", "{title}" }
-        p { class: "text-base-content/70 leading-relaxed", "{body}" }
+        p { class: "text-base-content/70 leading-relaxed", "{body}" {children} }
       }
     }
   }
