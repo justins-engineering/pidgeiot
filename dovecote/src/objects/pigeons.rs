@@ -3198,8 +3198,6 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       }
       "paused"
     }
-    // The carrier can deliver one send twice, and ThingSpace posts each delivery under its own
-    // request id. The frame's send sequence is what keeps two sends of the same readings apart.
     // Like any uplink it shows the device awake, so it still carries the owed shadow.
     Uplink::Telemetry(_) if row.has_seen_frame(&key) => {
       if shadow_reply_due(&row, now) {
