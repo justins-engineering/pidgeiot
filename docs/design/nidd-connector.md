@@ -46,7 +46,7 @@ the alternative.
 | 13 | SDK | Depend on the owner's crate for the three outbound calls after a short patch; parse the inbound callback in dovecote, where it is tested as the security boundary it is. Accept its `AGPL-3.0-only` licence for that crate alone. |
 | 14 | Radio contract | At most 4 radio accesses an hour (Verizon's guideline), an obligation on the application's cadence, telemetry batched inside one frame, the radio released within 5 s. |
 | 15 | Departure board | Stays on LTE-M IP. NIDD suits low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not. |
-| 16 | Gate | Nothing merges to `main` until the bench nRF9160 Feather attaches to Verizon NB-IoT and the SIM's NIDD plan is confirmed. Never the nRF9151: Verizon does not support the board. First, and independent of NIDD: the SDK's public example worker is removed and the account credentials rotated (task 0.5). |
+| 16 | Gate | Nothing merges to `main` until the bench nRF9160 Feather attaches to Verizon NB-IoT and the SIM's NIDD plan is confirmed. Never the nRF9151: Verizon does not support the board. Independent of NIDD and done: the SDK's public example worker is removed and the account credentials rotated (task 0.5). |
 | 17 | Effort | 65 to 105 hours for the platform through a proven staging loop; 36 to 62 more for the device library and production. |
 | 18 | Running cost | About $0.0004 per device-day on Cloudflare at 5-minute readings sent every 15 minutes, $0.0001 at hourly readings. NIDD carrier pricing is unpublished. |
 | 19 | Who may create a Nidd pigeon | Only a flock in an organization listed in `NIDD_ALLOWED_ORG_IDS`, a fail-closed allowlist, while D2 keeps NIDD to JES's own devices. |
@@ -1331,9 +1331,9 @@ value, a frame or an IMEI.
 ### 8.5 Registering the listener (owner runbook, once per environment)
 
 Registering displaces whatever holds `NiddService` on the account today (the 2023 middleware
-registered one, and the SDK's example worker routes one to `/vzw/nidd`,
-`thingspace-sdk-rust/examples/cf-worker/wasm-serv/src/lib.rs:30`), so it is the owner's action,
-decision D4, and it waits on task 0.5. The commands live in `docs/infra/thingspace-nidd.md` as one
+registered one, and the SDK's example worker, whose deployment task 0.5 deleted, held it at
+`/vzw/nidd`, `thingspace-sdk-rust/examples/cf-worker/wasm-serv/src/lib.rs:30`), so it is the
+owner's action, decision D4. The commands live in `docs/infra/thingspace-nidd.md` as one
 script, which is the authority; this section keeps its steps and the reasons for them. It is run
 with `bash`, never pasted into an interactive shell, where `set -e` or an `exit` would close the
 shell. It reads every value from exported environment variables, passes secrets to `curl` and `jq`
@@ -1377,9 +1377,10 @@ either.
 Step 2 is also the credential inventory. The account's API credentials are held by the dovecote
 environment being registered (both deployed environments during bring-up, production alone after
 cutover) and by the owner's machine: `secrets.env`, and the SDK repository's gitignored
-`secrets.toml` while its live tests need them. Nothing else holds them: task 0.5 removes the SDK's
-example worker deployment and confirms the 2023 middleware's host holds none. Anything found
-holding them later is removed and the credentials rotated (8.4).
+`secrets.toml` while its live tests need them. Nothing else holds them: task 0.5 deleted the SDK's
+example worker deployment and rotated the credentials, so whatever held the old ones, the 2023
+middleware's host included, holds none that work. Anything found holding them later is removed
+and the credentials rotated (8.4).
 
 7. In the Cloudflare dashboard, a Configuration Rule turning Browser Integrity Check off for
    `/internal/thingspace/*` on both API hostnames, before the first callback. The zone's BIC has
@@ -2192,9 +2193,9 @@ library, 4 to 8 for the sample, 8 to 16 on the bench.
 Hours are ranges for one engineer, bench and deploy waiting included; owner hours are separate.
 
 **Gate:** nothing merges to `main` until tasks 0.1 to 0.3 pass and task 0.5 is done. Task 0.5 is
-independent of NIDD and urgent: it closes an exposure that exists today. If the bench nRF9160
-Feather cannot attach to Verizon NB-IoT, the connector cannot be proven and the work stops at
-Phase 0. The nRF9151 is no fallback: Verizon does not support the board.
+independent of NIDD, and done. If the bench nRF9160 Feather cannot attach to Verizon NB-IoT, the
+connector cannot be proven and the work stops at Phase 0. The nRF9151 is no fallback: Verizon does
+not support the board.
 
 Phase 0, the gate and the rollback guard:
 
@@ -2204,7 +2205,7 @@ Phase 0, the gate and the rollback guard:
 | 0.2 | pigeon-examples | `nidd_probe` (13.2) | 4 to 8 | none |
 | 0.3 | bench | B2, B3 | 2 to 4 | 0.1, 0.2 |
 | 0.4 | pidgeiot | `refresh_token` refuses an unparseable stored connector (6.5); deployed alone, staging then production | 1 to 2 | none |
-| 0.5 | owner | Now: delete the SDK's example worker deployment, which is public at https://thingspace-sdk.justinsengineeringservices.workers.dev/ (its `POST /api/send_nidd` reached its handler with no authentication on 2026-09-24, answering 400 "Bad 'Content-Type' header" with nothing sent), and its KV namespace; its default `api` build (`thingspace-sdk-rust/examples/cf-worker/wasm-serv/Cargo.toml:38`) serves listener list, register and deregister, a device list and `send_nidd` with no authentication (`src/lib.rs:25-29`), and the list returns every listener password [LIST]. Confirm the 2023 middleware's host (dusty-loft) holds no credentials; read the worker's logs for `/api/*` hits; then rotate the UWS password and the OAuth key pair in the ThingSpace portal and update `secrets.env` | 1 to 2 | none |
+| 0.5 | owner | Done: the SDK's example worker deployment and its KV namespace deleted, the UWS password and the OAuth key pair rotated, and `secrets.env` updated. Its default `api` build (`thingspace-sdk-rust/examples/cf-worker/wasm-serv/Cargo.toml:38`) serves listener list, register and deregister, a device list and `send_nidd` with no authentication (`src/lib.rs:25-29`), and the list returns every listener password [LIST] | 1 to 2 | none |
 
 Phase 1, the platform, on branch `nidd-connector`:
 
@@ -2251,7 +2252,7 @@ Totals: 65 to 105 engineering hours for the platform through a proven staging lo
 2); 36 to 62 for the device library and production (Phases 3 and 4); 101 to 167 in all. Owner: 3.5
 to 7 hours.
 
-Order of deploys: 0.5 now, before anything else; 0.4 alone; the Phase 0 gate; the SDK patch pushed
+Order of deploys: 0.5 first, done; 0.4 alone; the Phase 0 gate; the SDK patch pushed
 and pinned; fancier with the variant (staging, and production before any production Nidd pigeon);
 dovecote with the NIDD code but NIDD off (no `THINGSPACE_ACCOUNT_NAME`), which changes nothing
 observable; staging secrets, registration and tier 2; the device library and tier 3; production
@@ -2264,7 +2265,7 @@ last. No Postgres migration at any step.
 | D1 | What stops one account binding another's device | **The claim key** (4.4): built into the firmware, sent once per boot, gating uplink and downlink. No Postgres, no per-line operator work, and "refresh revokes" holds for NIDD | Operator assignment (section 9): JES assigns every line to an account by SQL before create. No firmware secret, and no 409 an account can squat, but SQL per line and a table to keep in step. Revisit before D2 opens NIDD to customers: the claim key stops data crossing, but an open create would let any account probe and squat IMEIs, which v1's org allowlist (4.6) prevents only while NIDD is JES's alone |
 | D2 | Whose ThingSpace account, and for whom | **JES's one account, for JES's own devices, until counsel answers** whether running customer lines on it is making "the Services available to any third party" (https://thingspace.verizon.com/legal/terms-of-service.html); and before the first customer line, whether Verizon joins `docs/legal/subprocessors.md` with the DPA's advance notice. Until then `NIDD_ALLOWED_ORG_IDS` lists JES's own organizations only | Customers bring their own ThingSpace accounts: a per-organization credential store and settings form dovecote does not have, a feature of its own |
 | D3 | The SDK, and the licence statement | **Depend on the patched SDK**, pinned by revision, accepted per crate in `about.toml`; and **state pidgeiot's licence explicitly** in `README.md:80` and each crate's `license` field. `AGPL-3.0-only` matches what the dovecote binary effectively is once it links the SDK; "or later" also works | Vendor the three calls (about 150 lines over `worker::Fetch`): no new crates, no licence table, but a fork of the owner's client |
-| D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired in intent, but the example worker is still deployed and public, with unauthenticated routes that read the listener password and send to any line (task 0.5) | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
+| D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired, and task 0.5 deleted the example worker's deployment | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
 | D5 | A second UWS user for staging and dev | **Yes, if the account allows one**: then no staging mistake can spend production's lockout budget | One shared user: the latch still caps it at one strike per environment, two or three of Verizon's five |
 | D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download, and B9 proved it works beside the Non-IP PDN. The bench SIM's plan carries IP data, but 250 KB a month, less than one signed application image (319 to 489 KB), so field plans need a larger IP allowance for firmware | NIDD only: no remote firmware path at all; a bad build is a site visit |
 | D7 | Downlink delivery window (`maximumDeliveryTime`) | **30 seconds**, for pushes and replies alike. A push that misses the device's connection is not worth holding: nothing buffered was seen delivered later (B8's `Queued` push failed 30 minutes on; the B7 retest's, sent with 86400 s, reached none of the device's next three connections in 31 minutes), and the device's next uplink brings it as a reply. A reply lands 0.5 to 4 s after the send call | Longer holds nothing that has been seen to arrive, and lets a stale `SHADOW` land after a newer one (harmless, 7.4). A day-long window with a day-long re-push, as first designed, left a device that sends only telemetry waiting a day for its config |
@@ -2394,10 +2395,8 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   and counsel, not engineering.
 - **U18.** None seen (B3, B10: twelve frames in six minutes, no drop, no rate-control event).
 - **U19.** The sizes of a departure payload (section 14.4) are an estimate, not a measurement.
-- **U20.** Whether the deployed `thingspace-sdk` example worker holds live ThingSpace credentials
-  (its send route answered like the `api` build at `9d920a4` on 2026-09-24; nothing that would
-  use a credential was called), and whether the 2023 middleware still runs anywhere with
-  credentials. Task 0.5 settles both.
+- **U20.** Settled by task 0.5: the SDK's example worker deployment is deleted, and the rotation
+  leaves it and the 2023 middleware holding no credential that works.
 - **U21.** Whether the IMEI in a callback is what the modem reported or the line's provisioned
   record. B5 settled the other half: the inner `deviceIds` carry the ICCID, and the line pin took
   it.
@@ -2439,8 +2438,6 @@ Also read on 2026-09-24:
 
 - https://rdap.arin.net/registry/ip/3.87.163.45 and https://rdap.arin.net/registry/ip/137.117.33.109
   (two of Verizon's eight callback addresses: Amazon's `AMAZON-IAD`, Microsoft's `MICROSOFT`)
-- https://thingspace-sdk.justinsengineeringservices.workers.dev/ and its `/api/send_nidd`, probed
-  by the security review without any credential (task 0.5)
 
 [NIDD], [SEND], [CB], [CBBP], [REG], [LOGIN], [CRED], [NUG], the Durable Object state and pricing
 pages, the Workers, Queues and Hyperdrive query-caching pages and the cargo-about page were read
