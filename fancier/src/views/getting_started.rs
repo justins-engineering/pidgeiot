@@ -132,7 +132,7 @@ pub fn GettingStartedPage() -> Element {
           code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
             "native_sim"
           }
-          " swaps in host-socket networking, and compiles as a plain native binary, so a working host C compiler is the only real prerequisite (no Zephyr SDK cross-toolchain needed for this target). See the "
+          " swaps in host-socket networking and compiles as a plain native binary with your host's own C compiler, so no Zephyr SDK is needed. It does need a Linux machine (WSL 2 on Windows; native_sim does not run on macOS) with CMake and Ninja installed. See the "
           a {
             class: "link link-secondary",
             href: "https://github.com/justins-engineering/pigeon-examples",
@@ -161,7 +161,7 @@ pub fn GettingStartedPage() -> Element {
         }
 
         h3 { class: "text-lg font-bold mb-2", "3. Build and run" }
-        GsCode { code: "west build -d build_wifi_native samples/wifi_init -b native_sim/native/64\n./build_wifi_native/zephyr/zephyr.exe" }
+        GsCode { code: "ZEPHYR_TOOLCHAIN_VARIANT=host west build -d build_wifi_native samples/wifi_init -b native_sim/native/64\n./build_wifi_native/zephyr/zephyr.exe" }
       }
     }
 
@@ -185,20 +185,20 @@ pub fn GettingStartedPage() -> Element {
         }
         ul { class: "list-disc ml-6 space-y-2 text-base-content/70 leading-relaxed",
           li {
-            "The connection badge next to the pigeon's name flips to online once it's reported in."
+            "Reload the page: the connection badge next to the pigeon's name reads online once it's reported in."
           }
           li {
-            "Try the config loop: click "
-            strong { "Edit Shadow" }
+            "Try the config loop: in the Shadow section click "
+            strong { "Edit" }
             " and set "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
               "{{\"telemetry_interval\": 30}}"
             }
-            ". Within one poll the simulator's console reads \"Next shadow poll in 30 s\", the reports speed up, and the Shadow section's "
+            ". Within one poll the simulator's console reads \"Next shadow poll in 30 s\", the reports speed up, and after a reload the Shadow section's "
             strong { "Current" }
-            " version catches up to "
+            " version has caught up to "
             strong { "Target" }
-            " -- the full config round trip. (A device only adopts keys its firmware understands -- this sample knows "
+            ": the full config round trip. (A device only adopts keys its firmware understands -- this sample knows "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded", "log" }
             ", "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
@@ -209,7 +209,7 @@ pub fn GettingStartedPage() -> Element {
             ". Anything else stays visible in Target but won't appear in Current, which is exactly how you spot a key your firmware ignored.)"
           }
           li {
-            "Every numeric value the device reports becomes graphable under Telemetry Graphs. This sample sends three keys: "
+            "Every numeric value the device reports can be graphed in the Telemetry section (Add Graph). This sample sends three keys: "
             code { class: "font-mono text-sm bg-base-300 px-1.5 py-0.5 rounded",
               "uptime_s"
             }
@@ -249,8 +249,8 @@ pub fn GettingStartedPage() -> Element {
               Icon { icon: LdMessagesSquare, class: "size-7 stroke-secondary", title: "Chat" }
             },
             title: "Stuck?",
-            body: "Discord is where the maintainers actually are. Bug reports go to the issue tracker and get answered by the people who wrote the line.",
-            href: Some("https://discord.gg/W2vjtpeP"),
+            body: "Email support@pidgeiot.com, or open an issue on GitHub where the code lives. Either way the reply comes from the person who wrote the line.",
+            href: Some("mailto:support@pidgeiot.com"),
             route: None,
           }
           GsLink {
@@ -258,9 +258,9 @@ pub fn GettingStartedPage() -> Element {
               Icon { icon: LdKeyRound, class: "size-7 stroke-secondary", title: "Key" }
             },
             title: "Explore shadows & alerts",
-            body: "Push configuration to a device and define alerts that evaluate against it -- see the full Documentation page.",
+            body: "Push configuration to a device and define alerts that evaluate against it. The Features page shows how each works.",
             href: None,
-            route: Some(Route::DocumentationPage {}),
+            route: Some(Route::FeaturesPage {}),
           }
           GsLink {
             icon: rsx! {
