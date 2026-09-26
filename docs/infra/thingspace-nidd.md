@@ -347,7 +347,9 @@ tests run on dev after cutover, and on staging again only with a second ThingSpa
   `outcome=stored`, a retry overlapping its first attempt (only when a callback runs past about
   4 s) logs `outcome=duplicate` with its `attempt=2`, a frame the carrier delivered twice logs
   `outcome=repeat` under its second request id, and the organization's billed messages rise by
-  exactly the readings sent.
+  exactly the readings sent. An unchanged shadow report logs `outcome=repeat` too, and the line
+  names no frame type, so the re-delivery check is that billing equality, not a count of `repeat`
+  lines.
 - **Deploy dovecote and reflash together when the frame layout changes.** A `TELEMETRY` frame
   carries the device's send sequence, and dovecote refuses one without it (`400`, logged
   `outcome=malformed`): a device built from `pigeon` before the sequence stores nothing until it
