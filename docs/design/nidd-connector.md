@@ -1130,7 +1130,8 @@ No claim key value appears in this document; the test fixture is 16 zero bytes.
   ignores any `SHADOW` that is not newer, except to read its `current_version` as a confirmation. A
   repeated or late `SHADOW` therefore settles on the newest. Repeats are expected: any uplink from
   a device that is behind draws the owed `SHADOW` once the last one is 30 s old or was reported
-  missed, and a push ThingSpace reported `Queued` may still land after its reply.
+  missed, and a push ThingSpace reported `Queued` may still land after its reply, or hours later:
+  the soak saw two buffered pushes arrive 10.6 h on.
 - A report is confirmed by `STATUS STORED` or by a `SHADOW` whose `current_version` is at least the
   version reported. Re-sending a report is harmless: the write is the same, and an identical report
   is not billed.
@@ -1878,12 +1879,16 @@ the text above does not carry:
 - **A frame that lands after the connection closed can still arrive.** A push sent 0.6 s before
   its wake's connection went idle and a reply sent 1.7 s after were paged 3.8 and 2.2 s after the
   send, inside the 60 s active time, and delivered. A frame sent to a device in PSM went `Queued`
-  or `DeliveryFailed` and was never delivered later, including one sent 0.6 s before the device's
-  own uplink connected. Tier 2's worst-case push, sent with the 86400 s `maximumDeliveryTime`
+  or `DeliveryFailed` and reached none of the device's next connections, including one sent 0.6 s
+  before the device's own uplink connected. Tier 2's worst-case push, sent with the 86400 s `maximumDeliveryTime`
   dovecote asked before D13 was implemented, reported `DeliveryFailed` "timeout, could not deliver
   data" 24 hours after it was sent, having reached none of the device's connections that day; a
-  push sent with the current 30 s drew `Queued` and no final report in the next eight hours
-  (outside a 35-minute gap in the tail).
+  push sent with the current 30 s drew `Queued`, no final report in the next eight hours (outside
+  a 35-minute gap in the tail), and then `Delivered` 10 h 35 min after it was sent, in one soak
+  connection together with a second buffered 30 s frame from the same evening; the device dropped
+  both on their tags, signed under the key a token refresh had since replaced, and the version rule
+  would have refused them otherwise. `maximumDeliveryTime` is honoured for some buffered frames
+  (one failed at exactly 30 s) and not others; nothing in the design may rely on it.
 - **RAI.** `RAI_ONGOING` is accepted on the raw socket and does not lengthen a telemetry-only
   connection (3.7 to 4.1 s, the probe's 3.5 to 4.6 s without it). After `RAI_NO_DATA` Verizon
   released the radio 2.6 to 3.2 s later at a wake and 1.2 to 6.0 s later at a boot.
@@ -2278,7 +2283,7 @@ production last. No Postgres migration at any step.
 | D4 | Displace whatever holds `NiddService` today | **Yes**, once B1 has named the holder and task 0.5 is done. The 2023 middleware and the SDK's example worker are retired, and task 0.5 deleted the example worker's deployment | Keep it: then NIDD uplink cannot reach dovecote at all, since Verizon allows one endpoint per service per account |
 | D5 | A second UWS user for staging and dev | **Yes, if the account allows one**: then no staging mistake can spend production's lockout budget | One shared user: the latch still caps it at one strike per environment, two or three of Verizon's five |
 | D6 | The SIM plan for field units | **NIDD with IP data**, if Verizon sells it: the IP PDN carries HTTPS firmware download, and B9 proved it works beside the Non-IP PDN. The bench SIM's plan carries IP data, but 250 KB a month, less than one signed application image (319 to 489 KB), so field plans need a larger IP allowance for firmware | NIDD only: no remote firmware path at all; a bad build is a site visit |
-| D7 | Downlink delivery window (`maximumDeliveryTime`) | **30 seconds**, for pushes and replies alike. A push that misses the device's connection is not worth holding: nothing buffered was seen delivered later (B8's `Queued` push failed 30 minutes on; the B7 retest's, sent with 86400 s, reached none of the device's next three connections in 31 minutes), and the device's next uplink brings it as a reply. A reply lands 0.5 to 4 s after the send call | Longer holds nothing that has been seen to arrive, and lets a stale `SHADOW` land after a newer one (harmless, 7.4). A day-long window with a day-long re-push, as first designed, left a device that sends only telemetry waiting a day for its config |
+| D7 | Downlink delivery window (`maximumDeliveryTime`) | **30 seconds**, for pushes and replies alike. A push that misses the device's connection is not worth holding: a buffered push does not reach the device's next connections (B8's `Queued` push failed 30 minutes on; the B7 retest's, sent with 86400 s, reached none of the next three in 31 minutes; two 30 s pushes buffered in tier 3 reached none of about thirty in ten hours), and the device's next uplink brings it as a reply. The window bounds nothing on the carrier's side: those two tier-3 pushes were delivered together 10.6 h after buffering, and the device refused both (7.4). A reply lands 0.5 to 4 s after the send call | Longer holds nothing that has been seen to arrive, and lets a stale `SHADOW` land after a newer one (harmless, 7.4). A day-long window with a day-long re-push, as first designed, left a device that sends only telemetry waiting a day for its config |
 | D8 | Confirm every converged shadow report with `STATUS STORED` | **Yes**: one extra downlink per shadow change keeps the library's rule that a report is the one confirmed call | No reply when converged: saves that downlink, and the device can no longer tell a stored report from a lost one |
 | D9 | Price NIDD | **No downlink metering in v1**, NIDD kept off the pricing and marketing pages until the carrier price is known, and the "every transport in the free tier" promise (`fancier/src/views/pricing.rs:544`) reviewed before NIDD is listed. Downlinks per organization are logged, so the decision will have data | Meter downlinks now, against a carrier price nobody has seen |
 | D10 | The departure board on NIDD | **No**: it stays on LTE-M IP (14.4). NIDD is for low-duty sensors and, possibly, an e-paper variant on a core Verizon supports, which the nRF9151 is not | Pursue it: a Verizon exception to the 4-an-hour guideline, an NB-IoT build, and an application-data downlink the platform does not have |
