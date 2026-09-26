@@ -245,7 +245,7 @@ pub fn GettingStartedPage() -> Element {
               Icon { icon: LdCode, class: "size-7 stroke-primary", title: "Code" }
             },
             title: "Flash real hardware",
-            body: "Board-level samples for ESP32-C6 and Nordic nRF91 boards in the same pigeon-examples repository.",
+            body: "Samples for the Circuit Dojo nRF9160 and nRF9151 Feathers and the ESP32-C6-DevKitC, in the same pigeon-examples repository; start with https_init. On any other board, the pigeon library goes into your own Zephyr app.",
             href: Some("https://github.com/justins-engineering/pigeon-examples"),
             route: None,
           }
