@@ -790,7 +790,9 @@ fn log_nidd_callback(
 /// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
 /// anything a retry would repeat identically. A store that failed, or a deploy with NIDD half
 /// configured, answers 503, which is the truth but loses the callback: ThingSpace retries once,
-/// about a second later, and never after, so each such answer is logged as lost. Billing, the
+/// about a second later, and never after, so each such answer is logged as lost. It also retries
+/// a callback unanswered for about 4 s while the first attempt still runs; the Durable Object
+/// holds that retry until the first attempt has stored the uplink or failed. Billing, the
 /// Postgres sync and every downlink run in the Durable Object after it answers.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{

@@ -1,6 +1,6 @@
 use crate::helpers::nidd::{
-  NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddRow, NiddSqlRow, STATUS_PAUSED, STATUS_STORED,
-  STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
+  NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_PAUSED,
+  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
   nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
   shadow_reply_due, sign_frame, status_frame,
 };
@@ -164,6 +164,7 @@ pub struct Pigeons {
   // purpose -- a pending command has no meaning across a DO eviction
   // (there's no in-flight HTTP handler left to resolve).
   shell_waiters: RefCell<HashMap<String, oneshot::Sender<ShellOutputPayload>>>,
+  nidd_in_flight: NiddInFlight,
 }
 
 /// Carrier for a device's `shell_output` frame fields, handed from
@@ -382,6 +383,7 @@ impl DurableObject for Pigeons {
       state,
       env,
       shell_waiters: RefCell::new(HashMap::new()),
+      nidd_in_flight: NiddInFlight::default(),
     }
   }
 
@@ -3061,8 +3063,9 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// after it: a dashboard write or another callback may have changed it meanwhile. A repeat of an
 /// uplink (ThingSpace's retry after an answer that was not a 2xx or took over about 4 s, or a
 /// support resend) is recognised by its request id and frame digest and never stored or billed
-/// twice. A telemetry frame claims that key before the enqueue awaits, since the object serves
-/// the retry of a slow callback meanwhile, and releases it on a 503 so the retry can store it.
+/// twice. The object serves the retry of a slow callback while the first attempt awaits its
+/// enqueue, so that retry waits for the first attempt: a repeat if it stored the uplink, stored
+/// here if it failed.
 ///
 /// Answers 200 with the outcome as the body, 404 when no pigeon is here, and 5xx when the store
 /// failed, which the gateway answers 503 and logs as lost: ThingSpace retries once at once and
@@ -3077,8 +3080,15 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let Ok(frame) = req.bytes().await else {
     return Response::error("Bad Request: Failed to read body", 400);
   };
-  let now = (Date::now().as_millis() / 1000) as i64;
   let pigeon_id = pigeons.state.id().to_string();
+  let key = dedupe_key(&request_id, &frame);
+  // A `false` means the attempt failed; loop, since another waiting retry may claim it first.
+  while let Some(attempt) = pigeons.nidd_in_flight.wait(&key) {
+    if attempt.await.unwrap_or(false) {
+      return Response::ok("duplicate");
+    }
+  }
+  let now = (Date::now().as_millis() / 1000) as i64;
 
   let mut row = match read_nidd_row(&pigeons.sql) {
     Ok(row) => row,
@@ -3087,7 +3097,6 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       return Response::error("Internal Server Error", 500);
     }
   };
-  let key = dedupe_key(&request_id, &frame);
   if row.has_seen(&key) {
     return Response::ok("duplicate");
   }
@@ -3169,13 +3178,12 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           "rejected"
         }
         Ok(body) => {
-          // Claimed before the await, during which ThingSpace's retry of a slow callback lands.
-          row.remember(key.clone());
-          if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
-            console_error!("NIDD uplink: state WRITE error for pigeon {pigeon_id}: {e}");
-            return Response::error("Internal Server Error", 500);
-          }
+          // Nothing awaited since the wait loop found no attempt, so none can hold the key.
+          pigeons.nidd_in_flight.claim(&key);
           let result = ingest_telemetry(pigeons, body, "NIDD").await;
+          // Before any early return below, or a waiting retry would never be answered.
+          let decided = !matches!(result, TelemetryOutcome::Failed);
+          pigeons.nidd_in_flight.settle(&key, decided);
           // The enqueue awaited, so the row may have moved meanwhile.
           row = match read_nidd_row(&pigeons.sql) {
             Ok(fresh) => fresh,
@@ -3186,11 +3194,6 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           };
           match result {
             TelemetryOutcome::Failed => {
-              // Released, or the retry this 503 asks for would answer `duplicate`.
-              row.forget(&key);
-              if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
-                console_error!("NIDD uplink: key release error for pigeon {pigeon_id}: {e}");
-              }
               return Response::error("Service Unavailable: telemetry not stored", 503);
             }
             TelemetryOutcome::Rejected(message) => {
@@ -3315,9 +3318,8 @@ fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
   }
 }
 
-/// Records the uplink's key, unless it was claimed already, and whatever the uplink changed in one
-/// write, answers with the outcome, and hands billing, the Postgres sync and any downlink to the
-/// tail.
+/// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
+/// hands billing, the Postgres sync and any downlink to the tail.
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,

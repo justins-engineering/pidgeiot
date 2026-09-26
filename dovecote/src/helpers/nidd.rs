@@ -7,9 +7,12 @@
 
 use super::constant_time_eq;
 use capsules::{NIDD_MAX_FRAME_BYTES, PigeonShadow};
+use futures::channel::oneshot;
 use futures::future::{Either, select};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -465,6 +468,37 @@ pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
   key
 }
 
+/// The telemetry uplinks a pigeon's object is storing, by de-duplication key, each with the
+/// retries waiting on it. Held in memory rather than in `pigeon_nidd`, so a claim ends with the
+/// attempt that made it: an attempt lost to an object reset leaves nothing to turn its retry away.
+#[derive(Default)]
+pub struct NiddInFlight(RefCell<HashMap<String, Vec<oneshot::Sender<bool>>>>);
+
+impl NiddInFlight {
+  /// Marks `key` as being stored. The caller found no attempt under it with no await since.
+  pub fn claim(&self, key: &str) {
+    self.0.borrow_mut().insert(key.to_string(), Vec::new());
+  }
+
+  /// The outcome of the attempt storing `key`, or `None` when none is: `true` once it stored or
+  /// refused the uplink, `false` (or a dropped sender) when it failed and the retry should try.
+  pub fn wait(&self, key: &str) -> Option<oneshot::Receiver<bool>> {
+    let mut attempts = self.0.borrow_mut();
+    let waiters = attempts.get_mut(key)?;
+    let (sender, receiver) = oneshot::channel();
+    waiters.push(sender);
+    Some(receiver)
+  }
+
+  /// Ends the attempt storing `key` and tells each retry waiting on it whether it was decided.
+  pub fn settle(&self, key: &str, decided: bool) {
+    let waiters = self.0.borrow_mut().remove(key).unwrap_or_default();
+    for waiter in waiters {
+      let _ = waiter.send(decided);
+    }
+  }
+}
+
 /// `pigeon_nidd` as SQL returns it, `seen` still JSON text.
 #[derive(Deserialize)]
 pub struct NiddSqlRow {
@@ -519,22 +553,13 @@ impl NiddRow {
     self.seen.iter().any(|seen| seen == key)
   }
 
-  /// Records an uplink's key once, forgetting the oldest beyond the window. A key already held
-  /// is left in place, so an uplink that claimed its key before awaiting can record it again.
+  /// Records an uplink's key, forgetting the oldest beyond the window.
   pub fn remember(&mut self, key: String) {
-    if self.has_seen(&key) {
-      return;
-    }
     self.seen.push(key);
     if self.seen.len() > NIDD_SEEN_KEYS {
       let excess = self.seen.len() - NIDD_SEEN_KEYS;
       self.seen.drain(..excess);
     }
-  }
-
-  /// Releases a key claimed for an uplink that was not stored, so ThingSpace's retry can store it.
-  pub fn forget(&mut self, key: &str) {
-    self.seen.retain(|seen| seen != key);
   }
 
   /// `seen` as the JSON text the table stores.
@@ -1102,16 +1127,27 @@ mod tests {
   }
 
   #[test]
-  fn a_key_is_remembered_once_and_released_alone() {
-    let mut row = NiddRow::default();
-    row.remember("a".to_string());
-    row.remember("b".to_string());
-    row.remember("a".to_string());
-    assert_eq!(row.seen, ["a", "b"]);
-    row.forget("a");
-    assert_eq!(row.seen, ["b"]);
-    row.forget("a");
-    assert_eq!(row.seen, ["b"]);
+  fn a_retry_waits_for_the_attempt_storing_its_key() {
+    use futures::FutureExt;
+
+    let in_flight = NiddInFlight::default();
+    assert!(in_flight.wait("k").is_none());
+    in_flight.claim("k");
+    let mut first = in_flight.wait("k").expect("an attempt is storing k");
+    let second = in_flight.wait("k").expect("an attempt is storing k");
+    assert!(in_flight.wait("other").is_none());
+    assert_eq!((&mut first).now_or_never(), None);
+
+    in_flight.settle("k", false);
+    assert_eq!(first.now_or_never(), Some(Ok(false)));
+    assert_eq!(second.now_or_never(), Some(Ok(false)));
+    assert!(in_flight.wait("k").is_none());
+
+    in_flight.claim("k");
+    let third = in_flight.wait("k").expect("an attempt is storing k");
+    in_flight.settle("k", true);
+    assert_eq!(third.now_or_never(), Some(Ok(true)));
+    assert!(in_flight.wait("k").is_none());
   }
 
   #[test]
