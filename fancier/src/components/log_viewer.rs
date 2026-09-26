@@ -503,8 +503,25 @@ pub fn LogViewer(
         LogsState::Failed => rsx! {
           p { class: "text-error text-sm", "Failed to load device logs. Please try again." }
         },
+        // Log upload is a build option that defaults off, and the guide's
+        // sample leaves it off, so an empty panel is usually the firmware's
+        // choice rather than a fault.
         LogsState::Loaded(chunks) if chunks.is_empty() => rsx! {
-          p { class: "text-base-content/50 italic text-sm", "No log chunks received yet." }
+          div { class: "flex flex-col gap-1 text-sm",
+            p { class: "text-base-content/50 italic", "No log chunks received yet." }
+            p { class: "text-base-content/60",
+              "A device uploads its logs only when its firmware is built with "
+              code { class: "text-xs", "CONFIG_PIGEON_LOG_UPLOAD=y" }
+              ". Among the pigeon-examples samples, https_init, coap_dtls_init and mqtt_init turn it on; wifi_init, the getting-started sample, does not. "
+              a {
+                class: "link link-secondary",
+                href: "https://github.com/justins-engineering/pigeon-examples/blob/main/docs/device-logs.md",
+                target: "_blank",
+                rel: "noopener noreferrer",
+                "How device logs work"
+              }
+            }
+          }
         },
         LogsState::Loaded(chunks) => {
           let table = rsx! {
