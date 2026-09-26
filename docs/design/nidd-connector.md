@@ -2110,11 +2110,12 @@ PIGEON_FOTA`, since the image fetch reads both; `PIGEON_TELEMETRY_BATCH` (`:1135
 case, checks the `nidd://` scheme and configures the PDP context while the modem is offline.
 
 Build-time checks, each a `BUILD_ASSERT` naming the Kconfig to change:
-`PIGEON_TELEMETRY_BODY_MAX <= 1273` (the value counts the NUL, so the flat body is at most 1272
-bytes plus the type byte; it fails at the default 8 keys and holds at 7, so a NIDD build defaults
+`PIGEON_NIDD_SEQUENCE_MAX + PIGEON_TELEMETRY_BODY_MAX <= 1273` (the value counts the NUL, which
+stands for the type byte, so the flat body is at most 1261 bytes after the type byte and an
+11-byte sequence; it fails at the default 8 keys and holds at 7, so a NIDD build defaults
 `CONFIG_PIGEON_TELEMETRY_MAX_KEYS` to 7), naming `CONFIG_PIGEON_TELEMETRY_MAX_KEYS` as the one to
-lower; the telemetry batch body fits 1272 bytes; `CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64 <= 1272`
-(the report body);
+lower; the same for the telemetry batch body, which fits 1261 bytes;
+`CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64 <= 1272` (the report body);
 `sizeof(CONFIG_PIGEON_NIDD_CLAIM_KEY) == 33`; an NB-IoT network mode (`LTE_NETWORK_MODE_NBIOT`,
 `_NBIOT_GPS`, or a dual mode preferring NB-IoT).
 
