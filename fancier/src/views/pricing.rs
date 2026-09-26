@@ -84,8 +84,8 @@ fn NeverCard(label: String, value: String, note: String, body: String) -> Elemen
 
 /// A paid tier card's call to action. Until billing goes live it is a
 /// disabled "Free in beta" chip, and for signed-out visitors after that a
-/// disabled "Sign in to upgrade" chip -- checkout is only offered to a
-/// signed-in visitor, and even then
+/// link to sign up, since every account starts on the free tier. Checkout
+/// is only offered to a signed-in visitor, and even then
 /// only resolves for someone who manages exactly one org with no live
 /// subscription (an entitled org changes plan in the Billing Portal from
 /// its own page instead, since a second Checkout would create a second
@@ -103,14 +103,18 @@ fn TierUpgradeCta(plan: BillingPlan) -> Element {
   let mut cta_error = use_signal(|| Option::<String>::None);
   let mut naming_org = use_signal(|| false);
 
-  if !crate::config::BILLING_LIVE || !(session.state)().is_authenticated() {
-    let label = if crate::config::BILLING_LIVE {
-      "Sign in to upgrade"
-    } else {
-      "Free in beta"
-    };
+  if !crate::config::BILLING_LIVE {
     return rsx! {
-      div { class: "btn btn-outline w-full font-bold btn-disabled", "{label}" }
+      div { class: "btn btn-outline w-full font-bold btn-disabled", "Free in beta" }
+    };
+  }
+  if !(session.state)().is_authenticated() {
+    return rsx! {
+      Link {
+        class: "btn btn-outline w-full font-bold",
+        to: Route::RegisterFlow { flow: None },
+        "Sign up, then upgrade"
+      }
     };
   }
 
