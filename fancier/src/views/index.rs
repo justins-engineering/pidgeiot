@@ -443,12 +443,19 @@ pub fn Index() -> Element {
           Link { class: "btn btn-primary btn-lg font-bold", to: Route::DemoPage {},
             "Try the live demo"
           }
-          a {
+          Link {
             class: "btn btn-outline btn-lg font-bold",
+            to: Route::GettingStartedPage {},
+            "Get started"
+          }
+        }
+        p { class: "mt-5 text-sm",
+          a {
+            class: "link link-primary font-semibold",
             href: "https://github.com/justins-engineering",
             target: "_blank",
             rel: "noopener noreferrer",
-            "Read the source"
+            "Read the source on GitHub"
           }
         }
         p { class: "mt-5 text-sm text-base-content/60 font-mono",
@@ -708,8 +715,8 @@ pub fn Index() -> Element {
           Link {
             class: "btn btn-lg btn-outline font-bold",
             style: "background:transparent;border-color:var(--color-primary-content);color:var(--color-primary-content)",
-            to: Route::DocumentationPage {},
-            "Read the docs"
+            to: Route::GettingStartedPage {},
+            "Get started"
           }
         }
       }
