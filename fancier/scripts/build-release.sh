@@ -280,7 +280,7 @@ JSONLD = json.dumps({
          "url": BASE,
          "license": "https://www.gnu.org/licenses/agpl-3.0.html",
          "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
-                    "description": "Free during early access"}},
+                    "description": "Free for up to ten devices"}},
     ],
 })
 

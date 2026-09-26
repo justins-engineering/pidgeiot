@@ -16,7 +16,7 @@
   "pages": {
     "/": {
       "title": "PidgeIoT: Open-Source IoT Device Management",
-      "description": "Open-source IoT device management: config push, OTA updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Free while in beta."
+      "description": "Open-source IoT device management: config push, OTA updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Ten devices free."
     },
     "/features/": {
       "title": "IoT Platform Features: Shadows, Telemetry, OTA | PidgeIoT",

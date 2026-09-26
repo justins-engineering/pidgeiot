@@ -5,7 +5,7 @@
 > history, receive email alerts, and update firmware over the air. Built in
 > Rust end to end: the backend runs on Cloudflare Workers + Durable
 > Objects, the dashboard is a WASM single-page app. AGPL-3.0 licensed,
-> developed in the open, free during early access.
+> developed in the open, free for up to ten devices.
 
 Devices authenticate with per-device Ed25519 keypairs and compact binary
 bearer tokens (not JWTs); refreshing a token cryptographically revokes the
@@ -44,7 +44,8 @@ device-to-platform MQTT path against a broker on the same machine.
 
 - [Live Demo](https://pidgeiot.com/demo/): real device telemetry, no signup
 - [Features](https://pidgeiot.com/features/) and
-  [Pricing](https://pidgeiot.com/pricing/): free during early access
+  [Pricing](https://pidgeiot.com/pricing/): ten devices free, paid tiers
+  priced by what you connect
 - [Compare](https://pidgeiot.com/compare/): every IoT platform price we could
   verify, per device per month at three fleet sizes, each with its source
   and the date we checked it

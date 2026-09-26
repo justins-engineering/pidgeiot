@@ -166,7 +166,7 @@ fn DashboardMock() -> Element {
             "This is the whole dashboard"
           }
           p { class: "text-lg text-base-content/70 mt-2",
-            "No modules to buy, no widgets to assemble. Every device shows up here the moment it checks in."
+            "No modules to buy, no widgets to assemble. Every device you register is counted here, and the ones that need attention come first."
           }
         }
 
@@ -414,7 +414,7 @@ const CARDS: [Card; 5] = [
   Card {
     eyebrow: "City",
     title: "Smart parking",
-    body: "Bay occupancy served from the edge nearest each sensor: one object per device, however many there are.",
+    body: "Bay occupancy served from the edge: one object per sensor, however many there are.",
   },
 ];
 
@@ -485,7 +485,7 @@ pub fn Index() -> Element {
           Stop {
             number: "2",
             title: "The edge",
-            body: "Each device owns a small object on Cloudflare's network: its shadow, its permissions, its credentials. Nothing to provision, nothing to patch, close to wherever it wakes up.",
+            body: "Each device owns a small object on Cloudflare's network: its shadow, its permissions, its credentials. Nothing to provision, nothing to patch, placed near whoever first set it up.",
             mock: rsx! {
               div { class: "rounded-xl bg-base-200 border border-base-300 p-4 flex flex-col gap-2",
                 div { class: "flex items-center justify-between text-sm gap-3",
@@ -584,7 +584,7 @@ pub fn Index() -> Element {
         div { class: "flex flex-col gap-3 min-w-0",
           h3 { class: "text-xl md:text-2xl font-bold", "Private by default" }
           p { class: "leading-relaxed text-base-content/80",
-            "Send telemetry to your own endpoint and the history accumulates there, not here: we keep only the latest value per key. Dashboard identity is self-hosted, so your credentials don't visit a third party."
+            "Send telemetry to your own endpoint and the history accumulates there, not here: we keep only the latest value per key. Dashboard identity runs on our own Ory Kratos, not a hosted identity service."
           }
           Link { class: "link link-primary font-semibold text-sm", to: Route::HowItWorksPage {},
             "How data flows →"
@@ -614,7 +614,7 @@ pub fn Index() -> Element {
             div {
               h3 { class: "text-xl font-bold mb-2", "Serverless economics, edge-native by default" }
               p { class: "leading-relaxed text-base-content/80",
-                "The backend runs on Cloudflare Workers and Durable Objects, and each device owns its own SQLite-backed object at the edge. No idle servers to pay for, no capacity planning: a fleet of five costs almost nothing to serve, and the same architecture serves a fleet of thousands without a re-platform."
+                "The backend runs on Cloudflare Workers and Durable Objects, and each device owns its own SQLite-backed object at the edge. A fleet of five costs almost nothing to serve, and the same architecture serves a fleet of thousands without a re-platform."
               }
             }
           }
@@ -629,7 +629,7 @@ pub fn Index() -> Element {
             div {
               h3 { class: "text-xl font-bold mb-2", "Cryptographic identity per device" }
               p { class: "leading-relaxed text-base-content/80",
-                "Every device authenticates with its own Ed25519 keypair and a 69-byte binary token: no shared secrets, no JWT overhead, and refreshing a token is revocation, because it overwrites the only key the old one could verify against. Dashboard identity is self-hosted Ory Kratos: user credentials never leave infrastructure we control."
+                "Every device authenticates with its own Ed25519 keypair and a 69-byte binary token: no fleet-wide secret, no JWT overhead, and refreshing a token is revocation, because it overwrites the only key the old one could verify against. Dashboard identity is self-hosted Ory Kratos, not a hosted identity service."
               }
             }
           }
@@ -642,7 +642,7 @@ pub fn Index() -> Element {
               }
             }
             div {
-              h3 { class: "text-xl font-bold mb-2", "Rust and WebAssembly, end to end" }
+              h3 { class: "text-xl font-bold mb-2", "Rust and WebAssembly, edge to browser" }
               p { class: "leading-relaxed text-base-content/80",
                 "The edge router, this dashboard, and the wire types between them are one Rust workspace: the backend compiles to a Worker, the frontend to WebAssembly, and shared structs mean the two cannot drift apart. The protocol itself is the product surface: everything the dashboard does rides the same documented API a device or a script can use."
               }

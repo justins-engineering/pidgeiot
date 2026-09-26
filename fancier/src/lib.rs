@@ -365,7 +365,7 @@ pub fn App() -> Element {
   rsx! {
     document::Meta {
       name: "description",
-      content: "Open-source IoT device management: config push, OTA updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Free while in beta.",
+      content: "Open-source IoT device management: config push, OTA updates, telemetry graphs, GPS tracks, and email alerts for ESP32 and nRF91 fleets. Ten devices free.",
     }
     // Release builds get main.css from a static <link> in index.html instead
     // (Dioxus.toml's [web.resource], populated by scripts/build-release.sh) —
