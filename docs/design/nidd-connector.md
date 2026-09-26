@@ -2136,9 +2136,9 @@ the reason is given in place.
 
 | Transport call | Behaviour | Returns |
 |---|---|---|
-| `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`; `-EACCES` |
+| `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`, only while paused; `-EACCES`; `-ETIMEDOUT` with `res` zeroed when the modem did not take the frame in time |
 | `pigeon_transport_upload_logs` | Not defined: `PIGEON_LOG_UPLOAD` cannot be enabled on NIDD, so nothing references it (the CoAP connector's precedent) | links nowhere |
-| `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` (re-report next wake, harmless); `-EAGAIN`; `-EACCES`; `-EDEADLK` from the event callback |
+| `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` for no confirmation in time or a frame the modem did not take in time (re-report next wake, harmless); `-EAGAIN` only while paused; `-EACCES`; `-EDEADLK` from the event callback |
 | `pigeon_shadow_get` | A copy of the cached target; with none cached, a call waits only while a `HELLO`'s reply is owed, up to `SHADOW_WAIT` after that `HELLO` (an `UNCLAIMED 1` ends the wait), and otherwise answers `-EAGAIN` at once, so a refused key or an oversize target does not stall every wake. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
 
