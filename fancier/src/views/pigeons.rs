@@ -325,7 +325,7 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                               time::OffsetDateTime::now_utc(),
                           );
                           rsx! {
-                            ConnectionBadge { state, last_seen }
+                            ConnectionBadge { state, last_seen, window_hours: LIST_LOOKBACK_HOURS }
                           }
                       }
                     }

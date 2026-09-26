@@ -583,7 +583,7 @@ fn DeviceCard(
       }
       div { class: "flex items-center justify-between text-xs",
         span { class: "text-base-content/50",
-          "{connection_state::format_last_seen(last_seen, now)}"
+          "{connection_state::format_last_seen_within(last_seen, FLEET_LOOKBACK_HOURS, now)}"
         }
         Link {
           to: Route::PigeonView { flock_id, pigeon_id: pigeon_id.clone() },

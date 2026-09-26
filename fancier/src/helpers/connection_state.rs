@@ -38,6 +38,26 @@ pub fn classify(
   capsules::connection_state::classify(last_seen, interval_secs, now)
 }
 
+/// `format_last_seen` for a view that only looked `window_hours` back. No
+/// report inside the window is all such a view knows; "Never seen" would
+/// claim more, and is false for a device that went quiet a day ago.
+pub fn format_last_seen_within(
+  last_seen: Option<OffsetDateTime>,
+  window_hours: i64,
+  now: OffsetDateTime,
+) -> String {
+  if last_seen.is_some() {
+    return format_last_seen(last_seen, now);
+  }
+  const HEAD: &str = "No report in ";
+  let hours = window_hours.to_string();
+  let mut caption = String::with_capacity(HEAD.len() + hours.len() + 1);
+  caption.push_str(HEAD);
+  caption.push_str(&hours);
+  caption.push('h');
+  caption
+}
+
 /// Floor and fallback for `poll_interval_ms` -- fancier-only (dovecote never
 /// polls itself), so unlike `classify`'s thresholds these don't need to live
 /// in `capsules`.
@@ -127,6 +147,18 @@ impl ConnectionStateStyle for ConnectionState {
 mod classify_tests {
   use super::*;
   use time::macros::datetime;
+
+  #[test]
+  fn an_empty_window_is_not_called_never_seen() {
+    let now = datetime!(2026-09-26 12:00:00 UTC);
+    let caption = format_last_seen_within(None, 6, now);
+    assert_eq!(caption, "No report in 6h");
+    assert_eq!(caption.len(), caption.capacity());
+    assert_eq!(
+      format_last_seen_within(Some(now - time::Duration::hours(2)), 6, now),
+      "2h ago"
+    );
+  }
 
   #[test]
   fn suspended_wins_over_a_live_device() {
