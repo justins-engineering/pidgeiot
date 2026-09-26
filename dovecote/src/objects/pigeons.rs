@@ -3184,15 +3184,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           // Before any early return below, or a waiting retry would never be answered.
           let decided = !matches!(result, TelemetryOutcome::Failed);
           pigeons.nidd_in_flight.settle(&key, decided);
-          // The enqueue awaited, so the row may have moved meanwhile.
-          row = match read_nidd_row(&pigeons.sql) {
-            Ok(fresh) => fresh,
-            Err(e) => {
-              console_error!("NIDD uplink: state READ error for pigeon {pigeon_id}: {e}");
-              return Response::error("Internal Server Error", 500);
-            }
-          };
-          match result {
+          let outcome = match result {
             TelemetryOutcome::Failed => {
               return Response::error("Service Unavailable: telemetry not stored", 503);
             }
@@ -3201,7 +3193,20 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
               "rejected"
             }
             TelemetryOutcome::Stored => "stored",
-          }
+          };
+          // The enqueue awaited, so the row may have moved meanwhile. A retry could not change a
+          // decided outcome, only store a stored frame twice, so a failed read answers it and
+          // writes nothing: the stale copy could undo a push planned during the await.
+          row = match read_nidd_row(&pigeons.sql) {
+            Ok(fresh) => fresh,
+            Err(e) => {
+              console_error!(
+                "NIDD uplink: state READ error for pigeon {pigeon_id} after {outcome}: {e}"
+              );
+              return Response::ok(outcome);
+            }
+          };
+          outcome
         }
       };
       // Sent while this uplink's connection is up, since a push to an idle device can be lost. A
@@ -3319,7 +3324,9 @@ fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
 }
 
 /// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
-/// hands billing, the Postgres sync and any downlink to the tail.
+/// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
+/// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
+/// outcome and still runs the tail, so a stored report is billed and synced.
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,
@@ -3332,10 +3339,12 @@ fn finish_nidd_uplink(
   row.remember(key);
   if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
     console_error!(
-      "NIDD uplink: state WRITE error for pigeon {}: {e}",
+      "NIDD uplink: state WRITE error for pigeon {} after {outcome}: {e}",
       pigeons.state.id()
     );
-    return Response::error("Internal Server Error", 500);
+    if outcome != "stored" {
+      return Response::error("Internal Server Error", 500);
+    }
   }
   spawn_nidd_tail(pigeons, identity, stored_report, downlink);
   Response::ok(outcome)

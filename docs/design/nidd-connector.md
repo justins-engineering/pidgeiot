@@ -772,6 +772,12 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
     runs, in order: for a newly stored report, `count_billable_messages(env, id, 1)` and
     `update_shadow_pg_db` exactly as `handle_ws_shadow_report` does today (`:1797-1828`); then the
     planned downlink, if any (6.4).
+    Neither the re-read nor the write can fail a decided frame, since a retry could only store
+    and bill a stored one twice. A failed re-read after step 7 decided is logged and answers 200
+    with the outcome, writing and sending nothing: the pre-await copy could undo a push planned
+    during the await. A failed write after a store is logged, answers 200 and still runs the
+    tail, so a stored report is billed and synced. Any other failed write answers 500, and
+    ThingSpace retries.
 
 Row cost of a steady-state telemetry uplink: `pigeon_nidd` two reads (before and after the
 enqueue) and one write, `pigeon_telemetry_latest` one read and one write. Nothing else: the claim
@@ -1673,6 +1679,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 38 | A downlink frame not from dovecote (any holder of the API credentials, a replayed old frame) | The device drops a frame whose tag fails; a replayed `SHADOW` loses to a newer version; a replayed `PAUSED` holds at most 86400 s | The claim key is kept in the pigeon's DO and the firmware, never in Postgres (section 9) or a log |
 | 39 | An `UNCLAIMED` planned for a frame processed before the same wake's `HELLO` | Argument 0: the device sends `HELLO` again (hourly bound) rather than stopping | Only a failed `HELLO` draws argument 1 |
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
+| 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still bills and syncs a stored report and sends the planned reply, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost |
 
 ## 13. Tests and the staging verification plan
 
