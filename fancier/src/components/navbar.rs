@@ -84,6 +84,15 @@ pub fn Navbar() -> Element {
 
         // --- Navbar End: Auth, Theme Toggle & Mobile Menu ---
         div { class: "navbar-end flex items-center gap-1 lg:gap-2",
+          // Signed in, the header otherwise holds only an icon menu, so a
+          // visit to a public page left no visible way back into the app.
+          if is_logged_in {
+            Link {
+              class: "btn btn-sm btn-primary btn-outline font-semibold",
+              to: Route::Dashboard {},
+              "Dashboard"
+            }
+          }
           // Desktop Auth Actions
           div { class: "hidden lg:flex items-center gap-2",
             if is_logged_in {
@@ -92,6 +101,7 @@ pub fn Navbar() -> Element {
                 div {
                   tabindex: "0",
                   role: "button",
+                  aria_label: "User menu",
                   class: "btn btn-ghost btn-circle avatar border border-primary/20 hover:border-primary/50 transition-colors",
                   Icon {
                     icon: LdUser,
