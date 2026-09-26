@@ -236,11 +236,22 @@ pub fn DemoPage() -> Element {
 
     section { id: "demo-cta", class: "px-4 md:px-10 pb-24",
       div { class: "max-w-4xl mx-auto text-center",
-        Link {
-          class: "btn btn-lg btn-glow font-bold",
-          to: Route::RegisterFlow { flow: None },
-          Icon { icon: LdPlay, class: "mr-2", title: "Start now" }
-          "Start Your Own, Free"
+        h2 { class: "text-2xl md:text-3xl font-bold mb-3", "Run one of your own" }
+        p { class: "text-lg text-base-content/80 leading-relaxed mb-8 text-pretty",
+          "Sign up free, register a pigeon, and run a simulated device on your own machine until a board arrives. The getting-started guide walks through every step."
+        }
+        div { class: "flex flex-col sm:flex-row justify-center gap-4",
+          Link {
+            class: "btn btn-lg btn-glow font-bold",
+            to: Route::RegisterFlow { flow: None },
+            Icon { icon: LdPlay, class: "mr-2", title: "Start now" }
+            "Start Your Own, Free"
+          }
+          Link {
+            class: "btn btn-lg btn-outline font-bold",
+            to: Route::GettingStartedPage {},
+            "Read the guide first"
+          }
         }
       }
     }
