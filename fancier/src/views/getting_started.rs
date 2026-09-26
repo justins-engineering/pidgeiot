@@ -33,14 +33,14 @@ pub fn GettingStartedPage() -> Element {
     section { id: "getting-started-overview", class: "pb-16",
       div { class: "max-w-3xl mx-auto px-4 md:px-8 text-center",
         p { class: "text-sm uppercase tracking-wide text-base-content/50 font-semibold mb-4",
-          "The whole flow in under a minute"
+          "The whole flow in one minute"
         }
         // Click-to-play <video> instead of an autoplaying GIF: as an <img>
         // the GIF was this page's LCP element, gating LCP on its full
         // download (a 1.48MB GIF costs ~9s on slow 4G). Autoplaying video
         // doesn't fix it either -- Chrome takes the first frame, not the
         // poster, as the LCP candidate. Click-to-play makes the poster image
-        // the LCP candidate instead; the ~830KB webm only loads on click.
+        // the LCP candidate instead; the ~1.1MB webm only loads on click.
         GettingStartedRecording {}
       }
     }
@@ -277,9 +277,9 @@ pub fn GettingStartedPage() -> Element {
   }
 }
 
-/// The terminal recording, click-to-play. Renders as a still frame (the
+/// The getting-started recording, click-to-play. Renders as a still frame (the
 /// prerendered/SSG state too) with a play-button overlay; the actual video
-/// element -- and its ~830KB webm -- only exists after the visitor presses
+/// element -- and its ~1.1MB webm -- only exists after the visitor presses
 /// play. `autoplay` on the swapped-in element is fine LCP-wise: LCP
 /// candidates stop at the first user interaction, and mounting it fresh
 /// from a click means playback starts immediately without a second tap.
@@ -296,9 +296,9 @@ fn GettingStartedRecording() -> Element {
           r#loop: true,
           playsinline: true,
           controls: true,
-          width: 796,
-          height: 564,
-          aria_label: "Terminal recording: cloning pigeon-examples, building the wifi_init sample for Zephyr's native_sim target, and running it -- the console shows the simulated pigeon fetching its shadow and flushing telemetry against a real PidgeIoT backend.",
+          width: 1280,
+          height: 720,
+          aria_label: "Screen recording: registering a pigeon in the dashboard, writing its endpoint and token into prj.local.conf, building the wifi_init sample for Zephyr's native_sim target, and the pigeon coming online with telemetry. The token is hidden in the recording.",
           source {
             src: asset!("/assets/images/getting-started-demo.webm"),
             r#type: "video/webm",
@@ -312,14 +312,14 @@ fn GettingStartedRecording() -> Element {
         img {
           class: "w-full block",
           // Deliberately NOT asset!(): dx's image pipeline re-encodes webp
-          // assets and bloats this 60KB still to 218KB. Served verbatim
+          // assets and bloats a 60KB still to 218KB. Served verbatim
           // from fancier/public/ instead, same as og.png and favicon.ico.
           // This still is likely the page's LCP element, so its size
           // directly moves mobile LCP -- keep it small.
           src: "/getting-started-poster.webp",
-          alt: "Terminal recording still: building and running the wifi_init sample for Zephyr's native_sim target from pigeon-examples.",
-          width: "796",
-          height: "564",
+          alt: "Recording still: a simulated pigeon shown Online in the PidgeIoT dashboard, with its telemetry.",
+          width: "1280",
+          height: "720",
         }
         button {
           class: "absolute inset-0 flex items-center justify-center bg-base-300/20 hover:bg-base-300/30 transition-colors cursor-pointer",
