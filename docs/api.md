@@ -1138,9 +1138,9 @@ step after the pigeon's creation fails (its Postgres record or the organization'
 in which case the create is undone, so a retry starts clean; `503` "Service Unavailable: the
 pigeon's object did not answer; try again" when the create could not reach the pigeon's Durable
 Object or lost its answer. That one is not undone, because the lost answer may have been a `409`
-for a pigeon that already holds the IMEI. If a retry then answers `409` and none of your pigeons
-lists that IMEI, the first create landed unlisted: support has its pigeon id from the failure's
-log line, and a `DELETE /pigeons/:pigeon_id` by its creator frees the IMEI. The `201` body's
+for a pigeon that already holds the IMEI. If a retry then answers `409`, the first create may
+have landed without being listed: support can tell from the pigeon id logged with the failure,
+and a `DELETE /pigeons/:pigeon_id` by its creator frees the IMEI. The `201` body's
 `connector.Nidd` carries `endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like
 the token, the claim key is shown only here and by `token/refresh`.
 
