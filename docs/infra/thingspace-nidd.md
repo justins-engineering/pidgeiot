@@ -345,5 +345,11 @@ tests run on dev after cutover, and on staging again only with a second ThingSpa
 - **Check billing on real wakes after a deploy that changes the uplink path.** Dev bills no
   telemetry, so a deployed environment is where billing shows: each request id logs one
   `outcome=stored`, a retry overlapping its first attempt (only when a callback runs past about
-  4 s) logs `outcome=duplicate` with its `attempt=2`, and the organization's billed messages rise
-  by exactly the readings sent.
+  4 s) logs `outcome=duplicate` with its `attempt=2`, a frame the carrier delivered twice logs
+  `outcome=repeat` under its second request id, and the organization's billed messages rise by
+  exactly the readings sent.
+- **Deploy dovecote and reflash together when the frame layout changes.** A `TELEMETRY` frame
+  carries the device's send sequence, and dovecote refuses one without it (`400`, logged
+  `outcome=malformed`): a device built from `pigeon` before the sequence stores nothing until it
+  is rebuilt, and a dovecote from before it refuses a device built after it (the frames read as
+  malformed JSON, `outcome=rejected`).
