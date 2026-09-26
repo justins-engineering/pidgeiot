@@ -172,7 +172,9 @@ pub fn Navbar() -> Element {
               Link {
                 class: "btn btn-sm btn-glow font-semibold",
                 to: Route::RegisterFlow { flow: None },
-                "Get Started"
+                // Not "Get Started": that names the guide, which the landing
+                // page links under the same words.
+                "Sign up"
               }
             }
           }
@@ -372,7 +374,7 @@ pub fn Navbar() -> Element {
                   class: "btn btn-glow font-semibold mt-4 text-center block",
                   to: Route::RegisterFlow { flow: None },
                   onclick: move |_| is_menu_open.set(false),
-                  "Get Started"
+                  "Sign up"
                 }
               }
             }
