@@ -746,8 +746,10 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
    `rejected`, logged by the parse error's `e.classify()` and `e.column()`, never its `Display`,
    which would quote the frame's values (5.1, step 7); step 8's parse logs the same way. `Failed`
    (the merge or the enqueue): record nothing, 503, the honest answer, which the gateway logs as a
-   lost uplink; if ThingSpace's one retry lands it redoes the work, a merge that succeeded before a
-   failed enqueue simply re-applied with the same values.
+   lost uplink; if ThingSpace's one retry lands it redoes the work. A merge that succeeded before a
+   failed enqueue is re-applied with the same values, but the retry's rate alerts then diff its
+   readings against the failed attempt's newest values rather than what preceded the uplink, so they
+   can miss a real step or fire on one that never happened.
 8. `SHADOW_REPORT` (`0x02`): parse `PigeonShadowReportRequest` (`capsules/src/lib.rs:493`). If
    `(current_version, current_config)` equals what is stored, it is the device repeating itself:
    record the key, no bill, reply as below. Otherwise `write_shadow_report` (`:1534`, synchronous
@@ -1644,7 +1646,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 10 | Pigeon not claimed, or a frame from a line other than the pinned one (device booted before its pigeon existed, stale claim key after a refresh, a SIM swap, a forger) | 200, frame dropped, `UNCLAIMED 0` (or `1` answering a failed `HELLO`) at most once an hour | The device sends `HELLO` again, or after a failed one stops billable sends until it reboots; nothing is stored or pushed |
 | 11 | ThingSpace retries a callback we stored or are still storing (our 2xx lost, or not sent within about 4 s), or support resends one | De-duplication hit, 200; a retry arriving while the first attempt awaits its enqueue waits for it and answers `duplicate` once it stored | Never stored or billed twice |
 | 12 | A reading first stored on ThingSpace's retry | Stamped at its arrival, 1.2 to 1.7 s after the first attempt, or, for a retry that waited out a slow first attempt that failed, once that attempt settled | Seconds against readings minutes apart; nothing to correct |
-| 13 | Telemetry merge or enqueue fails | 503, key not recorded, any waiting retry told to go on, logged as lost | Honest; the one immediate retry may land it, and the merge is idempotent. Otherwise lost, recoverable only by a support resend |
+| 13 | Telemetry merge or enqueue fails | 503, key not recorded, any waiting retry told to go on, logged as lost | Honest; the one immediate retry may land it, re-applying the merged values unchanged, though its rate alerts diff against this attempt's newest values (6.3 step 7). Otherwise lost, recoverable only by a support resend |
 | 14 | Pigeon DO unreachable | 503, logged as lost | As row 13 |
 | 15 | Fuse lookup fails, or takes over a second | Fail-open, logged: the existing rule inside `check_ingest_fuse`, and the gateway's race | A Postgres blip must not brick ingestion or hold the acknowledgement |
 | 16 | Account over its free-tier allowance | 200, dropped, `PAUSED 3600` at most once an hour | A 429 would buy a retry that meets the same fuse; the notice makes the device back off |
