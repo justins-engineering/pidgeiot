@@ -1816,27 +1816,40 @@ billing counter, and a field unit at a real site, which is also the NB-IoT cover
 
 **Results, 2026-09-25.** The bench nRF9160 Feather ran `nidd_init` from `pigeon` `nidd-transport`
 and `pigeon-examples` `nidd-init`, built with a bench configuration that adds the AT shell and the
-library's debug log, against staging dovecote `b8158d7c`; `wrangler tail` stayed connected
-throughout. Every check passed on the device except the eDRX warning, which this network gave no
-chance to fire, and one sample defect found and fixed on the way (a report that timed out was
-repeated at once rather than at the next wake). What the text above does not carry:
+library's debug log, against staging dovecote `b8158d7c`, with `wrangler tail` capturing the
+Worker's side except for one 35-minute gap. Of 43 checks 36 passed, one only after the sample fix
+below, and none failed. Seven were not run or have not finished: the warning for an eDRX cycle
+longer than the active time, which this network gave no chance to fire; the lock's `-EBUSY` and
+the run-time `-EMSGSIZE`, which the bench could not provoke through the public API, so the code
+was read instead; FOTA over the IP PDN, whose signed image outweighs the bench plan's 250 KB of IP
+data a month (D6); the field unit; and the soak's two verdicts. One sample defect was found and
+fixed on the way: a report that timed out was repeated at once rather than at the next wake. What
+the text above does not carry:
 
-- **Timings.** `HELLO` goes out about 7 s after reset; its `SHADOW` came 1.4 to 3.1 s later, and a
-  report's `STORED` 1.2 to 2.5 s after the report, on the connection the `HELLO` or the wake
-  opened. An uplink from PSM saw its RRC connection 1.3 to 1.6 s after `send()` at most wakes,
-  5.2 s once and 35.7 s once; the modem held the frame and it arrived whole, but its readings were
-  stamped 35 s late, since `age_secs` resolves at receipt. One PDN activation after a re-attach
-  found no RRC connection within 30 s and failed; the next one worked.
-- **Replies and pushes after the connection closed** were paged inside the 60 s active time and
-  delivered, twice. A frame sent to a device in PSM went `Queued` or `DeliveryFailed` and was never
-  delivered later, including one sent 0.6 s before the device's own uplink connected.
+- **Timings.** `HELLO` went out 5.6 to 10.9 s after reset; its reply came 1.3 to 4.7 s later, and
+  a report's `STORED` 1.0 to 2.5 s after the report, on the connection the `HELLO` or the wake
+  opened. An uplink from PSM saw its RRC connection 1.2 to 1.6 s after `send()` at 16 of 22 wakes,
+  2.7 to 5.1 s at five and 35.7 s once; the modem held the frame and it arrived whole, but its
+  readings were stamped 35 s late, since `age_secs` resolves at receipt. One PDN activation after
+  a re-attach found no RRC connection within 30 s and failed; the next one worked.
+- **A frame that lands after the connection closed can still arrive.** A push sent 0.6 s before
+  its wake's connection went idle and a reply sent 1.7 s after were paged 3.8 and 2.2 s after the
+  send, inside the 60 s active time, and delivered. A frame sent to a device in PSM went `Queued`
+  or `DeliveryFailed` and was never delivered later, including one sent 0.6 s before the device's
+  own uplink connected. Tier 2's worst-case push, sent with the 86400 s `maximumDeliveryTime`
+  dovecote asked before D13 was implemented, reported `DeliveryFailed` "timeout, could not deliver
+  data" 24 hours after it was sent, having reached none of the device's connections that day; a
+  push sent with the current 30 s drew `Queued` and no final report in the next eight hours
+  (outside a 35-minute gap in the tail).
 - **RAI.** `RAI_ONGOING` is accepted on the raw socket and does not lengthen a telemetry-only
-  connection (3.7 to 3.9 s, the probe's 3.5 to 4.6 s without it). After `RAI_NO_DATA` Verizon
-  released the radio 2.8 to 5.9 s later, about when its own inactivity timer would have.
-- **Sockets.** mfw 1.3.7 refuses `SO_KEEPOPEN` (`EINVAL`); `AT+CFUN=4` ends the blocking `recv` with
-  `ENETDOWN`, and later sends re-create the PDN and the socket with the 60 s, then 120 s backoff.
-  The close in `pigeon_nidd_stop()` ends that `recv`: a `reboot` target restarted the board about
-  2 s after its report went out. The receive thread peaked at 744 of 2048 bytes of stack.
+  connection (3.7 to 4.1 s, the probe's 3.5 to 4.6 s without it). After `RAI_NO_DATA` Verizon
+  released the radio 2.6 to 3.2 s later at a wake and 1.2 to 6.0 s later at a boot.
+- **Sockets.** mfw 1.3.7 refuses `SO_KEEPOPEN` (`EINVAL`) at every open; `AT+CFUN=4` ends the
+  blocking `recv` with `ENETDOWN`, and later sends re-create the PDN and the socket with the 60 s,
+  then 120 s backoff. The close in `pigeon_nidd_stop()` ends that `recv`: a `reboot` target
+  restarted the board about 2 s after its report went out. The receive thread's stack peaked at
+  744 of 2048 bytes after a boot's `HELLO`, a repeat report sent from that thread, and `PAUSED`
+  and `UNCLAIMED 0` notices; a repeat report that must first re-activate the PDN was not run.
 - **PSM and eDRX.** A 0 s active time is grantable (`CONFIG_LTE_PSM_REQ_RAT="00000000"`) and
   draws the warning. Verizon granted no eDRX alongside PSM (`1001` requested, `+CEDRXRDP` empty),
   so the warning for a cycle longer than the active time cannot fire on this network.
@@ -1845,12 +1858,21 @@ repeated at once rather than at the next wake). What the text above does not car
   both stored the same six readings and billed them, because `nidd_uplink` checks `seen` before
   the telemetry enqueue awaits and records the key only after it. B6's one retry 1.2 to 1.7 s
   after a refusal describes refusals only.
+- **An oversize target** (320 bytes, one over what the default device keeps) passed the `PUT`,
+  was dropped by the device, and came again in the reply to the next uplink, as `docs/api.md`
+  says, until a small write replaced it.
+- **A `PAUSED` hold costs readings.** The frame that drew `PAUSED` returned 0 from its flush,
+  since the modem took it, and none of its readings was stored. Through the one-hour hold the
+  device made no radio access, and over the hold and the wake that ended it the batch buffer kept
+  the newest 6 of 20 readings, as its depth allows; those 6 were stored with correct ages, and
+  nothing was billed while paused.
 - **The runbook shell** must fire after the device's RRC connection is up: of three frames sent
   during the connection's setup from PSM, two failed at once and one was `Queued` and never
   delivered; every frame sent after the console's `NIDD: radio connected` arrived.
 - **The soak** started at 01:52Z on 2026-09-26 on the refreshed key, at the sample's 20-minute
   wake (target `telemetry_interval` 1200), with every reading tallied against staging's
-  history and billing every 30 minutes.
+  history and billing every 30 minutes. It ends about 02:53Z on 2026-09-27, and its verdicts are
+  read from the tally then.
 
 ## 14. The device transport follow-on: `pigeon_nidd.c`
 
@@ -1878,7 +1900,9 @@ shadow, and a report folded into the cache when it is confirmed
   a send. Once the reply owed to a `HELLO` or report has arrived it sets `NRF_RAI_NO_DATA`; after
   a wake of telemetry alone, which draws a reply only while the device is behind, it leaves the
   release to the network, which let a connection go 2.7 to 5.3 s after its last downlink and 3.5
-  to 4.6 s after a plain uplink: about Verizon's 5 seconds [NUG].
+  to 4.6 s after a plain uplink: about Verizon's 5 seconds [NUG]. Tier 3 saw a page succeed twice,
+  a push and a late reply delivered 3.8 and 2.2 s after the send inside the active time (13.3);
+  the rule stands, since a page is not something the device can count on.
 - PSM and eDRX set explicitly at every init, and the grant checked. The modem keeps `AT+CPSMS`
   and `AT+CEDRXS` in NVM across images and a full erase (B8): the bench board came up on eDRX
   with a 163.84 s cycle and PSM off, left by an earlier image, and Phase 0 was granted a 0 s
@@ -1890,7 +1914,8 @@ shadow, and a report folded into the cache when it is confirmed
   0, which leaves no window in which a downlink can page the device. eDRX is written off unless
   the application asks for it: a device in eDRX is paged only on its paging occasions, and with
   a 163.84 s cycle a 60 s active time may hold none, so a push sent inside it would never be
-  paged. An application that enables eDRX keeps its cycle shorter than the active time.
+  paged. An application that enables eDRX keeps its cycle shorter than the active time. On the
+  bench Verizon granted no eDRX at all to a device that also asked for PSM (13.3).
 - Uplink frames capped at 1273 bytes, the largest the bench modem accepted (B4, mfw 1.3.7); it
   refused 1283 in `send()` with `EINVAL` before any radio access, and 1274 to 1282 are untested,
   so 1273 is the cap until a modem firmware measures more. dovecote accepts up to 1358 either way.
@@ -2002,16 +2027,20 @@ the reason is given in place.
   earlier image wrote (B8), such as the 0 s active time Phase 0 was granted. After registration,
   log the grant from `LTE_LC_EVT_PSM_UPDATE` and `LTE_LC_EVT_EDRX_UPDATE`, warning on a 0 s
   active time or an eDRX cycle longer than it, and log each RRC transition, since the carrier's
-  guideline counts radio accesses.
+  guideline counts radio accesses. With eDRX written off the modem reports no eDRX, so no eDRX
+  line follows `NIDD: eDRX off`. At a detach (`AT+CFUN=4`, power-off) lte_lc reports the PSM
+  timers as -1 and the library logs `NIDD: network did not grant PSM`, which there means the
+  network is gone, not that it refused.
 - **Start** (after registration): `lte_lc_pdn_activate` for a dedicated CID, then a wait of up to
   60 s for `LTE_LC_EVT_PDN_ACTIVATED` before `lte_lc_pdn_id_get`, because `AT+CGACT` answering is
   not the PDN being up; `zsock_socket(AF_PACKET, SOCK_RAW, 0)`; `SO_BINDTOPDN`, because a raw
   socket on a shared PDN intercepts downlink meant for other sockets
   (https://github.com/nrfconnect/sdk-nrfxlib/blob/main/nrf_modem/doc/sockets/raw_sockets.rst, read
   by the readers on 2026-09-24); `SO_KEEPOPEN` best-effort only, because the option exists on
-  mfw_nrf91x1 2.0.1 and later and mfw_nrf9151-ntn but not on the nRF9160's mfw 1.3.7, where a
-  socket whose PDN went down answers `ENETDOWN` and must be closed; `SO_SNDTIMEO` of 30 s, because
-  every send holds the module mutex and the modem's default is no timeout; the receive thread; then
+  mfw_nrf91x1 2.0.1 and later and mfw_nrf9151-ntn but not on the nRF9160's mfw 1.3.7, which
+  refuses it with `EINVAL`, and where a socket whose PDN went down answers `ENETDOWN` (its blocking
+  `recv` did after `AT+CFUN=4`) and must be closed; `SO_SNDTIMEO` of 30 s, because every send
+  holds the module mutex and the modem's default is no timeout; the receive thread; then
   `HELLO`. Log the IMEI once, so the operator can match it to the dashboard. An open that fails, at
   start or later, is retried by the next send after a backoff of 60 s doubling to 1920 s, since
   activating a PDN is a radio access; a `HELLO` that fails at start, or draws no reply within
@@ -2028,9 +2057,10 @@ the reason is given in place.
   `RAI_NO_DATA` after `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet, unless that reply raised
   `PIGEON_EVENT_SHADOW_UPDATE` for a version the application will report on the same connection;
   a wake of telemetry alone leaves the release to the network (14.1). B8 found `RAI_NO_DATA`
-  accepted on a raw socket. The `lte_lc` handler never takes the mutex (atomics and log lines
-  only), because an lte_lc PDN call made under it completes on notifications delivered from the
-  handler's own context; the release work item takes it without waiting and skips when busy.
+  accepted on a raw socket, and tier 3 found `RAI_ONGOING` accepted too. The `lte_lc` handler
+  never takes the mutex (atomics and log lines only), because an lte_lc PDN call made under it
+  completes on notifications delivered from the handler's own context; the release work item
+  takes it without waiting and skips when busy.
 - **Receive thread** (blocking `zsock_recv` into 1358 bytes): first the tag, the last 16
   characters, the hex of the first 8 bytes of HMAC-SHA256 over every byte before them keyed by
   `CONFIG_PIGEON_NIDD_CLAIM_KEY`, through PSA
@@ -2039,21 +2069,25 @@ the reason is given in place.
   integers up to its newline; a version above 2147483647 is dropped rather than wrapped into
   `int32_t`, in a `SHADOW` header and in `STATUS STORED`'s argument alike. Then: a `SHADOW` older
   than the cached one is dropped except for its `current_version`; a newer one is cached (dropped
-  and logged if its config exceeds `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1`), gives the shadow-wait
-  semaphore and raises `PIGEON_EVENT_SHADOW_UPDATE`. A `current_version` at or above a pending
+  and logged if its config exceeds `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1`, after which the
+  platform, seeing the device still behind, sends it again in reply to every uplink until a
+  smaller target replaces it), gives the shadow-wait semaphore and raises
+  `PIGEON_EVENT_SHADOW_UPDATE`. A `current_version` at or above a pending
   report confirms it, as does `STATUS STORED` with an argument at or above it, so a late
   `STORED` for an older report cannot confirm a newer one. A `current_version` below the version
   this boot reported means the report was lost: report again, unless it is still inside its
   wait or the same `SHADOW` brought a newer target, whose report the application sends instead
   (7.4). `STATUS PAUSED s` makes billable sends answer `-EAGAIN` for `s` seconds, capped at 86400;
-  a newer `PAUSED` replaces the hold and `PAUSED 0` ends it. `STATUS UNCLAIMED 0` sends one
-  `HELLO` if none went in the last hour and leaves a waiting report pending, since the `HELLO`
-  re-claims and the application reports again at its next wake. `STATUS UNCLAIMED 1`, the answer
-  to a failed `HELLO`, makes billable sends answer `-EACCES` until the next boot, the device's
-  version of a 401. Anything else is ignored. A receive that ends closes the socket and raises
-  `PIGEON_EVENT_DISCONNECTED`; `PIGEON_EVENT_CONNECTED` is raised when the thread starts reading a
-  new socket. The event callback runs on this thread, so `pigeon_shadow_report` called from it
-  answers `-EDEADLK` at once rather than timing out on a reply the same thread must receive.
+  a newer `PAUSED` replaces the hold and `PAUSED 0` ends it. Readings taken meanwhile wait in
+  the batch buffer, which keeps the newest `CONFIG_PIGEON_TELEMETRY_BATCH_DEPTH` and drops older
+  ones. `STATUS UNCLAIMED 0` sends one `HELLO` if none went in the last hour and leaves a waiting
+  report pending, since the `HELLO` re-claims and the application reports again at its next wake.
+  `STATUS UNCLAIMED 1`, the answer to a failed `HELLO`, makes billable sends answer `-EACCES`
+  until the next boot, the device's version of a 401. Anything else is ignored. A receive that
+  ends closes the socket and raises `PIGEON_EVENT_DISCONNECTED`; `PIGEON_EVENT_CONNECTED` is
+  raised when the thread starts reading a new socket. The event callback runs on this thread, so
+  `pigeon_shadow_report` called from it answers `-EDEADLK` at once rather than timing out on a
+  reply the same thread must receive.
 
 | Transport call | Behaviour | Returns |
 |---|---|---|
@@ -2067,7 +2101,8 @@ Static RAM at defaults, measured on the `nidd_init` build: a 1273-byte send buff
 1358-byte receive buffer, three 320-byte configs (the cached target, the last report, and
 `pigeon_shadow_get`'s copy, which keeps "valid until the next call" true while the receive thread
 rewrites the cache), a 2048-byte stack and about 410 bytes of thread, lock and state: 6053
-bytes, the sum of every `pigeon_nidd*` data and bss symbol by `nm -S`.
+bytes, the sum of every `pigeon_nidd*` data and bss symbol by `nm -S`. On the bench the receive
+thread's stack peaked at 744 of its 2048 bytes (13.3).
 
 `CONFIG_PIGEON_WATCHDOG` is fed only by a delivered flush, so a NIDD application that enables it
 needs a timeout above its wake interval plus any `PAUSED` hold; the library cannot see the
@@ -2108,6 +2143,13 @@ active time (NCS's default 30 minutes was refused, B8) with eDRX written off, RA
 telemetry, a 20-minute wake that records readings and flushes (which is what keeps the sample inside
 14.1's four accesses an hour), the claim key in `prj.local.conf`, and a `PIGEON_EVENT_SHADOW_UPDATE`
 handler that applies and reports. The probe of 13.2 stays beside it as the carrier-side diagnostic.
+As built (branch `nidd-init`): the wake is the shadow's `telemetry_interval`, 1200 s until the
+shadow sets it and never under 900 s (a lower value is applied as 900 and reported so), with four
+readings a wake and the first wake a full interval after `HELLO`; a report that times out waits
+for the next wake, where the first build sent it again at once, which at the default 30 s wait
+costs a radio access of its own (found in tier 3); `reboot` is acted on only after this boot's
+report of that version was confirmed; and the build refuses every board but
+`circuitdojo_feather/nrf9160/ns`.
 `~/pigeon`'s docs gain the connector, and the frame table of section 7 with `docs/api.md` named as
 the authority, the way `loft` names it for `CoapPskLookup`. Estimate: 20 to 32 hours for the
 library, 4 to 8 for the sample, 8 to 16 on the bench.
@@ -2270,9 +2312,10 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   challenged by Browser Integrity Check in 62 requests.
 - **U3.** Partly settled. B5: four identical `HELLO`s from four wakes got four distinct request
   ids, so no device sequence byte is needed. B6: a refused callback draws one retry 1.2 to 1.7 s
-  later and no five-minute resends, so backdating by attempt was dropped. Still unknown: whether
-  that retry carries `callbackCount` 2 (the refusal lines now log it, 5.1 step 4), and whether a
-  callback that times out rather than being refused is resent later.
+  later and no five-minute resends, so backdating by attempt was dropped. Tier 3: a callback still
+  unanswered after about 4 s is retried, with `callbackCount` 2, while the first attempt runs on
+  (13.3). Still unknown: whether a refused callback's retry carries `callbackCount` 2 (the refusal
+  lines now log it, 5.1 step 4).
 - **U4.** Settled by B4 and B7 for one modem: an nRF9160 on mfw 1.3.7 accepts a 1273-byte uplink
   and refuses 1283 in `send()`, 1274 to 1282 untested; ThingSpace counts 1358 before base64 and
   refuses 1359 (`TooLong`). Other modems and firmware are unmeasured.
@@ -2302,11 +2345,12 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
 - **U12.** That any version of `/home/justin/pigeon-nidd/nidd-test` ever ran: no capture exists,
   and the tree on disk does not build against the NCS it pins (reader map `device-and-origin.md`
   1.5).
-- **U13.** Settled by B8 and the B7 retest: `NRF_RAI_NO_DATA` is accepted on a raw socket, and a
-  downlink ThingSpace buffered was never delivered later, neither at B8's next wake nor, sent with
-  an 86400 s `maximumDeliveryTime`, on the retest's next three connections (D13). Whether paging an
-  RRC-idle device can take longer than ThingSpace's roughly 10 s attempt in general, or did on
-  this cell, is unmeasured beyond those two pushes.
+- **U13.** Settled by B8, the B7 retest and tier 3: `NRF_RAI_NO_DATA` is accepted on a raw socket,
+  and a downlink ThingSpace buffered was never delivered later, neither at B8's next wake nor,
+  sent with an 86400 s `maximumDeliveryTime`, at any connection in the day before it reported
+  `DeliveryFailed` (D13, 13.3). Paging an RRC-idle device took 12.6 and 13.8 s in the B7 retest,
+  after ThingSpace's roughly 10 s attempt, and 2.2 and 3.8 s in tier 3, inside it; what decides
+  which is unmeasured.
 - **U14.** Whether a Hyperdrive connection opened from a Durable Object keeps it billed for up to 15
   minutes (section 17); the design keeps it off the uplink path either way.
 - **U15.** NIDD carrier pricing, per message or per byte.
