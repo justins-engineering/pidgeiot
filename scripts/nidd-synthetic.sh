@@ -7,11 +7,12 @@
 # every downlink the suite provokes is planned and then refused by the session object as
 # `not_configured`; the `nidd_dl` lines in the wrangler log are where a planned frame shows.
 #
-# Some steps need NIDD configured differently, so wrangler dev is started three times: with the
-# callback password blanked, with the callback allowlist and the account name blanked, and fully
-# configured. Each blanks values with --var, which wrangler applies over dovecote/.dev.vars, so
-# no file changes. GREPTIMEDB_ENDPOINT is blanked too, so history lands in Postgres as it does
-# in every deployed environment.
+# Some steps need NIDD configured differently, so wrangler dev is started five times: with the
+# callback password blanked, with the callback allowlist and the account name blanked, fully
+# configured, with every telemetry store failing, and fully configured again. Each sets values
+# with --var, which wrangler applies over dovecote/.dev.vars, so no file changes.
+# GREPTIMEDB_ENDPOINT is blanked too, so history lands in Postgres as it does in every deployed
+# environment.
 #
 # Needs the dev stack up (infra/docker-compose.yml), dovecote/.dev.vars holding dev-only
 # THINGSPACE_CALLBACK_PASSWORD and THINGSPACE_ACCOUNT_NAME, and curl, jq, psql, sqlite3, xxd and
@@ -99,8 +100,10 @@ stop_wrangler() {
 }
 
 usage_restore=""
+holder_pid=""
 cleanup() {
   if [[ -n $usage_restore ]]; then sql "$usage_restore" >/dev/null || true; fi
+  if [[ -n $holder_pid ]]; then kill "$holder_pid" 2>/dev/null || true; fi
   stop_wrangler
   rm -rf "$work"
 }
@@ -197,10 +200,10 @@ frame() { { printf '%s' "$1" | xxd -r -p; printf '%s' "$2"; } >"$work/frame"; }
 # hello <claim-key-hex>: a HELLO frame, the type byte then the key's 32 hex characters.
 hello() { { printf '\x04'; printf '%s' "$1"; } >"$work/frame"; }
 
-# uplink <label> <request-id> <attempt> <imei> <iccid>: posts $work/frame as ThingSpace's MO
-# callback; the line is named by the ICCID in the inner identifier list.
-uplink() {
-  local label=$1 rid=$2 attempt=$3 imei=$4 line=$5
+# uplink_body <request-id> <attempt> <imei> <iccid>: $work/frame as ThingSpace's MO callback, on
+# stdout; the line is named by the ICCID in the inner identifier list.
+uplink_body() {
+  local rid=$1 attempt=$2 imei=$3 line=$4
   base64 -w0 <"$work/frame" |
     NIDD_PW=$cb_password NIDD_ACCT=$account jq -cR --arg rid "$rid" --argjson n "$attempt" \
       --arg imei "$imei" --arg line "$line" '
@@ -211,8 +214,64 @@ uplink() {
            message: $msg,
            deviceIds: ([{id: $imei, kind: "IMEI"}]
              + if $line == "" then [] else [{id: $line, kind: "ICCID"}] end)}},
-         callbackCount: $n, maxCallbackThreshold: 4}' >"$work/body"
+         callbackCount: $n, maxCallbackThreshold: 4}'
+}
+
+# uplink <label> <request-id> <attempt> <imei> <iccid>: posts $work/frame as that callback.
+uplink() {
+  local label=$1 rid=$2 attempt=$3
+  uplink_body "$rid" "$attempt" "$4" "$5" >"$work/body"
   callback "$label (request $rid, attempt $attempt, frame $(wc -c <"$work/frame") bytes)"
+}
+
+# post_async <body-file> <status-file>: posts a callback body in the background, its status
+# landing in the file once it answers; the caller waits on $!.
+post_async() {
+  curl -sS -A "$ua" -o /dev/null -w '%{http_code}' -m 60 -X POST \
+    -H 'Content-Type: application/json' --data-binary @"$1" \
+    "$base/internal/thingspace/nidd" >"$2" 2>/dev/null &
+}
+
+# hold_history: a SHARE lock on pigeon_telemetry_history, taken by a psql kept open as a
+# coprocess, so every history insert waits until release_history commits. Should the suite die
+# holding it, cleanup kills that psql, and the server ends the transaction after a minute idle.
+hold_history() {
+  coproc HOLDER { PGAPPNAME=nidd-synthetic-hold exec psql -X -qAt -v ON_ERROR_STOP=1 \
+    >/dev/null 2>&1; }
+  holder_pid=$HOLDER_PID
+  holder_in=${HOLDER[1]}
+  printf '%s\n' "SET idle_in_transaction_session_timeout = '60s';" 'BEGIN;' \
+    'LOCK TABLE pigeon_telemetry_history IN SHARE MODE;' >&"$holder_in"
+  for _ in $(seq 1 20); do
+    if [[ $(sql "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+      JOIN pg_stat_activity a ON a.pid = l.pid WHERE c.relname = 'pigeon_telemetry_history'
+      AND a.application_name = 'nidd-synthetic-hold' AND l.granted;") == 1 ]]; then
+      note "> pigeon_telemetry_history locked in SHARE mode"
+      return 0
+    fi
+    sleep 0.5
+  done
+  die "could not lock pigeon_telemetry_history"
+}
+
+release_history() {
+  printf 'COMMIT;\n' >&"$holder_in"
+  exec {holder_in}>&-
+  wait "$holder_pid" || true
+  holder_pid=""
+  note "> pigeon_telemetry_history released"
+}
+
+# insert_held: whether a history insert is waiting on that lock, within ten seconds.
+insert_held() {
+  for _ in $(seq 1 20); do
+    if (($(sql "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+      WHERE c.relname = 'pigeon_telemetry_history' AND NOT l.granted;") > 0)); then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
 }
 
 # report_body <variant> <status> <reason> <imei> <iccid>: a delivery report or configuration
@@ -599,7 +658,7 @@ expect "stored at its arrival, not backdated (within 30 s)" yes \
   "$( ((age >= -30 && age <= 30)) && echo yes || echo "no ($age s)")"
 note_log "$m"
 
-step 7 "a resend of a stored uplink"
+step 7 "a resend of a stored uplink, and a retry that overlaps its first attempt"
 m=$(mark)
 r=$(rid s7)
 frame 01 '{"steps":"7"}'
@@ -613,6 +672,42 @@ api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=steps&since=$(iso_ag
 expect "one history row, one write" 1 "$(jq length "$resp")"
 note "  Billing: dev binds no telemetry queue and bills telemetry on no surface; in a deployed"
 note "  environment the consumer bills per enqueued reading, and a duplicate is never enqueued."
+note_log "$m"
+
+# ThingSpace also retries a callback it has had no answer to for about 4 s, while the first
+# attempt is still running. The lock holds the first attempt inside its history write, dev's
+# stand-in for the enqueue, while the retry arrives.
+m=$(mark)
+r=$(rid s7o)
+frame 01 '{"laps":"1"}'
+uplink_body "$r" 1 "$imei_a" "$iccid2" >"$work/body-first"
+uplink_body "$r" 2 "$imei_a" "$iccid2" >"$work/body-retry"
+hold_history
+note "> POST /internal/thingspace/nidd the first attempt (request $r, attempt 1), not awaited"
+post_async "$work/body-first" "$work/status-first"
+first=$!
+expect "the first attempt is held inside its history write" yes \
+  "$(insert_held && echo yes || echo no)"
+note "> POST /internal/thingspace/nidd the retry (request $r, attempt 2), not awaited"
+post_async "$work/body-retry" "$work/status-retry"
+retry=$!
+expect_log "the retry answers duplicate while the first is held" "$m" \
+  "outcome=duplicate pigeon=$pigeon request=$r attempt=2"
+expect "the first is still held then, and not yet stored" "yes 0" \
+  "$(insert_held && echo yes || echo no) $(log_since "$m" |
+    grep -c "outcome=stored pigeon=$pigeon request=$r" || true)"
+release_history
+wait "$first" "$retry" || true
+expect "both attempts answer 200" "200 200" \
+  "$(cat "$work/status-first") $(cat "$work/status-retry")"
+expect_log "released, the first attempt is stored" "$m" \
+  "outcome=stored pigeon=$pigeon request=$r attempt=1"
+expect "one stored, one duplicate" "1 1" \
+  "$(log_since "$m" | grep -c "outcome=stored pigeon=$pigeon request=$r" || true) $(log_since "$m" |
+    grep -c "outcome=duplicate pigeon=$pigeon request=$r" || true)"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=laps&since=$(iso_ago 3600)"
+expect "one history row" 1 "$(jq length "$resp")"
+note "  Billing: the one history row stands for the one enqueue a deployed environment bills."
 note_log "$m"
 
 step 8 "shadow reports"
@@ -875,6 +970,35 @@ r=$(rid s13e)
 frame 01 '{"temp_c":"25.0"}'
 uplink "TELEMETRY after the allowance is restored" "$r" 1 "$imei_a" "$iccid2"
 expect_log "ingest resumes" "$m" "outcome=stored pigeon=$pigeon request=$r"
+note_log "$m"
+stop_wrangler
+
+# ======================================================================================
+# Phase 4: every telemetry store failing, as a deployed environment without its queue binding
+# does; a non-loopback DEVICE_API_HOST is what makes dev count as deployed. Then phase 3's
+# configuration again, for ThingSpace's retry.
+# ======================================================================================
+
+start_wrangler failing --var "NIDD_ALLOWED_ORG_IDS:$org_a" --var DEVICE_API_HOST:api-dev.invalid
+
+step 7 "a store that fails releases its claim, so ThingSpace's retry can store the uplink"
+m=$(mark)
+r=$(rid s7f)
+frame 01 '{"splits":"1"}'
+uplink "TELEMETRY while the telemetry store fails" "$r" 1 "$imei_a" "$iccid2"
+expect "the failed store answers 503" 503 "$status"
+expect_log "and is logged as lost" "$m" "nidd_cb lost pigeon=$pigeon request=$r attempt=1"
+expect "pigeon_nidd keeps no key for it" 0 "$(nidd_state "$pigeon" "instr(seen, '$r:') > 0")"
+note_log "$m"
+stop_wrangler
+
+start_wrangler restored --var "NIDD_ALLOWED_ORG_IDS:$org_a"
+m=$(mark)
+uplink "the retry, the store working again" "$r" 2 "$imei_a" "$iccid2"
+expect_log "the retry is stored, not taken for a duplicate" "$m" \
+  "outcome=stored pigeon=$pigeon request=$r attempt=2"
+api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=splits&since=$(iso_ago 3600)"
+expect "one history row" 1 "$(jq length "$resp")"
 note_log "$m"
 
 step 14 "after the thirteen: what the logs never hold"
