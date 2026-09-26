@@ -79,6 +79,10 @@ pub fn Orgs() -> Element {
             p { class: "text-base-content/60 max-w-sm",
               "An organization lets a team share flocks and devices under individual accounts with per-person roles. Create one, then invite your teammates by email."
             }
+            p { class: "text-base-content/60 max-w-sm",
+              "It is also what a paid plan is billed to, working alone or not: upgrade from the organization's Billing section. "
+              Link { class: "link link-primary", to: Route::PricingPage {}, "See the plans" }
+            }
           }
         } else {
           div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16",
