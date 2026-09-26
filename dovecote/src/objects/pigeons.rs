@@ -3085,7 +3085,7 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// here if it failed. A telemetry frame the carrier delivered twice arrives under a second
 /// request id, so it is recognised by its digest alone, which its send sequence makes unique to
 /// one send. It waits for an attempt storing the frame as a retry does, and is a repeat once that
-/// attempt decided.
+/// attempt decided; a copy dropped as unclaimed makes no repeat, since nothing judged it.
 ///
 /// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
 /// not parse, 404 when no pigeon is here, and 5xx when the frame was not read or stored, which the
@@ -3380,7 +3380,8 @@ fn finish_nidd_uplink(
   stored_report: Option<PigeonShadow>,
   downlink: Option<NiddDownlink>,
 ) -> Result<Response> {
-  row.remember(key);
+  // `unclaimed` drops a frame before any rule judged it, so a copy arriving once claimed still is.
+  row.remember(key, outcome != "unclaimed");
   if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
     console_error!(
       "NIDD uplink: state WRITE error for pigeon {} after {outcome}: {e}",

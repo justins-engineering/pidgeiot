@@ -67,6 +67,9 @@ const NIDD_PUSH_HOLD_SECS: i64 = 900;
 const NIDD_NOTICE_HOLD_SECS: i64 = 3600;
 /// De-duplication keys a pigeon remembers, oldest dropped first.
 const NIDD_SEEN_KEYS: usize = 64;
+/// Ends a remembered key whose answer settled nothing about the send, as `unclaimed` does: a
+/// retry of that callback is still a duplicate, but another delivery of the frame is judged.
+const NIDD_UNSETTLED_MARK: char = '?';
 
 /// The fields read before a callback is trusted: the password to check, and the request id and
 /// attempt that name the callback in a log line, a refused one or one whose body does not parse
@@ -558,7 +561,7 @@ pub struct NiddRow {
   pub pushed_at: i64,
   /// When the last `PAUSED` or `UNCLAIMED` notice went out.
   pub notice_at: i64,
-  /// The last de-duplication keys, oldest first.
+  /// The last de-duplication keys, oldest first, each marked whose answer settled nothing.
   pub seen: Vec<String>,
 }
 
@@ -578,22 +581,32 @@ impl From<NiddSqlRow> for NiddRow {
 }
 
 impl NiddRow {
-  /// Whether this uplink has been stored already.
+  /// Whether this uplink has been answered already, under this request id.
   pub fn has_seen(&self, key: &str) -> bool {
-    self.seen.iter().any(|seen| seen == key)
+    self
+      .seen
+      .iter()
+      .any(|seen| seen.strip_suffix(NIDD_UNSETTLED_MARK).unwrap_or(seen) == key)
   }
 
-  /// Whether a frame with this key's digest has been seen under any request id. ThingSpace posts
-  /// each carrier delivery of one device send under a request id of its own, so this is how a
-  /// repeated `TELEMETRY` frame is known; its send sequence keeps two sends of the same readings
+  /// Whether a frame with this key's digest has settled its send under any request id. ThingSpace
+  /// posts each carrier delivery of one device send under a request id of its own, so this is how
+  /// a repeated `TELEMETRY` frame is known; its send sequence keeps two sends of the same readings
   /// apart, which no other frame type has.
   pub fn has_seen_frame(&self, key: &str) -> bool {
     let digest = key_digest(key);
-    self.seen.iter().any(|seen| key_digest(seen) == digest)
+    self
+      .seen
+      .iter()
+      .any(|seen| !seen.ends_with(NIDD_UNSETTLED_MARK) && key_digest(seen) == digest)
   }
 
-  /// Records an uplink's key, forgetting the oldest beyond the window.
-  pub fn remember(&mut self, key: String) {
+  /// Records an uplink's key, forgetting the oldest beyond the window. A key whose answer did not
+  /// settle the send is marked, so only `has_seen` finds it.
+  pub fn remember(&mut self, mut key: String, settled: bool) {
+    if !settled {
+      key.push(NIDD_UNSETTLED_MARK);
+    }
     self.seen.push(key);
     if self.seen.len() > NIDD_SEEN_KEYS {
       let excess = self.seen.len() - NIDD_SEEN_KEYS;
@@ -1196,7 +1209,7 @@ mod tests {
     let first = b"\x0117\n{\"laps\":\"1\"}";
     let next_send = b"\x0118\n{\"laps\":\"1\"}";
     let mut row = NiddRow::default();
-    row.remember(dedupe_key("request-a", first));
+    row.remember(dedupe_key("request-a", first), true);
 
     let redelivered = dedupe_key("request-b", first);
     assert!(!row.has_seen(&redelivered));
@@ -1206,15 +1219,46 @@ mod tests {
     assert!(!row.has_seen_frame(&dedupe_key("request-a", b"\x0117\n{}")));
     // A request id holding a colon cannot shift the digest half.
     let mut odd = NiddRow::default();
-    odd.remember(dedupe_key("a:b", first));
+    odd.remember(dedupe_key("a:b", first), true);
     assert!(odd.has_seen_frame(&redelivered));
+  }
+
+  #[test]
+  fn a_frame_dropped_as_unclaimed_is_judged_on_its_next_delivery() {
+    let frame = b"\x0117\n{\"laps\":\"1\"}";
+    let unclaimed = dedupe_key("request-a", frame);
+    let mut written = NiddRow::default();
+    written.remember(unclaimed.clone(), false);
+    // Read back through the table's JSON text, as the next uplink reads it.
+    let mut row: NiddRow = NiddSqlRow {
+      claimed_at: None,
+      line_id: None,
+      awaiting_version: 0,
+      pushed_version: 0,
+      pushed_at: 0,
+      notice_at: 0,
+      seen: written.seen_json(),
+    }
+    .into();
+
+    // ThingSpace's retry of that callback is still a duplicate.
+    assert!(row.has_seen(&unclaimed));
+    // Nothing judged the frame, so its delivery under another request id is not a repeat.
+    let after_claim = dedupe_key("request-b", frame);
+    assert!(!row.has_seen(&after_claim));
+    assert!(!row.has_seen_frame(&after_claim));
+
+    // Once a delivery settles the send, every later one is a repeat.
+    row.remember(after_claim.clone(), true);
+    assert!(row.has_seen_frame(&dedupe_key("request-c", frame)));
+    assert!(row.has_seen(&unclaimed) && row.has_seen(&after_claim));
   }
 
   #[test]
   fn remember_keeps_the_newest_sixty_four() {
     let mut row = NiddRow::default();
     for i in 0..70 {
-      row.remember(i.to_string());
+      row.remember(i.to_string(), true);
     }
     assert_eq!(row.seen.len(), 64);
     assert_eq!(row.seen.first().map(String::as_str), Some("6"));
