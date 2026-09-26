@@ -21,6 +21,11 @@ pub fn GettingStartedPage() -> Element {
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
           "Set it up in the dashboard, run a simulated device on your own machine, and swap in a real board whenever one lands on your desk."
         }
+        // Said before the sign-up button rather than beside the commands, so
+        // nobody makes an account for a route their machine cannot run.
+        p { class: "mt-4 text-base leading-relaxed max-w-3xl text-base-content/70 text-pretty",
+          "The simulator needs Linux: WSL 2 on Windows, a Linux virtual machine on a Mac. Its first setup downloads about 3.5 GB and wants about 10 GB of free disk."
+        }
         Link {
           class: "inline-flex items-center gap-1.5 mt-6 text-sm font-semibold text-primary hover:underline",
           to: Route::DemoPage {},
