@@ -217,7 +217,7 @@ pub fn DemoPage() -> Element {
           // shrink-0: this label wraps to two lines at 390px, and without it
           // the flex item compresses into the first word.
           Icon { icon: LdRadio, class: "size-4 shrink-0", title: "Start" }
-          "Want to push config and trip alerts? Run your own in ten minutes →"
+          "Want to push config to a device of your own? Run a simulated one in ten minutes →"
         }
       }
     }
