@@ -803,8 +803,8 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
 /// Creates this pigeon in its fresh Durable Object: the row, the creator's owner ACL and an empty
 /// shadow, with every connector credential minted here. The body's connector only names the
 /// variant, except a `Nidd` connector's IMEI, which must name this very object: a second create
-/// for one IMEI lands here too and answers 409. A failure after the first row is written removes
-/// what was written.
+/// for one IMEI lands here too and answers 409. A statement or read-back that fails after the
+/// first row is written removes what was written.
 async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let Ok(Some(user_id)) = req.headers().get("X-User-Id") else {
     return Response::error("Request missing 'X-User-Id'", 400);
