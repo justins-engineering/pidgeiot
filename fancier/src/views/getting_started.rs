@@ -234,7 +234,7 @@ pub fn GettingStartedPage() -> Element {
         h2 { class: "text-3xl md:text-4xl font-bold mb-10 tracking-tight",
           "Where to go next"
         }
-        div { class: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6",
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-6",
           GsLink {
             icon: rsx! {
               Icon { icon: LdCode, class: "size-7 stroke-primary", title: "Code" }
@@ -374,9 +374,11 @@ fn GsLink(
 ) -> Element {
   let inner = rsx! {
     div { class: "shrink-0 mt-1", {icon} }
-    div {
+    // min-w-0: a flex item never shrinks below its longest word, so without it
+    // break-words cannot wrap the email address inside a narrow card.
+    div { class: "min-w-0",
       h3 { class: "text-lg font-bold", "{title}" }
-      p { class: "text-base-content/70 leading-relaxed mt-1 text-sm", "{body}" }
+      p { class: "text-base-content/70 leading-relaxed mt-1 text-sm break-words", "{body}" }
     }
   };
   rsx! {
