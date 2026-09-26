@@ -1526,8 +1526,7 @@ same "fancier first" order the Terms gate uses.
 
   `has_psk` (`:25`) becomes `has_write_once_secret`, true for a `Nidd` connector carrying a claim
   key, so the reveal keeps its shown-once warning. The per-variant tests (`:98-215`) gain a
-  `nidd()` fixture and its stripped-read case. The Kconfig names in the `target` column become
-  true once section 14 lands; until then the reveal says so.
+  `nidd()` fixture and its stripped-read case.
 - **`ConnectorInfo`** (`views/pigeon.rs:471`): a `Nidd` arm beside `:509`, `:540`, `:595` with
   rows Protocol "NIDD (Verizon ThingSpace, NB-IoT)", IMEI, APN (`capsules::NIDD_APN`) and Endpoint
   with the copy button the other arms have. The sentence "its token authenticates it on every

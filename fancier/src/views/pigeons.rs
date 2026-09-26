@@ -581,7 +581,6 @@ fn ErrorPigeonsState() -> Element {
 fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
   let fields = device_credentials::device_credentials(&connector);
   let secret = device_credentials::write_once_secret(&connector).map(|(noun, _)| noun);
-  let nidd = matches!(connector, Connector::Nidd(_));
 
   rsx! {
     div {
@@ -612,11 +611,6 @@ fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
           }
           strong { "only once" }
           ". Copy them into your device build now; they cannot be retrieved later. Refreshing this pigeon's token mints replacements and retires these."
-        }
-        if nidd {
-          p { class: "text-xs text-base-content/60",
-            "The device library does not ship its NIDD transport yet. The symbols below are the ones its NIDD build will read."
-          }
         }
         for field in fields {
           CredentialRow {
