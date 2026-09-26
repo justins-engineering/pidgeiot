@@ -769,8 +769,8 @@ there waits in step 2 for that attempt's outcome. A refused callback is retried 
     runs, in order: for a newly stored report, `count_billable_messages(env, id, 1)` and
     `update_shadow_pg_db` exactly as `handle_ws_shadow_report` does today (`:1797-1828`); then the
     planned downlink, if any (6.4).
-    Neither the re-read nor the write can fail a decided frame, since a retry could only store
-    and bill a stored one twice. A failed re-read after step 7 decided is logged and answers 200
+    Neither the re-read nor the write can fail a stored frame, since a retry could only store
+    and bill it twice. A failed re-read after step 7 decided is logged and answers 200
     with the outcome, writing and sending nothing: the pre-await copy could undo a push planned
     during the await. A failed write after a store is logged, answers 200 and still runs the
     tail, so a stored report is billed and synced. Any other failed write answers 500, and
