@@ -62,9 +62,8 @@ pub fn UseCasesPage() -> Element {
                 circle { cx: "306", cy: "34", r: "7", fill: "var(--chart-series-1)" }
               }
               div { class: "flex flex-wrap gap-3 mt-3 font-mono text-xs text-base-content/60",
-                span { "4h 12m" }
-                span { "38.2 km" }
-                span { "last fix 3s ago" }
+                span { "40.7128°N, 74.0060°W" }
+                span { "12.4 m/s" }
               }
             }
           },
@@ -156,7 +155,7 @@ pub fn UseCasesPage() -> Element {
           // The design read "the readings never rest with us", which isn't
           // true: the latest value per key is always upserted before any
           // forwarding decision is made. Only history is bypassed.
-          body_secondary: "Regulated retention? Point telemetry at your own line-protocol endpoint and the history accumulates there instead of here: we hold only the latest value of each key, which is what the dashboard and alerts read.",
+          body_secondary: "Regulated retention? Point telemetry at your own line-protocol endpoint and the history accumulates there instead of here: we hold only the latest value of each key, which is what the dashboard reads. Heartbeat alerts keep watching for silence; threshold and rate-of-change alerts run only on telemetry whose history stays with us.",
           keys: vec!["litres_total", "flow_lpm", "tamper"],
           features_used: "Bring-your-own database · per-device OTA, per-flock rollout planned",
           divider: true,
@@ -167,10 +166,10 @@ pub fn UseCasesPage() -> Element {
                 span { class: "badge badge-ghost font-mono text-[11px] ml-auto", "your endpoint" }
               }
               div { class: "rounded-xl bg-base-100 border border-base-300 p-4 font-mono text-xs leading-relaxed text-base-content/75 overflow-x-auto",
-                p { class: "whitespace-nowrap", "POST https://tsdb.yourco.net/write" }
+                p { class: "whitespace-nowrap", "POST https://tsdb.yourco.net/write?precision=ms" }
                 p { class: "whitespace-nowrap",
-                  "meter,id=0417 litres_total=48213 "
-                  span { class: "text-success", "202" }
+                  "pigeon_telemetry,pigeon_id=59d0… litres_total=48213 "
+                  span { class: "text-success", "204" }
                 }
                 p { class: "text-base-content/50 whitespace-nowrap", "// platform history store: bypassed" }
               }
@@ -191,7 +190,7 @@ pub fn UseCasesPage() -> Element {
         UseCase {
           number: "05",
           title: "Smart parking & city infrastructure",
-          body: "Bay occupancy across a district, each sensor its own small object served from the edge nearest it. A pilot of five costs almost nothing, and growing it is the same architecture rather than a re-platform.",
+          body: "Bay occupancy across a district, each sensor its own small object, reached through the edge location nearest it. A pilot of five costs almost nothing, and growing it is the same architecture rather than a re-platform.",
           body_secondary: "Public-sector procurement tends to ask who holds the data. The answer is in the licence and the code.",
           keys: vec!["occupied", "since_ts", "rssi"],
           features_used: "Edge-served objects · AGPL self-host",

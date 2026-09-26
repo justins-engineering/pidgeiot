@@ -28,7 +28,7 @@
     },
     "/use-cases/": {
       "title": "Use Cases: Asset Tracking, Monitoring, OTA | PidgeIoT",
-      "description": "Five shapes of device fleet on one platform: GPS asset tracking, environmental alerting, remote firmware updates, bring-your-own-database, and small fleets."
+      "description": "Five shapes of device fleet: GPS asset tracking, irrigation and soil, machine monitoring, utility metering with your own database, and smart parking."
     },
     "/pricing/": {
       "title": "Pricing: Ten Devices Free for Good | PidgeIoT",
