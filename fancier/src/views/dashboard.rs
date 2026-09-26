@@ -322,6 +322,18 @@ pub fn Dashboard() -> Element {
                     }
                   }
                 }
+                // Needs Attention counts stale and offline only, so a fleet
+                // whose one device never reported reads as nothing to do.
+                if unknown > 0 {
+                  p { class: "text-xs text-base-content/60 mt-3",
+                    "Unknown means no report in the last {FLEET_LOOKBACK_HOURS}h, which is where a new pigeon stays until its device first reports. "
+                    Link {
+                      class: "link link-primary",
+                      to: Route::GettingStartedPage {},
+                      "How to connect a device"
+                    }
+                  }
+                }
               }
             }
 
