@@ -8,18 +8,19 @@ crates.io packages; this file covers assets whose notices would otherwise
 not accompany the *compiled* artifact served to browsers.)
 
 The dashboard's `/open-source` page is the user-facing rendering of this
-same inventory: it carries this file's Lucide notice verbatim, names the
-other directly user-visible open-source pieces (daisyUI, Tailwind CSS,
-Dioxus, Ory Kratos), and includes the full Rust crate license inventory for
-both `fancier` and `dovecote`, auto-generated from the actual dependency
-graph on every release build (`fancier/scripts/generate-oss-notices.sh`,
-via `cargo about`) rather than hand-maintained here.
+same inventory: it names Lucide and links here for its notice, names the
+other directly user-visible open-source pieces (Font Awesome, daisyUI,
+Tailwind CSS, Dioxus, Ory Kratos), and includes the full Rust crate license
+inventory for both `fancier` and `dovecote`, auto-generated from the actual
+dependency graph on every release build
+(`fancier/scripts/generate-oss-notices.sh`, via `cargo about`) rather than
+hand-maintained here.
 
 ## Lucide icons
 
-All inline UI icons, including the bird mark currently used as the
-stand-in logo, are from [Lucide](https://lucide.dev), bundled via the
-`dioxus-free-icons` crate.
+All inline UI icons except the GitHub, Discord and YouTube marks,
+including the bird mark currently used as the stand-in logo, are from
+[Lucide](https://lucide.dev), bundled via the `dioxus-free-icons` crate.
 
 > ISC License
 >
@@ -63,3 +64,14 @@ The Feather-derived portions are additionally covered by:
 > CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 > TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 > SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Font Awesome Free brand icons
+
+The GitHub, Discord and YouTube marks are Font Awesome Free 6.1.1 brand
+icons, bundled via the `dioxus-free-icons` crate. The icons are licensed
+under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the full
+terms are at https://fontawesome.com/license/free.
+
+> Font Awesome Free 6.1.1 by @fontawesome - https://fontawesome.com
+> License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts:
+> SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc.

@@ -89,9 +89,13 @@ pub fn OpenSourcePage() -> Element {
           ul { class: "list-disc ml-6 space-y-3",
             li {
               a { class: "link link-secondary", href: "https://lucide.dev", target: "_blank", rel: "noopener", "Lucide" }
-              " (ISC, with Feather-derived portions under MIT) -- every inline icon in this app, including the bird mark standing in as the logo. Full notices in "
+              " (ISC, with Feather-derived portions under MIT) -- every inline icon in this app except the GitHub, Discord and YouTube marks, including the bird mark standing in as the logo. Full notices in "
               a { class: "link link-secondary", href: "https://github.com/justins-engineering/pidgeiot/blob/main/THIRD_PARTY_NOTICES.md", target: "_blank", rel: "noopener", "THIRD_PARTY_NOTICES.md" }
               "."
+            }
+            li {
+              a { class: "link link-secondary", href: "https://fontawesome.com", target: "_blank", rel: "noopener", "Font Awesome Free" }
+              " (icons under CC BY 4.0) -- the GitHub, Discord and YouTube marks."
             }
             li {
               a { class: "link link-secondary", href: "https://daisyui.com", target: "_blank", rel: "noopener", "daisyUI" }
@@ -120,7 +124,7 @@ pub fn OpenSourcePage() -> Element {
           p { class: "mb-2",
             "Every Rust crate compiled into what ships, grouped by license, generated directly from the real dependency graph with "
             a { class: "link link-secondary", href: "https://github.com/EmbarkStudios/cargo-about", target: "_blank", rel: "noopener", "cargo-about" }
-            " -- not hand-maintained, so it can't go stale. Each license's text is collapsed by default; click a heading to expand it."
+            " -- not hand-maintained, so it can't go stale. Each license's text is collapsed by default; click \"Show license text and packages\" under a license to expand it."
           }
 
           // A single #oss-md scope wraps both subsections so the shared
