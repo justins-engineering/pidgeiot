@@ -26,7 +26,7 @@ pub fn FeaturesPage() -> Element {
         FeatureRow {
           eyebrow: "01. Identity",
           title: "A key per device, minted where its state lives",
-          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot; only the public key is ever stored. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open, presents it as an MQTT CONNECT password, or speaks CoAP over DTLS or TLS because that's all its modem can afford. Authentication costs almost nothing on a metered link.",
+          body: "Each pigeon gets its own Ed25519 keypair, generated inside the isolated object that will later verify it. The private half signs one token and is discarded on the spot; verification needs only the public key. That token is 69 bytes: version, expiry, signature, and it's the same 69 bytes whether the device talks plain HTTPS, holds a live socket open or presents it as an MQTT CONNECT password. A device speaking CoAP over DTLS or TLS, because that's all its modem can afford, proves itself instead with a short pre-shared key minted alongside the token, and the terminator presents the token upstream on its behalf. Authentication costs almost nothing on a metered link.",
           body_secondary: rsx! {
             "Refreshing a token overwrites the old public key, which means rotation "
             span { class: "italic", "is" }
@@ -36,11 +36,11 @@ pub fn FeaturesPage() -> Element {
           visual: rsx! {
             div { class: "mockup-code text-sm w-full max-w-full overflow-x-auto",
               pre { class: "px-5",
-                code { class: "text-base-content/50", "// the entire device auth path" }
+                code { class: "text-base-content/50", "// the device auth path, abridged" }
               }
               pre { class: "px-5",
                 code { class: "text-primary", "pub fn " }
-                code { "verify_device_token(token: &str, key_b64: &str) -> bool {{" }
+                code { "verify_device_token(token: &str, public_key_b64: &str) -> bool {{" }
               }
               pre { class: "px-5",
                 code { "    let Ok(raw) = URL_SAFE_NO_PAD.decode(token) else {{ .. }};" }
@@ -168,7 +168,7 @@ pub fn FeaturesPage() -> Element {
               div { class: "rounded-xl bg-base-100 border border-base-300 p-4 flex flex-col gap-2 font-mono text-xs text-base-content/75 overflow-x-auto",
                 p { class: "whitespace-nowrap",
                   span { class: "text-error", "FIRING" }
-                  " temp_c > 30 for 5m · pigeon-0440"
+                  " temp_c > 30 · pigeon-0440"
                 }
                 p { class: "whitespace-nowrap",
                   span { class: "text-success", "CLEARED" }
