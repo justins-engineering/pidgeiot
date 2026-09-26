@@ -9,8 +9,7 @@ branch `nidd-connector`), `thingspace-sdk-rust` at `9d920a4`.
 
 Rulings taken as given: the owner's 2026-09-24 ask ("add a NIDD connector starting with Verizon
 ThingSpace"), and the 2026-09-18 position that the platform stays vendor-agnostic, "IP transports
-over LTE-M first; NIDD as an optional carrier-specific path, never a dependency"
-(memory `project_product_strategy.md:117`).
+over LTE-M first; NIDD as an optional carrier-specific path, never a dependency".
 
 Tier 1, the staging synthetic suite and tier 2, the bench nRF9160 Feather against staging, ran on
 2026-09-24. Section 13.2 records the bench's results, and the sections they changed (7, 8.4, 8.5,
@@ -186,9 +185,8 @@ pub fn imei_is_valid(imei: &str) -> bool {
 ```
 
 `imei_is_valid` lives in capsules because both sides need it: fancier checks the create form before
-submitting and dovecote refuses a bad IMEI at create. The same Luhn loop was compiled and run in
-the smallest design's scratch file (`nidd/kiss/luhn.rs` in the job directory): `490154203237518`
-passes; a changed last digit, 14 digits, 16 digits and a letter fail.
+submitting and dovecote refuses a bad IMEI at create. `490154203237518` passes; a changed last
+digit, 14 digits, 16 digits and a letter fail (`imei_check_digit`).
 
 Tests, extending `connector_tests` (`capsules/src/lib.rs:744`): `a_nidd_connector_round_trips`
 (including `{"Nidd":{"imei":"490154203237518"}}` with the other fields defaulted);
@@ -271,7 +269,7 @@ A Nidd pigeon's Durable Object id is `PIGEONS.id_from_name("nidd:imei:<15 digits
 - Cost, handled: delete then recreate reuses the id. The create route clears any Postgres rows and
   the R2 log dictionary left under that id before mirroring the new pigeon (section 9).
 - Why the IMEI: it names the modem, is printed on the module, is readable by firmware
-  (`MODEM_INFO_IMEI`, `/home/justin/pigeon-nidd/nidd-test/src/main.c:142`), is what Verizon's MO
+  (`AT+CGSN=1`, which `~/pigeon`'s `src/pigeon_nidd.c` reads), is what Verizon's MO
   example names at the top level, and is an accepted `kind` for downlink [SEND]. ICCID changes
   with a SIM swap; an MDN can be reassigned.
 - Why not a Postgres index: every uplink would pay a lookup that Hyperdrive cannot usefully cache
@@ -294,11 +292,10 @@ shadow, until the device has claimed the pigeon:
 - The DO compares in constant time; a match sets `claimed_at`. Every other frame from an unclaimed
   pigeon is dropped, and the device is told so at most once an hour (section 6.4).
 - A good `HELLO` also pins the line: the DO stores the ICCID (or, failing that, the IMSI) from the
-  callback's inner `deviceIds`, which Verizon's MO example carries ([SEND], saved copy
-  `nidd/understand/vz/send-nidd-to-devices.txt:620-647`). A later frame whose callback names a
-  different line is dropped as if unclaimed, without clearing the claim; a good `HELLO` from the
-  new line moves the pin, which is how a SIM swap recovers. B5 records which identifiers real
-  callbacks carry; if they carry neither, the pin is dropped and D12 says so.
+  callback's inner `deviceIds`, which Verizon's MO example carries [SEND]. A later frame whose
+  callback names a different line is dropped as if unclaimed, without clearing the claim; a good
+  `HELLO` from the new line moves the pin, which is how a SIM swap recovers. B5 records which
+  identifiers real callbacks carry; if they carry neither, the pin is dropped and D12 says so.
 - The key signs every platform frame. `SHADOW` and `STATUS` end in the first 8 bytes of HMAC-SHA256
   over the rest of the frame, keyed by the 16 key bytes and written as 16 hex characters, and the
   device drops any frame whose tag fails. Without it, anyone able to call ThingSpace's send API for
@@ -497,7 +494,7 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
    Never the body, the password, the frame, the account name, the IMEI, the ICCID or the IMSI. Never
    a serde error's `Display` either: it quotes the offending value, so an IMEI sent as a JSON number
    logs as ``invalid type: integer `490154203237518`, expected a string at line 1 column 21``
-   (serde_json 1, reproduced in `nidd/fix-serde-probe/` in the job directory). Every parse failure,
+   (serde_json 1; `a_parse_error_line_never_quotes_the_value` sends one). Every parse failure,
    of `CallbackAuth`, `NiddCallback` or a frame's body, logs `e.classify()` and `e.column()` only,
    through one helper (6.6). Every callback logs one line,
    `nidd_cb kind= outcome= pigeon= request= attempt= ms=`, so `ms` can be watched against the
@@ -1030,9 +1027,8 @@ already follows.
 
 ### 7.2 Exact bytes
 
-Computed by `nidd/synth/frames.py` in the job directory, which also parses every JSON body back;
-the platform frames are pinned by golden tests in `helpers/nidd.rs`, which sign on the host with an
-HMAC checked against RFC 4231. Byte 0 is shown first; the ASCII column is the text the body
+The platform frames are pinned by golden tests in `helpers/nidd.rs`, which sign on the host with
+an HMAC checked against RFC 4231. Byte 0 is shown first; the ASCII column is the text the body
 carries.
 
 **Frame 1: `TELEMETRY`, a batch of three readings taken five minutes apart, sent at one wake.**
@@ -1364,8 +1360,7 @@ pipeline stop the script, and the `nonempty` checks catch a 200 without a token,
 prints `null` and exits 0; without both, a failed login would still reach step 3 and replace the
 Worker's callback password while step 5 fails, and every callback would then answer 403. [LIST],
 [REG] and [DEREG] each say the request "must set the content-type to JSON", so steps 2 and 4 send
-it too. [DEREG] lists `NiddService` among its valid service names (saved copy
-`nidd/understand/vz/Deregister_Callback_Listener.txt:44`, and the live page, both read
+it too. [DEREG] lists `NiddService` among its valid service names (the live page, read
 2026-09-24). And an empty list from step 2 does not prove that nothing holds `NiddService`: the
 list "only includes callback listeners that were registered through the Connectivity Management
 API" [LIST], and "You cannot register a callback service through the REST API if the same callback
@@ -1384,9 +1379,9 @@ and the credentials rotated (8.4).
 
 7. In the Cloudflare dashboard, a Configuration Rule turning Browser Integrity Check off for
    `/internal/thingspace/*` on both API hostnames, before the first callback. The zone's BIC has
-   already refused non-browser clients on these hosts with "error code: 1010" (memory
-   `reference_cloudflare_bic_python_ua.md`). ThingSpace's user agent, `Verizon's callback
-   service`, met no challenge in 62 requests (B5), so the rule is insurance, not a fix.
+   already refused non-browser clients on these hosts with "error code: 1010". ThingSpace's user
+   agent, `Verizon's callback service`, met no challenge in 62 requests (B5), so the rule is
+   insurance, not a fix.
 8. Prove it with a real uplink (tier 2, B5): `wrangler tail --env staging` shows one `nidd_cb`
    line with `outcome=stored`.
 
@@ -1570,21 +1565,20 @@ thingspace-sdk = { git = "https://github.com/justins-engineering/thingspace-sdk-
 
 Only `objects/thingspace.rs` touches it: `get_access_token`, `get_session_token`, `send_nidd`, and
 the models `LoginResponse`, `Session`, `SessionRequestBody`, `NiddMessage`, `NiddRequest`,
-`DeviceID` and `Error`. The reader's probe linked `send_nidd` against worker 0.8.6, the version in
-dovecote's lock, for wasm32 (`nidd/understand/wasm-dep-probe/`). The SDK asks for `worker = "0.8"`,
-which unifies with it.
+`DeviceID` and `Error`. dovecote's wasm32 build links `send_nidd` against worker 0.8.6, the
+version in its lock. The SDK asks for `worker = "0.8"`, which unifies with it.
 
 The inbound callback is parsed by dovecote's own model (6.6), not the SDK's `NiddCallback`: that
-model drops `username` and `password`, has no `niddConfigResponse` variant, and requires exactly
-one top-level device id (`thingspace-sdk-rust/src/models/nidd/callback.rs:6-25`); the reader's serde
-probe confirmed every configuration callback fails to parse. The callback is the device
-authentication boundary, so the code that reads it belongs under dovecote's tests.
+model drops `username` and `password`, has no `niddConfigResponse` variant, and requires exactly one
+top-level device id (`thingspace-sdk-rust/src/models/nidd/callback.rs:6-25`), so no configuration
+callback parses into it. The callback is the device authentication boundary, so the code that reads
+it belongs under dovecote's tests.
 
-New crates in dovecote's wasm graph: `const_format`, `iso8601` (with `nom`) and `base64ct`, the
-last a second base64 beside dovecote's `base64 0.22` (`cargo tree`, reader map
-`sdk-and-verizon.md` section 1). The reason under the minimal-dependency rule: it is the owner's
-own client for this API, named in the request, and the alternative is a second copy of its three
-request builders inside dovecote, about 150 lines over `worker::Fetch` (decision D3).
+New crates in dovecote's wasm graph: `const_format`, `iso8601` (with `nom`) and `base64ct`, the last
+a second base64 beside dovecote's `base64 0.22` (`cargo tree -p dovecote`). The reason under the
+minimal-dependency rule: it is the owner's own client for this API, named in the request, and the
+alternative is a second copy of its three request builders inside dovecote, about 150 lines over
+`worker::Fetch` (decision D3).
 
 ### 11.2 The patch, before dovecote depends on it
 
@@ -1783,16 +1777,15 @@ which is the suite's last step.
 
 ### 13.2 Tier 2: the bench SIM, downlink and a replayed callback
 
-After the Phase 0 gate, with `pigeon-examples/nidd_probe` (task 0.2): the bench test
-(`/home/justin/pigeon-nidd/nidd-test`) ported to NCS v3.4.0's `lte_lc` PDN calls (the PDN library it
-uses was deprecated in NCS 3.2 and is absent from v3.4.0), its `modem/ltes_lc.h` include typo fixed,
-a receive loop that prints each downlink as hex and whether its tag verifies against the claim
-key (printing ok or bad, never the key), shell commands that send a canned `HELLO` (the
-claim key from `prj.local.conf`, the sample credential convention) or N filler bytes, and the IMEI
-and ICCID logged at boot. It is built for the nRF9160 Feather (`circuitdojo_feather/nrf9160/ns`),
-never the nRF9151, which Verizon does not support. Flashing is pre-approved; the Feather programs
-through the nRF5340-DK acting as J-Link, and its console is chosen by serial, not index. Ordered by
-risk:
+After the Phase 0 gate, with `pigeon-examples/nidd_probe` (task 0.2): the owner's earlier NIDD bench
+test ported to NCS v3.4.0's `lte_lc` PDN calls (the PDN library it uses was deprecated in NCS 3.2
+and is absent from v3.4.0), its `modem/ltes_lc.h` include typo fixed, a receive loop that prints
+each downlink as hex and whether its tag verifies against the claim key (printing ok or bad, never
+the key), shell commands that send a canned `HELLO` (the claim key from `prj.local.conf`, the sample
+credential convention) or N filler bytes, and the IMEI and ICCID logged at boot. It is built for the
+nRF9160 Feather (`circuitdojo_feather/nrf9160/ns`), never the nRF9151, which Verizon does not
+support. Flashing is pre-approved; the Feather programs through the nRF5340-DK acting as J-Link, and
+its console is chosen by serial, not index. Ordered by risk:
 
 | # | Check | Pass means |
 |---|---|---|
@@ -2146,20 +2139,18 @@ application's cadence, and `nidd_init` leaves it off.
 
 PidgeIoT's origin was putting departure boards on NIDD, so the question deserves a straight answer.
 
-- **The board is LTE-M only**
-  (`/home/justin/embedded-departure-board/app/boards/circuitdojo_feather_nrf9160_ns.conf:49`,
-  `CONFIG_LTE_NETWORK_MODE_LTE_M=y`), and Verizon's NIDD is NB-IoT only [NIDD][SEND]. A NIDD
-  board would be a different radio build, and nobody has shown Verizon NB-IoT coverage at the
-  Massachusetts sites (B2 and a site survey would).
-- **The board refreshes departures every 30 seconds** by default, runtime-clamped to 5 to 45
-  seconds (`/home/justin/embedded-departure-board/app/Kconfig:27-35`): 120 radio accesses an hour
-  against the guideline's four. Verizon allows that "in certain circumstances" [NUG], which would
-  be a negotiation, not a setting.
+- **The board is LTE-M only** (`justins-engineering/embedded-departure-board`,
+  `app/boards/circuitdojo_feather_nrf9160_ns.conf:49`, `CONFIG_LTE_NETWORK_MODE_LTE_M=y`), and
+  Verizon's NIDD is NB-IoT only [NIDD][SEND]. A NIDD board would be a different radio build, and
+  nobody has shown Verizon NB-IoT coverage at the Massachusetts sites (B2 and a site survey would).
+- **The board refreshes departures every 30 seconds** by default, runtime-clamped to 5 to 45 seconds
+  (`app/Kconfig:27-35` there): 120 radio accesses an hour against the guideline's four. Verizon
+  allows that "in certain circumstances" [NUG], which would be a negotiation, not a setting.
 - **Size is not the constraint.** A stop's next departures are on the order of 100 to 200 bytes as
   compact JSON (an estimate), far inside 1358.
 - **The origin never carried sign data over NIDD.** dusty-loft's encoder for a stop was an empty
   stub (`justins-engineering/dusty-loft@5d07cbe:src/nidd_client.c:22`); only "Hello world!" went
-  down and printed uplinks came up (reader map `device-and-origin.md` 3.1).
+  down and printed uplinks came up.
 
 So the LED departure board stays on LTE-M IP, and its bandwidth path is the CoAP migration
 (`docs/design/coap-nrf91-migration.md`). The low-power e-paper variant the owner ruled in on
@@ -2285,8 +2276,8 @@ million rows read, $12.50 per million GB-s
 requests and $0.02 per million CPU ms (https://developers.cloudflare.com/workers/platform/pricing/);
 Queues $0.40 per million operations, three per message
 (https://developers.cloudflare.com/queues/platform/pricing/). Hyperdrive has no per-query charge on
-Workers Paid (https://developers.cloudflare.com/hyperdrive/platform/pricing/, read by the cost
-review on 2026-09-24). The arithmetic is `nidd/synth/cost.py` in the job directory.
+Workers Paid (https://developers.cloudflare.com/hyperdrive/platform/pricing/, read on
+2026-09-24).
 
 **Per uplink, steady state:** one Worker request (the callback), one Durable Object request, three
 SQLite rows read and two written (`pigeon_nidd` read twice, the telemetry blob once, each written
@@ -2376,9 +2367,8 @@ the first cadence with ten keys (540 bytes a wake) sends about 52 KB a day.
   and Verizon NB-IoT serves the bench on band 13. Coverage at Massachusetts sites is still
   unknown. The only
   claim on hand about US NB-IoT is an unsourced commit message in the departure board's history.
-- **U12.** That any version of `/home/justin/pigeon-nidd/nidd-test` ever ran: no capture exists,
-  and the tree on disk does not build against the NCS it pins (reader map `device-and-origin.md`
-  1.5).
+- **U12.** That any version of the owner's earlier NIDD bench test ever ran: no capture exists,
+  and its tree does not build against the NCS it pins.
 - **U13.** Settled by B8, the B7 retest and tier 3: `NRF_RAI_NO_DATA` is accepted on a raw socket,
   and a downlink ThingSpace buffered was never delivered later, neither at B8's next wake nor,
   sent with an 86400 s `maximumDeliveryTime`, at any connection in the day before it reported
@@ -2439,13 +2429,6 @@ Also read on 2026-09-24:
 - https://rdap.arin.net/registry/ip/3.87.163.45 and https://rdap.arin.net/registry/ip/137.117.33.109
   (two of Verizon's eight callback addresses: Amazon's `AMAZON-IAD`, Microsoft's `MICROSOFT`)
 
-[NIDD], [SEND], [CB], [CBBP], [REG], [LOGIN], [CRED], [NUG], the Durable Object state and pricing
-pages, the Workers, Queues and Hyperdrive query-caching pages and the cargo-about page were read
-by this document's writer, and [DEREG] and the two RDAP records by its fix pass; the rest by the
-reader, review and skeptic agents the same day, whose saved
-copies of the Verizon pages sit under `nidd/understand/vz/` in the job directory.
-
 Internal: pidgeiot at `fcc093c` (every `file:line` above), `thingspace-sdk-rust` at `9d920a4`,
-`~/pigeon` at `fd81344`, NCS v3.4.0 at `/home/justin/pigeon-examples-ncs`,
-`/home/justin/pigeon-nidd/nidd-test`, `/home/justin/embedded-departure-board`, and
+`pigeon` at `fd81344`, NCS v3.4.0, `justins-engineering/embedded-departure-board`, and
 `justins-engineering/dusty-loft` for the origin.
