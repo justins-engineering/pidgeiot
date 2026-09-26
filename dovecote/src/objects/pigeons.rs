@@ -3084,7 +3084,8 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// enqueue, so that retry waits for the first attempt: a repeat if it stored the uplink, stored
 /// here if it failed. A telemetry frame the carrier delivered twice arrives under a second
 /// request id, so it is recognised by its digest alone, which its send sequence makes unique to
-/// one send.
+/// one send. It waits for an attempt storing the frame as a retry does, and is a repeat once that
+/// attempt decided.
 ///
 /// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
 /// not parse, 404 when no pigeon is here, and 5xx when the frame was not read or stored, which the
@@ -3103,10 +3104,16 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   };
   let pigeon_id = pigeons.state.id().to_string();
   let key = dedupe_key(&request_id, &frame);
-  // A `false` means the attempt failed; loop, since another waiting retry may claim it first.
-  while let Some(attempt) = pigeons.nidd_in_flight.wait(&key) {
+  // A `false` means the attempt failed; loop, since another waiting copy may claim it first.
+  let mut decided_elsewhere = false;
+  while let Some((same_key, attempt)) = pigeons.nidd_in_flight.wait(&key) {
     if attempt.await.unwrap_or(false) {
-      return Response::ok("duplicate");
+      if same_key {
+        return Response::ok("duplicate");
+      }
+      // Another delivery of the send: a repeat below, even if that attempt's key goes unrecorded.
+      decided_elsewhere = true;
+      break;
     }
   }
   let now = (Date::now().as_millis() / 1000) as i64;
@@ -3199,7 +3206,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       "paused"
     }
     // Like any uplink it shows the device awake, so it still carries the owed shadow.
-    Uplink::Telemetry(_) if row.has_seen_frame(&key) => {
+    Uplink::Telemetry(_) if decided_elsewhere || row.has_seen_frame(&key) => {
       if shadow_reply_due(&row, now) {
         downlink = plan_shadow_push(pigeons, &mut row, now);
       }
@@ -3215,7 +3222,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           "rejected"
         }
         Ok(body) => {
-          // Nothing awaited since the wait loop found no attempt, so none can hold the key.
+          // Nothing awaited since the wait loop found no attempt, so none can hold the frame.
           pigeons.nidd_in_flight.claim(&key);
           let result = ingest_telemetry(pigeons, body, "NIDD").await;
           // Before any early return below, or a waiting retry would never be answered.

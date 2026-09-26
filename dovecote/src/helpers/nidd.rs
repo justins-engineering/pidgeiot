@@ -492,28 +492,35 @@ pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
 }
 
 /// The telemetry uplinks a pigeon's object is storing, by de-duplication key, each with the
-/// retries waiting on it. Held in memory rather than in `pigeon_nidd`, so a claim ends with the
+/// copies waiting on it. Held in memory rather than in `pigeon_nidd`, so a claim ends with the
 /// attempt that made it: an attempt lost to an object reset leaves nothing to turn its retry away.
 #[derive(Default)]
 pub struct NiddInFlight(RefCell<HashMap<String, Vec<oneshot::Sender<bool>>>>);
 
 impl NiddInFlight {
-  /// Marks `key` as being stored. The caller found no attempt under it with no await since.
+  /// Marks `key` as being stored. The caller found no attempt storing its frame with no await
+  /// since, so at most one attempt holds a frame.
   pub fn claim(&self, key: &str) {
     self.0.borrow_mut().insert(key.to_string(), Vec::new());
   }
 
-  /// The outcome of the attempt storing `key`, or `None` when none is: `true` once it stored or
-  /// refused the uplink, `false` (or a dropped sender) when it failed and the retry should try.
-  pub fn wait(&self, key: &str) -> Option<oneshot::Receiver<bool>> {
+  /// The attempt storing this key's frame under any request id, so the carrier's second delivery
+  /// of a send waits as ThingSpace's retry does: whether it holds `key` itself, and its outcome,
+  /// `true` once it stored or refused the frame, `false` (or a dropped sender) when it failed and
+  /// the caller should try. Only a `TELEMETRY` frame is ever claimed, and its send sequence makes
+  /// the digest name one send.
+  pub fn wait(&self, key: &str) -> Option<(bool, oneshot::Receiver<bool>)> {
+    let digest = key_digest(key);
     let mut attempts = self.0.borrow_mut();
-    let waiters = attempts.get_mut(key)?;
+    let (held, waiters) = attempts
+      .iter_mut()
+      .find(|(held, _)| key_digest(held) == digest)?;
     let (sender, receiver) = oneshot::channel();
     waiters.push(sender);
-    Some(receiver)
+    Some((held == key, receiver))
   }
 
-  /// Ends the attempt storing `key` and tells each retry waiting on it whether it was decided.
+  /// Ends the attempt storing `key` and tells each copy waiting on it whether it was decided.
   pub fn settle(&self, key: &str, decided: bool) {
     let waiters = self.0.borrow_mut().remove(key).unwrap_or_default();
     for waiter in waiters {
@@ -1233,8 +1240,9 @@ mod tests {
     let in_flight = NiddInFlight::default();
     assert!(in_flight.wait("k").is_none());
     in_flight.claim("k");
-    let mut first = in_flight.wait("k").expect("an attempt is storing k");
-    let second = in_flight.wait("k").expect("an attempt is storing k");
+    let (same, mut first) = in_flight.wait("k").expect("an attempt is storing k");
+    assert!(same);
+    let (_, second) = in_flight.wait("k").expect("an attempt is storing k");
     assert!(in_flight.wait("other").is_none());
     assert_eq!((&mut first).now_or_never(), None);
 
@@ -1244,10 +1252,45 @@ mod tests {
     assert!(in_flight.wait("k").is_none());
 
     in_flight.claim("k");
-    let third = in_flight.wait("k").expect("an attempt is storing k");
+    let (_, third) = in_flight.wait("k").expect("an attempt is storing k");
     in_flight.settle("k", true);
     assert_eq!(third.now_or_never(), Some(Ok(true)));
     assert!(in_flight.wait("k").is_none());
+  }
+
+  #[test]
+  fn a_second_delivery_waits_for_the_attempt_storing_its_frame() {
+    use futures::FutureExt;
+
+    let frame = b"\x0117\n{\"laps\":\"1\"}";
+    let first = dedupe_key("request-a", frame);
+    let second = dedupe_key("request-b", frame);
+    let in_flight = NiddInFlight::default();
+    let held = |key: &str| in_flight.wait(key).expect("the frame is in flight");
+    in_flight.claim(&first);
+
+    let (same, retry) = held(&first);
+    assert!(same);
+    let (same, mut redelivery) = held(&second);
+    assert!(!same);
+    // A request id holding a colon cannot shift the digest half.
+    let (same, odd) = held(&dedupe_key("a:b", frame));
+    assert!(!same);
+    // The same readings sent again carry the next sequence, so they are a frame of their own.
+    let next_send = dedupe_key("request-c", b"\x0118\n{\"laps\":\"1\"}");
+    assert!(in_flight.wait(&next_send).is_none());
+    assert_eq!((&mut redelivery).now_or_never(), None);
+
+    in_flight.settle(&first, true);
+    assert_eq!(retry.now_or_never(), Some(Ok(true)));
+    assert_eq!(redelivery.now_or_never(), Some(Ok(true)));
+    assert_eq!(odd.now_or_never(), Some(Ok(true)));
+    assert!(in_flight.wait(&second).is_none());
+
+    // After a failure, whichever copy claims next holds the frame for the rest.
+    in_flight.claim(&second);
+    let (same, _) = held(&first);
+    assert!(!same);
   }
 
   #[test]
