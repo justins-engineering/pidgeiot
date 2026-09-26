@@ -616,6 +616,19 @@ fn TokenReveal(connector: Connector, on_close: EventHandler<()>) -> Element {
             ". Copy it into your device build now; it cannot be retrieved later. Refreshing this pigeon's token mints a replacement and retires this one."
           }
         }
+        // The one moment the token exists is the one to say where it goes.
+        // A new tab, because leaving this dialog loses the token for good.
+        p { class: "text-sm text-base-content/80",
+          "The symbol beside each value is where it goes in a device build; the pigeon-examples samples read them from a git-ignored prj.local.conf. "
+          a {
+            class: "link link-secondary",
+            href: "/getting-started/#getting-started-simulator",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            "The getting-started guide walks through it"
+          }
+          " (opens in a new tab)."
+        }
         for field in fields {
           CredentialRow {
             key: "{field.label}",
