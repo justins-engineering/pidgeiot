@@ -424,7 +424,15 @@ pub fn LogViewer(
                 ") to decode them right here. It must come from the exact build the device is running. "
                 "Alternatively, download raw chunks and decode offline with Zephyr's "
                 code { class: "text-xs", "log_parser.py" }
-                " (see the pigeon-examples README's dictionary logging section)."
+                " ("
+                a {
+                  class: "link link-secondary",
+                  href: "https://github.com/justins-engineering/pigeon-examples/blob/main/docs/device-logs.md",
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  "how to decode them"
+                }
+                ")."
               }
               DictionaryUpload { pigeon_id: pigeon_id.clone(), dict_state }
             }
