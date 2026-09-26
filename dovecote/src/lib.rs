@@ -788,11 +788,12 @@ fn log_nidd_callback(
 ///
 /// A 2xx says the callback is handled, so it is answered only once a retry could not change the
 /// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
-/// anything a retry would repeat identically. A store that failed, or a deploy with NIDD half
-/// configured, answers 503, which is the truth but loses the callback: ThingSpace retries once,
-/// about a second later, and never after, so each such answer is logged as lost. It also retries
-/// a callback unanswered for about 4 s while the first attempt still runs; the Durable Object
-/// holds that retry until the first attempt has stored the uplink or failed. Billing, the
+/// anything a retry would repeat identically. A `TELEMETRY` frame whose sequence header does not
+/// parse answers 400, as a body that is not JSON does. A store that failed, or a deploy with NIDD
+/// half configured, answers 503, which is the truth but loses the callback: ThingSpace retries
+/// once, about a second later, and never after, so each such answer is logged as lost. It also
+/// retries a callback unanswered for about 4 s while the first attempt still runs; the Durable
+/// Object holds that retry until the first attempt has stored the uplink or failed. Billing, the
 /// Postgres sync and every downlink run in the Durable Object after it answers.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
@@ -1004,6 +1005,20 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         200..=299 => Ok(body),
         // No pigeon behind that IMEI: an unprovisioned line, which a resend cannot help.
         404 => Ok("no_pigeon".to_string()),
+        // A TELEMETRY sequence header that does not parse, refused like a body that is not JSON.
+        400 => {
+          log_nidd_callback(
+            kind,
+            "malformed",
+            &pigeon_id,
+            &request_id,
+            &attempt,
+            started,
+          );
+          return Response::error("Bad Request: malformed frame", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
         _ => {
           console_error!("nidd_cb: pigeon {pigeon_id} answered {status}");
           Err("store_failed")

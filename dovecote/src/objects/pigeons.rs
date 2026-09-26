@@ -3082,11 +3082,14 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// support resend) is recognised by its request id and frame digest and never stored or billed
 /// twice. The object serves the retry of a slow callback while the first attempt awaits its
 /// enqueue, so that retry waits for the first attempt: a repeat if it stored the uplink, stored
-/// here if it failed.
+/// here if it failed. A telemetry frame the carrier delivered twice arrives under a second
+/// request id, so it is recognised by its digest alone, which its send sequence makes unique to
+/// one send.
 ///
-/// Answers 200 with the outcome as the body, 404 when no pigeon is here, and 5xx when the store
-/// failed, which the gateway answers 503 and logs as lost: ThingSpace retries once at once and
-/// never later. Billing, the Postgres sync and any downlink run after the response.
+/// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
+/// not parse, 404 when no pigeon is here, and 5xx when the store failed, which the gateway
+/// answers 503 and logs as lost: ThingSpace retries once at once and never later. Billing, the
+/// Postgres sync and any downlink run after the response.
 async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
 
@@ -3144,6 +3147,15 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let mut downlink = None;
   let mut stored_report = None;
   let outcome = match uplink {
+    // Refused like a callback body that is not JSON, so ThingSpace's archive keeps the frame for
+    // a resend once a parser takes it.
+    Uplink::BadHeader => {
+      console_log!(
+        "NIDD uplink: dropped TELEMETRY len={} with a malformed header for pigeon {pigeon_id}",
+        frame.len()
+      );
+      return Response::error("Bad Request: malformed TELEMETRY sequence header", 400);
+    }
     Uplink::Empty | Uplink::Unknown(_) => {
       console_log!(
         "NIDD uplink: dropped frame type={} len={} for pigeon {pigeon_id}",
@@ -3184,6 +3196,15 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         downlink = plan_shadow_push(pigeons, &mut row, now);
       }
       "paused"
+    }
+    // The carrier can deliver one send twice, and ThingSpace posts each delivery under its own
+    // request id. The frame's send sequence is what keeps two sends of the same readings apart.
+    // Like any uplink it shows the device awake, so it still carries the owed shadow.
+    Uplink::Telemetry(_) if row.has_seen_frame(&key) => {
+      if shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
+      "repeat"
     }
     Uplink::Telemetry(body) => {
       let outcome = match serde_json::from_slice::<capsules::TelemetryReportBody>(body) {

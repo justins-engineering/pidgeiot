@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::pin::pin;
 use std::time::Duration;
 
-/// Device to platform: a telemetry body, exactly as the HTTPS telemetry route takes it.
+/// Device to platform: a send-sequence header, then a telemetry body exactly as the HTTPS
+/// telemetry route takes it.
 pub const FRAME_TELEMETRY: u8 = 0x01;
 /// Device to platform: a shadow report body, exactly as the HTTPS report route takes it.
 pub const FRAME_SHADOW_REPORT: u8 = 0x02;
@@ -46,6 +47,8 @@ pub const HEADER_LINE: &str = "X-Nidd-Line";
 pub const NIDD_TAG_CHARS: usize = 16;
 /// Bytes in a claim key, which a `HELLO` carries as twice as many hex characters.
 pub const NIDD_CLAIM_KEY_BYTES: usize = 16;
+/// Longest `TELEMETRY` header: a ten-digit send sequence and the newline.
+const NIDD_SEQUENCE_HEADER_MAX: usize = 11;
 /// Longest `SHADOW` header: two ten-digit versions, the space between them and the newline.
 const NIDD_SHADOW_HEADER_MAX: usize = 22;
 /// Longest `STATUS` header: a three-digit code, a ten-digit argument, the space and the newline.
@@ -313,8 +316,10 @@ pub fn parse_error_line(context: &str, error: &serde_json::Error) -> String {
 /// An uplink frame, split by its type byte.
 #[derive(Debug, PartialEq)]
 pub enum Uplink<'a> {
-  /// A telemetry body.
+  /// A telemetry body, its sequence header removed.
   Telemetry(&'a [u8]),
+  /// A telemetry frame whose sequence header does not parse.
+  BadHeader,
   /// A shadow report body.
   ShadowReport(&'a [u8]),
   /// A `HELLO`'s body, meant to be the claim key's 32 hex characters.
@@ -329,11 +334,29 @@ pub enum Uplink<'a> {
 pub fn decode_uplink(frame: &[u8]) -> Uplink<'_> {
   match frame.split_first() {
     None => Uplink::Empty,
-    Some((&FRAME_TELEMETRY, body)) => Uplink::Telemetry(body),
+    Some((&FRAME_TELEMETRY, rest)) => {
+      after_sequence(rest).map_or(Uplink::BadHeader, Uplink::Telemetry)
+    }
     Some((&FRAME_SHADOW_REPORT, body)) => Uplink::ShadowReport(body),
     Some((&FRAME_HELLO, body)) => Uplink::Hello(body),
     Some((&other, _)) => Uplink::Unknown(other),
   }
+}
+
+/// What follows a `TELEMETRY` frame's sequence header: 1 to 10 decimal digits naming a u32, then
+/// a newline, the rule the device applies to a platform frame's header. `None` when the frame does
+/// not open with that.
+fn after_sequence(rest: &[u8]) -> Option<&[u8]> {
+  let end = rest
+    .iter()
+    .take(NIDD_SEQUENCE_HEADER_MAX)
+    .position(|&byte| byte == b'\n')?;
+  let digits = &rest[..end];
+  if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+    return None;
+  }
+  std::str::from_utf8(digits).ok()?.parse::<u32>().ok()?;
+  Some(&rest[end + 1..])
 }
 
 /// Whether a frame of this type is billed and so paused with the account.
@@ -456,7 +479,7 @@ fn hex_pair(byte: u8) -> [u8; 2] {
 
 /// The de-duplication key of one uplink: the request id and the first 16 hex characters of the
 /// frame's SHA-256. ThingSpace's retry of a callback, and a support resend of one, repeat both
-/// halves.
+/// halves; the carrier delivering one send twice repeats only the digest.
 pub fn dedupe_key(request_id: &str, frame: &[u8]) -> String {
   let digest = Sha256::digest(frame);
   let mut key = String::with_capacity(request_id.len() + 17);
@@ -553,6 +576,15 @@ impl NiddRow {
     self.seen.iter().any(|seen| seen == key)
   }
 
+  /// Whether a frame with this key's digest has been seen under any request id. ThingSpace posts
+  /// each carrier delivery of one device send under a request id of its own, so this is how a
+  /// repeated `TELEMETRY` frame is known; its send sequence keeps two sends of the same readings
+  /// apart, which no other frame type has.
+  pub fn has_seen_frame(&self, key: &str) -> bool {
+    let digest = key_digest(key);
+    self.seen.iter().any(|seen| key_digest(seen) == digest)
+  }
+
   /// Records an uplink's key, forgetting the oldest beyond the window.
   pub fn remember(&mut self, key: String) {
     self.seen.push(key);
@@ -577,6 +609,11 @@ impl NiddRow {
     self.pushed_version = 0;
     true
   }
+}
+
+/// The frame digest half of a de-duplication key.
+fn key_digest(key: &str) -> &str {
+  key.rsplit_once(':').map_or(key, |(_, digest)| digest)
 }
 
 /// Whether a delivery report says a downlink missed the device: it failed, or the network could
@@ -923,13 +960,57 @@ mod tests {
   #[test]
   fn every_uplink_type_decodes() {
     assert_eq!(decode_uplink(&[]), Uplink::Empty);
-    assert_eq!(decode_uplink(&[0x01, b'{', b'}']), Uplink::Telemetry(b"{}"));
+    assert_eq!(decode_uplink(b"\x017\n{}"), Uplink::Telemetry(b"{}"));
     assert_eq!(decode_uplink(&[0x02, b'{']), Uplink::ShadowReport(b"{"));
     assert_eq!(decode_uplink(&[0x04, 1, 2]), Uplink::Hello(&[1, 2]));
     assert_eq!(decode_uplink(&[0x03, 9]), Uplink::Unknown(0x03));
     assert_eq!(decode_uplink(&[0x81]), Uplink::Unknown(0x81));
     assert!(is_billable(FRAME_TELEMETRY) && is_billable(FRAME_SHADOW_REPORT));
     assert!(!is_billable(FRAME_HELLO) && !is_billable(0x03));
+  }
+
+  #[test]
+  fn a_telemetry_sequence_header_is_parsed_as_the_device_writes_it() {
+    for (frame, body) in [
+      (&b"\x010\n{}"[..], &b"{}"[..]),
+      (b"\x014294967295\n{}", b"{}"),
+      (b"\x010000000001\n{}", b"{}"),
+      (b"\x0142\n", b""),
+    ] {
+      assert_eq!(decode_uplink(frame), Uplink::Telemetry(body));
+    }
+    // No header, as a build before the sequence sends; no digits; past a u32; eleven digits; a
+    // sign; the wrong separator; no newline at all.
+    for frame in [
+      &b"\x01{}"[..],
+      b"\x01",
+      b"\x01\n{}",
+      b"\x014294967296\n{}",
+      b"\x0112345678901\n{}",
+      b"\x01+7\n{}",
+      b"\x01-1\n{}",
+      b"\x017 {}",
+      b"\x017\r\n{}",
+      b"\x017",
+    ] {
+      assert_eq!(decode_uplink(frame), Uplink::BadHeader, "{frame:?}");
+    }
+  }
+
+  #[test]
+  fn the_documented_telemetry_frame_decodes_to_its_body() {
+    let body = concat!(
+      r#"{"reports":[{"age_secs":600,"metrics":{"uptime_s":"85800","rsrp":"-97","#,
+      r#""batt_mv":"3712","temp_c":"21.5"}},{"age_secs":300,"metrics":{"uptime_s":"86100","#,
+      r#""rsrp":"-98","batt_mv":"3711","temp_c":"21.4"}},{"age_secs":0,"metrics":{"#,
+      r#""uptime_s":"86400","rsrp":"-97","batt_mv":"3711","temp_c":"21.4"}}]}"#
+    );
+    let mut frame = b"\x013141592653\n".to_vec();
+    frame.extend_from_slice(body.as_bytes());
+    assert_eq!(frame.len(), 305);
+    assert_eq!(decode_uplink(&frame), Uplink::Telemetry(body.as_bytes()));
+    assert_eq!(dedupe_key("r", &frame), "r:4de851f1be23b5ba");
+    assert!(serde_json::from_str::<capsules::TelemetryReportBody>(body).is_ok());
   }
 
   /// The fixture key docs/api.md's exact bytes use: 16 zero bytes, never a real key.
@@ -1101,6 +1182,25 @@ mod tests {
     assert_eq!(dedupe_key("req", b"ABC"), "req:b5d4045c3f466fa9");
     assert_ne!(dedupe_key("req", b"ABD"), dedupe_key("req", b"ABC"));
     assert_ne!(dedupe_key("other", b"ABC"), dedupe_key("req", b"ABC"));
+  }
+
+  #[test]
+  fn a_frame_delivered_twice_is_known_by_its_digest_alone() {
+    let first = b"\x0117\n{\"laps\":\"1\"}";
+    let next_send = b"\x0118\n{\"laps\":\"1\"}";
+    let mut row = NiddRow::default();
+    row.remember(dedupe_key("request-a", first));
+
+    let redelivered = dedupe_key("request-b", first);
+    assert!(!row.has_seen(&redelivered));
+    assert!(row.has_seen_frame(&redelivered));
+    // The same readings sent again carry the next sequence, so they are a new frame.
+    assert!(!row.has_seen_frame(&dedupe_key("request-c", next_send)));
+    assert!(!row.has_seen_frame(&dedupe_key("request-a", b"\x0117\n{}")));
+    // A request id holding a colon cannot shift the digest half.
+    let mut odd = NiddRow::default();
+    odd.remember(dedupe_key("a:b", first));
+    assert!(odd.has_seen_frame(&redelivered));
   }
 
   #[test]
