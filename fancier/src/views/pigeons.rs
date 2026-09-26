@@ -306,8 +306,17 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                 }
                 for (id , pigeon) in filtered {
                   tr { class: "hover",
-                    td { class: "font-semibold text-primary",
-                      "{pigeon.name.as_deref().unwrap_or(\"--\")}"
+                    // The name is the link: on a phone the row's own "View"
+                    // sits past the table's scroll edge.
+                    td { class: "font-semibold",
+                      Link {
+                        class: "link link-hover text-primary",
+                        to: Route::PigeonView {
+                            flock_id,
+                            pigeon_id: id.clone(),
+                        },
+                        "{pigeon.name.as_deref().unwrap_or(\"--\")}"
+                      }
                     }
                     td { class: "font-mono text-sm text-base-content/70",
                       "{pigeon.serial.as_deref().unwrap_or(\"--\")}"
