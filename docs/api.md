@@ -1139,10 +1139,12 @@ in which case the create is undone, so a retry starts clean; `503` "Service Unav
 pigeon's object did not answer; try again" when the create could not reach the pigeon's Durable
 Object or lost its answer. That one is not undone, because the lost answer may have been a `409`
 for a pigeon that already holds the IMEI. If a retry then answers `409`, the first create may
-have landed without being listed: support can tell from the pigeon id logged with the failure,
-and a `DELETE /pigeons/:pigeon_id` by its creator frees the IMEI. The `201` body's
-`connector.Nidd` carries `endpoint` (`nidd://VZWSCEF`), `token`, `imei` and `claim_key`; like
-the token, the claim key is shown only here and by `token/refresh`.
+have landed without being listed. The pigeon id logged with the failure is the same either way,
+so support looks it up in Postgres: with no `pigeons` row the create landed, and a
+`DELETE /pigeons/:pigeon_id` by its creator frees the IMEI; a row may be a live pigeon, so the
+id is left alone. The `201` body's `connector.Nidd` carries `endpoint` (`nidd://VZWSCEF`),
+`token`, `imei` and `claim_key`; like the token, the claim key is shown only here and by
+`token/refresh`.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flock/pigeons \
