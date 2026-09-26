@@ -109,7 +109,7 @@
           "last_verified": "2026-08-12",
           "source": "https://golioth.io/pricing",
           "note": "Golioth charge a flat $0.25 for every device that connects, plus data, which comes to about $0.285 a device each month at a report every five minutes and does not fall as a fleet grows. Below roughly 1,225 devices that beats our price: $14.25 against our $29 at fifty devices, $142.50 against $186.50 at five hundred, $285 against $349 at a thousand. Above that line ours is the cheaper number. What their price does not include is a multi-tenant dashboard, organizations and access control, or alerting, so the question worth answering is whether you would build those yourself or do without them.",
-          "summary_note": "Cheaper than us below roughly 1,225 devices, and without a multi-tenant dashboard, organizations and access control, or alerting."
+          "summary_note": "Cheaper than us from eleven devices to roughly 1,225, and without a multi-tenant dashboard, organizations and access control, or alerting."
         },
         {
           "id": "thingsboard-steady",
@@ -377,7 +377,7 @@
       ],
       "summary_heading": "1,000 devices, reporting every five minutes",
       "summary_subhead": "Published list prices, cheapest tier that legitimately fits the fleet. Each figure carries the date we last checked it.",
-      "closing": "Golioth is cheaper than us up to about 1,225 devices and we are cheaper above it: 18% at 1,500, 21% at 2,000, 47% at ten thousand. Our per-device price falls as each tier fills; a flat rate per device never does."
+      "closing": "Past our ten free devices, Golioth is cheaper than us up to about 1,225 devices and we are cheaper above it: 18% at 1,500, 21% at 2,000, 47% at ten thousand. Our per-device price falls as each tier fills; a flat rate per device never does."
     },
     {
       "id": "chatty",

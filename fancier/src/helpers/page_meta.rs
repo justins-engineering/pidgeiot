@@ -176,7 +176,7 @@ mod page_meta_matches_the_router {
   fn a_public_route_resolves_to_its_seo_title() {
     assert_eq!(
       page_title(&Route::PricingPage {}),
-      "Pricing: Free During Early Access | PidgeIoT"
+      "Pricing: Ten Devices Free for Good | PidgeIoT"
     );
   }
 

@@ -340,7 +340,7 @@ pub fn PricingPage() -> Element {
           "Ten devices free for good. Paid tiers priced by what you connect."
         }
         p { class: "mt-6 text-xl md:text-2xl leading-relaxed max-w-3xl text-base-content/80 text-pretty",
-          "One ladder, no editions, no feature paywall, and device count is the only number you have to forecast."
+          "One ladder, no editions, no feature paywall, and while your devices average under 30,000 messages a month each, device count is the only number you have to forecast."
         }
       }
     }
@@ -477,7 +477,7 @@ pub fn PricingPage() -> Element {
           label: "Billable messages",
           value: "$0.30",
           note: "per 10,000 · pooled",
-          body: "A billable message is a device→platform report: telemetry, shadow report-back, or a log upload. Pooled across the whole account.",
+          body: "A billable message is one device→platform report: a telemetry reading (each one in a batch counts), a shadow report-back, or a log upload. Pooled across the whole account.",
         }
         NeverCard {
           label: "Never metered",
@@ -529,19 +529,19 @@ pub fn PricingPage() -> Element {
         div { class: "flex flex-col gap-8",
           Answer {
             question: "What counts as a message?",
-            body: "A report from a device to us. Shadow polls, firmware chunks, dashboard calls and WebSocket keep-alives don't count, because they'd punish exactly the behaviour we want to encourage.",
+            body: "A report from a device to us, with each reading in a batch counted as one. Shadow polls, firmware chunks, dashboard calls and WebSocket keep-alives don't count, because they'd punish exactly the behaviour we want to encourage.",
           }
           Answer {
             question: "What happens if I go over?",
-            body: "On a paid tier, overage runs at $0.30 per 10,000 messages and service keeps going. Free accounts pause ingestion instead, warned at 80% of the cap. Usage is counted in the dashboard either way, so you can see where you stand. No surprise invoice, ever.",
+            body: "On a paid tier, overage runs at $0.30 per 10,000 messages and service keeps going. Free accounts pause ingestion instead, warned at 80% of the cap. An organization's page shows its usage either way, so you can see where you stand. No surprise invoice, ever.",
           }
           Answer {
             question: "How long do you keep my data?",
-            body: "As long as your tier's retention says: 7 days on the free tier, up to 13 months on Scale. Thirteen rather than twelve on purpose: comparing this month to the same month last year needs both of them, and a twelve-month window is one month short of that. Those limits are on the history we store for you. Telemetry forwarded to your own store has no limit from us at all, because we never hold a copy of it.",
+            body: "As long as your tier's retention says: 7 days on the free tier, up to 13 months on Scale. Thirteen rather than twelve on purpose: comparing this month to the same month last year needs both of them, and a twelve-month window is one month short of that. Those limits are on the history we store for you. Telemetry forwarded to your own store has no limit from us at all, because we keep only its latest value per key, never its history.",
           }
           Answer {
             question: "Is anything locked behind a tier?",
-            body: "No feature that costs us nothing to serve. Every transport, OTA, remote logs, the firmware catalog and per-device crypto are in the free tier. Tiers differ by devices, messages, retention, SSO and support.",
+            body: "No feature that costs us nothing to serve. Every transport, OTA, remote logs, the firmware catalog and per-device crypto are in the free tier. Tiers differ by devices, messages, retention, seats, alerts, organizations and support.",
           }
           Answer {
             question: "Can I self-host it?",
