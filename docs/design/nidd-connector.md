@@ -1754,7 +1754,7 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
    deployed, and dev binds no queue): 503, logged as lost, no key kept; its retry, once the store
    works, is stored. Dev bills telemetry on no surface, so these checks count history rows; the
    billing half, one billed message per reading sent, is checked on staging after the deploy (the
-   runbook's tier 3 record).
+   runbook's operating notes).
 8. A behind shadow report: stored, one billable message, a `SHADOW` planned. A converged one:
    `STATUS STORED`. The same report again: not billed. Telemetry from the converged device: no
    reply.
