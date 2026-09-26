@@ -676,7 +676,7 @@ note_log "$m"
 
 # ThingSpace also retries a callback it has had no answer to for about 4 s, while the first
 # attempt is still running. The lock holds the first attempt inside its history write, dev's
-# stand-in for the enqueue, while the retry arrives.
+# stand-in for the enqueue, while the retry arrives; the retry must wait for it, not store.
 m=$(mark)
 r=$(rid s7o)
 frame 01 '{"laps":"1"}'
@@ -691,10 +691,11 @@ expect "the first attempt is held inside its history write" yes \
 note "> POST /internal/thingspace/nidd the retry (request $r, attempt 2), not awaited"
 post_async "$work/body-retry" "$work/status-retry"
 retry=$!
-expect_log "the retry answers duplicate while the first is held" "$m" \
-  "outcome=duplicate pigeon=$pigeon request=$r attempt=2"
-expect "the first is still held then, and not yet stored" "yes 0" \
-  "$(insert_held && echo yes || echo no) $(log_since "$m" |
+expect_no_log "the retry waits for the first attempt, unanswered while it is held" "$m" \
+  "request=$r attempt=2"
+expect "only the first attempt's insert waits on the lock, and nothing is stored yet" "1 0" \
+  "$(sql "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+    WHERE c.relname = 'pigeon_telemetry_history' AND NOT l.granted;") $(log_since "$m" |
     grep -c "outcome=stored pigeon=$pigeon request=$r" || true)"
 release_history
 wait "$first" "$retry" || true
@@ -702,6 +703,8 @@ expect "both attempts answer 200" "200 200" \
   "$(cat "$work/status-first") $(cat "$work/status-retry")"
 expect_log "released, the first attempt is stored" "$m" \
   "outcome=stored pigeon=$pigeon request=$r attempt=1"
+expect_log "and the retry answers duplicate" "$m" \
+  "outcome=duplicate pigeon=$pigeon request=$r attempt=2"
 expect "one stored, one duplicate" "1 1" \
   "$(log_since "$m" | grep -c "outcome=stored pigeon=$pigeon request=$r" || true) $(log_since "$m" |
     grep -c "outcome=duplicate pigeon=$pigeon request=$r" || true)"
@@ -981,7 +984,7 @@ stop_wrangler
 
 start_wrangler failing --var "NIDD_ALLOWED_ORG_IDS:$org_a" --var DEVICE_API_HOST:api-dev.invalid
 
-step 7 "a store that fails releases its claim, so ThingSpace's retry can store the uplink"
+step 7 "a store that fails keeps no key, so ThingSpace's retry can store the uplink"
 m=$(mark)
 r=$(rid s7f)
 frame 01 '{"splits":"1"}'
