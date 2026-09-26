@@ -3442,13 +3442,14 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 - **A `SHADOW` can arrive more than once**, as a repeated reply or a buffered push landing late.
   The device keeps the shadow with the highest `target_version` and reads any other `SHADOW` only
   for its `current_version`.
-- **A report always gets exactly one reply**, `SHADOW` or `STATUS STORED`. A report is confirmed
-  by that `STATUS STORED`, or by a `SHADOW` whose `current_version` is at least the version
-  reported. A `SHADOW` whose `current_version` is below what the device applied means the report
-  was lost, and the device reports again, unless that report still awaits its reply (telemetry
-  sent before the report can draw the owed `SHADOW` first) or the same `SHADOW` brings a newer
-  target, whose report follows instead. Re-sending a report is harmless: an identical report is
-  neither rewritten nor billed.
+- **A report that is stored, or repeats the stored one, gets exactly one reply**, `SHADOW` or
+  `STATUS STORED`. One the platform drops (paused, unclaimed, from another line, or unparseable) can
+  get no reply at all. A report is confirmed by that `STATUS STORED`, or by a `SHADOW` whose
+  `current_version` is at least the version reported. A `SHADOW` whose `current_version` is below
+  what the device applied means the report was lost, and the device reports again, unless that
+  report still awaits its reply (telemetry sent before the report can draw the owed `SHADOW` first)
+  or the same `SHADOW` brings a newer target, whose report follows instead. Re-sending a report is
+  harmless: an identical report is neither rewritten nor billed.
 - **Frames can arrive out of order.** Each is its own callback. Readings carry their own
   `age_secs`, resolved against the time the callback arrives.
 - **Repeats are stored once.** ThingSpace retries a refused callback once, about a second later,
