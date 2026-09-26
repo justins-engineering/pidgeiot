@@ -33,7 +33,7 @@
     {
       "id": "steady",
       "heading": "Reporting every five minutes",
-      "subhead": "A real device, not a thought experiment: our own departure board, one report every 300 seconds. Each price is the cheapest tier that genuinely fits that fleet.",
+      "subhead": "A real device, not a thought experiment: a transit departure board that runs on PidgeIoT, one report every 300 seconds. Each price is the cheapest tier that genuinely fits that fleet.",
       "columns": [
         {
           "key": "one",
