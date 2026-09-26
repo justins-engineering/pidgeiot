@@ -2062,7 +2062,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
       // A Nidd pigeon's mirror insert is also what clears an earlier pigeon's leftovers under
       // its reused id, so it is the one mirror that may not fail quietly: the create is undone
-      // and the operator retries, and no pigeon ever lives over leftovers it could read.
+      // and the operator retries, and no pigeon answered 201 lives over leftovers it could read.
       if nidd_imei.is_some() {
         if !mirrored {
           return undo_nidd_create(&principal, &obj_id, &cors).await;
