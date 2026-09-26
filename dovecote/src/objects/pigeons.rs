@@ -3087,9 +3087,9 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// one send.
 ///
 /// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
-/// not parse, 404 when no pigeon is here, and 5xx when the store failed, which the gateway
-/// answers 503 and logs as lost: ThingSpace retries once at once and never later. Billing, the
-/// Postgres sync and any downlink run after the response.
+/// not parse, 404 when no pigeon is here, and 5xx when the frame was not read or stored, which the
+/// gateway answers 503 and logs as lost: ThingSpace retries once at once and never later. Billing,
+/// the Postgres sync and any downlink run after the response.
 async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
 
@@ -3097,8 +3097,9 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   let request_id = header(HEADER_REQUEST_ID).unwrap_or_default();
   let paused = header(HEADER_INGEST).as_deref() == Some("paused");
   let line = header(HEADER_LINE);
+  // Not 400: the gateway reads a 400 from here as a bad sequence header, which a retry cannot fix.
   let Ok(frame) = req.bytes().await else {
-    return Response::error("Bad Request: Failed to read body", 400);
+    return Response::error("Internal Server Error", 500);
   };
   let pigeon_id = pigeons.state.id().to_string();
   let key = dedupe_key(&request_id, &frame);
