@@ -809,10 +809,17 @@ fn ConnectorInfo(
                     div { class: "font-mono bg-base-200 rounded px-2 w-fit wrap-anywhere",
                       "{token}"
                     }
+                    p { class: "text-xs text-base-content/60",
+                      "It goes in the device build as "
+                      code { class: "font-mono", "CONFIG_PIGEON_TOKEN" }
+                      " (the samples read it from prj.local.conf); rebuild and reflash the device with it."
+                    }
                   }
                 } else {
+                  // The token is never returned after it is minted, so there
+                  // is no reveal to hint at; a refresh is the way to a new one.
                   span { class: "text-base-content/50 italic text-sm",
-                    "Token hidden for security"
+                    "Shown only once, when minted. Refresh Token mints a new one."
                   }
                 }
               }
