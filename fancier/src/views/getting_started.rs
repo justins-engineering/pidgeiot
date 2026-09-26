@@ -346,9 +346,11 @@ fn GsStep(number: &'static str, title: &'static str, body: &'static str) -> Elem
       div { class: "shrink-0 size-10 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-primary",
         "{number}"
       }
-      div {
+      // min-w-0 and break-words, as in GsLink: step 5's endpoint URL is one
+      // unbreakable word wider than a phone, and main clips what spills.
+      div { class: "min-w-0",
         h3 { class: "text-xl font-bold mb-1", "{title}" }
-        p { class: "text-base-content/70 leading-relaxed", "{body}" }
+        p { class: "text-base-content/70 leading-relaxed break-words", "{body}" }
       }
     }
   }
