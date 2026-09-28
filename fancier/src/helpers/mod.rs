@@ -74,6 +74,8 @@ pub mod svg_hover;
 
 pub mod graph_store;
 
+pub mod telemetry_export;
+
 mod page_meta;
 pub use page_meta::page_title;
 
