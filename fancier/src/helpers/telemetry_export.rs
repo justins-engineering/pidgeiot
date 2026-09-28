@@ -10,6 +10,11 @@ use time::{OffsetDateTime, UtcOffset};
 /// Most raw pages one export fetches, so at most 200,000 points in one file.
 pub const EXPORT_MAX_PAGES: usize = 40;
 
+/// CSV bytes after which an export fetches no further page. A row of long text values runs to
+/// about 1.3 KB, so the page cap alone could hold hundreds of MB in the tab, twice over once the
+/// file's Blob is made.
+pub const EXPORT_MAX_BYTES: usize = 50_000_000;
+
 /// The file's first line. Every row has these seven fields in this order.
 pub const CSV_HEADER: &str = "reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num\r\n";
 

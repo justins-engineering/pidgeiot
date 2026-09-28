@@ -1935,9 +1935,10 @@ file itself.
   running it while `-97` stays a number.
 - The file is named `<pigeon-or-flock-name>-telemetry-<since>-<until>.csv`, with each stamp
   written like `20260926T000000Z`.
-- One export fetches at most 40 pages, 200,000 points. When the range holds more, the dashboard
-  says before saving how many points the file will hold and at what instant older points are left
-  out, and **Export the older part** then saves those as a further file.
+- One export fetches at most 40 pages (200,000 points) and stops paging once the file passes
+  about 50 MB. When the range holds more, the dashboard says before saving how many points the
+  file will hold and at what instant older points are left out, and **Export the older part** then
+  saves those as a further file.
 - A pigeon with a telemetry endpoint has nothing stored here to export; see
   [`PUT /pigeons/:pigeon_id/telemetry-endpoint`](#put-pigeonspigeon_idtelemetry-endpoint).
 

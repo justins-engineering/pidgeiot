@@ -71,6 +71,7 @@ impl Request {
 struct Walked {
   parts: js_sys::Array,
   rows: usize,
+  bytes: usize,
   oldest: Option<OffsetDateTime>,
   newest: Option<OffsetDateTime>,
 }
@@ -87,6 +88,7 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
   let mut walked = Walked {
     parts: js_sys::Array::new(),
     rows: 0,
+    bytes: 0,
     oldest: None,
     newest: None,
   };
@@ -107,7 +109,8 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
       return WalkEnd::NoHeader;
     };
     let mut points = page.points;
-    let last_page = page_index + 1 >= export::EXPORT_MAX_PAGES;
+    let last_page =
+      page_index + 1 >= export::EXPORT_MAX_PAGES || walked.bytes >= export::EXPORT_MAX_BYTES;
     let (keep_from, step) = export::plan_page(&points, truncated, last_page);
     let kept = &mut points[keep_from..];
     if let (Some(first), Some(last)) = (kept.first(), kept.last()) {
@@ -115,6 +118,7 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
       walked.newest.get_or_insert(last.reported_at);
       walked.rows += kept.len();
       let csv = export::rows_csv(kept, &request.pigeon_names, &request.flock_name);
+      walked.bytes += csv.len();
       walked.parts.push(&JsValue::from_str(&csv));
       progress.set(walked.rows);
     }
