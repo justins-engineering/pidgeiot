@@ -1942,7 +1942,9 @@ CSV**. The flock page lists the keys reported in the last 24 hours and those its
 paged as above, and saves the file itself.
 
 - UTF-8 without a byte-order mark, CRLF line ends, and one header row:
-  `reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num`.
+  `reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num`. Excel on Windows reads a
+  double-clicked file in the local code page, so a name like "Café" comes out garbled; open it
+  through **Data > From Text/CSV** with UTF-8 instead.
 - One row per point, oldest first, ties ordered by pigeon then key. `reported_at` is RFC 3339 in
   UTC. `pigeon_name` and `flock_name` are the names at export time, empty when there is none or the
   dashboard could not load it.
