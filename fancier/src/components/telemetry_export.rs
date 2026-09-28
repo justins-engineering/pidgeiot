@@ -10,6 +10,7 @@ use crate::helpers::download_text_parts;
 use crate::helpers::graph_store::GraphScope;
 use crate::helpers::telemetry_export::{self as export, CSV_HEADER, PageStep};
 use capsules::TELEMETRY_HISTORY_MAX_POINTS;
+use dioxus::core::Task;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -134,7 +135,8 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
 
 enum Phase {
   Idle,
-  Running,
+  /// The walk in flight, kept so Cancel can drop it.
+  Running(Task),
   /// A capped walk waiting for the user to accept the newest part.
   Confirm {
     walked: Walked,
@@ -186,9 +188,8 @@ fn start(
   mut phase: Signal<Phase>,
   mut progress: Signal<usize>,
 ) {
-  phase.set(Phase::Running);
   progress.set(0);
-  spawn(async move {
+  let task = spawn(async move {
     load_flock_pigeons(&request.scope, &local).await;
     (request.pigeon_names, request.flock_name, request.scope_name) = names(&request.scope, &local);
     let next = match walk(&request, progress).await {
@@ -205,6 +206,8 @@ fn start(
     };
     phase.set(next);
   });
+  // A spawned task first runs after this handler returns, so its own set cannot come first.
+  phase.set(Phase::Running(task));
 }
 
 /// Fetches the flock's pigeons the dashboard has not loaded yet, so an export started before the
@@ -289,8 +292,10 @@ pub fn TelemetryExport(
 
   let choices = key_choices(&keys, &graphs);
   let flock_scope = matches!(scope, GraphScope::Flock(_));
-  let busy = matches!(*phase.read(), Phase::Running | Phase::Confirm { .. });
-  let can_start = !busy && (all_keys() || !picked.read().is_empty());
+  let busy = matches!(*phase.read(), Phase::Running(_) | Phase::Confirm { .. });
+  let running = matches!(*phase.read(), Phase::Running(_));
+  let needs_key = !all_keys() && picked.read().is_empty();
+  let can_start = !busy && !needs_key;
 
   let download = {
     let scope = scope.clone();
@@ -312,7 +317,7 @@ pub fn TelemetryExport(
 
   let status = match &*phase.read() {
     Phase::Idle => rsx! {},
-    Phase::Running => rsx! {
+    Phase::Running(_) => rsx! {
       span { class: "loading loading-spinner loading-xs me-2" }
       "Fetching… {export::points_text(progress())}"
     },
@@ -436,7 +441,7 @@ pub fn TelemetryExport(
                   r#type: "checkbox",
                   class: "checkbox checkbox-sm",
                   disabled: busy || all_keys(),
-                  checked: !all_keys() && picked.read().contains(&k),
+                  checked: all_keys() || picked.read().contains(&k),
                   onchange: {
                       let k = k.clone();
                       move |evt: Event<FormData>| {
@@ -465,12 +470,29 @@ pub fn TelemetryExport(
       }
 
       div { class: "flex flex-wrap items-center gap-2",
-        button {
-          class: "btn btn-primary btn-sm",
-          r#type: "button",
-          disabled: !can_start,
-          onclick: download,
-          "Download CSV"
+        if confirm_rows.is_none() {
+          button {
+            class: "btn btn-primary btn-sm",
+            r#type: "button",
+            disabled: !can_start,
+            onclick: download,
+            "Download CSV"
+          }
+        }
+        if running {
+          button {
+            class: "btn btn-ghost btn-sm",
+            r#type: "button",
+            onclick: move |_| {
+                if let Phase::Running(task) = phase.replace(Phase::Idle) {
+                    task.cancel();
+                }
+            },
+            "Cancel"
+          }
+        }
+        if needs_key && !busy {
+          span { class: "text-xs text-base-content/70", "Pick a key, or All keys." }
         }
         if let Some(rows) = confirm_rows {
           button {
