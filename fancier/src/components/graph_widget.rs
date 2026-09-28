@@ -495,10 +495,12 @@ pub fn PigeonGraphs(
         h2 { class: "text-3xl font-bold", "Telemetry" }
         div { class: "flex flex-wrap gap-2",
           button {
+            id: "pigeon-telemetry-export-toggle",
             class: "btn btn-outline",
             r#type: "button",
             disabled: !graphs_loaded(),
             "aria-expanded": show_export(),
+            "aria-controls": "pigeon-telemetry-export",
             onclick: move |_| show_export.toggle(),
             "Export CSV"
           }
@@ -642,10 +644,12 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
         h2 { class: "text-3xl font-bold", "Flock Telemetry" }
         div { class: "flex flex-wrap gap-2",
           button {
+            id: "flock-telemetry-export-toggle",
             class: "btn btn-outline",
             r#type: "button",
             disabled: !graphs_loaded(),
             "aria-expanded": show_export(),
+            "aria-controls": "flock-telemetry-export",
             onclick: move |_| show_export.toggle(),
             "Export CSV"
           }
