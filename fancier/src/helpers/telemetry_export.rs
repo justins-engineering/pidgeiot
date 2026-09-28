@@ -207,6 +207,7 @@ pub fn filterable_key(key: &str) -> bool {
   !key.is_empty() && !key.contains(',') && key.trim() == key
 }
 
+/// The file's row order: time, then pigeon, key and value, so ties never depend on the server.
 fn row_order(p: &TelemetryHistoryPoint) -> (OffsetDateTime, &str, &str, &str) {
   (p.reported_at, &p.pigeon_id, &p.key, &p.value)
 }
@@ -234,6 +235,7 @@ pub fn display_utc(t: OffsetDateTime) -> String {
   shown.unwrap_or_default()
 }
 
+/// Appends `t` for a file name: RFC 3339 UTC without `-` and `:`.
 fn push_stamp(out: &mut String, t: OffsetDateTime) {
   out.extend(rfc3339_utc(t).chars().filter(|c| *c != '-' && *c != ':'));
 }

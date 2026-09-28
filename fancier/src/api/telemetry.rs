@@ -128,8 +128,11 @@ pub async fn get_flock_history(
   fetch_history(&path).await
 }
 
+/// Path suffix and first parameter of a raw page, after `/pigeons/<id>` or `/flocks/<id>`.
 const RAW_HISTORY_QUERY: &str = "/telemetry/history?raw=true&since=";
+/// The page's inclusive upper bound.
 const UNTIL_PARAM: &str = "&until=";
+/// Comma-separated key filter; left off to export every key.
 const KEYS_PARAM: &str = "&keys=";
 
 /// One raw page of either scope's history for the CSV export: the newest

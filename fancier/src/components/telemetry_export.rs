@@ -60,6 +60,7 @@ struct Request {
 }
 
 impl Request {
+  /// The file's name for rows from `since` to this request's `until`.
   fn file_name(&self, since: OffsetDateTime) -> String {
     let fallback = match self.scope {
       GraphScope::Pigeon(_) => "pigeon",
@@ -78,14 +79,20 @@ struct Walked {
   newest: Option<OffsetDateTime>,
 }
 
+/// How a walk ended; the variants mirror [`PageStep`] plus the two ways a request can fail.
 enum WalkEnd {
   Complete(Walked),
+  /// The rows kept, and the instant at or before which points were left out.
   Capped(Walked, OffsetDateTime),
   Stalled(Option<OffsetDateTime>),
+  /// A request failed after this many rows.
   Failed(usize),
+  /// A raw page came back without `X-Telemetry-Truncated`, so completeness is unknown.
   NoHeader,
 }
 
+/// Fetches raw pages from the request's `until` back towards its `since`, newest first, turning
+/// each into CSV as it lands so wasm holds about one page at a time.
 async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
   let mut walked = Walked {
     parts: js_sys::Array::new(),
@@ -134,6 +141,7 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
   }
 }
 
+/// Where the panel is, which picks its status line and buttons.
 enum Phase {
   Idle,
   /// The walk in flight, kept so Cancel can drop it.
@@ -144,16 +152,19 @@ enum Phase {
     left_out: OffsetDateTime,
     request: Request,
   },
+  /// The file was handed to the browser.
   Saved {
     rows: usize,
     file: String,
     /// The walk for the points a capped file left out.
     older: Option<Request>,
   },
+  /// The range held no points; nothing was saved.
   Empty,
   Stalled(Option<OffsetDateTime>),
   Failed(usize),
   NoHeader,
+  /// The browser refused the Blob or the object URL.
   SaveFailed,
 }
 
@@ -183,6 +194,8 @@ fn save(walked: Walked, request: &Request, since: OffsetDateTime, older: Option<
   }
 }
 
+/// Starts a walk for `request`, filling in its names first, and moves `phase` through Running to
+/// wherever the walk ends. `refocus` asks for focus back on "Download CSV" afterwards.
 fn start(
   mut request: Request,
   local: LocalSession,
