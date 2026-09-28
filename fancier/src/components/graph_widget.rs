@@ -520,7 +520,12 @@ pub fn PigeonGraphs(
           graphs: graphs.read().clone(),
           keys: reported_keys(),
           forwarding_to: forwarding_to.clone(),
-          on_close: move |_| show_export.set(false),
+          on_close: move |_| {
+              show_export.set(false);
+              document::eval(
+                  r#"document.getElementById("pigeon-telemetry-export-toggle")?.focus();"#,
+              );
+          },
         }
       }
 
@@ -669,7 +674,12 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
           graphs: graphs.read().clone(),
           keys: reported_keys(),
           forwarding_to: None,
-          on_close: move |_| show_export.set(false),
+          on_close: move |_| {
+              show_export.set(false);
+              document::eval(
+                  r#"document.getElementById("flock-telemetry-export-toggle")?.focus();"#,
+              );
+          },
         }
       }
 

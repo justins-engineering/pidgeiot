@@ -13,6 +13,7 @@ use capsules::TELEMETRY_HISTORY_MAX_POINTS;
 use dioxus::core::Task;
 use dioxus::prelude::*;
 use std::collections::HashMap;
+use std::rc::Rc;
 use time::OffsetDateTime;
 use wasm_bindgen::JsValue;
 
@@ -187,6 +188,7 @@ fn start(
   local: LocalSession,
   mut phase: Signal<Phase>,
   mut progress: Signal<usize>,
+  mut refocus: Signal<bool>,
 ) {
   progress.set(0);
   let task = spawn(async move {
@@ -204,6 +206,7 @@ fn start(
       WalkEnd::Failed(rows) => Phase::Failed(rows),
       WalkEnd::NoHeader => Phase::NoHeader,
     };
+    refocus.set(!matches!(next, Phase::Confirm { .. }));
     phase.set(next);
   });
   // A spawned task first runs after this handler returns, so its own set cannot come first.
@@ -290,6 +293,22 @@ pub fn TelemetryExport(
   let mut phase = use_signal(|| Phase::Idle);
   let progress = use_signal(|| 0usize);
 
+  // The control that had focus is disabled or removed while an export runs or waits, so focus
+  // comes back to "Download CSV" once it can take it again: after the render, hence an effect.
+  let mut download_button: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+  let mut refocus = use_signal(|| false);
+  use_effect(move || {
+    if !refocus() {
+      return;
+    }
+    refocus.set(false);
+    if let Some(button) = download_button.peek().clone() {
+      spawn(async move {
+        let _ = button.set_focus(true).await;
+      });
+    }
+  });
+
   let choices = key_choices(&keys, &graphs);
   let flock_scope = matches!(scope, GraphScope::Flock(_));
   let busy = matches!(*phase.read(), Phase::Running(_) | Phase::Confirm { .. });
@@ -311,7 +330,7 @@ pub fn TelemetryExport(
         flock_name: String::new(),
         scope_name: String::new(),
       };
-      start(request, local, phase, progress);
+      start(request, local, phase, progress, refocus);
     }
   };
 
@@ -381,6 +400,7 @@ pub fn TelemetryExport(
     Phase::Confirm { walked, .. } => Some(export::points_text(walked.rows)),
     _ => None,
   };
+  let confirming = confirm_rows.is_some();
   let has_older = matches!(&*phase.read(), Phase::Saved { older: Some(_), .. });
 
   rsx! {
@@ -470,23 +490,31 @@ pub fn TelemetryExport(
       }
 
       div { class: "flex flex-wrap items-center gap-2",
-        if confirm_rows.is_none() {
-          button {
-            class: "btn btn-primary btn-sm",
-            r#type: "button",
-            disabled: !can_start,
-            onclick: download,
-            "Download CSV"
-          }
+        // Hidden rather than removed while confirming, so focus can return to the same element.
+        button {
+          class: if confirming {
+              "btn btn-primary btn-sm hidden"
+          } else {
+              "btn btn-primary btn-sm"
+          },
+          r#type: "button",
+          disabled: !can_start,
+          onmounted: move |e| download_button.set(Some(e.data())),
+          onclick: download,
+          "Download CSV"
         }
         if running {
           button {
             class: "btn btn-ghost btn-sm",
             r#type: "button",
+            onmounted: move |e| async move {
+                let _ = e.set_focus(true).await;
+            },
             onclick: move |_| {
                 if let Phase::Running(task) = phase.replace(Phase::Idle) {
                     task.cancel();
                 }
+                refocus.set(true);
             },
             "Cancel"
           }
@@ -498,7 +526,11 @@ pub fn TelemetryExport(
           button {
             class: "btn btn-secondary btn-sm",
             r#type: "button",
+            onmounted: move |e| async move {
+                let _ = e.set_focus(true).await;
+            },
             onclick: move |_| {
+                refocus.set(true);
                 if let Phase::Confirm { walked, left_out, request } = phase.replace(Phase::Idle) {
                     let since = walked
                         .oldest
@@ -516,7 +548,10 @@ pub fn TelemetryExport(
           button {
             class: "btn btn-ghost btn-sm",
             r#type: "button",
-            onclick: move |_| phase.set(Phase::Idle),
+            onclick: move |_| {
+                phase.set(Phase::Idle);
+                refocus.set(true);
+            },
             "Cancel"
           }
         }
@@ -530,7 +565,7 @@ pub fn TelemetryExport(
                     _ => None,
                 };
                 if let Some(older) = older {
-                    start(older, local, phase, progress);
+                    start(older, local, phase, progress, refocus);
                 }
             },
             "Export the older part"
