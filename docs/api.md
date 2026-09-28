@@ -1906,16 +1906,18 @@ Repeating a request with the same bounds within about a minute can be answered f
 query cache, and a request that omits `until` repeats its bounds every time. A page whose `until`
 moves is always read fresh.
 
-For CSV from the command line:
+For CSV from the command line, one page per request:
 
 ```sh
-curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?raw=true&keys=rsrp_dbm&since=2026-09-26T00:00:00Z&until=2026-09-28T00:00:00Z" \
+curl -sD /dev/stderr "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?raw=true&keys=rsrp_dbm&since=2026-09-26T00:00:00Z&until=2026-09-28T00:00:00Z" \
   -H 'Cookie: ory_kratos_session=<session_token>' \
-  | jq -r '.[] | [.reported_at, .pigeon_id, .key, .value, (.value_num // "")] | @csv'
+  | jq -r '["reported_at","pigeon_id","key","value","value_num"], (.[] | [.reported_at, .pigeon_id, .key, .value, (.value_num // "")]) | @csv'
 ```
 
-`@csv` quotes per RFC 4180 but does not neutralise a value a spreadsheet would run as a formula,
-which the dashboard's export below does.
+`-D /dev/stderr` prints the response headers: when they carry `x-telemetry-truncated: true`, the
+file holds only the range's newest 5000 points, and the rest needs the paging above. `@csv` quotes
+per RFC 4180 but does not neutralise a value a spreadsheet would run as a formula, which the
+dashboard's export below does.
 
 ##### CSV export from the dashboard
 
