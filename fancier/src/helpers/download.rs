@@ -16,9 +16,7 @@ pub fn decode_base64(data: &str) -> Option<Vec<u8>> {
 
 /// Saves `bytes` to disk as `filename` via a throwaway `Blob` + object URL +
 /// synthetic anchor click -- the standard way to hand a browser-derived byte
-/// buffer to the user without a server round-trip. The object URL is
-/// revoked immediately after the click is dispatched; browsers keep the
-/// download alive off of the Blob's own retained data, not the URL.
+/// buffer to the user without a server round-trip.
 pub fn download_bytes(bytes: &[u8], filename: &str, mime_type: &str) -> Option<()> {
   let array = js_sys::Uint8Array::from(bytes);
   let parts = js_sys::Array::new();
@@ -29,8 +27,25 @@ pub fn download_bytes(bytes: &[u8], filename: &str, mime_type: &str) -> Option<(
   let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
     .inspect_err(|err| error!("Failed to construct download Blob: {err:?}"))
     .ok()?;
+  save_blob(&blob, filename)
+}
 
-  let url = Url::create_object_url_with_blob(&blob)
+/// Saves a file made of JS string `parts`, in order, as `filename`. Text built in pages goes
+/// straight from each page into the Blob, so the whole file never sits in wasm memory, which
+/// never shrinks.
+pub fn download_text_parts(parts: &js_sys::Array, filename: &str, mime_type: &str) -> Option<()> {
+  let options = BlobPropertyBag::new();
+  options.set_type(mime_type);
+  let blob = Blob::new_with_str_sequence_and_options(parts, &options)
+    .inspect_err(|err| error!("Failed to construct download Blob: {err:?}"))
+    .ok()?;
+  save_blob(&blob, filename)
+}
+
+/// The object URL is revoked right after the click; the download keeps the Blob's own data
+/// alive, not the URL.
+fn save_blob(blob: &Blob, filename: &str) -> Option<()> {
+  let url = Url::create_object_url_with_blob(blob)
     .inspect_err(|err| error!("Failed to create object URL for download: {err:?}"))
     .ok()?;
 

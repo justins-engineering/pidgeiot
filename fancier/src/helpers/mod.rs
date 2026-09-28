@@ -42,7 +42,7 @@ pub use return_to::{clear_return_to, stash_return_to, take_return_to};
 pub mod browser;
 
 mod download;
-pub use download::{decode_base64, download_bytes};
+pub use download::{decode_base64, download_bytes, download_text_parts};
 
 mod tar;
 pub use tar::build_tar;
