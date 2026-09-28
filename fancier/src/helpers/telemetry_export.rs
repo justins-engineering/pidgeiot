@@ -49,8 +49,8 @@ pub enum PageStep {
 /// be followed caps the export instead of continuing it.
 ///
 /// A cut page holds every point newer than its oldest instant but perhaps only some of the points
-/// at it, because readings are stamped in whole seconds and many share one. Those are dropped here
-/// and fetched whole by the next page, whose inclusive `until` is that instant.
+/// at it, because every key of a report shares the report's instant. Those are dropped here and
+/// fetched whole by the next page, whose inclusive `until` is that instant.
 pub fn plan_page(
   points: &[TelemetryHistoryPoint],
   truncated: bool,

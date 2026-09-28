@@ -1911,10 +1911,10 @@ history store at all, only at the URL you configured).
 
 Pass an explicit `until`. When a page answers `X-Telemetry-Truncated: true`, drop its rows at its
 oldest `reported_at` and ask again with `until` set to that timestamp, which is inclusive; stop at
-`false`. The drop is needed because readings are stamped in whole seconds, so many rows share one
-and the cut can fall inside it: every row newer than a page's oldest timestamp is in the page, but
-not necessarily every row at it. A second holding more than 5000 matching points cannot be paged
-past; narrow `keys` instead.
+`false`. The drop is needed because many rows share one timestamp (every key of a report carries
+the report's) and the cut can fall inside it: every row newer than a page's oldest timestamp is in
+the page, but not necessarily every row at it. A timestamp shared by 5000 or more matching points
+cannot be paged past; narrow `keys` instead.
 
 Repeating a request with the same bounds within about a minute can be answered from Hyperdrive's
 query cache, and a request that omits `until` repeats its bounds every time. A page whose `until`
@@ -1952,7 +1952,8 @@ paged as above, and saves the file itself.
   return gets a leading `'` unless it is a number, so a spreadsheet shows device text instead of
   running it while `-97` stays a number.
 - The file is named `<pigeon-or-flock-name>-telemetry-<since>-<until>.csv`, with each stamp
-  written like `20260926T000000Z`.
+  written like `20260926T000000Z` and the name reduced to ASCII letters, digits, `_`, `.` and `-`.
+  A file cut short by the cap below is named from its oldest row's second, not the range's start.
 - One export fetches at most 40 pages (200,000 points) and stops paging once the file passes
   about 50 MB. When the range holds more, the dashboard says before saving how many points the
   file will hold and at what instant older points are left out, and **Export the older part** then
