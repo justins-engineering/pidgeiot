@@ -1921,8 +1921,9 @@ which the dashboard's export below does.
 
 The pigeon page's Telemetry section and the flock page's Flock Telemetry section each have
 **Export CSV**: pick a range and keys (by default, those of the graphs on screen) and **Download
-CSV**. The browser reads this route or the flock route in raw mode, paged as above, and saves the
-file itself.
+CSV**. The flock page lists the keys reported in the last 24 hours and those its graphs draw;
+**All keys** also takes older ones. The browser reads this route or the flock route in raw mode,
+paged as above, and saves the file itself.
 
 - UTF-8 without a byte-order mark, CRLF line ends, and one header row:
   `reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num`.

@@ -262,7 +262,8 @@ pub fn TelemetryExport(
   scope: GraphScope,
   /// The section's graphs, which set the default range and keys.
   graphs: Vec<GraphDef>,
-  /// Keys the section knows were reported, offered alongside the graphs' own.
+  /// Keys the section knows were reported, offered alongside the graphs' own. The flock section
+  /// knows only the last 24 hours', which the panel says.
   keys: Vec<String>,
   /// A forwarding pigeon's endpoint: its history is not stored here, which an empty export says.
   forwarding_to: Option<String>,
@@ -276,6 +277,7 @@ pub fn TelemetryExport(
   let progress = use_signal(|| 0usize);
 
   let choices = key_choices(&keys, &graphs);
+  let flock_scope = matches!(scope, GraphScope::Flock(_));
   let busy = matches!(*phase.read(), Phase::Running | Phase::Confirm { .. });
   let can_start = !busy && (all_keys() || !picked.read().is_empty());
 
@@ -434,6 +436,11 @@ pub fn TelemetryExport(
                 span { class: "font-mono text-xs break-all", "{k}" }
               }
             }
+          }
+        }
+        if flock_scope {
+          p { class: "text-xs text-base-content/70",
+            "Listed: keys a pigeon reported in the last 24 hours and keys a graph draws. All keys also takes older ones."
           }
         }
       }
