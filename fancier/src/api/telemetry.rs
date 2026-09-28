@@ -4,12 +4,14 @@
 // api/pigeons.rs (`update_telemetry_endpoint`) alongside the other
 // per-pigeon PUT routes, not here.
 use crate::api::fetch_json;
+use crate::helpers::graph_store::GraphScope;
 use capsules::{
   TELEMETRY_HISTORY_TRUNCATED_HEADER, TelemetryHistoryBucket, TelemetryHistoryPoint,
   TelemetryLatest,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use uuid::Uuid;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Response;
 
@@ -122,6 +124,58 @@ pub async fn get_flock_history(
   path.push_str(&rfc3339_query_value(since));
   path.push_str("&until=");
   path.push_str(&rfc3339_query_value(until));
+
+  fetch_history(&path).await
+}
+
+const RAW_HISTORY_QUERY: &str = "/telemetry/history?raw=true&since=";
+const UNTIL_PARAM: &str = "&until=";
+const KEYS_PARAM: &str = "&keys=";
+
+/// One raw page of either scope's history for the CSV export: the newest
+/// `capsules::TELEMETRY_HISTORY_MAX_POINTS` points of `[since, until]` for `keys`, or for every
+/// key when `keys` is `None`. The caller always pins `until`, so no page repeats a statement
+/// Hyperdrive may have cached.
+pub async fn get_history_page(
+  scope: &GraphScope,
+  keys: Option<&[String]>,
+  since: OffsetDateTime,
+  until: OffsetDateTime,
+) -> Option<TelemetryHistory> {
+  let since = rfc3339_query_value(since);
+  let until = rfc3339_query_value(until);
+  let keys: Vec<String> = keys
+    .unwrap_or_default()
+    .iter()
+    .map(|k| String::from(js_sys::encode_uri_component(k)))
+    .collect();
+  let keys_len: usize = keys.iter().map(|k| k.len() + 1).sum();
+  let mut buf = Uuid::encode_buffer();
+  let (prefix, id) = match scope {
+    GraphScope::Pigeon(id) => ("/pigeons/", id.as_str()),
+    GraphScope::Flock(id) => ("/flocks/", &*id.hyphenated().encode_lower(&mut buf)),
+  };
+
+  let mut path = String::with_capacity(
+    prefix.len()
+      + id.len()
+      + RAW_HISTORY_QUERY.len()
+      + since.len()
+      + UNTIL_PARAM.len()
+      + until.len()
+      + KEYS_PARAM.len()
+      + keys_len,
+  );
+  path.push_str(prefix);
+  path.push_str(id);
+  path.push_str(RAW_HISTORY_QUERY);
+  path.push_str(&since);
+  path.push_str(UNTIL_PARAM);
+  path.push_str(&until);
+  for (i, key) in keys.iter().enumerate() {
+    path.push_str(if i == 0 { KEYS_PARAM } else { "," });
+    path.push_str(key);
+  }
 
   fetch_history(&path).await
 }
