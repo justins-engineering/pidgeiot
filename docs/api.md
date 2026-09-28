@@ -1891,7 +1891,55 @@ says which case it was:
 | `X-Telemetry-Truncated: true` | the range held more; you have its newest 5000 points |
 
 The header is listed in `Access-Control-Expose-Headers`, so a browser client can read it. Narrow
-the range or the key set to see the rest.
+the range or the key set to see the rest, or page backwards as below.
+
+##### Paging past the cap
+
+Pass an explicit `until`. When a page answers `X-Telemetry-Truncated: true`, drop its rows at its
+oldest `reported_at` and ask again with `until` set to that timestamp, which is inclusive; stop at
+`false`. The drop is needed because readings are stamped in whole seconds, so many rows share one
+and the cut can fall inside it: every row newer than a page's oldest timestamp is in the page, but
+not necessarily every row at it. A second holding more than 5000 matching points cannot be paged
+past; narrow `keys` instead.
+
+Repeating a request with the same bounds within about a minute can be answered from Hyperdrive's
+query cache, and a request that omits `until` repeats its bounds every time. A page whose `until`
+moves is always read fresh.
+
+For CSV from the command line:
+
+```sh
+curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?raw=true&keys=rsrp_dbm&since=2026-09-26T00:00:00Z&until=2026-09-28T00:00:00Z" \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  | jq -r '.[] | [.reported_at, .pigeon_id, .key, .value, (.value_num // "")] | @csv'
+```
+
+`@csv` quotes per RFC 4180 but does not neutralise a value a spreadsheet would run as a formula,
+which the dashboard's export below does.
+
+##### CSV export from the dashboard
+
+The pigeon page's Telemetry section and the flock page's Flock Telemetry section each have
+**Export CSV**: pick a range and keys (by default, those of the graphs on screen) and **Download
+CSV**. The browser reads this route or the flock route in raw mode, paged as above, and saves the
+file itself.
+
+- UTF-8 without a byte-order mark, CRLF line ends, and one header row:
+  `reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num`.
+- One row per point, oldest first, ties ordered by pigeon then key. `reported_at` is RFC 3339 in
+  UTC. `pigeon_name` and `flock_name` are the names at export time, empty when unnamed.
+- `value` is the reported string. `value_num` repeats it when it is a finite number and is empty
+  otherwise.
+- Fields are quoted per RFC 4180. A field that starts with `=`, `+`, `-`, `@`, a tab or a carriage
+  return gets a leading `'` unless it is a number, so a spreadsheet shows device text instead of
+  running it while `-97` stays a number.
+- The file is named `<pigeon-or-flock-name>-telemetry-<since>-<until>.csv`, with each stamp
+  written like `20260926T000000Z`.
+- One export fetches at most 40 pages, 200,000 points. When the range holds more, the dashboard
+  says before saving how many points the file will hold and at what instant older points are left
+  out, and **Export the older part** then saves those as a further file.
+- A pigeon with a telemetry endpoint has nothing stored here to export; see
+  [`PUT /pigeons/:pigeon_id/telemetry-endpoint`](#put-pigeonspigeon_idtelemetry-endpoint).
 
 **Backing store (task #26, revised by the Postgres consolidation).** Both modes read from
 whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`
