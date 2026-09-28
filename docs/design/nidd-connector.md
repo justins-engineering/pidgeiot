@@ -1325,7 +1325,8 @@ object and are never logged.
 4. Read `login_failures`. Its fingerprint is `SHA-256(salt, login_epoch, 0x00, public_key, 0x00,
    private_key, 0x00, uws_username, 0x00, uws_password)`, `login_epoch` being the plain
    `THINGSPACE_LOGIN_EPOCH` var. A fingerprint that does not match is discarded: the credentials or
-   the epoch changed. A match with `count >= 2`: `latched`, no request.
+   the epoch changed. A match with `count >= 2`: `latched`, no request. A read that fails:
+   `unreachable`, no request, since a login it let through could be past the latch.
 5. Stale access token: `get_access_token`; `access_expires_at = now + expires_in`. Stale session:
    `get_session_token`. Each call is raced against a 10-second `Delay`, the pattern at
    `dovecote/src/helpers/turnstile.rs:118-132`; the SDK takes no abort signal, so a timed-out

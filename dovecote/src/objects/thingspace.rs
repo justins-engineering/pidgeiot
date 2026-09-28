@@ -154,6 +154,23 @@ fn held_failures(stored: LoginFailures, creds: &Credentials) -> Option<LoginFail
   (fingerprint(&salt, creds) == stored.fingerprint).then_some(stored)
 }
 
+/// Whether a login may go ahead, given the read of the stored count: the count held against these
+/// credentials when it may, `Latched` at the limit, and `Unreachable` when the read failed. A
+/// failed read is not "no count": the login it let through could be past the latch, and the
+/// count that login recorded would overwrite the one that could not be read.
+fn login_gate(
+  read: std::result::Result<Option<LoginFailures>, ()>,
+  creds: &Credentials,
+) -> std::result::Result<Option<LoginFailures>, Unavailable> {
+  let Ok(stored) = read else {
+    return Err(Unavailable::Unreachable);
+  };
+  match stored.and_then(|stored| held_failures(stored, creds)) {
+    Some(held) if held.latched() => Err(Unavailable::Latched),
+    held => Ok(held),
+  }
+}
+
 /// The count a login run leaves stored, given the count `held` against the same credentials and
 /// the verdict on the attempt that failed, `None` when every call the run made succeeded.
 ///
@@ -571,10 +588,7 @@ impl ThingSpaceSession {
       return Ok(tokens);
     }
 
-    let failures = self.read_failures(creds).await;
-    if failures.as_ref().is_some_and(LoginFailures::latched) {
-      return Err(Unavailable::Latched);
-    }
+    let failures = self.read_failures(creds).await?;
 
     let run = self.log_in(creds, &mut tokens, now, pigeon_id).await;
     let held = failures.as_ref().map(|f| f.count);
@@ -746,21 +760,19 @@ impl ThingSpaceSession {
     crate::helpers::send_ops_email(&self.env, "ThingSpace login latched", &text).await;
   }
 
-  /// The stored failure count, when it was recorded against these exact credentials and epoch.
-  async fn read_failures(&self, creds: &Credentials) -> Option<LoginFailures> {
-    let stored = match self
+  /// The stored failure count, when it was recorded against these exact credentials and epoch,
+  /// or why no login may go ahead (`login_gate`).
+  async fn read_failures(
+    &self,
+    creds: &Credentials,
+  ) -> std::result::Result<Option<LoginFailures>, Unavailable> {
+    let read = self
       .state
       .storage()
       .get::<LoginFailures>(LOGIN_FAILURES_KEY)
       .await
-    {
-      Ok(stored) => stored?,
-      Err(e) => {
-        console_error!("thingspace_login: reading the failure count failed: {e}");
-        return None;
-      }
-    };
-    held_failures(stored, creds)
+      .map_err(|e| console_error!("thingspace_login: reading the failure count failed: {e}"));
+    login_gate(read, creds)
   }
 
   /// The cached tokens; empty ones when none are stored or the read fails.
@@ -991,6 +1003,23 @@ mod tests {
     let second = count_after_run(first, Some(&LoginVerdict::Count));
     assert_eq!(second, Some(LOGIN_FAILURE_LIMIT));
     assert!(stored(&creds(), LOGIN_FAILURE_LIMIT).latched());
+  }
+
+  #[test]
+  fn a_failed_read_of_the_count_refuses_the_login() {
+    assert_eq!(
+      login_gate(Err(()), &creds()).err(),
+      Some(Unavailable::Unreachable)
+    );
+    assert!(matches!(login_gate(Ok(None), &creds()), Ok(None)));
+    assert!(
+      login_gate(Ok(Some(stored(&creds(), 1))), &creds())
+        .is_ok_and(|held| held.is_some_and(|held| held.count == 1))
+    );
+    assert_eq!(
+      login_gate(Ok(Some(stored(&creds(), LOGIN_FAILURE_LIMIT))), &creds()).err(),
+      Some(Unavailable::Latched)
+    );
   }
 
   #[test]
