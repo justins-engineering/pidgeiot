@@ -9,6 +9,7 @@
 use crate::LocalSession;
 use crate::api::{alerts, telemetry};
 use crate::components::telemetry_chart::format_duration;
+use crate::components::telemetry_export::TelemetryExport;
 use crate::components::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 use crate::helpers::graph_store::{self, GraphScope};
 use crate::helpers::{connection_state, gps_track, is_page_hidden, sleep_ms};
@@ -420,7 +421,10 @@ pub fn PigeonGraphs(
     });
   }
   let mut show_add = use_signal(|| false);
+  let mut show_export = use_signal(|| false);
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
+  // Every key, numeric or not: an export is not limited to what can be drawn.
+  let mut reported_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
   let mut thresholds: Signal<Vec<ThresholdAlert>> = use_signal(Vec::new);
 
@@ -466,6 +470,7 @@ pub fn PigeonGraphs(
       async move {
         match telemetry::get_latest(&pigeon_id).await {
           Some(latest) if !latest.is_empty() => {
+            reported_keys.set(latest.iter().map(|l| l.key.clone()).collect());
             let keys = numeric_keys_from_latest(&latest);
             if keys.is_empty() {
               available_keys.set(fallback_keys());
@@ -488,11 +493,32 @@ pub fn PigeonGraphs(
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
       div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Telemetry" }
-        button {
-          class: "btn btn-secondary",
-          disabled: !graphs_loaded(),
-          onclick: move |_| show_add.set(true),
-          "Add Graph"
+        div { class: "flex flex-wrap gap-2",
+          button {
+            class: "btn btn-outline",
+            r#type: "button",
+            disabled: !graphs_loaded(),
+            "aria-expanded": show_export(),
+            onclick: move |_| show_export.toggle(),
+            "Export CSV"
+          }
+          button {
+            class: "btn btn-secondary",
+            disabled: !graphs_loaded(),
+            onclick: move |_| show_add.set(true),
+            "Add Graph"
+          }
+        }
+      }
+
+      if show_export() {
+        TelemetryExport {
+          id: "pigeon-telemetry-export",
+          scope: scope.clone(),
+          graphs: graphs.read().clone(),
+          keys: reported_keys(),
+          forwarding_to: forwarding_to.clone(),
+          on_close: move |_| show_export.set(false),
         }
       }
 
@@ -576,18 +602,22 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
     });
   }
   let mut show_add = use_signal(|| false);
+  let mut show_export = use_signal(|| false);
   let local_session = use_context::<LocalSession>();
 
   // No flock-level "latest keys" route — derive a best-effort key list from
   // the flock's own history fetch at the default range instead of adding
   // another endpoint.
   let mut available_keys: Signal<Vec<String>> = use_signal(Vec::new);
+  // See `PigeonGraphs`.
+  let mut reported_keys: Signal<Vec<String>> = use_signal(Vec::new);
   let mut is_mock_keys = use_signal(|| false);
   use_resource(move || async move {
     let until = now();
     let since = until - time::Duration::seconds(TimeRange::Last24h.seconds());
     match telemetry::get_flock_history_buckets(&flock_id, since, until).await {
       Some(buckets) if !buckets.is_empty() => {
+        reported_keys.set(buckets.iter().map(|b| b.key.clone()).collect());
         let keys = numeric_keys_from_history(&buckets);
         if keys.is_empty() {
           available_keys.set(fallback_keys());
@@ -610,11 +640,32 @@ pub fn FlockGraphs(flock_id: Uuid) -> Element {
     div { class: "w-full flex flex-col gap-4 bg-base-100 p-6 rounded-box border border-base-content/10 shadow-sm",
       div { class: "flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between md:px-4",
         h2 { class: "text-3xl font-bold", "Flock Telemetry" }
-        button {
-          class: "btn btn-secondary",
-          disabled: !graphs_loaded(),
-          onclick: move |_| show_add.set(true),
-          "Add Graph"
+        div { class: "flex flex-wrap gap-2",
+          button {
+            class: "btn btn-outline",
+            r#type: "button",
+            disabled: !graphs_loaded(),
+            "aria-expanded": show_export(),
+            onclick: move |_| show_export.toggle(),
+            "Export CSV"
+          }
+          button {
+            class: "btn btn-secondary",
+            disabled: !graphs_loaded(),
+            onclick: move |_| show_add.set(true),
+            "Add Graph"
+          }
+        }
+      }
+
+      if show_export() {
+        TelemetryExport {
+          id: "flock-telemetry-export",
+          scope: scope.clone(),
+          graphs: graphs.read().clone(),
+          keys: reported_keys(),
+          forwarding_to: None,
+          on_close: move |_| show_export.set(false),
         }
       }
 

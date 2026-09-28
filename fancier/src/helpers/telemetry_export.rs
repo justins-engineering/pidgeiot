@@ -190,7 +190,8 @@ fn row_order(p: &TelemetryHistoryPoint) -> (OffsetDateTime, &str, &str, &str) {
   (p.reported_at, &p.pigeon_id, &p.key, &p.value)
 }
 
-fn rfc3339_utc(t: OffsetDateTime) -> String {
+/// RFC 3339 in UTC, as the file writes `reported_at`.
+pub fn rfc3339_utc(t: OffsetDateTime) -> String {
   t.to_offset(UtcOffset::UTC)
     .format(&Rfc3339)
     .unwrap_or_default()

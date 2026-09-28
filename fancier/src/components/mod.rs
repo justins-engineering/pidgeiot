@@ -47,6 +47,8 @@ pub use telemetry_chart::{ChartKind, ChartReference, ChartSeries, TelemetryChart
 mod graph_widget;
 pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs};
 
+mod telemetry_export;
+
 mod track_widget;
 pub use track_widget::TrackWidget;
 
