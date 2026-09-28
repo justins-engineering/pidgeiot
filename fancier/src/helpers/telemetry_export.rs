@@ -31,7 +31,7 @@ pub enum PageStep {
   Done,
   /// Fetch the next page with `until` set to this instant, inclusive.
   Continue(OffsetDateTime),
-  /// The page budget is spent; points at or before this instant are left out.
+  /// The budget is spent; points at or before this instant are left out.
   Capped(OffsetDateTime),
   /// More points than one page holds share this instant, so no `until` pages past it. `None`
   /// when the server flagged a cut page and sent no points.
@@ -39,7 +39,8 @@ pub enum PageStep {
 }
 
 /// Plans one raw page (oldest first, the newest slice of its range): returns the index the kept
-/// points start at, and the next step.
+/// points start at, and the next step. `last_page` is the caller's budget: a cut page that may not
+/// be followed caps the export instead of continuing it.
 ///
 /// A cut page holds every point newer than its oldest instant but perhaps only some of the points
 /// at it, because readings are stamped in whole seconds and many share one. Those are dropped here
@@ -47,7 +48,7 @@ pub enum PageStep {
 pub fn plan_page(
   points: &[TelemetryHistoryPoint],
   truncated: bool,
-  page_index: usize,
+  last_page: bool,
 ) -> (usize, PageStep) {
   if !truncated {
     return (0, PageStep::Done);
@@ -59,7 +60,7 @@ pub fn plan_page(
   if keep_from == points.len() {
     return (keep_from, PageStep::Stalled(Some(oldest)));
   }
-  if page_index + 1 >= EXPORT_MAX_PAGES {
+  if last_page {
     return (keep_from, PageStep::Capped(oldest));
   }
   (keep_from, PageStep::Continue(oldest))
@@ -332,7 +333,7 @@ mod tests {
   #[test]
   fn a_complete_page_is_kept_whole() {
     let points = vec![point("p", "a", "1", at(0)), point("p", "a", "1", at(1))];
-    assert_eq!(plan_page(&points, false, 0), (0, PageStep::Done));
+    assert_eq!(plan_page(&points, false, false), (0, PageStep::Done));
   }
 
   #[test]
@@ -343,30 +344,27 @@ mod tests {
       .collect();
     points.push(point("p", "a", "1", at(1)));
     points.push(point("p", "a", "1", at(2)));
-    assert_eq!(plan_page(&points, true, 0), (3, PageStep::Continue(at(0))));
+    assert_eq!(
+      plan_page(&points, true, false),
+      (3, PageStep::Continue(at(0)))
+    );
   }
 
   #[test]
   fn a_cut_page_inside_one_second_stalls() {
     let points = vec![point("p", "a", "1", at(5)), point("p", "b", "1", at(5))];
     assert_eq!(
-      plan_page(&points, true, 0),
+      plan_page(&points, true, false),
       (2, PageStep::Stalled(Some(at(5))))
     );
-    assert_eq!(plan_page(&[], true, 0), (0, PageStep::Stalled(None)));
+    assert_eq!(plan_page(&[], true, false), (0, PageStep::Stalled(None)));
   }
 
   #[test]
   fn the_last_allowed_page_caps() {
     let points = vec![point("p", "a", "1", at(0)), point("p", "a", "1", at(1))];
-    assert_eq!(
-      plan_page(&points, true, EXPORT_MAX_PAGES - 1),
-      (1, PageStep::Capped(at(0)))
-    );
-    assert_eq!(
-      plan_page(&points, true, EXPORT_MAX_PAGES - 2),
-      (1, PageStep::Continue(at(0)))
-    );
+    assert_eq!(plan_page(&points, true, true), (1, PageStep::Capped(at(0))));
+    assert_eq!(plan_page(&points, false, true), (0, PageStep::Done));
   }
 
   /// dovecote's raw read: the newest `TELEMETRY_HISTORY_MAX_POINTS` of `[since, until]`, oldest
@@ -391,36 +389,66 @@ mod tests {
     (rows, truncated)
   }
 
-  #[test]
-  fn a_walk_over_a_cut_inside_a_second_exports_every_point_once() {
-    // Seven keys a second, so 5,000 is never a whole number of seconds.
+  /// Seven keys a second for 1,600 seconds, so 5,000 is never a whole number of seconds and every
+  /// cut falls inside one.
+  fn seven_keys_a_second() -> Vec<TelemetryHistoryPoint> {
     let keys = ["k1", "k2", "k3", "k4", "k5", "k6", "k7"];
-    let table: Vec<_> = (0..1_600)
+    (0..1_600)
       .flat_map(|s| keys.iter().map(move |k| point("p", k, "1", at(s))))
-      .collect();
-    let mut until = at(1_599);
+      .collect()
+  }
+
+  /// The component's walk from `until` with a budget of `max_pages`: the kept points, the pages
+  /// fetched and the step it ended on.
+  fn walk(
+    table: &[TelemetryHistoryPoint],
+    mut until: OffsetDateTime,
+    max_pages: usize,
+  ) -> (Vec<TelemetryHistoryPoint>, usize, PageStep) {
     let mut kept = Vec::new();
     let mut pages = 0;
     loop {
-      let (page, truncated) = serve(&table, until);
-      let (keep_from, step) = plan_page(&page, truncated, pages);
+      let (page, truncated) = serve(table, until);
       pages += 1;
+      let (keep_from, step) = plan_page(&page, truncated, pages >= max_pages);
       kept.extend_from_slice(&page[keep_from..]);
       match step {
-        PageStep::Done => break,
         PageStep::Continue(t) => until = t,
-        other => panic!("unexpected step {other:?}"),
+        end => return (kept, pages, end),
       }
     }
-    assert_eq!(pages, 3);
-    let mut seen: Vec<(OffsetDateTime, String)> = kept
+  }
+
+  fn assert_each_point_once(kept: &[TelemetryHistoryPoint], table: &[TelemetryHistoryPoint]) {
+    let mut seen: Vec<(OffsetDateTime, &str)> = kept
       .iter()
-      .map(|p| (p.reported_at, p.key.clone()))
+      .map(|p| (p.reported_at, p.key.as_str()))
       .collect();
     seen.sort();
     seen.dedup();
     assert_eq!(seen.len(), kept.len(), "a point was exported twice");
     assert_eq!(kept.len(), table.len(), "a point was left out");
+  }
+
+  #[test]
+  fn a_walk_over_a_cut_inside_a_second_exports_every_point_once() {
+    let table = seven_keys_a_second();
+    let (kept, pages, end) = walk(&table, at(1_599), EXPORT_MAX_PAGES);
+    assert_eq!((pages, end), (3, PageStep::Done));
+    assert_each_point_once(&kept, &table);
+  }
+
+  #[test]
+  fn a_capped_file_and_its_older_part_hold_every_point_once() {
+    let table = seven_keys_a_second();
+    let (newer, pages, end) = walk(&table, at(1_599), 2);
+    // The second page's cut falls inside second 171, which the capped file leaves out whole.
+    assert_eq!((pages, end), (2, PageStep::Capped(at(171))));
+    assert!(newer.iter().all(|p| p.reported_at > at(171)));
+    let (older, _, end) = walk(&table, at(171), EXPORT_MAX_PAGES);
+    assert_eq!(end, PageStep::Done);
+    assert!(older.iter().all(|p| p.reported_at <= at(171)));
+    assert_each_point_once(&[newer, older].concat(), &table);
   }
 
   #[test]

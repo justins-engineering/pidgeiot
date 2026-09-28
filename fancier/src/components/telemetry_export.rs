@@ -107,7 +107,8 @@ async fn walk(request: &Request, mut progress: Signal<usize>) -> WalkEnd {
       return WalkEnd::NoHeader;
     };
     let mut points = page.points;
-    let (keep_from, step) = export::plan_page(&points, truncated, page_index);
+    let last_page = page_index + 1 >= export::EXPORT_MAX_PAGES;
+    let (keep_from, step) = export::plan_page(&points, truncated, last_page);
     let kept = &mut points[keep_from..];
     if let (Some(first), Some(last)) = (kept.first(), kept.last()) {
       walked.oldest = Some(first.reported_at);
