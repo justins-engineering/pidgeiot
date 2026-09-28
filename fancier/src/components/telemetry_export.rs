@@ -154,6 +154,17 @@ enum Phase {
   SaveFailed,
 }
 
+/// The status line's look: a failure in the error text colour, the cap's question as a warning.
+fn status_class(phase: &Phase) -> &'static str {
+  match phase {
+    Phase::Confirm { .. } => "alert alert-warning not-dark:text-warning-content",
+    Phase::Stalled(_) | Phase::Failed(_) | Phase::NoHeader | Phase::SaveFailed => {
+      "text-sm text-error"
+    }
+    _ => "text-sm text-base-content/80",
+  }
+}
+
 /// Header first, then the pages oldest first, into one file.
 fn save(walked: Walked, request: &Request, since: OffsetDateTime, older: Option<Request>) -> Phase {
   let file = request.file_name(since);
@@ -497,7 +508,7 @@ pub fn TelemetryExport(
         }
       }
 
-      p { class: "text-sm text-base-content/80", role: "status", "aria-live": "polite", {status} }
+      p { class: status_class(&phase.read()), role: "status", "aria-live": "polite", {status} }
     }
   }
 }
