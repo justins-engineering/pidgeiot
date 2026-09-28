@@ -314,23 +314,24 @@ pub fn TelemetryExport(
     Phase::Idle => rsx! {},
     Phase::Running => rsx! {
       span { class: "loading loading-spinner loading-xs me-2" }
-      "Fetching… {progress} points"
+      "Fetching… {export::points_text(progress())}"
     },
     Phase::Confirm {
       walked, left_out, ..
     } => {
-      let rows = walked.rows;
+      let rows = export::points_text(walked.rows);
       let from = walked.oldest.map(export::display_utc).unwrap_or_default();
       let to = walked.newest.map(export::display_utc).unwrap_or_default();
       let cut = export::display_utc(*left_out);
       rsx! {
-        "This range holds more than {rows} points. The file will hold the newest {rows}, from {from} to {to}; points at or before {cut} are left out."
+        "This range holds more than {rows}. The file will hold the newest {rows}, from {from} to {to}; points at or before {cut} are left out."
       }
     }
     Phase::Saved { rows, file, older } => {
+      let rows = export::points_text(*rows);
       let older = older.as_ref().map(|o| export::display_utc(o.until));
       rsx! {
-        "Saved {rows} points to "
+        "Handed {rows} to the browser as "
         span { class: "font-mono break-all", "{file}" }
         "."
         if let Some(cut) = older {
@@ -348,15 +349,22 @@ pub fn TelemetryExport(
     },
     Phase::Stalled(Some(at)) => {
       let at = export::display_utc(*at);
+      let page = export::points_text(TELEMETRY_HISTORY_MAX_POINTS);
+      let narrower = if flock_scope {
+        "Pick fewer keys, or export one pigeon."
+      } else {
+        "Pick fewer keys."
+      };
       rsx! {
-        "More than {TELEMETRY_HISTORY_MAX_POINTS} points share one second ({at}), so the export cannot page past it. Pick fewer keys. Nothing was saved."
+        "At least {page} share one second ({at}), so the export cannot page past it. {narrower} Nothing was saved."
       }
     }
     Phase::Stalled(None) => {
       rsx! { "The server cut the range short but sent no points. Nothing was saved." }
     }
     Phase::Failed(rows) => {
-      rsx! { "The export stopped after {rows} points because a request failed. Nothing was saved." }
+      let rows = export::points_text(*rows);
+      rsx! { "The export stopped after {rows} because a request failed. Nothing was saved." }
     }
     Phase::NoHeader => {
       rsx! { "The server did not say whether the range is complete, so nothing was saved." }
@@ -365,7 +373,7 @@ pub fn TelemetryExport(
   };
 
   let confirm_rows = match &*phase.read() {
-    Phase::Confirm { walked, .. } => Some(walked.rows),
+    Phase::Confirm { walked, .. } => Some(export::points_text(walked.rows)),
     _ => None,
   };
   let has_older = matches!(&*phase.read(), Phase::Saved { older: Some(_), .. });

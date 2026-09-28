@@ -187,6 +187,20 @@ pub fn file_name(
   name
 }
 
+/// A count of points for a sentence: `1 point`, `199,920 points`.
+pub fn points_text(n: usize) -> String {
+  let digits = n.to_string();
+  let mut out = String::with_capacity(digits.len() + digits.len() / 3 + " points".len());
+  for (i, digit) in digits.chars().enumerate() {
+    if i > 0 && (digits.len() - i) % 3 == 0 {
+      out.push(',');
+    }
+    out.push(digit);
+  }
+  out.push_str(if n == 1 { " point" } else { " points" });
+  out
+}
+
 /// Whether `key` can be asked for by name: the history routes split `keys` on commas and trim
 /// each entry, so a key holding a comma or edge whitespace is reachable only as "all keys".
 pub fn filterable_key(key: &str) -> bool {
@@ -520,6 +534,16 @@ mod tests {
       display_utc(datetime!(2026-07-07 10:34:41.389358 -5)),
       "Jul 7, 2026 at 15:34:41.389358 UTC"
     );
+  }
+
+  #[test]
+  fn counts_read_as_words() {
+    assert_eq!(points_text(0), "0 points");
+    assert_eq!(points_text(1), "1 point");
+    assert_eq!(points_text(999), "999 points");
+    assert_eq!(points_text(5_000), "5,000 points");
+    assert_eq!(points_text(199_920), "199,920 points");
+    assert_eq!(points_text(1_234_567), "1,234,567 points");
   }
 
   #[test]
