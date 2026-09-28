@@ -378,10 +378,13 @@ pub fn TelemetryExport(
           class: "select select-bordered select-sm w-full",
           disabled: busy,
           value: "{range().label()}",
+          // A changed selection clears the last result, so "Export the older part" never runs
+          // with a range or keys other than the ones on screen.
           onchange: move |evt: Event<FormData>| {
               if let Some(r) = TimeRange::from_label(&evt.value()) {
                   range.set(r);
               }
+              phase.set(Phase::Idle);
           },
           for r in TimeRange::ALL {
             option { value: "{r.label()}", selected: r == range(), "{r.label()}" }
@@ -397,7 +400,10 @@ pub fn TelemetryExport(
             class: "checkbox checkbox-sm",
             disabled: busy,
             checked: all_keys(),
-            onchange: move |evt: Event<FormData>| all_keys.set(evt.checked()),
+            onchange: move |evt: Event<FormData>| {
+                all_keys.set(evt.checked());
+                phase.set(Phase::Idle);
+            },
           }
           "All keys"
         }
@@ -421,6 +427,7 @@ pub fn TelemetryExport(
                           } else {
                               keys.retain(|existing| existing != &k);
                           }
+                          phase.set(Phase::Idle);
                       }
                   },
                 }
