@@ -5,6 +5,7 @@
 use capsules::TelemetryHistoryPoint;
 use std::collections::HashMap;
 use time::format_description::well_known::Rfc3339;
+use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
 /// Most raw pages one export fetches, so at most 200,000 points in one file.
@@ -197,10 +198,26 @@ fn row_order(p: &TelemetryHistoryPoint) -> (OffsetDateTime, &str, &str, &str) {
 }
 
 /// RFC 3339 in UTC, as the file writes `reported_at`.
-pub fn rfc3339_utc(t: OffsetDateTime) -> String {
+fn rfc3339_utc(t: OffsetDateTime) -> String {
   t.to_offset(UtcOffset::UTC)
     .format(&Rfc3339)
     .unwrap_or_default()
+}
+
+/// An instant as the dashboard shows one, `Sep 26, 2026 at 14:03:12 UTC`, keeping a fraction of a
+/// second when there is one, since that is where an export's cut can fall.
+pub fn display_utc(t: OffsetDateTime) -> String {
+  let t = t.to_offset(UtcOffset::UTC);
+  let shown = if t.nanosecond() == 0 {
+    t.format(format_description!(
+      "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second] UTC"
+    ))
+  } else {
+    t.format(format_description!(
+      "[month repr:short] [day padding:none], [year] at [hour]:[minute]:[second].[subsecond] UTC"
+    ))
+  };
+  shown.unwrap_or_default()
 }
 
 fn push_stamp(out: &mut String, t: OffsetDateTime) {
@@ -491,6 +508,18 @@ mod tests {
     // A cut that lands on a separator does not leave it dangling.
     let edge = "x".repeat(NAME_MAX - 1) + " " + &"y".repeat(10);
     assert_eq!(stem(&edge), "x".repeat(NAME_MAX - 1));
+  }
+
+  #[test]
+  fn instants_are_shown_in_utc_with_any_fraction() {
+    assert_eq!(
+      display_utc(datetime!(2026-09-26 14:03:12 UTC)),
+      "Sep 26, 2026 at 14:03:12 UTC"
+    );
+    assert_eq!(
+      display_utc(datetime!(2026-07-07 10:34:41.389358 -5)),
+      "Jul 7, 2026 at 15:34:41.389358 UTC"
+    );
   }
 
   #[test]

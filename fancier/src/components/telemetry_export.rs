@@ -320,15 +320,15 @@ pub fn TelemetryExport(
       walked, left_out, ..
     } => {
       let rows = walked.rows;
-      let from = walked.oldest.map(export::rfc3339_utc).unwrap_or_default();
-      let to = walked.newest.map(export::rfc3339_utc).unwrap_or_default();
-      let cut = export::rfc3339_utc(*left_out);
+      let from = walked.oldest.map(export::display_utc).unwrap_or_default();
+      let to = walked.newest.map(export::display_utc).unwrap_or_default();
+      let cut = export::display_utc(*left_out);
       rsx! {
         "This range holds more than {rows} points. The file will hold the newest {rows}, from {from} to {to}; points at or before {cut} are left out."
       }
     }
     Phase::Saved { rows, file, older } => {
-      let older = older.as_ref().map(|o| export::rfc3339_utc(o.until));
+      let older = older.as_ref().map(|o| export::display_utc(o.until));
       rsx! {
         "Saved {rows} points to "
         span { class: "font-mono break-all", "{file}" }
@@ -347,7 +347,7 @@ pub fn TelemetryExport(
       None => rsx! { "No points in this range; nothing was saved." },
     },
     Phase::Stalled(Some(at)) => {
-      let at = export::rfc3339_utc(*at);
+      let at = export::display_utc(*at);
       rsx! {
         "More than {TELEMETRY_HISTORY_MAX_POINTS} points share one second ({at}), so the export cannot page past it. Pick fewer keys. Nothing was saved."
       }
