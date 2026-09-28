@@ -4,7 +4,7 @@
 
 use super::graph_widget::TimeRange;
 use crate::LocalSession;
-use crate::api::telemetry;
+use crate::api::{pigeons, telemetry};
 use crate::components::GraphDef;
 use crate::helpers::download_text_parts;
 use crate::helpers::graph_store::GraphScope;
@@ -43,7 +43,7 @@ fn key_choices(reported: &[String], graphs: &[GraphDef]) -> Vec<String> {
   keys
 }
 
-/// Everything one walk needs, fixed when it starts.
+/// Everything one walk needs, fixed when it starts. [`start`] fills in the names.
 #[derive(Clone)]
 struct Request {
   scope: GraphScope,
@@ -169,10 +169,17 @@ fn save(walked: Walked, request: &Request, since: OffsetDateTime, older: Option<
   }
 }
 
-fn start(request: Request, mut phase: Signal<Phase>, mut progress: Signal<usize>) {
+fn start(
+  mut request: Request,
+  local: LocalSession,
+  mut phase: Signal<Phase>,
+  mut progress: Signal<usize>,
+) {
   phase.set(Phase::Running);
   progress.set(0);
   spawn(async move {
+    load_flock_pigeons(&request.scope, &local).await;
+    (request.pigeon_names, request.flock_name, request.scope_name) = names(&request.scope, &local);
     let next = match walk(&request, progress).await {
       WalkEnd::Complete(walked) if walked.rows == 0 => Phase::Empty,
       WalkEnd::Complete(walked) => save(walked, &request, request.since, None),
@@ -189,7 +196,32 @@ fn start(request: Request, mut phase: Signal<Phase>, mut progress: Signal<usize>
   });
 }
 
-/// Names from the dashboard's own cache; a pigeon or flock it has not loaded exports unnamed.
+/// Fetches the flock's pigeons the dashboard has not loaded yet, so an export started before the
+/// flock page's own fetch lands still names them.
+async fn load_flock_pigeons(scope: &GraphScope, local: &LocalSession) {
+  let GraphScope::Flock(flock_id) = scope else {
+    return;
+  };
+  let missing: Vec<String> = {
+    let flocks = local.flocks.peek();
+    let loaded = local.pigeons.peek();
+    flocks
+      .get(flock_id)
+      .map(|f| {
+        f.pigeon_ids
+          .iter()
+          .filter(|id| !loaded.contains_key(*id))
+          .cloned()
+          .collect()
+      })
+      .unwrap_or_default()
+  };
+  if !missing.is_empty() {
+    pigeons::list(&missing).await;
+  }
+}
+
+/// Names from the dashboard's own cache; a pigeon or flock it could not load exports unnamed.
 fn names(scope: &GraphScope, local: &LocalSession) -> (HashMap<String, String>, String, String) {
   let pigeons = local.pigeons.peek();
   let flocks = local.flocks.peek();
@@ -252,17 +284,16 @@ pub fn TelemetryExport(
     move |_| {
       let now = OffsetDateTime::now_utc();
       let until = now.replace_nanosecond(0).unwrap_or(now);
-      let (pigeon_names, flock_name, scope_name) = names(&scope, &local);
       let request = Request {
         scope: scope.clone(),
         keys: (!all_keys()).then(|| picked.read().clone()),
         since: until - time::Duration::seconds(range().seconds()),
         until,
-        pigeon_names,
-        flock_name,
-        scope_name,
+        pigeon_names: HashMap::new(),
+        flock_name: String::new(),
+        scope_name: String::new(),
       };
-      start(request, phase, progress);
+      start(request, local, phase, progress);
     }
   };
 
@@ -444,7 +475,7 @@ pub fn TelemetryExport(
                     _ => None,
                 };
                 if let Some(older) = older {
-                    start(older, phase, progress);
+                    start(older, local, phase, progress);
                 }
             },
             "Export the older part"

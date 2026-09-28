@@ -1927,7 +1927,8 @@ file itself.
 - UTF-8 without a byte-order mark, CRLF line ends, and one header row:
   `reported_at,pigeon_id,pigeon_name,flock_name,key,value,value_num`.
 - One row per point, oldest first, ties ordered by pigeon then key. `reported_at` is RFC 3339 in
-  UTC. `pigeon_name` and `flock_name` are the names at export time, empty when unnamed.
+  UTC. `pigeon_name` and `flock_name` are the names at export time, empty when there is none or the
+  dashboard could not load it.
 - `value` is the reported string. `value_num` repeats it when it is a finite number and is empty
   otherwise.
 - Fields are quoted per RFC 4180. A field that starts with `=`, `+`, `-`, `@`, a tab or a carriage
