@@ -1893,6 +1893,20 @@ says which case it was:
 The header is listed in `Access-Control-Expose-Headers`, so a browser client can read it. Narrow
 the range or the key set to see the rest, or page backwards as below.
 
+**Backing store (task #26, revised by the Postgres consolidation).** Both modes read from
+whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`
+table by default. A GreptimeDB store remains supported per environment for **raw mode only**
+(when `GREPTIMEDB_ENDPOINT` is configured — see `helpers/greptime.rs`; no deployed environment
+currently sets it, see `docs/infra/postgres-consolidation.md`), in which case reads go there
+first and fall back to Postgres on a query error; bucketed mode always reads Postgres directly.
+This is transparent to the caller within a mode — the response shape is identical either way raw
+mode's own data came from. **Only populated for reports made while the pigeon had no
+`telemetry_endpoint` configured** — see
+[`PUT /pigeons/:pigeon_id/telemetry-endpoint`](#put-pigeonspigeon_idtelemetry-endpoint) for the
+per-pigeon override, which still takes precedence over the platform default in both directions
+(write and, indirectly, read: an overridden pigeon's data never lands in the platform's own
+history store at all, only at the URL you configured).
+
 ##### Paging past the cap
 
 Pass an explicit `until`. When a page answers `X-Telemetry-Truncated: true`, drop its rows at its
@@ -1946,29 +1960,16 @@ paged as above, and saves the file itself.
 - A pigeon with a telemetry endpoint has nothing stored here to export; see
   [`PUT /pigeons/:pigeon_id/telemetry-endpoint`](#put-pigeonspigeon_idtelemetry-endpoint).
 
-**Backing store (task #26, revised by the Postgres consolidation).** Both modes read from
-whichever store actually holds this data: the platform's Postgres `pigeon_telemetry_history`
-table by default. A GreptimeDB store remains supported per environment for **raw mode only**
-(when `GREPTIMEDB_ENDPOINT` is configured — see `helpers/greptime.rs`; no deployed environment
-currently sets it, see `docs/infra/postgres-consolidation.md`), in which case reads go there
-first and fall back to Postgres on a query error; bucketed mode always reads Postgres directly.
-This is transparent to the caller within a mode — the response shape is identical either way raw
-mode's own data came from. **Only populated for reports made while the pigeon had no
-`telemetry_endpoint` configured** — see the next section for the per-pigeon override, which still
-takes precedence over the platform default in both directions (write and, indirectly, read: an
-overridden pigeon's data never lands in the platform's own history store at all, only at the URL
-you configured).
-
 #### `GET /flocks/:flock_id/telemetry/history`
 
 **Auth:** flock: view
 
-Same shape and query params as above (bucketed by default, `raw=true` for the flat/capped shape),
-across every pigeon in the flock. Unlike the pigeon-scoped route, this checks *flock*-level access
-(`authorize_flock` — personal owner, or any org role on an org-owned flock), not any pigeon's ACL
-— so a pigeon shared with you via its own ACL, but living in a flock you have no flock-level
-access to, won't show up here even though `GET /pigeons/:pigeon_id/telemetry/history` would work
-for it directly.
+Same shape and query params as above (bucketed by default, `raw=true` for the flat/capped shape,
+paged as in [Paging past the cap](#paging-past-the-cap)), across every pigeon in the flock.
+Unlike the pigeon-scoped route, this checks *flock*-level access (`authorize_flock` — personal
+owner, or any org role on an org-owned flock), not any pigeon's ACL — so a pigeon shared with you
+via its own ACL, but living in a flock you have no flock-level access to, won't show up here even
+though `GET /pigeons/:pigeon_id/telemetry/history` would work for it directly.
 
 ```sh
 curl -s "https://api.pidgeiot.com/flocks/<flock_id>/telemetry/history?since=2026-07-17T00:00:00Z" \
