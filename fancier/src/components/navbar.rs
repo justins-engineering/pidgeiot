@@ -1,10 +1,11 @@
 use crate::components::{FeedbackForm, OryLogOut, ThemeController};
+use crate::views::STORIES;
 use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
   LdBird, LdBookOpen, LdBuilding2, LdLayoutGrid, LdLightbulb, LdLogIn, LdMenu, LdMessageSquare,
-  LdRadio, LdRocket, LdRoute, LdSettings, LdSparkles, LdTag, LdUser, LdX,
+  LdNewspaper, LdRadio, LdRocket, LdRoute, LdSettings, LdSparkles, LdTag, LdUser, LdX,
 };
 
 #[component]
@@ -76,6 +77,16 @@ pub fn Navbar() -> Element {
                   to: Route::DocumentationPage {},
                   class: "px-2 hover:text-primary transition-colors duration-300",
                   "Docs"
+                }
+              }
+              // Same guard as the footer: no link to an index with nothing in it.
+              if !STORIES.is_empty() {
+                li {
+                  Link {
+                    to: Route::StoriesIndex {},
+                    class: "px-2 hover:text-primary transition-colors duration-300",
+                    "Stories"
+                  }
                 }
               }
             }
@@ -292,6 +303,19 @@ pub fn Navbar() -> Element {
                     class: "size-5 mr-2 opacity-70",
                   }
                   "Docs"
+                }
+              }
+              if !STORIES.is_empty() {
+                li {
+                  Link {
+                    to: Route::StoriesIndex {},
+                    onclick: move |_| is_menu_open.set(false),
+                    Icon {
+                      icon: LdNewspaper,
+                      class: "size-5 mr-2 opacity-70",
+                    }
+                    "Stories"
+                  }
                 }
               }
               div { class: "divider my-2" }
