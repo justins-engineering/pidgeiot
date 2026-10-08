@@ -64,13 +64,14 @@ production):
 | `THINGSPACE_ACCOUNT_NAME` | The billing account; also this environment's NIDD switch | Callback `503`, Nidd create `403`, no downlinks |
 | `THINGSPACE_CALLBACK_PASSWORD` | The listener password, set by the script below | Callback `503` |
 | `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` | The listener password the last run of the script replaced, still accepted for a day, then deleted by hand | Only the current password is accepted |
+| `NIDD_ALLOWED_ORG_IDS` | Comma-separated ids of the organizations whose flocks may create a Nidd pigeon: JES's own in production (from `secrets.env`), JES's test organization on staging. A secret so that no organization id is committed | Every Nidd create answers `403` |
 
 Vars in `dovecote/wrangler.toml`, one per `[vars]` block:
 
 | Var | Production | Staging | Dev |
 |---|---|---|---|
-| `THINGSPACE_CALLBACK_ALLOWED_IPS` | `""` until cutover, then Verizon's callback addresses | The addresses during bring-up, `""` after cutover | `"127.0.0.1,::1"` |
-| `NIDD_ALLOWED_ORG_IDS` | `""` until cutover, then JES's own organization ids | JES's test organization's id | The local test organization's id |
+| `THINGSPACE_CALLBACK_ALLOWED_IPS` | Verizon's callback addresses | The addresses during bring-up, `""` after cutover | `"127.0.0.1,::1"` |
+| `NIDD_ALLOWED_ORG_IDS` | Not a var: a secret (above) | Not a var: a secret (above) | The local test organization's id, `""` until one exists |
 | `THINGSPACE_LOGIN_EPOCH` | `"1"` | `"1"` | `"1"` |
 
 Verizon's callback addresses, from its callback documentation: `137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234`.
@@ -290,14 +291,23 @@ Object class change. From that deploy on, recovery is a forward redeploy that ke
 exported, never `wrangler rollback` and never a deploy of code without the class. Staging crossed
 the same floor at its first NIDD deploy.
 
-1. Put production's API secrets (section 1 with `env_flag=()`).
-2. Commit Verizon's callback addresses into production's `[vars]`
-   `THINGSPACE_CALLBACK_ALLOWED_IPS` and JES's organization ids into its `NIDD_ALLOWED_ORG_IDS`,
-   and deploy fancier, then dovecote.
+1. Put production's API secrets (section 1 with `env_flag=()`), then its organization allowlist
+   from `secrets.env`, from the repository root, without echoing it:
+
+   ```sh
+   (. ./secrets.env
+    [ -n "${NIDD_ALLOWED_ORG_IDS:-}" ] || { echo "NIDD_ALLOWED_ORG_IDS is not set" >&2; exit 1; }
+    printf %s "$NIDD_ALLOWED_ORG_IDS" | (cd dovecote && bunx wrangler secret put NIDD_ALLOWED_ORG_IDS))
+   ```
+
+2. Deploy fancier, then dovecote. Production's `[vars]` already carry Verizon's callback
+   addresses in `THINGSPACE_CALLBACK_ALLOWED_IPS`; re-read Verizon's list first and commit any
+   change.
 3. Run the registration script with `env_flag=()` and
    `url=https://api.pidgeiot.com/internal/thingspace/nidd`, then steps 7 and 8.
-4. Take NIDD off staging entirely: delete its account name, its four API secrets and its callback
-   password (and `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, if still set) with
+4. Take NIDD off staging entirely: delete its account name, its four API secrets, its callback
+   password, its `NIDD_ALLOWED_ORG_IDS` (and `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, if still set)
+   with
    `(cd dovecote && bunx wrangler secret delete <NAME> --env staging)` for each, set its
    `THINGSPACE_CALLBACK_ALLOWED_IPS` back to `""`, and deploy staging.
 

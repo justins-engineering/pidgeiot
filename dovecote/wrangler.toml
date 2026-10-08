@@ -112,10 +112,12 @@ head_sampling_rate = 1
 # terminator from DEVICE_AUTH_FAIL_LIMITER. Empty/unset denies every
 # caller -- NOT "allow anything".
 #
-# NIDD_ALLOWED_ORG_IDS (all three blocks) -- comma-separated organization
-# ids whose flocks may create a Nidd pigeon. Every NIDD line rides JES's
-# one ThingSpace account, so only JES's own organizations are listed.
-# Empty/unset refuses every Nidd create, the DEMO_PIGEON_IDS convention.
+# NIDD_ALLOWED_ORG_IDS -- comma-separated organization ids whose flocks may
+# create a Nidd pigeon. Every NIDD line rides JES's one ThingSpace account,
+# so only JES's own organizations are listed. A Worker SECRET in production
+# and staging, so no customer's organization id is committed; a [vars] entry
+# only in dev, where it names a local test organization. Unset refuses every
+# Nidd create, the DEMO_PIGEON_IDS convention.
 #
 # THINGSPACE_LOGIN_EPOCH (all three blocks) -- folded into the
 # ThingSpaceSession object's failed-login latch (objects/thingspace.rs).
@@ -132,9 +134,9 @@ head_sampling_rate = 1
 # NiddService, its own value per environment) and, for a day after a
 # rotation only, THINGSPACE_CALLBACK_PASSWORD_PREVIOUS (the password it
 # replaced, still accepted because ThingSpace keeps sending it for minutes
-# after the new one is registered). Set via `wrangler secret put <NAME>
-# --env <env>`; dev reads them from dovecote/.dev.vars and never holds the
-# four API secrets.
+# after the new one is registered), plus NIDD_ALLOWED_ORG_IDS (above). Set
+# via `wrangler secret put <NAME> --env <env>`; dev reads them from
+# dovecote/.dev.vars and never holds the four API secrets.
 [vars]
 KRATOS_BROWSER_URL = "https://auth.pidgeiot.com"
 ROOT_URL = "https://pidgeiot.com"
@@ -163,10 +165,10 @@ GREPTIMEDB_ENDPOINT = ""
 # records). Must move with the VPS (the loft repo's
 # docs/infra/coap-terminator.md, "Internal PSK route allowlist").
 COAP_SERVICE_ALLOWED_IPS = "15.204.254.3,2604:2dc0:121::5be"
-# NIDD stays off in production until cutover (see the
-# THINGSPACE_CALLBACK_ALLOWED_IPS note above).
-THINGSPACE_CALLBACK_ALLOWED_IPS = ""
-NIDD_ALLOWED_ORG_IDS = ""
+# Verizon's published callback addresses: production holds the NiddService
+# registration from cutover on (see the THINGSPACE_CALLBACK_ALLOWED_IPS note
+# above). NIDD_ALLOWED_ORG_IDS is a secret, not a var (see its note above).
+THINGSPACE_CALLBACK_ALLOWED_IPS = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234"
 THINGSPACE_LOGIN_EPOCH = "1"
 
 [[hyperdrive]]
@@ -413,8 +415,6 @@ COAP_SERVICE_ALLOWED_IPS = ""
 # Verizon's callback addresses; at production cutover this goes back to
 # "" (see the THINGSPACE_CALLBACK_ALLOWED_IPS note above).
 THINGSPACE_CALLBACK_ALLOWED_IPS = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234"
-# JES's test organization, "NIDD tier 2 bench".
-NIDD_ALLOWED_ORG_IDS = "2d407cb2-9e01-4c12-9f6e-af4bd25900c4"
 THINGSPACE_LOGIN_EPOCH = "1"
 # `From:` for every mail this Worker sends (helpers/alerts.rs). A sending
 # domain is onboarded per environment and Cloudflare Email Service signs
