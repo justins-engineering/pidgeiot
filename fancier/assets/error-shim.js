@@ -338,12 +338,20 @@
       return;
     }
     var r = ev.reason;
-    send(
-      "unhandled_rejection",
-      r && (r.message || String(r)),
-      null,
-      r && r.stack
-    );
+    var message = r && (r.message || String(r));
+    var stack = r && r.stack;
+    if (state.boot) {
+      send("unhandled_rejection", message, null, stack);
+      return;
+    }
+    // Before boot this is nearly always the wasm download cut short by the
+    // visitor leaving, which fires before pagehide and so cannot be told
+    // from a stuck page yet. Leaving destroys this timer; a page still not
+    // booted when it fires is stuck, and reports.
+    setTimeout(function () {
+      if (!state.boot && !state.panicked && !state.unsupported)
+        send("unhandled_rejection", message, null, stack);
+    }, 20000);
   });
 
   // Boot watchdog for the white-screen class where no Rust ever runs to
