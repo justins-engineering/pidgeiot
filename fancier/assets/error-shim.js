@@ -159,7 +159,10 @@
     state.sent++;
 
     var report = buildReport(kind, message, location, stack);
-    state.last_report = JSON.stringify(report);
+    var body = JSON.stringify(report);
+    // An open crash panel shows one report's ID and its note resends that
+    // report, so a later report must not replace it.
+    if (!revealed) state.last_report = body;
     var api = apiHost();
     if (!api) {
       console.error("pidgeiot error-shim (no API host injected):", report);
@@ -174,7 +177,7 @@
         keepalive: true,
         credentials: "omit",
         headers: { "Content-Type": "text/plain;charset=UTF-8" },
-        body: state.last_report,
+        body: body,
       });
     } catch (e) {
       /* reporting must never throw */
