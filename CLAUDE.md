@@ -132,3 +132,17 @@ Plain serde structs with no Worker/Dioxus dependencies, consumed by both other c
 - No `?`-based early return inside the Worker route closures in `dovecote/src/lib.rs` — use explicit `let Ok(x) = ... else { return ... }` so failures always produce a CORS-wrapped error `Response` rather than silently 500ing through the framework's generic error path.
 - Every response returned from the top-level router must call `.with_cors(&cors)`, where `cors` is that route's own `build_cors(&ctx.env, &req)` result (see `dovecote` architecture notes above) — there is no shared/global CORS instance to reference.
 - DB sync from a Durable Object back to Postgres is always best-effort/fire-and-log (`console_error!`), never blocking or failing the primary request.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `justins-engineering/pidgeiot`, via `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default role labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `CONTEXT.md` plus `docs/adr/`, both created lazily. See `docs/agents/domain.md`.
