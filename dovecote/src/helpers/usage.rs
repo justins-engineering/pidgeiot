@@ -681,9 +681,9 @@ pub async fn check_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
 // next one.
 
 /// A creation-time entitlement decision. `Refuse` carries the finished
-/// message rather than the raw numbers so that every gate's phrasing comes
-/// from one place -- a customer who hits two different limits should not
-/// be told about them in two different voices.
+/// message rather than the raw numbers so that every per-tier gate's
+/// phrasing comes from one place -- a customer who hits two different
+/// limits should not be told about them in two different voices.
 pub enum EntitlementCap {
   Allow,
   Refuse(String),
@@ -702,7 +702,7 @@ fn tier_phrase(plan: BillingPlan) -> &'static str {
   }
 }
 
-/// The one refusal sentence every gate speaks: what the tier includes,
+/// The one refusal sentence every per-tier gate speaks: what the tier includes,
 /// what the account already has, and what to do about it. `noun` is the
 /// singular ("device", "seat"); every noun these gates use pluralizes
 /// regularly. `detail` is an optional parenthetical for a count whose
