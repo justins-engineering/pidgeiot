@@ -34,6 +34,10 @@ use worker::{
 /// silently go missing from one of the near-identical queries.
 const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, suspended_at, updated_at, created_at";
 
+/// Appended to `PIGEON_COLUMNS` on the reads that answer the dashboard. Not on `RETURNING` (a
+/// fresh pigeon has no stamp) nor on the reads that never answer with a `Pigeon`.
+const LAST_SEEN_COLUMN: &str = "(SELECT at FROM pigeon_seen) AS last_seen_at";
+
 // A missing DEVICE_API_HOST binding should degrade to prod's own host
 // rather than emit a garbage endpoint.
 const DEFAULT_DEVICE_API_HOST: &str = "api.pidgeiot.com";
@@ -185,6 +189,132 @@ fn one_row<T: serde::de::DeserializeOwned>(cursor: &worker::SqlCursor) -> Result
     Some(row) => Ok(row),
     None => Err(worker::Error::RustError("Pigeon not found".into())),
   }
+}
+
+#[derive(serde::Deserialize)]
+struct SeenRow {
+  at: Option<f64>,
+}
+
+/// The stored contact stamp, `None` before the first. A failed read is logged and also `None`.
+fn read_device_seen(sql: &SqlStorage, query: &str) -> Option<i64> {
+  match sql
+    .exec(query, None)
+    .and_then(|cursor| cursor.to_array::<SeenRow>())
+  {
+    Ok(rows) => rows
+      .into_iter()
+      .next()
+      .and_then(|row| row.at)
+      .map(|at| at as i64),
+    Err(e) => {
+      console_error!("Pigeon contact stamp READ error: {e}");
+      None
+    }
+  }
+}
+
+fn write_device_seen(sql: &SqlStorage, at: i64) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_seen (id, at) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET at = excluded.at;",
+    vec![(at as f64).into()],
+  )?;
+  Ok(())
+}
+
+/// Seeds an empty stamp from the evidence this object held before the stamp existed: the newest
+/// telemetry write, the newest log chunk, and the shadow's `updated_at` once a device has
+/// reported into it. Without it every pigeon would read "never seen" until its next contact, and
+/// a dead one forever. Writes nothing while there is no evidence at all.
+fn seed_device_seen(pigeons: &Pigeons) {
+  let sql = &pigeons.sql;
+  if read_device_seen(sql, "SELECT at FROM pigeon_seen;").is_some() {
+    return;
+  }
+
+  let mut newest = read_device_seen(
+    sql,
+    "SELECT MAX(at) AS at FROM (
+      SELECT updated_at AS at FROM pigeon_telemetry_latest
+      UNION ALL
+      SELECT * FROM (SELECT received_at FROM pigeon_log_chunks ORDER BY id DESC LIMIT 1)
+    );",
+  );
+  // An empty table is a deleted or not yet created pigeon, which has no shadow evidence.
+  if let Ok(shadow) = read_shadow(pigeons)
+    && !capsules::connection_state::has_never_reported(
+      shadow.current_version,
+      &shadow.current_config,
+    )
+  {
+    newest = newest.max(Some(shadow.updated_at));
+  }
+
+  if let Some(at) = newest
+    && let Err(e) = write_device_seen(sql, at)
+  {
+    console_error!("Pigeon contact stamp seed error: {e}");
+  }
+}
+
+/// Records a device contact and answers the stamp when one is due (see `seen_stamp_due`), which
+/// is when the Postgres mirror must be written. Nothing is awaited between the read and the
+/// write, so two contacts interleaving in this object cannot both stamp, and the stamp is
+/// persisted, so the throttle holds across an eviction.
+fn note_device_seen(pigeons: &Pigeons) -> Option<i64> {
+  let now = (Date::now().as_millis() / 1000) as i64;
+  let prev = read_device_seen(&pigeons.sql, "SELECT at FROM pigeon_seen;");
+  if !crate::helpers::seen_stamp_due(prev, now) {
+    return None;
+  }
+  match write_device_seen(&pigeons.sql, now) {
+    Ok(()) => Some(now),
+    Err(e) => {
+      console_error!("Pigeon contact stamp WRITE error: {e}");
+      None
+    }
+  }
+}
+
+/// The routes a device itself calls. The consumer's `/telemetry/write` and `/endpoint` hops are
+/// not device contact: they replay a report the verify hop already counted.
+fn is_device_contact_path(path: &str) -> bool {
+  matches!(
+    path,
+    "/pigeon/device/shadow"
+      | "/pigeon/device/shadow/report"
+      | "/pigeon/device/ws"
+      | "/pigeon/device/firmware/target"
+      | "/pigeon/device/telemetry"
+      | "/pigeon/device/telemetry/verify"
+      | "/pigeon/device/logs"
+  )
+}
+
+/// Whether a device route's answer means the device proved itself. `is_authorized_device` runs
+/// first in every device handler and is the only source of 401 there, so anything below 500 but
+/// 401 came after a good token: a refused report is still a live device.
+fn counts_as_contact(status: u16) -> bool {
+  status != 401 && status < 500
+}
+
+/// Stamps a device route's answer as contact and, when the mirror is due, sets the
+/// `SEEN_HEADER` the gateway turns into the Postgres write.
+fn mark_device_contact(pigeons: &Pigeons, response: Result<Response>) -> Result<Response> {
+  let mut response = response?;
+  if counts_as_contact(response.status_code())
+    && let Some(at) = note_device_seen(pigeons)
+  {
+    let value = crate::helpers::seen_header_value(&pigeons.state.id().to_string(), at);
+    if let Err(e) = response
+      .headers_mut()
+      .set(crate::helpers::SEEN_HEADER, &value)
+    {
+      console_error!("Pigeon contact stamp header error: {e}");
+    }
+  }
+  Ok(response)
 }
 
 impl DurableObject for Pigeons {
@@ -378,19 +508,35 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_nidd table");
 
-    Pigeons {
+    // When a device was last in contact, in its own row for the telemetry blob's billing reason:
+    // the rowid key carries no index, and `pigeons` is left alone because its `set_updated_at`
+    // trigger would turn every stamp into a second written row and a moving `updated_at`. No
+    // foreign key to `pigeons`, so `delete` wipes it explicitly.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_seen (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          at INTEGER NOT NULL
+        );",
+        None,
+      )
+      .expect("created pigeon_seen table");
+
+    let pigeons = Pigeons {
       sql,
       state,
       env,
       shell_waiters: RefCell::new(HashMap::new()),
       nidd_in_flight: NiddInFlight::default(),
-    }
+    };
+    seed_device_seen(&pigeons);
+    pigeons
   }
 
   async fn fetch(&self, req: Request) -> Result<Response> {
     let path = req.path();
 
-    match path.as_str() {
+    let response = match path.as_str() {
       "/pigeon/get" => get(self, req).await,
       "/pigeon/detail" => get_detail(self, req).await,
       "/pigeon/create" => create(self, req).await,
@@ -427,7 +573,12 @@ impl DurableObject for Pigeons {
       "/pigeon/nidd/uplink" => nidd_uplink(self, req).await,
       "/pigeon/nidd/missed" => nidd_missed(self),
       _ => Response::error("Not Found", 404),
+    };
+
+    if is_device_contact_path(&path) {
+      return mark_device_contact(self, response);
     }
+    response
   }
 
   /// Runs for every frame on a hibernation-accepted socket, including ones
@@ -683,7 +834,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -708,7 +859,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   let mut pigeon = match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1142,7 +1293,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       }
 
       match pigeons.sql.exec(
-        &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+        &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1250,6 +1401,13 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   // starts unclaimed.
   if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_nidd;", None) {
     console_error!("Pigeon NIDD state delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // A Nidd pigeon recreated under the same IMEI reuses this object, and must not inherit the
+  // old device's contact.
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_seen;", None) {
+    console_error!("Pigeon contact stamp delete execution error: {e}");
     return Response::error("Internal Server Error", 500);
   }
 
@@ -1383,7 +1541,7 @@ async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Respon
 /// any reason to hand one back.
 fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -3484,8 +3642,32 @@ async fn send_nidd_downlink(
 
 #[cfg(test)]
 mod tests {
-  use super::{awaiting, build_nidd_endpoint, host_without_port};
+  use super::{
+    awaiting, build_nidd_endpoint, counts_as_contact, host_without_port, is_device_contact_path,
+  };
   use capsules::PigeonShadow;
+
+  #[test]
+  fn only_authenticated_device_answers_count_as_contact() {
+    for status in [101, 200, 202, 206, 400, 404, 413, 429] {
+      assert!(counts_as_contact(status), "{status}");
+    }
+    for status in [401, 500, 503] {
+      assert!(!counts_as_contact(status), "{status}");
+    }
+    assert!(is_device_contact_path("/pigeon/device/shadow"));
+    assert!(is_device_contact_path("/pigeon/device/telemetry/verify"));
+    for path in [
+      "/pigeon/get",
+      "/pigeon/token/refresh",
+      "/pigeon/internal/psk",
+      "/pigeon/device/telemetry/write",
+      "/pigeon/device/telemetry/endpoint",
+      "/pigeon/nidd/uplink",
+    ] {
+      assert!(!is_device_contact_path(path), "{path}");
+    }
+  }
 
   #[test]
   fn the_nidd_endpoint_names_verizons_apn() {

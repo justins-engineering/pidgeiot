@@ -4,7 +4,7 @@ use capsules::{
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
-use worker::{Request, RequestInit, Response, console_error};
+use worker::{Env, Headers, Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 
@@ -739,6 +739,114 @@ pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Res
     })?;
 
   Ok(())
+}
+
+/// Internal response header a pigeon's object sets on a device contact that is due a Postgres
+/// stamp, valued `<unix secs> <pigeon id>`. The gateway's `main` turns it into the write after
+/// the response and strips it, so it never reaches a device, a terminator or ThingSpace.
+pub const SEEN_HEADER: &str = "X-Pigeon-Seen";
+
+/// Least time between two contact stamps of one pigeon, which bounds the Postgres writes a
+/// chatty device costs to one a minute.
+pub const SEEN_STAMP_SECS: i64 = 60;
+
+/// Whether a contact at `now` is due a stamp after the last one at `prev`. A clock that steps
+/// back waits until it passes the stored stamp, so the stamp never moves backwards.
+pub fn seen_stamp_due(prev: Option<i64>, now: i64) -> bool {
+  prev.is_none_or(|prev| now >= prev + SEEN_STAMP_SECS)
+}
+
+/// The `SEEN_HEADER` value for a stamp, which `parse_seen_header` reads back.
+pub fn seen_header_value(pigeon_id: &str, at: i64) -> String {
+  let secs = at.to_string();
+  let mut value = String::with_capacity(secs.len() + 1 + pigeon_id.len());
+  value.push_str(&secs);
+  value.push(' ');
+  value.push_str(pigeon_id);
+  value
+}
+
+/// The pigeon id and unix seconds in a `SEEN_HEADER` value; `None` for anything else.
+pub fn parse_seen_header(value: &str) -> Option<(&str, i64)> {
+  let (secs, pigeon_id) = value.split_once(' ')?;
+  let at = secs.parse::<i64>().ok().filter(|at| *at > 0)?;
+  let well_formed = !pigeon_id.is_empty() && pigeon_id.bytes().all(|b| b.is_ascii_alphanumeric());
+  well_formed.then_some((pigeon_id, at))
+}
+
+/// The `SEEN_HEADER` a pigeon's object answered with, for a route that answers the device with a
+/// response of its own rather than the object's.
+pub fn seen_of(response: &Response) -> Option<String> {
+  response.headers().get(SEEN_HEADER).ok().flatten()
+}
+
+/// Sets a carried `SEEN_HEADER` (see `seen_of`) on a route's own response headers.
+pub fn set_seen(headers: &Headers, seen: Option<&str>) {
+  if let Some(value) = seen
+    && let Err(e) = headers.set(SEEN_HEADER, value)
+  {
+    console_error!("Failed to carry the device contact stamp: {e}");
+  }
+}
+
+/// Mirrors a pigeon's last device contact into `pigeons.last_seen_at`, which the DeviceState
+/// alert sweep reads. The pigeon's object already decided the stamp was due, so this runs at
+/// most once a minute per pigeon. Monotonic, so a late `waitUntil` or a queue retry never moves
+/// it back. Best-effort and logged, like every Postgres mirror.
+pub async fn stamp_last_seen(env: &Env, pigeon_id: &str, at: i64) {
+  let Ok(at) = OffsetDateTime::from_unix_timestamp(at) else {
+    return;
+  };
+  let client = match crate::helpers::get_db_client(env).await {
+    Ok(client) => client,
+    Err(e) => {
+      console_error!("Last-seen stamp skipped for '{pigeon_id}': {e}");
+      return;
+    }
+  };
+  if let Err(e) = client
+    .execute_typed(
+      "UPDATE pigeons SET last_seen_at = $2
+       WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < $2);",
+      &[(&pigeon_id, Type::TEXT), (&at, Type::TIMESTAMPTZ)],
+    )
+    .await
+  {
+    console_error!("Last-seen stamp failed for '{pigeon_id}': {e}");
+  }
+}
+
+#[cfg(test)]
+mod seen_tests {
+  use super::{SEEN_STAMP_SECS, parse_seen_header, seen_header_value, seen_stamp_due};
+
+  #[test]
+  fn seen_stamp_is_due_first_then_once_a_minute() {
+    assert!(seen_stamp_due(None, 1_000));
+    assert!(!seen_stamp_due(Some(1_000), 1_000 + SEEN_STAMP_SECS - 1));
+    assert!(seen_stamp_due(Some(1_000), 1_000 + SEEN_STAMP_SECS));
+    assert!(!seen_stamp_due(Some(1_000), 900));
+  }
+
+  #[test]
+  fn seen_header_round_trips_and_garbage_is_ignored() {
+    let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let value = seen_header_value(id, 1_760_000_000);
+    assert_eq!(value.len(), value.capacity());
+    assert_eq!(parse_seen_header(&value), Some((id, 1_760_000_000)));
+    for garbage in [
+      "",
+      "1760000000",
+      "x abc",
+      "0 abc",
+      "-5 abc",
+      "1760000000 ",
+      "1 a b",
+      "1 a\r\nX",
+    ] {
+      assert_eq!(parse_seen_header(garbage), None, "{garbage:?}");
+    }
+  }
 }
 
 #[cfg(test)]
