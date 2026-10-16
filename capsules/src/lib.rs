@@ -224,6 +224,10 @@ pub struct PigeonRow {
   // Unix seconds while an operator holds this pigeon out of alert
   // evaluation, NULL while live.
   pub suspended_at: Option<f64>,
+  // Unix seconds of the last accepted device contact, NULL until the first;
+  // absent from a fresh pigeon's `RETURNING` row.
+  #[serde(default)]
+  pub last_seen_at: Option<f64>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -247,6 +251,9 @@ impl From<PigeonRow> for Pigeon {
       board: row.board,
       suspended_at: row
         .suspended_at
+        .and_then(|t| OffsetDateTime::from_unix_timestamp(t as i64).ok()),
+      last_seen_at: row
+        .last_seen_at
         .and_then(|t| OffsetDateTime::from_unix_timestamp(t as i64).ok()),
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
@@ -279,6 +286,13 @@ pub struct Pigeon {
     skip_serializing_if = "Option::is_none"
   )]
   pub suspended_at: Option<OffsetDateTime>,
+  /// Last accepted device contact on any transport, at most 60 s behind; absent until the first.
+  #[serde(
+    default,
+    with = "time::serde::rfc3339::option",
+    skip_serializing_if = "Option::is_none"
+  )]
+  pub last_seen_at: Option<OffsetDateTime>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -298,6 +312,7 @@ impl Default for Pigeon {
       telemetry_endpoint: None,
       board: None,
       suspended_at: None,
+      last_seen_at: None,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -978,6 +993,51 @@ mod pigeon_suspension_tests {
     let json = serde_json::to_string(&pigeon).unwrap();
     assert!(json.contains(r#""suspended_at":"1970-01-01T00:00:00Z""#));
     assert_eq!(serde_json::from_str::<Pigeon>(&json).unwrap(), pigeon);
+  }
+}
+
+#[cfg(test)]
+mod pigeon_last_seen_tests {
+  use super::*;
+
+  #[test]
+  fn last_seen_at_is_absent_until_set_and_round_trips() {
+    let json = serde_json::to_string(&Pigeon::default()).unwrap();
+    assert!(!json.contains("last_seen_at"));
+    assert_eq!(
+      serde_json::from_str::<Pigeon>(&json).unwrap().last_seen_at,
+      None
+    );
+
+    let pigeon = Pigeon {
+      last_seen_at: Some(OffsetDateTime::UNIX_EPOCH),
+      ..Pigeon::default()
+    };
+    let json = serde_json::to_string(&pigeon).unwrap();
+    assert!(json.contains(r#""last_seen_at":"1970-01-01T00:00:00Z""#));
+    assert_eq!(serde_json::from_str::<Pigeon>(&json).unwrap(), pigeon);
+  }
+
+  fn row(extra: &str) -> PigeonRow {
+    let mut json = String::from(
+      r#"{"id":"p","flock_id":"00000000-0000-0000-0000-000000000000","serial":null,"name":null,"tags":null,"connector":"{}","token_expires_at":0,"telemetry_endpoint":null,"board":null,"suspended_at":null,"updated_at":0,"created_at":0"#,
+    );
+    json.push_str(extra);
+    json.push('}');
+    serde_json::from_str(&json).unwrap()
+  }
+
+  #[test]
+  fn a_row_without_a_stamp_reads_none() {
+    assert_eq!(Pigeon::from(row("")).last_seen_at, None);
+    assert_eq!(
+      Pigeon::from(row(r#","last_seen_at":null"#)).last_seen_at,
+      None
+    );
+    assert_eq!(
+      Pigeon::from(row(r#","last_seen_at":1760000000"#)).last_seen_at,
+      Some(OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap())
+    );
   }
 }
 
