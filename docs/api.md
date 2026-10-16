@@ -296,7 +296,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
 | Alert definitions per account | Tier's alert count, across every flock and pigeon | `helpers/usage.rs::check_pigeon_alert_cap`/`check_flock_alert_cap`, `403` at both alert `POST`s |
-| Organizations owned per user | Tier's organization count | `helpers/usage.rs::check_org_cap`, `403` at `POST /orgs` |
+| Organizations owned per user | One on the free tier; organizations on a paid or complimentary tier do not count | `helpers/usage.rs::check_org_cap`, `403` at `POST /orgs` |
 | `POST /pigeons/:id/shell` — device reply timeout | 10s default, 30s max (caller-configurable `timeout_ms`, clamped) | `objects/pigeons.rs::SHELL_TIMEOUT_DEFAULT_MS`/`SHELL_TIMEOUT_MAX_MS`, `504` over the wait |
 | `POST /feedback` — bytes per raw body | 8 KiB (`capsules::MAX_FEEDBACK_BODY_BYTES`) | `lib.rs`, `413` over the cap |
 | `POST /feedback` — bytes in `message` | 4 KiB (`capsules::MAX_FEEDBACK_MESSAGE_BYTES`) | `lib.rs`, `413` over the cap |
@@ -534,10 +534,12 @@ blank and editable rather than failing a creation that already succeeded. See
 [Business details](#business-details) for the full semantics — the create path applies exactly
 the same rules as `PUT /orgs/:org_id/business-details`.
 
-**Organization-count entitlement.** `403` past the caller's tier's allowance (see
-[Per-tier limits](#per-tier-limits)). Counts the organizations this person already *owns*, so
-belonging to somebody else's spends none of their own allowance, and the tier is the best one
-any of those organizations is entitled to. Deleting an organization frees its slot.
+**Organization-count entitlement.** An account may own one organization served on the free
+tier; `403` when it already owns one (see [Per-tier limits](#per-tier-limits)). Organizations
+on a live subscription or a complimentary tier do not count, and one whose subscription has
+lapsed counts as free, since it is served free. Only organizations this person *owns* count,
+so belonging to somebody else's spends none of their allowance. To add one, upgrade the free
+organization you have. Deleting an organization frees its slot.
 
 #### `GET /orgs`
 
@@ -898,18 +900,23 @@ a complimentary grant is gated at the granted tier. See
 | Pooled messages/period | 300 K | 1.5 M | 7.5 M | 45 M | 300 M |
 | Seats per org | 1 | 3 | unlimited | unlimited | unlimited |
 | Alerts per account | 1 | 10 | unlimited | unlimited | unlimited |
-| Organizations owned | 1 | 1 | unlimited | unlimited | unlimited |
 
 Devices are the one row that is a *price* rather than a ceiling: past the included count an
 account **with a live subscription** bills per-device overage instead of being refused. An
 account with no subscription to bill — free, or complimentary — hard-caps at its own served
-tier's device count. Seats, alerts and organizations refuse on every tier that publishes a
-number.
+tier's device count. Seats and alerts refuse on every tier that publishes a number;
+organizations follow the one-free-organization rule below.
 
-A refusal is always `403` with a plain-text body in one shape:
+A refusal is always `403` with a plain-text body. The per-tier limits share one shape:
 
 ```
 Forbidden: the free tier includes 1 seat and this account already has 1 (members plus pending invites) -- upgrade to add more
+```
+
+The organization limit is the same on every tier, so its sentence names the rule instead:
+
+```
+Forbidden: an account may own one organization on the free tier and this account already has one -- upgrade that organization to add more
 ```
 
 Four rules hold for all of them:
@@ -922,9 +929,13 @@ Four rules hold for all of them:
 - **Counts are per account, not per container.** The alert limit spans every flock and pigeon
   the account owns (a per-pigeon limit would be no limit, since flocks are free); the device
   count spans every flock; the seat count is per organization, which is what a seat belongs to.
-- **The free tier keeps one organization on purpose.** Billing attaches to an organization and
+- **One free organization per account.** An account may own one organization served on the
+  free tier; subscribed and comped organizations do not count, and the limit does not grow
+  with any other organization's tier. One, not none: billing attaches to an organization and
   checkout runs against one that already exists, so a free account refused its first could
-  never reach a paid tier. What the free tier does not get is a *team* — that is the one seat.
+  never reach a paid tier. Not more than one: each free organization carries the free tier's
+  allowance, so stacking them would multiply it. What the free tier does not get is a *team*:
+  that is the one seat.
 
 #### Complimentary tiers
 
