@@ -69,6 +69,10 @@ pub const HEADER_BILLED: &str = "X-Nidd-Billed";
 /// changes.
 pub const NIDD_LOG_BILLED_MESSAGES: u32 = 0;
 
+/// Billable messages one answered `FOTA_REQ` counts. None: firmware is not priced. A paused
+/// account still gets its firmware, so a nonzero value here would bill an account the fuse holds.
+pub const NIDD_FOTA_BILLED_MESSAGES: u32 = 0;
+
 /// Image bytes in one `FOTA_CHUNK`: a flash write-block multiple whose COBS, header and tag fit
 /// one downlink with 22 bytes to spare.
 pub const NIDD_FOTA_CHUNK_BYTES: u32 = 1280;
@@ -1183,6 +1187,8 @@ mod tests {
   #[test]
   fn a_fota_request_is_not_ingest_so_firmware_flows_while_paused() {
     assert!(!is_ingest(FRAME_FOTA_REQ));
+    // Unbilled by decision, and a paused account still draws chunks: changing this bills it.
+    assert_eq!(NIDD_FOTA_BILLED_MESSAGES, 0);
   }
 
   #[test]

@@ -800,9 +800,10 @@ fn log_nidd_callback(
 /// here, after the response, through `main`.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
-    CallbackAuth, FRAME_LOG, HEADER_BILLED, NIDD_CALLBACK_MAX_BYTES, NIDD_LOG_BILLED_MESSAGES,
-    NiddCallback, NiddResponse, PasswordMatch, callback_imei, callback_line, delivery_missed,
-    is_ingest, match_callback_password, parse_error_line, within,
+    CallbackAuth, FRAME_FOTA_REQ, FRAME_LOG, HEADER_BILLED, NIDD_CALLBACK_MAX_BYTES,
+    NIDD_FOTA_BILLED_MESSAGES, NIDD_LOG_BILLED_MESSAGES, NiddCallback, NiddResponse, PasswordMatch,
+    callback_imei, callback_line, delivery_missed, is_ingest, match_callback_password,
+    parse_error_line, within,
   };
   use base64::Engine as _;
   use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -1048,12 +1049,18 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
       let acknowledged = Response::ok("").unwrap();
       set_seen(acknowledged.headers(), seen.as_deref());
-      // TELEMETRY bills in the queue consumer and SHADOW_REPORT in the object's tail; LOG has
-      // neither, so it bills here, after the response, through `main`.
-      if frame[0] == FRAME_LOG && outcome == "stored" && NIDD_LOG_BILLED_MESSAGES != 0 {
-        let billed = seen_header_value(&pigeon_id, i64::from(NIDD_LOG_BILLED_MESSAGES));
+      // TELEMETRY bills in the queue consumer and SHADOW_REPORT in the object's tail. A stored
+      // LOG and an answered FOTA_REQ have neither, so they bill here, after the response,
+      // through `main`, each by its own constant; both are 0, so neither bills today.
+      let billed_messages = match (frame[0], outcome) {
+        (FRAME_LOG, "stored") => NIDD_LOG_BILLED_MESSAGES,
+        (FRAME_FOTA_REQ, "chunk") => NIDD_FOTA_BILLED_MESSAGES,
+        _ => 0,
+      };
+      if billed_messages != 0 {
+        let billed = seen_header_value(&pigeon_id, i64::from(billed_messages));
         if let Err(e) = acknowledged.headers().set(HEADER_BILLED, &billed) {
-          console_error!("nidd_cb: failed to carry the LOG bill for pigeon {pigeon_id}: {e}");
+          console_error!("nidd_cb: failed to carry the bill for pigeon {pigeon_id}: {e}");
         }
       }
       acknowledged.with_cors(&cors)
