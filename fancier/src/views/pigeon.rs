@@ -29,10 +29,12 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
   let mut show_telemetry_endpoint_modal = use_signal(|| false);
   let mut show_firmware_modal = use_signal(|| false);
 
-  // "Last seen" is the newest of three signals this page already fetches
+  // "Last seen" is the pigeon's own `last_seen_at`, the same fact the flock
+  // list shows, folded with the newer evidence this page already fetches
   // (or, for the log chunks, would fetch anyway via LogViewer): the latest
   // telemetry report, the shadow's own updated_at, and the newest received
-  // device log chunk. No new backend routes, no extra device traffic.
+  // device log chunk. The stamp is written at most once a minute, so these
+  // keep the badge from reading older than a report the page can see.
   let mut telemetry_latest: Signal<Option<Vec<TelemetryLatest>>> = use_signal(|| None);
   let mut latest_log_received: Signal<Option<time::OffsetDateTime>> = use_signal(|| None);
 
@@ -82,6 +84,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                 connection_state::latest_of(latest.iter().map(|t| Some(t.reported_at)))
             });
             let last_seen = connection_state::latest_of([
+                pd.pigeon.last_seen_at,
                 shadow_seen,
                 telemetry_seen,
                 latest_log_received(),

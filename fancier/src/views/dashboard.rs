@@ -16,13 +16,6 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// How far back the fleet-wide "last seen" fetch looks, mirroring the
-/// per-flock pigeon list's own `LIST_LOOKBACK_HOURS` (views/pigeons.rs) --
-/// same reasoning applies here, just fanned out over every flock instead
-/// of one: bounded, cheap, and only needs to say "seen recently" vs. not,
-/// not produce an exact age.
-const FLEET_LOOKBACK_HOURS: i64 = 6;
-
 /// Cap on how many device cards the fleet grid renders directly. Anything
 /// past this is one click away via a flock's own pigeon list (which has no
 /// such cap) -- this page's job is triage, not a full inventory table.
@@ -33,17 +26,15 @@ pub fn Dashboard() -> Element {
   let local = use_context::<crate::LocalSession>();
   let flocks = local.flocks;
   let pigeons = local.pigeons;
-  let mut last_seen: Signal<HashMap<String, OffsetDateTime>> = use_signal(HashMap::new);
   let mut fleet_data_loaded = use_signal(|| false);
   // Flock-scoped *firing* alert count per flock -- deliberately NOT a
   // fleet-wide total: there is no "list every alert's state this user
   // owns" route, only per-pigeon and per-flock listing (dovecote/src/lib.rs's
   // "Alert Routes"), so a true fleet total would mean fetching every
   // pigeon's own alert state too -- an N-pigeon fan-out this page's own
-  // `MAX_DEVICE_CARDS` cap and `FLEET_LOOKBACK_HOURS` comment already treat
-  // as a cost worth avoiding for a summary widget. Flock-scoped state alone
-  // is one cheap call per flock (same shape as the telemetry fetch above,
-  // via `api::alerts::state_flock`), so the card below is explicit that
+  // `MAX_DEVICE_CARDS` cap already treats as a cost worth avoiding for a
+  // summary widget. Flock-scoped state alone is one cheap call per flock
+  // (via `api::alerts::state_flock`), so the card below is explicit that
   // pigeon-level alerts aren't counted here rather than silently
   // under-reporting.
   let mut flock_firing_alert_counts: Signal<HashMap<Uuid, usize>> = use_signal(HashMap::new);
@@ -51,10 +42,8 @@ pub fn Dashboard() -> Element {
   // Populates the two things this page needs that aren't already fetched
   // by the time an authenticated user lands here: each flock's pigeons
   // (LocalSession.pigeons is otherwise only filled in lazily, per flock,
-  // by views/pigeons.rs) and a fleet-wide last-seen map (built the same
-  // way the per-flock pigeon list builds its own, just once per flock
-  // instead of once total -- there is no combined "all my telemetry"
-  // route to call instead). Reads `flocks` before the first `.await` so
+  // by views/pigeons.rs), which carry their own `last_seen_at`, and each
+  // flock's firing alert count. Reads `flocks` before the first `.await` so
   // this reruns if the flocks map changes, same pattern as the per-flock
   // pigeon list's own resource (views/pigeons.rs).
   use_resource(move || async move {
@@ -69,26 +58,11 @@ pub fn Dashboard() -> Element {
       return;
     }
 
-    let now = OffsetDateTime::now_utc();
-    let since = now - time::Duration::hours(FLEET_LOOKBACK_HOURS);
-    let mut merged: HashMap<String, OffsetDateTime> = HashMap::new();
     let mut alert_counts: HashMap<Uuid, usize> = HashMap::new();
 
     for (flock_id, pigeon_ids) in flock_snapshot {
       if !pigeon_ids.is_empty() {
         api::pigeons::list(&pigeon_ids).await;
-      }
-      if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, now).await {
-        for (id, seen) in connection_state::latest_seen_by_pigeon(&history.points) {
-          merged
-            .entry(id)
-            .and_modify(|t| {
-              if seen > *t {
-                *t = seen;
-              }
-            })
-            .or_insert(seen);
-        }
       }
       if let Some(states) = api::alerts::state_flock(flock_id).await {
         let firing = states
@@ -99,7 +73,6 @@ pub fn Dashboard() -> Element {
       }
     }
 
-    last_seen.set(merged);
     flock_firing_alert_counts.set(alert_counts);
     fleet_data_loaded.set(true);
   });
@@ -130,7 +103,6 @@ pub fn Dashboard() -> Element {
   let total_pigeons = scoped_pigeons.len();
 
   let now = OffsetDateTime::now_utc();
-  let seen = last_seen.read();
   let mut online = 0usize;
   let mut stale = 0usize;
   let mut offline = 0usize;
@@ -141,8 +113,7 @@ pub fn Dashboard() -> Element {
   let mut classified: Vec<(Pigeon, ConnectionState, Option<OffsetDateTime>)> = scoped_pigeons
     .iter()
     .map(|pigeon| {
-      let last = seen.get(&pigeon.id).copied();
-      let state = connection_state::classify(pigeon.suspended_at.is_some(), last, None, now);
+      let state = connection_state::contact_state(pigeon, now);
       let bucket = per_flock.entry(pigeon.flock_id).or_default();
       match state {
         ConnectionState::Online => {
@@ -166,10 +137,9 @@ pub fn Dashboard() -> Element {
           bucket.suspended += 1;
         }
       }
-      (pigeon.clone(), state, last)
+      (pigeon.clone(), state, pigeon.last_seen_at)
     })
     .collect();
-  drop(seen);
 
   // Worst-first: a fleet dashboard's job is triage, so problem devices
   // float to the top of the (capped) grid rather than sorting
@@ -326,7 +296,7 @@ pub fn Dashboard() -> Element {
                 // whose one device never reported reads as nothing to do.
                 if unknown > 0 {
                   p { class: "text-xs text-base-content/60 mt-3",
-                    "Unknown means no report in the last {FLEET_LOOKBACK_HOURS}h, which is where a new pigeon stays until its device first reports. "
+                    "Unknown means never in contact, which is where a new pigeon stays until its device first connects. "
                     Link {
                       class: "link link-primary",
                       to: Route::GettingStartedPage {},
@@ -595,7 +565,7 @@ fn DeviceCard(
       }
       div { class: "flex items-center justify-between text-xs",
         span { class: "text-base-content/50",
-          "{connection_state::format_last_seen_within(last_seen, FLEET_LOOKBACK_HOURS, now)}"
+          "{connection_state::format_last_seen(last_seen, now)}"
         }
         Link {
           to: Route::PigeonView { flock_id, pigeon_id: pigeon_id.clone() },

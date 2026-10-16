@@ -10,19 +10,8 @@ use capsules::{
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdCopy, LdTriangleAlert, LdX};
-use std::collections::HashMap;
 #[cfg(feature = "web")]
 use wasm_bindgen_futures::JsFuture;
-
-/// How far back the flock pigeon-list looks for a per-pigeon "last seen" --
-/// deliberately short and bounded to keep this the only
-/// fetch the list makes for the feature (no per-pigeon fan-out, no new
-/// routes: one `GET /flocks/:id/telemetry/history` call covers the whole
-/// table). A pigeon that hasn't reported within this window shows as
-/// offline/unknown even if it reported further back -- the list only
-/// needs to distinguish "seen recently" from "not," not produce an exact
-/// last-seen age the way the pigeon detail page does.
-const LIST_LOOKBACK_HOURS: i64 = 6;
 
 #[component]
 pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
@@ -43,8 +32,6 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
   // registering the same device twice.
   let mut show_create = use_signal(|| false);
   let nav = use_navigator();
-  let mut last_seen_by_pigeon: Signal<HashMap<String, time::OffsetDateTime>> =
-    use_signal(HashMap::new);
   // Distinguishes "this flock genuinely has no pigeons" from "the fetch
   // failed" -- without it the two render identically (an empty
   // LocalSession.pigeons cache either way), the silent failure a flock
@@ -74,14 +61,6 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           }
         }
       };
-    }
-  });
-
-  use_resource(move || async move {
-    let now = time::OffsetDateTime::now_utc();
-    let since = now - time::Duration::hours(LIST_LOOKBACK_HOURS);
-    if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, now).await {
-      last_seen_by_pigeon.set(connection_state::latest_seen_by_pigeon(&history.points));
     }
   });
 
@@ -326,15 +305,12 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
                     }
                     td { class: "text-sm",
                       {
-                          let last_seen = last_seen_by_pigeon.read().get(&id).copied();
-                          let state = connection_state::classify(
-                              pigeon.suspended_at.is_some(),
-                              last_seen,
-                              None,
+                          let state = connection_state::contact_state(
+                              &pigeon,
                               time::OffsetDateTime::now_utc(),
                           );
                           rsx! {
-                            ConnectionBadge { state, last_seen, window_hours: LIST_LOOKBACK_HOURS }
+                            ConnectionBadge { state, last_seen: pigeon.last_seen_at }
                           }
                       }
                     }

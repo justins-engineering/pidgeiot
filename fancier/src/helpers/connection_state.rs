@@ -12,13 +12,13 @@
 // same math drifting apart. See `capsules::connection_state`'s own doc
 // comment for the full rationale.
 //
-// "Last seen" is still the newest of whichever signals a given call site
-// fetches (see `views::pigeon::PigeonView` for the full three-signal
-// version, and `views::pigeons`/`views::dashboard` for the telemetry-only
-// version -- neither does a per-pigeon shadow/log fan-out).
+// "Last seen" is the pigeon's own `last_seen_at`, the last accepted device
+// contact on any transport, which every view reads from the payload it
+// already fetches (`contact_state`). `views::pigeon::PigeonView` folds in
+// the newer evidence it holds too, since the stamp can trail by a minute.
+use capsules::Pigeon;
 pub use capsules::connection_state::{
-  ConnectionState, format_last_seen, has_never_reported, latest_of, latest_seen_by_pigeon,
-  telemetry_interval_secs,
+  ConnectionState, format_last_seen, has_never_reported, latest_of, telemetry_interval_secs,
 };
 use time::OffsetDateTime;
 
@@ -38,24 +38,16 @@ pub fn classify(
   capsules::connection_state::classify(last_seen, interval_secs, now)
 }
 
-/// `format_last_seen` for a view that only looked `window_hours` back. No
-/// report inside the window is all such a view knows; "Never seen" would
-/// claim more, and is false for a device that went quiet a day ago.
-pub fn format_last_seen_within(
-  last_seen: Option<OffsetDateTime>,
-  window_hours: i64,
-  now: OffsetDateTime,
-) -> String {
-  if last_seen.is_some() {
-    return format_last_seen(last_seen, now);
-  }
-  const HEAD: &str = "No report in ";
-  let hours = window_hours.to_string();
-  let mut caption = String::with_capacity(HEAD.len() + hours.len() + 1);
-  caption.push_str(HEAD);
-  caption.push_str(&hours);
-  caption.push('h');
-  caption
+/// A pigeon's state from its own `last_seen_at`, for the views that hold no
+/// shadow: the flock list and the fleet dashboard. Without a
+/// `current_config` they classify against the default thresholds.
+pub fn contact_state(pigeon: &Pigeon, now: OffsetDateTime) -> ConnectionState {
+  classify(
+    pigeon.suspended_at.is_some(),
+    pigeon.last_seen_at,
+    None,
+    now,
+  )
 }
 
 /// Floor and fallback for `poll_interval_ms` -- fancier-only (dovecote never
@@ -149,15 +141,23 @@ mod classify_tests {
   use time::macros::datetime;
 
   #[test]
-  fn an_empty_window_is_not_called_never_seen() {
-    let now = datetime!(2026-09-26 12:00:00 UTC);
-    let caption = format_last_seen_within(None, 6, now);
-    assert_eq!(caption, "No report in 6h");
-    assert_eq!(caption.len(), caption.capacity());
+  fn contact_state_suspended_wins_and_never_seen_is_unknown() {
+    let now = datetime!(2026-10-16 18:30:00 UTC);
+    let seen = |ago_mins: i64| Pigeon {
+      last_seen_at: Some(now - time::Duration::minutes(ago_mins)),
+      ..Pigeon::default()
+    };
+    let suspended = Pigeon {
+      suspended_at: Some(now),
+      ..seen(0)
+    };
+    assert_eq!(contact_state(&suspended, now), ConnectionState::Suspended);
     assert_eq!(
-      format_last_seen_within(Some(now - time::Duration::hours(2)), 6, now),
-      "2h ago"
+      contact_state(&Pigeon::default(), now),
+      ConnectionState::Unknown
     );
+    assert_eq!(contact_state(&seen(1), now), ConnectionState::Online);
+    assert_eq!(contact_state(&seen(40), now), ConnectionState::Offline);
   }
 
   #[test]

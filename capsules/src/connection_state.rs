@@ -22,8 +22,7 @@
 // "seen" right after someone edits its config. This is self-correcting
 // (the timestamp doesn't keep advancing, so the pigeon falls back to
 // stale/offline once the classification window elapses).
-use crate::{JsonString, TelemetryHistoryPoint};
-use std::collections::HashMap;
+use crate::JsonString;
 use time::OffsetDateTime;
 
 /// Fallback thresholds used when a pigeon's shadow has no
@@ -147,27 +146,6 @@ pub fn format_last_seen(last_seen: Option<OffsetDateTime>, now: OffsetDateTime) 
   } else {
     format!("{}d ago", age_secs / 86400)
   }
-}
-
-/// Per-pigeon last-seen map from one flock-scoped telemetry history query
-/// (`GET /flocks/:id/telemetry/history`) -- deliberately the only fetch
-/// the flock pigeon-list makes for this feature (see `fancier`'s
-/// `views/pigeons.rs`): no per-pigeon fan-out, no shadow/log signals, just
-/// the newest `reported_at` per `pigeon_id` within whatever window the
-/// caller queried.
-pub fn latest_seen_by_pigeon(points: &[TelemetryHistoryPoint]) -> HashMap<String, OffsetDateTime> {
-  let mut latest: HashMap<String, OffsetDateTime> = HashMap::new();
-  for point in points {
-    latest
-      .entry(point.pigeon_id.clone())
-      .and_modify(|t| {
-        if point.reported_at > *t {
-          *t = point.reported_at;
-        }
-      })
-      .or_insert(point.reported_at);
-  }
-  latest
 }
 
 #[cfg(test)]
@@ -324,25 +302,5 @@ mod tests {
       format_last_seen(Some(now - time::Duration::days(2)), now),
       "2d ago"
     );
-  }
-
-  #[test]
-  fn latest_seen_by_pigeon_takes_the_max_per_pigeon() {
-    fn point(pigeon_id: &str, reported_at: OffsetDateTime) -> TelemetryHistoryPoint {
-      TelemetryHistoryPoint {
-        pigeon_id: pigeon_id.to_string(),
-        key: "battery_mv".to_string(),
-        value: "4000".to_string(),
-        value_num: Some(4000.0),
-        reported_at,
-      }
-    }
-    let t1 = datetime!(2026-07-18 10:00:00 UTC);
-    let t2 = datetime!(2026-07-18 11:00:00 UTC);
-    let points = vec![point("a", t1), point("a", t2), point("b", t1)];
-    let latest = latest_seen_by_pigeon(&points);
-    assert_eq!(latest.get("a"), Some(&t2));
-    assert_eq!(latest.get("b"), Some(&t1));
-    assert_eq!(latest.get("c"), None);
   }
 }
