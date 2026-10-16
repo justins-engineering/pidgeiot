@@ -2846,19 +2846,24 @@ async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Respo
     return Response::error("Payload Too Large: Log chunk exceeds size cap", 413);
   }
 
-  let data_b64 = STANDARD.encode(&bytes);
-
-  if let Err(e) = pigeons.sql.exec(
-    "INSERT INTO pigeon_log_chunks (data) VALUES (?);",
-    vec![data_b64.into()],
-  ) {
+  if let Err(e) = store_log_chunk(&pigeons.sql, &bytes) {
     console_error!("Log chunk INSERT error: {e}");
     return Response::error("Internal Server Error", 500);
   }
 
-  // Prune beyond the ring-buffer cap, oldest first. Non-fatal -- the
-  // chunk itself is already durably stored.
-  if let Err(e) = pigeons.sql.exec(
+  Response::ok("")
+}
+
+/// Appends one chunk to the ring buffer and prunes it to `MAX_STORED_LOG_CHUNKS`, the store the
+/// HTTPS route and a NIDD `LOG` frame share. Errs only when the insert fails; a failed prune is
+/// logged, since the chunk itself is stored.
+fn store_log_chunk(sql: &SqlStorage, bytes: &[u8]) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_log_chunks (data) VALUES (?);",
+    vec![STANDARD.encode(bytes).into()],
+  )?;
+
+  if let Err(e) = sql.exec(
     "DELETE FROM pigeon_log_chunks WHERE id NOT IN (
        SELECT id FROM pigeon_log_chunks ORDER BY id DESC LIMIT ?
      );",
@@ -2866,8 +2871,7 @@ async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Respo
   ) {
     console_error!("Log chunk prune error: {e}");
   }
-
-  Response::ok("")
+  Ok(())
 }
 
 /// Every stored chunk, oldest first, as base64 for host-side decode --
