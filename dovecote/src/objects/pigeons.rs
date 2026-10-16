@@ -1392,8 +1392,8 @@ async fn get_device_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Res
 /// empty — so this wipes every row this DO owns instead. `pigeon_shadow`
 /// cascades via its foreign key; the tables scoped to this DO's single
 /// pigeon rather than keyed by pigeon id — `pigeon_acl`,
-/// `pigeon_telemetry_latest`, `pigeon_log_chunks` and `pigeon_nidd` — have
-/// none, so each is cleared explicitly.
+/// `pigeon_telemetry_latest`, `pigeon_log_chunks`, `pigeon_nidd` and
+/// `pigeon_seen` — have none, so each is cleared explicitly.
 async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
