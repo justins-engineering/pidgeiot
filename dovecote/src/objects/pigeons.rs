@@ -3839,7 +3839,8 @@ async fn send_nidd_downlink(
 }
 
 /// Reads the span from R2 and sends it as `FOTA_CHUNK` frames in order, one per 1280 bytes, each
-/// awaited before the next. An image R2 does not hold draws `FOTA_NONE`, so the device stops; a
+/// awaited before the next. An image R2 does not hold, or holds at another size than the target's,
+/// draws `FOTA_NONE`, so the device stops: objects are content-addressed and never change size. A
 /// failed or short read sends nothing, since the device asks again for what it did not get.
 async fn send_nidd_chunks(
   env: &Env,
@@ -3850,9 +3851,17 @@ async fn send_nidd_chunks(
   offset: u32,
   length: u32,
 ) {
+  // `None` draws `FOTA_NONE`.
   let bytes = match read_firmware_span(env, sha256, offset, length).await {
-    Ok(Some(bytes)) if bytes.len() == length as usize => bytes,
-    Ok(Some(bytes)) => {
+    Ok(Some((size, _))) if size != u64::from(total) => {
+      console_error!(
+        "nidd_dl kind=chunk outcome=size_mismatch offset={offset} size={size} total={total} \
+         pigeon={pigeon_id}"
+      );
+      None
+    }
+    Ok(Some((_, bytes))) if bytes.len() == length as usize => Some(bytes),
+    Ok(Some((_, bytes))) => {
       console_error!(
         "nidd_dl kind=chunk outcome=short_read offset={offset} got={} want={length} \
          pigeon={pigeon_id}",
@@ -3862,10 +3871,7 @@ async fn send_nidd_chunks(
     }
     Ok(None) => {
       console_error!("nidd_dl kind=chunk outcome=no_object offset={offset} pigeon={pigeon_id}");
-      let frame = status_frame(STATUS_FOTA_NONE, 0);
-      let outcome = sign_and_send(env, pigeon_id, &identity.imei, identity.claim_key, frame).await;
-      log_downlink("status", "", pigeon_id, &outcome);
-      return;
+      None
     }
     Err(e) => {
       console_error!(
@@ -3873,6 +3879,12 @@ async fn send_nidd_chunks(
       );
       return;
     }
+  };
+  let Some(bytes) = bytes else {
+    let frame = status_frame(STATUS_FOTA_NONE, 0);
+    let outcome = sign_and_send(env, pigeon_id, &identity.imei, identity.claim_key, frame).await;
+    log_downlink("status", "", pigeon_id, &outcome);
+    return;
   };
   let Some(sha16) = sha256.get(..NIDD_FOTA_SHA_CHARS) else {
     return;
@@ -3893,15 +3905,15 @@ async fn send_nidd_chunks(
   }
 }
 
-/// `length` bytes of the stored image from `offset`; `None` when R2 holds no such object, and
-/// fewer bytes than asked when its body is shorter. An error past `NIDD_FOTA_READ_LIMIT`, since
-/// nothing else bounds the tail and a late chunk is lost anyway.
+/// The stored image's whole size and `length` of its bytes from `offset`; `None` when R2 holds no
+/// such object, and fewer bytes than asked when its body is shorter. An error past
+/// `NIDD_FOTA_READ_LIMIT`, since nothing else bounds the tail and a late chunk is lost anyway.
 async fn read_firmware_span(
   env: &Env,
   sha256: &str,
   offset: u32,
   length: u32,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<(u64, Vec<u8>)>> {
   let bucket = env.bucket("FIRMWARE_BUCKET")?;
   let mut key = String::with_capacity(13 + sha256.len());
   key.push_str("firmware/");
@@ -3915,9 +3927,10 @@ async fn read_firmware_span(
     let Some(object) = bucket.get(&key).range(range).execute().await? else {
       return Ok(None);
     };
+    let size = object.size();
     match object.body() {
-      Some(body) => body.bytes().await.map(Some),
-      None => Ok(Some(Vec::new())),
+      Some(body) => body.bytes().await.map(|bytes| Some((size, bytes))),
+      None => Ok(Some((size, Vec::new()))),
     }
   };
   within(NIDD_FOTA_READ_LIMIT, read)

@@ -1278,8 +1278,9 @@ contract.
   chunk again, which the device drops by offset.
 - **Replies.** Up to `NIDD_FOTA_MAX_CHUNKS` = 4 frames, one per 1280 bytes asked for: the one
   exception to one reply per uplink. Never a `SHADOW`: a changed target shows as `FOTA_NONE`, and
-  the next ordinary uplink carries the shadow. An image R2 no longer holds draws `FOTA_NONE`; a
-  failed or short read sends nothing. An offset outside the image, or a body that does not parse,
+  the next ordinary uplink carries the shadow. An image R2 no longer holds, or holds at another
+  size than the target's `size` (objects are content-addressed, so it never will), draws
+  `FOTA_NONE`; a failed or short read sends nothing. An offset outside the image, or a body that does not parse,
   is `rejected`, with no reply and no `400`, since there is nothing for ThingSpace's archive to
   keep.
 - **Fuse and billing.** `FOTA_REQ` is not `is_ingest`, so the gateway never runs the fuse on it

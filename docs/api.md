@@ -3489,8 +3489,10 @@ to 7 digits, and `<len>` is at least 1. dovecote answers in the tail of that upl
 connection is up, with `min(len, 5120, total - offset)` bytes from `offset` as `FOTA_CHUNK`
 frames of 1280 bytes each, the last one shorter only where that span ends, each with `<total>`
 the target's `size`. A request whose `<sha16>` is not the assigned image's, or that arrives with
-no image assigned, draws `STATUS FOTA_NONE`; one whose offset is not inside the image, or whose
-body does not parse, is dropped (`rejected`) with no reply. The platform keeps no transfer state,
+no image assigned, draws `STATUS FOTA_NONE`, as does one for an image the store no longer holds
+or holds at another size than the target's; one whose offset is not inside the image, or whose
+body does not parse, is dropped (`rejected`) with no reply, and a read of the store that fails or
+comes back short sends nothing, so the device asks again. The platform keeps no transfer state,
 so a device that misses a chunk asks for it again, any offset, as often as it needs: a repeated
 `FOTA_REQ`, under any `requestId`, is answered again, and the device keeps the first chunk it
 gets for each offset. The image is verified on the device, by its full SHA-256 and its MCUboot
