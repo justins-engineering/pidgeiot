@@ -474,13 +474,13 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
    - **Uplink.** `accountName` differs: 200 and a log line. `callback_imei(&callback)` finds no
      IMEI, or the `message` is not standard base64, or it decodes to zero bytes: 200 and a log line.
      Otherwise derive the object with `namespace.id_from_name(&nidd_object_name(&imei))`. If byte 0
-     is a billable type (`TELEMETRY` or `SHADOW_REPORT`), run `check_ingest_fuse(&ctx.env,
+     is an ingest type (`TELEMETRY`, `SHADOW_REPORT` or `LOG`), run `check_ingest_fuse(&ctx.env,
      &pigeon_id)` here, exactly where the HTTP telemetry route runs it (`lib.rs:981-988`), raced
      against a one-second `Delay` in the pattern at `dovecote/src/helpers/turnstile.rs:118-132`, and
      carry the answer as `X-Nidd-Ingest: paused` or `open`. The race is needed because the fuse
      opens a Hyperdrive socket and runs an uncached query with no deadline of its own
      (`dovecote/src/helpers/usage.rs:603-639`, `dovecote/src/helpers/hyperdrive.rs:18-31`), before
-     the acknowledgement, on every billable callback, resends included. A timeout fails open and is
+     the acknowledgement, on every ingest callback, resends included. A timeout fails open and is
      logged, the fuse's own error rule (`usage.rs:597-599`). Then `nidd_uplink_via_do(&obj_id,
      &frame, &request_id, ingest, line)` (new, in `helpers/pigeons.rs` beside `psk_lookup_via_do`,
      `:130`: a bare internal POST of the raw frame bytes to `/pigeon/nidd/uplink` in the binary-safe
@@ -739,7 +739,7 @@ frame under another request id. A refused callback is retried once, 1.2 to
    a `HELLO`, never for silence: callbacks arrive out of order (7.4), so a notice planned for a
    frame processed before the same wake's `HELLO` can reach a device whose claim has just
    succeeded. Only a failed `HELLO` draws argument 1, the one that stops billable sends.
-6. Billable type (`TELEMETRY`, `SHADOW_REPORT`) with `X-Nidd-Ingest: paused`: plan a `PAUSED`
+6. Ingest type (`TELEMETRY`, `SHADOW_REPORT`, `LOG`) with `X-Nidd-Ingest: paused`: plan a `PAUSED`
    notice (argument 3600) if due, record the key, 200 `paused`. The gateway ran the fuse, as the
    HTTP telemetry route does, so this path opens no Postgres connection. That departs from the rule
    `device_ingest_paused`'s rustdoc states (`dovecote/src/objects/pigeons.rs:1481-1495`: the check
@@ -775,7 +775,7 @@ frame under another request id. A refused callback is retried once, 1.2 to
    `awaiting_version` becomes `target_version` if the device is behind, else 0. Reply: a `SHADOW`
    when `target_version > current_version`, else `STATUS STORED` carrying the version. The
    report is the one confirmed call in the device library, so it always gets exactly one reply.
-9. After a `TELEMETRY`, stored, refused or repeated, and after a billable frame dropped while paused
+9. After a `TELEMETRY`, stored, refused or repeated, and after an ingest frame dropped while paused
    when no notice is due, plan a `SHADOW` if `shadow_reply_due(&row, now)` (6.4): the reply goes out
    while the connection the uplink opened is still up. `HELLO` and reports plan theirs in steps 4
    and 8.
@@ -874,10 +874,10 @@ another path stops being owed one.
 | `HELLO` that matches | `SHADOW` always (the device asked) | `claimed_at`, `pushed_*`; `awaiting_version` = target if behind, else 0 |
 | Shadow report, device behind | `SHADOW` (the reply) | `awaiting_version` = target, `pushed_*` |
 | Shadow report, device converged | `STATUS STORED <version>` | `awaiting_version = 0` |
-| Telemetry (a repeat included), or a billable frame while paused with no notice due, reply due (the newest target held, unsent, marked missed, or out over 30 s unconfirmed) | `SHADOW` (the reply) | `awaiting_version`, `pushed_*` |
+| Telemetry (a repeat included), or an ingest frame while paused with no notice due, reply due (the newest target held, unsent, marked missed, or out over 30 s unconfirmed) | `SHADOW` (the reply) | `awaiting_version`, `pushed_*` |
 | `DeliveryFailed` or `Queued` report while the device is behind | none; the next uplink carries the push | `pushed_version = 0` (pending) |
 | `HELLO` that does not match | `STATUS UNCLAIMED 1`, signed with the presented key, at most one an hour | `notice_at` |
-| Other frame from an unclaimed pigeon or an unpinned line, or a billable frame while paused | `STATUS UNCLAIMED 0` or `STATUS PAUSED 3600`, at most one an hour | `notice_at` |
+| Other frame from an unclaimed pigeon or an unpinned line, or an ingest frame while paused | `STATUS UNCLAIMED 0` or `STATUS PAUSED 3600`, at most one an hour | `notice_at` |
 | Converged device sending telemetry | none | none |
 
 **Sending.** The tail builds the frame (`shadow_frame` or `status_frame`, section 6.6), appends its
@@ -967,7 +967,7 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   `Display`, which quotes the offending value (5.1, step 7). Every NIDD parse failure logs through
   it.
 - Frame constants (`TELEMETRY` 0x01, `SHADOW_REPORT` 0x02, `HELLO` 0x04, `SHADOW` 0x81, `STATUS`
-  0x82, status codes 0, 1, 2, `NIDD_TAG_CHARS` 16), `is_billable(frame_type)`,
+  0x82, status codes 0, 1, 2, `NIDD_TAG_CHARS` 16), `is_ingest(frame_type)`,
   `shadow_frame(&PigeonShadow) -> Vec<u8>` and `status_frame(code, arg) -> Vec<u8>` (unsigned,
   their text header written by one `push_header`), `shadow_config_cap(target, current)` (6.4) and
   `hello_key(body)`, the claim key a `HELLO`'s 32 hex characters present.

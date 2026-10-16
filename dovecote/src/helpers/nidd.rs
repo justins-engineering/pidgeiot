@@ -47,7 +47,7 @@ pub const STATUS_UNCLAIMED: u8 = 0x02;
 
 /// The callback's request id, from the gateway to the pigeon's Durable Object.
 pub const HEADER_REQUEST_ID: &str = "X-Nidd-Request-Id";
-/// `paused` when the gateway's free-tier fuse refused a billable frame, else `open`.
+/// `paused` when the gateway's free-tier fuse refused an ingest frame, else `open`.
 pub const HEADER_INGEST: &str = "X-Nidd-Ingest";
 /// The line the uplink came from, when the callback named one.
 pub const HEADER_LINE: &str = "X-Nidd-Line";
