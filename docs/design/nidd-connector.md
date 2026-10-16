@@ -1280,7 +1280,8 @@ contract.
   exception to one reply per uplink. Never a `SHADOW`: a changed target shows as `FOTA_NONE`, and
   the next ordinary uplink carries the shadow. An image R2 no longer holds, or holds at another
   size than the target's `size` (objects are content-addressed, so it never will), draws
-  `FOTA_NONE`; a failed or short read sends nothing. An offset outside the image, or a body that does not parse,
+  `FOTA_NONE`; a failed or short read sends nothing, and so does a shadow that cannot be read
+  (`read_failed`), answered 200 rather than 503, since the device asks again anyway. An offset outside the image, or a body that does not parse,
   is `rejected`, with no reply and no `400`, since there is nothing for ThingSpace's archive to
   keep.
 - **Fuse and billing.** `FOTA_REQ` is not `is_ingest`, so the gateway never runs the fuse on it

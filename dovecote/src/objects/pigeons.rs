@@ -3478,7 +3478,21 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         let target = match read_firmware_target(&pigeons.sql) {
           Ok(target) => target,
           Err(FirmwareTargetError::Malformed) => None,
-          Err(FirmwareTargetError::Read) => return Response::error("Internal Server Error", 500),
+          // A 5xx would log a lost uplink, and the device asks again on its own anyway.
+          Err(FirmwareTargetError::Read) => {
+            let contact = nidd_is_contact("read_failed", on_claimed_line);
+            return finish_nidd_uplink(
+              pigeons,
+              row,
+              key,
+              remember,
+              "read_failed",
+              contact,
+              identity,
+              None,
+              None,
+            );
+          }
         };
         let target = target.and_then(|target| {
           let total = u32::try_from(target.size)
@@ -4002,6 +4016,7 @@ mod tests {
       "rejected",
       "chunk",
       "fota_none",
+      "read_failed",
     ] {
       assert!(nidd_is_contact(outcome, true), "{outcome}");
     }
