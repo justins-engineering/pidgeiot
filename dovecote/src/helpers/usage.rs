@@ -1591,7 +1591,7 @@ mod tests {
   }
 
   #[test]
-  fn every_gate_refuses_in_the_same_voice() {
+  fn every_per_tier_gate_refuses_in_the_same_voice() {
     // The device refusal is the sentence the other two are shaped to
     // match; this pins it verbatim so the shared builder can't drift away
     // from it.
