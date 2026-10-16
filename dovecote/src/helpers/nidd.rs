@@ -1516,6 +1516,7 @@ mod tests {
       ),
       (STATUS_UNCLAIMED, 0, &b"\x822 0\nedba557d1f9f3445"[..]),
       (STATUS_UNCLAIMED, 1, &b"\x822 1\n6e3162e1b9f30649"[..]),
+      (STATUS_FOTA_NONE, 0, &b"\x823 0\ndf4fb0db6139e754"[..]),
     ] {
       assert_eq!(signed(&FIXTURE_KEY, status_frame(code, arg)), expected);
     }
