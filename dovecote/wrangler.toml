@@ -411,10 +411,10 @@ GREPTIMEDB_ENDPOINT = ""
 # call staging's internal PSK route: empty is a deliberate deny-all, not
 # an oversight. A future staging terminator lists its egress here.
 COAP_SERVICE_ALLOWED_IPS = ""
-# Staging holds the NiddService registration during bring-up, so it admits
-# Verizon's callback addresses; at production cutover this goes back to
-# "" (see the THINGSPACE_CALLBACK_ALLOWED_IPS note above).
-THINGSPACE_CALLBACK_ALLOWED_IPS = "137.117.33.109,168.62.173.153,3.87.163.45,3.91.119.203,54.197.62.209,35.165.205.14,54.200.43.232,34.216.81.234"
+# Production holds the NiddService registration, so staging admits no
+# callback address and sends no downlink (see the
+# THINGSPACE_CALLBACK_ALLOWED_IPS note above).
+THINGSPACE_CALLBACK_ALLOWED_IPS = ""
 THINGSPACE_LOGIN_EPOCH = "1"
 # `From:` for every mail this Worker sends (helpers/alerts.rs). A sending
 # domain is onboarded per environment and Cloudflare Email Service signs
