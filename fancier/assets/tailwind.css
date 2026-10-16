@@ -271,6 +271,8 @@ body {
 main {
   @apply overflow-x-hidden my-4 px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 2xl:px-24;
   height: 100%;
+  /* Keeps the footer below the fold while a short prerendered page waits to hydrate. */
+  min-height: 100vh;
   flex: 1;
   display: flex;
   flex-direction: column;
