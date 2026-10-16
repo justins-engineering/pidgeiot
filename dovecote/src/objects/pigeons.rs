@@ -3398,7 +3398,8 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
     Uplink::Hello(presented) => {
       let Some(presented) = hello_key(presented) else {
-        return finish_nidd_uplink(pigeons, row, key, "rejected", identity, None, None);
+        let contact = nidd_is_contact("rejected", on_claimed_line);
+        return finish_nidd_uplink(pigeons, row, key, "rejected", contact, identity, None, None);
       };
       let claim_key = identity.as_ref().and_then(|found| found.claim_key);
       if claim_key.is_some_and(|expected| constant_time_eq(&expected, &presented)) {
@@ -3472,7 +3473,10 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
               console_error!(
                 "NIDD uplink: state READ error for pigeon {pigeon_id} after {outcome}: {e}"
               );
-              return Response::ok(outcome);
+              // Still the claimed device on its line, whatever became of the frame.
+              let response = Response::ok(outcome)?;
+              stamp_contact(pigeons, &response);
+              return Ok(response);
             }
           };
           outcome
@@ -3551,11 +3555,13 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     row.pushed_at = 0;
     downlink = None;
   }
+  let contact = nidd_is_contact(outcome, on_claimed_line);
   finish_nidd_uplink(
     pigeons,
     row,
     key,
     outcome,
+    contact,
     identity,
     stored_report,
     downlink,
@@ -3592,24 +3598,27 @@ fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
   }
 }
 
-/// Whether an uplink outcome is device contact for `last_seen_at`: a frame the claimed device
-/// sent, stored or not. `unclaimed` and `rejected` prove no claim key; `duplicate` is
-/// ThingSpace retrying a callback already counted.
-fn nidd_outcome_is_contact(outcome: &str) -> bool {
-  matches!(outcome, "claimed" | "stored" | "paused" | "repeat")
+/// Whether an uplink is device contact for `last_seen_at`: a HELLO that proved the claim key, or
+/// any frame the claimed line sent, refused or not, as an HTTPS 400 after a valid token is.
+/// `unclaimed` proves no key, and `duplicate` (answered before this) is ThingSpace retrying a
+/// callback already counted.
+fn nidd_is_contact(outcome: &str, on_claimed_line: bool) -> bool {
+  outcome == "claimed" || (on_claimed_line && outcome != "unclaimed")
 }
 
 /// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
 /// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
 /// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
-/// outcome and still runs the tail, so a stored report is billed and synced. A contact outcome
-/// carries the `SEEN_HEADER` when a stamp is due, which the callback route copies onto its own
-/// answer for `main` to write.
+/// outcome and still runs the tail, so a stored report is billed and synced. A `contact` uplink
+/// (`nidd_is_contact`) carries the `SEEN_HEADER` when a stamp is due, which the callback route
+/// copies onto its own answer for `main` to write.
+#[allow(clippy::too_many_arguments)]
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,
   key: String,
   outcome: &str,
+  contact: bool,
   identity: Option<NiddIdentity>,
   stored_report: Option<PigeonShadow>,
   downlink: Option<NiddDownlink>,
@@ -3627,7 +3636,7 @@ fn finish_nidd_uplink(
   }
   spawn_nidd_tail(pigeons, identity, stored_report, downlink);
   let response = Response::ok(outcome)?;
-  if nidd_outcome_is_contact(outcome) {
+  if contact {
     stamp_contact(pigeons, &response);
   }
   Ok(response)
@@ -3724,17 +3733,20 @@ async fn send_nidd_downlink(
 mod tests {
   use super::{
     awaiting, build_nidd_endpoint, counts_as_contact, host_without_port, is_device_contact_path,
-    nidd_outcome_is_contact,
+    nidd_is_contact,
   };
   use capsules::PigeonShadow;
 
   #[test]
   fn nidd_contact_outcomes() {
-    for outcome in ["claimed", "stored", "paused", "repeat"] {
-      assert!(nidd_outcome_is_contact(outcome), "{outcome}");
+    for outcome in ["claimed", "stored", "paused", "repeat", "rejected"] {
+      assert!(nidd_is_contact(outcome, true), "{outcome}");
     }
-    for outcome in ["unclaimed", "rejected", "duplicate", "no_pigeon"] {
-      assert!(!nidd_outcome_is_contact(outcome), "{outcome}");
+    assert!(!nidd_is_contact("unclaimed", true));
+    // Before the claim only a HELLO with the key proves the device.
+    assert!(nidd_is_contact("claimed", false));
+    for outcome in ["unclaimed", "rejected"] {
+      assert!(!nidd_is_contact(outcome, false), "{outcome}");
     }
   }
 
