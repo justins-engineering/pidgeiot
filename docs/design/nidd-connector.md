@@ -1267,7 +1267,8 @@ contract.
 - **No transfer state.** The arm reads the shadow's `firmware` target (`read_firmware_target`,
   shared with the HTTPS route), compares `<sha16>` with its sha256, and plans
   `NiddDownlink::Chunks`, which holds no bytes: the tail reads the span from R2 with a ranged
-  `get` and sends one frame per 1280 bytes, in order, each awaited. A device repairs a lost chunk
+  `get`, given 2 s (`NIDD_FOTA_READ_LIMIT`) since a later chunk would miss the connection, and
+  sends one frame per 1280 bytes, in order, each awaited. A device repairs a lost chunk
   by asking again, so the bench's 2.2 s p90 callback leg (6.8 s at worst) costs a resend, not a
   transfer.
 - **Answered every time.** Nothing is stored and nothing awaited before the row write, so no

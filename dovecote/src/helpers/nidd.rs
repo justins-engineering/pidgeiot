@@ -80,6 +80,9 @@ pub const NIDD_FOTA_BILLED_MESSAGES: u32 = 0;
 pub const NIDD_FOTA_CHUNK_BYTES: u32 = 1280;
 /// Most `FOTA_CHUNK` frames one `FOTA_REQ` draws.
 pub const NIDD_FOTA_MAX_CHUNKS: u32 = 4;
+/// Longest the tail waits on R2 for a request's bytes: the device asks again after 2.5 s, and a
+/// chunk sent after its connection is released goes to paging and is lost.
+pub const NIDD_FOTA_READ_LIMIT: Duration = Duration::from_secs(2);
 /// Hex characters of the image's sha256 that name it in a FOTA frame: the content, not the
 /// `target_version`, which also moves on config-only writes.
 pub const NIDD_FOTA_SHA_CHARS: usize = 16;

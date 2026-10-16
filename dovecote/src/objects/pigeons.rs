@@ -1,10 +1,10 @@
 use crate::helpers::nidd::{
-  NIDD_CLAIM_KEY_BYTES, NIDD_FOTA_CHUNK_BYTES, NIDD_FOTA_SHA_CHARS, NIDD_PAUSED_HOLD_SECS,
-  NiddInFlight, NiddRow, NiddSqlRow, STATUS_FOTA_NONE, STATUS_PAUSED, STATUS_STORED,
-  STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_fota_request, decode_log, decode_uplink,
-  dedupe_key, fota_chunk_frame, fota_span, hello_key, nidd_object_name, notice_due,
+  NIDD_CLAIM_KEY_BYTES, NIDD_FOTA_CHUNK_BYTES, NIDD_FOTA_READ_LIMIT, NIDD_FOTA_SHA_CHARS,
+  NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_FOTA_NONE, STATUS_PAUSED,
+  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_fota_request, decode_log,
+  decode_uplink, dedupe_key, fota_chunk_frame, fota_span, hello_key, nidd_object_name, notice_due,
   parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due, shadow_reply_due, sign_frame,
-  status_frame,
+  status_frame, within,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -3894,7 +3894,8 @@ async fn send_nidd_chunks(
 }
 
 /// `length` bytes of the stored image from `offset`; `None` when R2 holds no such object, and
-/// fewer bytes than asked when its body is shorter.
+/// fewer bytes than asked when its body is shorter. An error past `NIDD_FOTA_READ_LIMIT`, since
+/// nothing else bounds the tail and a late chunk is lost anyway.
 async fn read_firmware_span(
   env: &Env,
   sha256: &str,
@@ -3910,13 +3911,18 @@ async fn read_firmware_span(
     offset: offset.into(),
     length: length.into(),
   };
-  let Some(object) = bucket.get(&key).range(range).execute().await? else {
-    return Ok(None);
+  let read = async {
+    let Some(object) = bucket.get(&key).range(range).execute().await? else {
+      return Ok(None);
+    };
+    match object.body() {
+      Some(body) => body.bytes().await.map(Some),
+      None => Ok(Some(Vec::new())),
+    }
   };
-  match object.body() {
-    Some(body) => body.bytes().await.map(Some),
-    None => Ok(Some(Vec::new())),
-  }
+  within(NIDD_FOTA_READ_LIMIT, read)
+    .await
+    .unwrap_or_else(|| Err("R2 read timed out".into()))
 }
 
 /// Signs `frame` with `key` and sends it. No key, which a pigeon never claimed has, sends nothing.
