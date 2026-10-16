@@ -402,7 +402,7 @@ pub fn PricingPage() -> Element {
                 "50 devices".into(),
                 "1.5M pooled messages/mo".into(),
                 "30 days in our history store".into(),
-                "3 seats · 10 alerts · 1 org".into(),
+                "3 seats · 10 alerts".into(),
             ],
             featured: false,
             cta: rsx! {
@@ -421,7 +421,7 @@ pub fn PricingPage() -> Element {
                 "250 devices".into(),
                 "7.5M pooled messages/mo".into(),
                 "90 days in our history store".into(),
-                "Unlimited seats, orgs and alerts".into(),
+                "Unlimited seats and alerts".into(),
                 "Priority email support".into(),
             ],
             featured: false,
@@ -441,7 +441,7 @@ pub fn PricingPage() -> Element {
                 "1,500 devices".into(),
                 "45M pooled messages/mo".into(),
                 "13 months in our history store".into(),
-                "Unlimited seats, orgs and alerts".into(),
+                "Unlimited seats and alerts".into(),
                 "SSO and priority support, both planned".into(),
             ],
             featured: false,
@@ -560,7 +560,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Is anything locked behind a tier?",
-            body: "No feature that costs us nothing to serve. Every transport, OTA, remote logs, the firmware catalog and per-device crypto are in the free tier. Tiers differ by devices, messages, retention, seats, alerts, organizations and support.",
+            body: "No feature that costs us nothing to serve. Every transport, OTA, remote logs, the firmware catalog and per-device crypto are in the free tier. Tiers differ by devices, messages, retention, seats, alerts and support.",
           }
           Answer {
             question: "Can I self-host it?",
