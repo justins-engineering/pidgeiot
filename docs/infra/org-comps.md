@@ -96,9 +96,9 @@ The org drops to the free tier immediately (or to its subscription, if it has
 one). Anything it holds above the free tier's limits keeps working — the
 gates only ever refuse *growth*, so no device, seat, alert or organization
 disappears. What changes is that the next one is refused, and the ingest fuse
-starts measuring against 300 K instead of the granted allowance. A revoked org
-also counts as its owner's free org again, so its owner is refused the next
-organization until one of their free orgs is upgraded or deleted.
+starts measuring against 300 K instead of the granted allowance. If it has no
+live subscription, a revoked org counts as its owner's free org again, and its
+owner is refused another organization until they own no free one.
 
 ## Listing what is granted
 
