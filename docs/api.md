@@ -3464,7 +3464,7 @@ the decoded records, so the dashboard's log viewer reads NIDD chunks as it reads
 |---|---|---|---|
 | `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
 | `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY`, `SHADOW_REPORT` and `LOG` that long, capped at 86400 |
-| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops billable sends until its next boot; on `0`, sends `HELLO` again, at most hourly |
+| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops `TELEMETRY`, `SHADOW_REPORT` and `LOG` until its next boot; on `0`, sends `HELLO` again, at most hourly |
 
 Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x05` upward,
 new platform frames `0x84` upward. An unknown type is logged and dropped by dovecote and ignored
