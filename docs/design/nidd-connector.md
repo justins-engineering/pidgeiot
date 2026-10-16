@@ -1065,7 +1065,7 @@ carry no tag (D12).
 |---|---|---|---|
 | `0x01` | `TELEMETRY` | device to platform | Header `<sequence>\n`, then UTF-8 JSON, exactly a `POST /device/pigeons/:pigeon_id/telemetry` body: the flat map or `{"reports":[...]}` |
 | `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a `POST /device/pigeons/:pigeon_id/shadow` body |
-| `0x03` | reserved | device to platform | Log upload, not in v1 |
+| `0x03` | `LOG` | device to platform | Added after v1 (7.6): header `<sequence>\n`, an encoding byte, then whole dictionary log records |
 | `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
 | `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
 | `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
@@ -1229,6 +1229,30 @@ counted with its sequence at ten digits, 11 bytes, as the device's build asserts
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
 | `STATUS` | 21 to 30 | yes |
 | Callback body around a 1273-byte uplink, measured (B5: 564 bytes plus the frame's base64) | 2264 | under the 8 KiB route cap |
+| `LOG`, 1255 record bytes at COBS's worst case (7.6) | 1 + 11 + 1 + 1260 = 1273 | yes, by construction |
+
+### 7.6 `LOG`, added after v1
+
+A NIDD-only board has no IP route to `POST /device/pigeons/:id/logs`, so its dictionary log
+records ride type `0x03`: the `TELEMETRY` sequence header (one counter across both types, so the
+digest rule tells a carrier repeat from a new send), an encoding byte, then whole records.
+`docs/api.md`'s "NIDD frames" is the contract.
+
+- **Encoding.** `c` is COBS without a trailing delimiter, which holds no NUL and is what devices
+  send; `r` is the records raw, kept for a carrier proven to pass a NUL uplink unaltered. The
+  device picks by Kconfig, dovecote by that byte (`decode_log`), so a carrier verdict changes a
+  default and no frame layout.
+- **Store.** The decoded records become one chunk of the existing 200-chunk ring buffer
+  (`store_log_chunk`, shared with the HTTPS route), stored with no await, so no `NiddInFlight`
+  claim; a failed insert answers 503 before the key is remembered.
+- **Rules it shares.** The claim gate, line pin, `repeat` by digest, the owed `SHADOW` as reply,
+  and the gateway fuse (`is_ingest`): a paused account's `LOG` is dropped with the hourly notice.
+  It is never answered with a `STATUS`.
+- **Billing.** None (`NIDD_LOG_BILLED_MESSAGES = 0`). The callback route carries a hook that bills
+  after the response through `main` once that constant is raised.
+- **Device.** Records are framed whole in the log ring, and up to
+  `CONFIG_PIGEON_NIDD_LOG_FRAMES_PER_WAKE` frames follow a `TELEMETRY` that sent, on its
+  connection; no timer and no size trigger, which would each be a radio access.
 
 ## 8. ThingSpace credentials, cache and session
 
@@ -1790,7 +1814,10 @@ x86_64-unknown-linux-gnu`.
   `callbackCount`; an unknown variant), as fixtures with placeholders where Verizon's examples carry
   credentials; `dedupe_key`; the `TELEMETRY` sequence header, parsed as the device writes it
   and refused in every malformed form, and frame 1 of 7.2 decoding to its body with its digest;
-  `has_seen_frame` matching a second delivery under a new request id and not the next send;
+  `has_seen_frame` matching a second delivery under a new request id and not the next send, for a
+  `TELEMETRY` and a `LOG`; COBS decode of the golden vectors `~/pigeon`'s encoder test shares, and
+  its refusal of a `00` or an overrun; the `LOG` encoding byte; the `LOG` sequence header in every
+  malformed form; `is_ingest` taking `LOG` and its billed count pinned at 0;
   a key remembered as `unclaimed`, read back from the table's JSON, still found by `has_seen` and
   skipped by `has_seen_frame`; `remember` trimming at 64; `NiddInFlight` answering each waiting
   retry, and a second delivery under another request id found by its digest; `notice_due`; a truth
@@ -1869,6 +1896,11 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
 12. Delivery report and configuration bodies: 200, one log line each, none naming the IMEI or
     ICCID; a body carrying the IMEI as a JSON number logs none of its digits.
 13. A dev account forced over its allowance: `PAUSED` planned once, not again within the hour.
+14. The log scan: no line any step wrote holds a claim key, IMEI or credential.
+15. `LOG` frames (7.6): one stores one chunk whose bytes the logs route returns exactly; the same
+    callback again is `duplicate`; the frame under a new request id is `repeat`; the next
+    sequence stores a second chunk; a bad header 400; bad COBS `rejected`; unclaimed `unclaimed`;
+    paused `paused`; 201 frames leave 200 chunks; and the billed count does not move.
 
 Dev has no Hyperdrive query cache (`[env.dev]` uses a `localConnectionString`), which does not
 matter here: no NIDD path reads Postgres before a write it then relies on.
@@ -2244,7 +2276,7 @@ the reason is given in place.
 | Transport call | Behaviour | Returns |
 |---|---|---|
 | `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`, only while paused; `-EACCES`; `-ETIMEDOUT` with `res` zeroed when the modem did not take the frame in time |
-| `pigeon_transport_upload_logs` | Not defined: `PIGEON_LOG_UPLOAD` cannot be enabled on NIDD, so nothing references it (the CoAP connector's precedent) | links nowhere |
+| `pigeon_transport_upload_logs` | Not defined: on NIDD, `PIGEON_LOG_UPLOAD` sends `LOG` frames after telemetry instead (7.6) | links nowhere |
 | `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` for no confirmation in time or a frame the modem did not take in time (re-report next wake, harmless); `-EAGAIN` only while paused; `-EACCES`; `-EDEADLK` from the event callback |
 | `pigeon_shadow_get` | A copy of the cached target; with none cached, a call waits only while a `HELLO`'s reply is owed, up to `SHADOW_WAIT` after that `HELLO` (an `UNCLAIMED 1` ends the wait), and otherwise answers `-EAGAIN` at once, so a refused key or an oversize target does not stall every wake. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
