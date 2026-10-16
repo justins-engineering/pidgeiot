@@ -1,8 +1,10 @@
 -- Migration: per-pigeon stamp of the last accepted device contact on any
--- transport (every authenticated device route, every WebSocket frame, a
--- stored NIDD uplink). Before this the flock list, the pigeon page and the
--- device-state alert each judged "seen" from different evidence, and a
--- device that only polled its shadow read Offline while it was alive.
+-- transport (every authenticated device route, every WebSocket frame that
+-- parses, and any NIDD uplink from the claimed device, stored or not; see
+-- docs/api.md's GET /pigeons/:pigeon_id). Before this the flock list, the
+-- pigeon page and the device-state alert each judged "seen" from different
+-- evidence, and a device that only polled its shadow read Offline while it
+-- was alive.
 --
 -- NULL until the pigeon's first contact after deploy; the pigeon's own
 -- Durable Object holds the authoritative copy and seeds it from its older
