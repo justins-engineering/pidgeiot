@@ -1264,9 +1264,11 @@ route that returns a stored pigeon.
 
 `last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339
 stamp: every device route that answers after a valid token (a shadow poll or report, telemetry,
-a log upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame, and a NIDD uplink
-from the claimed device. A request refused `401` or answered `5xx` is not contact; one refused
-`400`, `404`, `413` or `429` after a valid token is. It is absent until the first contact, and
+a log upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that parses, and a
+NIDD uplink from the claimed device. A request refused `401`, or one the pigeon's object fails
+with a `5xx`, is not contact; one refused `400`, `404`, `413` or `429` after a valid token is,
+and so is one the gateway fails after the object accepted it. A binary, oversized, over-rate or
+unparseable WebSocket frame closes the socket without a stamp. It is absent until the first contact, and
 written at most once a minute, so it can trail the device by up to 60 seconds. It is read from
 the pigeon's own Durable Object, so no query cache applies; the dashboard's connection badge is
 classified from it. Every route that returns a stored pigeon carries it. The badge and the
