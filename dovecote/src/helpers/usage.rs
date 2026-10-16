@@ -665,10 +665,12 @@ pub async fn check_ingest_fuse(env: &Env, pigeon_id: &str) -> IngestFuse {
 // --- Creation-time entitlement gates ---
 //
 // One shape for every published per-tier quantity the product can refuse
-// to exceed: devices, seats, alerts, organizations. Each gate resolves the
-// tier through `effective_plan` (status before plan, as everywhere),
-// counts what already exists the way the billing overview counts it, and
-// either allows or hands back a finished refusal.
+// to exceed: devices, seats, alerts. Each gate resolves the tier through
+// `effective_plan` (status before plan, as everywhere), counts what
+// already exists the way the billing overview counts it, and either
+// allows or hands back a finished refusal. The organization gate is the
+// exception: it is one free organization per account, not a per-tier
+// quantity.
 //
 // Two rules they all share. They fail OPEN on a lookup error, logged: an
 // infrastructure blip must not block a customer from using what they pay
@@ -952,17 +954,44 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
   )
 }
 
+/// Free-tier organizations one account may own. Organizations served on a
+/// paid or complimentary tier do not count against it.
+///
+/// One, not none, and that is structural: billing attaches to an
+/// organization and checkout runs against one that already exists, so an
+/// account refused its first could never reach a paid tier. The limit is
+/// abuse control, since each free organization carries the free tier's
+/// allowance and stacking them would multiply it.
+const FREE_ORGS_PER_ACCOUNT: usize = 1;
+
+/// The organization gate's refusal. Not `cap_refusal`'s sentence: that
+/// one names a per-tier limit, and this rule is the same on every tier.
+const ORG_CAP_REFUSAL: &str = "Forbidden: an account may own one organization on the free \
+  tier and this account already has one -- upgrade that organization to add more";
+
+/// The decision behind `check_org_cap`, over the served tier of each
+/// organization the account owns.
+fn org_cap(owned: impl IntoIterator<Item = BillingPlan>) -> EntitlementCap {
+  let free = owned
+    .into_iter()
+    .filter(|plan| *plan == BillingPlan::Perch)
+    .count();
+  if free >= FREE_ORGS_PER_ACCOUNT {
+    EntitlementCap::Refuse(ORG_CAP_REFUSAL.to_string())
+  } else {
+    EntitlementCap::Allow
+  }
+}
+
 /// Whether this user may create another organization. Counts the ones
 /// they own, not the ones they belong to: being invited into somebody
-/// else's organization spends none of your own entitlement, and an
-/// organization you own can be deleted to free its slot again.
+/// else's organization spends none of their own allowance, and deleting
+/// an organization frees its slot again.
 ///
-/// The tier is the best one any of those organizations is entitled to,
-/// resolved through the same `effective_plan` as everywhere else. There is
-/// no other place a person's own tier could come from -- a plan lives on
-/// an organization, so someone's first organization is necessarily created
-/// from the free tier's allowance of exactly one, and paying for that one
-/// is what buys the next.
+/// Each owned organization is read at its own served tier through
+/// `effective_plan`, so a lapsed subscription or an unreadable comp
+/// counts as free. Upgrading the free organization is what frees the
+/// slot for the next one.
 pub async fn check_org_cap(client: &Client, user_id_str: &str) -> EntitlementCap {
   let rows = match client
     .query_typed(
@@ -982,29 +1011,16 @@ pub async fn check_org_cap(client: &Client, user_id_str: &str) -> EntitlementCap
     }
   };
 
-  let owned_count = rows.len() as i64;
-  let plan = rows
-    .iter()
-    .map(|row| {
-      let org_plan: Option<String> = row.get("org_plan");
-      let org_status: Option<String> = row.get("org_status");
-      let comp_plan: Option<String> = row.get("comp_plan");
-      effective_plan(
-        org_plan.as_deref(),
-        org_status.as_deref(),
-        comp_plan.as_deref(),
-      )
-    })
-    .max()
-    .unwrap_or(BillingPlan::Perch);
-
-  apply_cap(
-    plan,
-    plan.included_organizations(),
-    owned_count,
-    "organization",
-    None,
-  )
+  org_cap(rows.iter().map(|row| {
+    let org_plan: Option<String> = row.get("org_plan");
+    let org_status: Option<String> = row.get("org_status");
+    let comp_plan: Option<String> = row.get("comp_plan");
+    effective_plan(
+      org_plan.as_deref(),
+      org_status.as_deref(),
+      comp_plan.as_deref(),
+    )
+  }))
 }
 
 // --- Stripe meter reporting ---
@@ -1404,8 +1420,8 @@ async fn post_unposted_reports(
 #[cfg(test)]
 mod tests {
   use super::{
-    EntitlementCap, PlanSource, apply_cap, cap_refusal, effective_plan, period_message_allowance,
-    served_plan,
+    EntitlementCap, ORG_CAP_REFUSAL, PlanSource, apply_cap, cap_refusal, effective_plan, org_cap,
+    period_message_allowance, served_plan,
   };
   use capsules::BillingPlan;
 
@@ -1562,7 +1578,6 @@ mod tests {
   fn an_unlimited_rung_allows_at_any_count() {
     assert!(BillingPlan::Growth.included_alerts().is_none());
     assert!(BillingPlan::Growth.included_seats().is_none());
-    assert!(BillingPlan::Growth.included_organizations().is_none());
     assert!(
       refusal(apply_cap(
         BillingPlan::Growth,
@@ -1577,21 +1592,21 @@ mod tests {
 
   #[test]
   fn every_gate_refuses_in_the_same_voice() {
-    // The device refusal is the sentence the other three are shaped to
+    // The device refusal is the sentence the other two are shaped to
     // match; this pins it verbatim so the shared builder can't drift away
     // from it.
     assert_eq!(
       cap_refusal(BillingPlan::Perch, 10, 10, "device", None),
       "Forbidden: the free tier includes 10 devices and this account already has 10 -- upgrade to add more"
     );
-    // A limit of one takes the singular noun, and a paid tier is named by
-    // its product name where the free tier is named for what it is.
+    // A limit of one takes the singular noun.
     assert_eq!(
-      cap_refusal(BillingPlan::Builder, 1, 1, "organization", None),
-      "Forbidden: the Builder tier includes 1 organization and this account already has 1 -- upgrade to add more"
+      cap_refusal(BillingPlan::Perch, 1, 1, "alert", None),
+      "Forbidden: the free tier includes 1 alert and this account already has 1 -- upgrade to add more"
     );
-    // The seat count is the one that isn't self-evident from the noun, so
-    // it says what it counted.
+    // A paid tier is named by its product name where the free tier is
+    // named for what it is. The seat count is the one that isn't
+    // self-evident from the noun, so it says what it counted.
     assert_eq!(
       cap_refusal(
         BillingPlan::Builder,
@@ -1607,17 +1622,15 @@ mod tests {
   #[test]
   fn the_published_ladder_is_what_the_gates_enforce() {
     // The pricing page's own rows, in the order it prints them: Perch
-    // "1 seat, 1 alert", Builder "3 seats, 10 alerts, 1 org", and
-    // unlimited from Growth up. A change here is a change to what we sell.
+    // "1 seat, 1 alert", Builder "3 seats, 10 alerts", and unlimited from
+    // Growth up. A change here is a change to what we sell.
     assert_eq!(BillingPlan::Perch.included_seats(), Some(1));
     assert_eq!(BillingPlan::Perch.included_alerts(), Some(1));
     assert_eq!(BillingPlan::Builder.included_seats(), Some(3));
     assert_eq!(BillingPlan::Builder.included_alerts(), Some(10));
-    assert_eq!(BillingPlan::Builder.included_organizations(), Some(1));
     for plan in [BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
       assert_eq!(plan.included_seats(), None);
       assert_eq!(plan.included_alerts(), None);
-      assert_eq!(plan.included_organizations(), None);
     }
   }
 
@@ -1626,27 +1639,66 @@ mod tests {
     // The bootstrap the org gate must not break: billing attaches to an
     // organization and checkout runs against one that already exists, so
     // refusing a free account its first organization would wall off every
-    // paid tier. The second is what costs money.
-    assert!(
-      refusal(apply_cap(
-        BillingPlan::Perch,
-        BillingPlan::Perch.included_organizations(),
-        0,
-        "organization",
-        None
-      ))
-      .is_none()
+    // paid tier.
+    assert!(refusal(org_cap([])).is_none());
+  }
+
+  #[test]
+  fn a_second_free_organization_is_refused() {
+    let free = effective_plan(Some("perch"), Some("none"), None);
+    assert_eq!(refusal(org_cap([free])).as_deref(), Some(ORG_CAP_REFUSAL));
+    assert_eq!(
+      ORG_CAP_REFUSAL,
+      "Forbidden: an account may own one organization on the free tier and this account already has one -- upgrade that organization to add more"
     );
-    assert!(
-      refusal(apply_cap(
-        BillingPlan::Perch,
-        BillingPlan::Perch.included_organizations(),
-        1,
-        "organization",
-        None
-      ))
-      .is_some()
-    );
+  }
+
+  #[test]
+  fn a_subscribed_organization_does_not_count() {
+    for (plan, status) in [
+      ("builder", "active"),
+      ("growth", "trialing"),
+      ("scale", "past_due"),
+    ] {
+      let served = effective_plan(Some(plan), Some(status), None);
+      assert!(refusal(org_cap([served])).is_none(), "{plan}/{status}");
+    }
+  }
+
+  #[test]
+  fn a_comped_organization_does_not_count() {
+    // The operator's case: his only owned organization is a customer's,
+    // comped, and he still needs his own.
+    let comped = effective_plan(Some("perch"), Some("none"), Some("builder"));
+    assert!(refusal(org_cap([comped])).is_none());
+  }
+
+  #[test]
+  fn a_cancelled_subscription_counts_as_free() {
+    // A lapsed organization is served the free tier, so it is the
+    // account's free organization; cancelling is the same as never paying.
+    for (plan, status) in [("growth", "canceled"), ("builder", "incomplete")] {
+      let lapsed = effective_plan(Some(plan), Some(status), None);
+      assert!(refusal(org_cap([lapsed])).is_some(), "{plan}/{status}");
+    }
+  }
+
+  #[test]
+  fn a_paid_organization_does_not_lift_the_free_limit() {
+    // One organization's tier does not govern how many others the account
+    // may own: a paid one licenses no second free one.
+    let paid = effective_plan(Some("growth"), Some("active"), None);
+    let free = effective_plan(Some("perch"), Some("none"), None);
+    assert!(refusal(org_cap([paid, paid])).is_none());
+    assert!(refusal(org_cap([paid, free])).is_some());
+  }
+
+  #[test]
+  fn an_unreadable_comp_counts_as_free() {
+    for raw in ["perch", "buidler"] {
+      let served = effective_plan(Some("perch"), Some("none"), Some(raw));
+      assert!(refusal(org_cap([served])).is_some(), "{raw}");
+    }
   }
 
   #[test]
