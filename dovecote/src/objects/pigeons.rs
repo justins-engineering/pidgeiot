@@ -299,20 +299,20 @@ fn counts_as_contact(status: u16) -> bool {
   status != 401 && status < 500
 }
 
-/// Stamps a device route's answer as contact and, when the mirror is due, sets the
+/// Records a device contact on the answer to it and, when the mirror is due, sets the
 /// `SEEN_HEADER` the gateway turns into the Postgres write.
-fn mark_device_contact(pigeons: &Pigeons, response: Result<Response>) -> Result<Response> {
-  let mut response = response?;
-  if counts_as_contact(response.status_code())
-    && let Some(at) = note_device_seen(pigeons)
-  {
+fn stamp_contact(pigeons: &Pigeons, response: &Response) {
+  if let Some(at) = note_device_seen(pigeons) {
     let value = crate::helpers::seen_header_value(&pigeons.state.id().to_string(), at);
-    if let Err(e) = response
-      .headers_mut()
-      .set(crate::helpers::SEEN_HEADER, &value)
-    {
-      console_error!("Pigeon contact stamp header error: {e}");
-    }
+    crate::helpers::set_seen(response.headers(), Some(&value));
+  }
+}
+
+/// `stamp_contact` for a device route's answer that `counts_as_contact`.
+fn mark_device_contact(pigeons: &Pigeons, response: Result<Response>) -> Result<Response> {
+  let response = response?;
+  if counts_as_contact(response.status_code()) {
+    stamp_contact(pigeons, &response);
   }
   Ok(response)
 }
@@ -3589,10 +3589,19 @@ fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
   }
 }
 
+/// Whether an uplink outcome is device contact for `last_seen_at`: a frame the claimed device
+/// sent, stored or not. `unclaimed` and `rejected` prove no claim key; `duplicate` is
+/// ThingSpace retrying a callback already counted.
+fn nidd_outcome_is_contact(outcome: &str) -> bool {
+  matches!(outcome, "claimed" | "stored" | "paused" | "repeat")
+}
+
 /// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
 /// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
 /// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
-/// outcome and still runs the tail, so a stored report is billed and synced.
+/// outcome and still runs the tail, so a stored report is billed and synced. A contact outcome
+/// carries the `SEEN_HEADER` when a stamp is due, which the callback route copies onto its own
+/// answer for `main` to write.
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,
@@ -3614,7 +3623,11 @@ fn finish_nidd_uplink(
     }
   }
   spawn_nidd_tail(pigeons, identity, stored_report, downlink);
-  Response::ok(outcome)
+  let response = Response::ok(outcome)?;
+  if nidd_outcome_is_contact(outcome) {
+    stamp_contact(pigeons, &response);
+  }
+  Ok(response)
 }
 
 /// Runs what an uplink or a dashboard write leaves for after the response, in order: the planned
@@ -3708,8 +3721,19 @@ async fn send_nidd_downlink(
 mod tests {
   use super::{
     awaiting, build_nidd_endpoint, counts_as_contact, host_without_port, is_device_contact_path,
+    nidd_outcome_is_contact,
   };
   use capsules::PigeonShadow;
+
+  #[test]
+  fn nidd_contact_outcomes() {
+    for outcome in ["claimed", "stored", "paused", "repeat"] {
+      assert!(nidd_outcome_is_contact(outcome), "{outcome}");
+    }
+    for outcome in ["unclaimed", "rejected", "duplicate", "no_pigeon"] {
+      assert!(!nidd_outcome_is_contact(outcome), "{outcome}");
+    }
+  }
 
   #[test]
   fn only_authenticated_device_answers_count_as_contact() {

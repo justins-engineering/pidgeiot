@@ -998,8 +998,11 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
 
   let line = callback_line(&callback);
   let dispatched = nidd_uplink_via_do(&obj_id, &frame, &request_id, paused, line.as_deref()).await;
+  // The object decides whether this uplink is due a contact stamp; `main` writes it.
+  let mut seen = None;
   let stored = match dispatched {
     Ok(mut response) => {
+      seen = seen_of(&response);
       let status = response.status_code();
       let body = response.text().await.unwrap_or_default();
       match status {
@@ -1041,7 +1044,9 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         &outcome
       };
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
-      Response::ok("").unwrap().with_cors(&cors)
+      let acknowledged = Response::ok("").unwrap();
+      set_seen(acknowledged.headers(), seen.as_deref());
+      acknowledged.with_cors(&cors)
     }
     Err(outcome) => {
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
