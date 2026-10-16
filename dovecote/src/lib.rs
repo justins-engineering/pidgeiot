@@ -1461,9 +1461,10 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         if telemetry_queue.send(message).await.is_err() {
           console_error!("Failed to enqueue telemetry for pigeon {pigeon_id}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          // The object already advanced its stamp, so the mirror write must not be dropped too.
+          let failed = Response::error("Internal Server Error", 500).unwrap();
+          set_seen(failed.headers(), seen.as_deref());
+          return failed.with_cors(&cors);
         }
 
         let accepted = Response::ok("{}").unwrap().with_status(202);
@@ -1556,13 +1557,17 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         }
 
         let seen = seen_of(&do_response);
+        // The object already advanced its stamp, so a refusal of our own still carries it.
+        let refuse = |message: &str, status: u16| {
+          let response = Response::error(message, status).unwrap();
+          set_seen(response.headers(), seen.as_deref());
+          response.with_cors(&cors)
+        };
         let target = parse_do_response::<FirmwareTarget>(do_response).await?;
 
         let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
           console_error!("Failed to bind FIRMWARE_BUCKET");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         let object_key = format!("firmware/{}.bin", target.sha256);
@@ -1573,23 +1578,17 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         let Ok(Some(object)) = get_builder.execute().await else {
           console_error!("Firmware object missing from R2: {object_key}");
-          return Response::error("Not Found: Firmware object missing from storage", 404)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Not Found: Firmware object missing from storage", 404);
         };
 
         let Some(body) = object.body() else {
           console_error!("R2 object body unexpectedly absent for {object_key}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         let Ok(response_body) = body.response_body() else {
           console_error!("Failed to build streamed response body for {object_key}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         // target.size is the total from the pigeon's own shadow — treated as
@@ -1627,9 +1626,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         if !ok {
           console_error!("Failed to set one or more firmware response headers");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         }
 
         let Ok(builder) = ResponseBuilder::new()
@@ -1637,9 +1634,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           .with_headers(headers)
           .with_cors(&cors)
         else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         Ok(builder.body(response_body))

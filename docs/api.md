@@ -2167,7 +2167,10 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   two consecutive sweeps. The state is classified from the newest of the pigeon's reports and its
   `last_seen_at`, so a device that only polls its shadow or downloads firmware is not Offline. The
   sweep reads the Postgres copy of the stamp, which can trail the device by about two minutes (the
-  stamp's own minute plus Hyperdrive's minute-long read cache).
+  stamp's own minute plus Hyperdrive's minute-long read cache) while its writes succeed. The copy
+  is best-effort: a write lost to a Postgres or queue failure leaves it at the previous stamp until
+  the device's next contact due one, which for a device that calls in every 15 minutes is 15
+  minutes later.
 - `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
   this long. Contact without a report does not hold this off: a device that polls while its
   telemetry has stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
