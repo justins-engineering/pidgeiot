@@ -3219,7 +3219,7 @@ fn write_nidd_row(sql: &SqlStorage, row: &NiddRow) -> Result<()> {
   Ok(())
 }
 
-/// A frame planned for a Nidd device, built and sent after the response.
+/// What a Nidd device is sent after the response: one frame, or for `Chunks` up to four.
 enum NiddDownlink {
   /// The shadow as it stood when the push was recorded, with the time it was recorded at.
   Shadow {
@@ -3787,7 +3787,8 @@ fn spawn_nidd_tail(
   });
 }
 
-/// Builds, signs and sends one downlink. A `SHADOW` that could not be sent is marked unpushed,
+/// Builds, signs and sends a planned downlink; `Chunks` goes to `send_nidd_chunks`, which sends
+/// up to four frames or a `FOTA_NONE`. A `SHADOW` that could not be sent is marked unpushed,
 /// unless a newer push was planned meanwhile, so it is due again at once; one ThingSpace refused
 /// is left as sent, since the same bytes would fail the same way. A failed notice is dropped.
 async fn send_nidd_downlink(

@@ -797,7 +797,7 @@ fn log_nidd_callback(
 /// Durable Object holds that retry until the first attempt has stored the uplink or failed.
 /// The Postgres sync and every downlink run in the Durable Object after it answers. A `TELEMETRY`
 /// frame bills in the queue consumer, a `SHADOW_REPORT` in the object's tail, and a stored `LOG`
-/// here, after the response, through `main`.
+/// and an answered `FOTA_REQ` here, after the response, through `main`, each by its own constant.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
     CallbackAuth, FRAME_FOTA_REQ, FRAME_LOG, HEADER_BILLED, NIDD_CALLBACK_MAX_BYTES,
