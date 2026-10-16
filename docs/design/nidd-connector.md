@@ -1278,7 +1278,10 @@ contract.
   chunk again, which the device drops by offset.
 - **Replies.** Up to `NIDD_FOTA_MAX_CHUNKS` = 4 frames, one per 1280 bytes asked for: the one
   exception to one reply per uplink. Never a `SHADOW`: a changed target shows as `FOTA_NONE`, and
-  the next ordinary uplink carries the shadow. An image R2 no longer holds, or holds at another
+  the next ordinary uplink carries the shadow. `FOTA_NONE`'s argument is the request's image, its
+  sha16's first 8 hex characters as a number (`fota_none_arg`), because every copy is answered
+  again: a carrier repeat of a request for the old image, landing after the target moved, must not
+  stop the pull of the new one. An image R2 no longer holds, or holds at another
   size than the target's `size` (objects are content-addressed, so it never will), draws
   `FOTA_NONE`; a failed or short read sends nothing, and so does a shadow that cannot be read
   (`read_failed`), answered 200 rather than 503, since the device asks again anyway. An offset outside the image, or a body that does not parse,

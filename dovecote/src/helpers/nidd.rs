@@ -50,7 +50,8 @@ pub const STATUS_STORED: u8 = 0x00;
 pub const STATUS_PAUSED: u8 = 0x01;
 /// `STATUS` code: the pigeon is not claimed; the argument is 1 when answering a failed `HELLO`.
 pub const STATUS_UNCLAIMED: u8 = 0x02;
-/// `STATUS` code: no firmware target matches a `FOTA_REQ`, so the device stops that transfer.
+/// `STATUS` code: no firmware target matches a `FOTA_REQ`, so the device stops that transfer; the
+/// argument names the request's image (`fota_none_arg`), so a late copy cannot stop another one.
 pub const STATUS_FOTA_NONE: u8 = 0x03;
 
 /// The callback's request id, from the gateway to the pigeon's Durable Object.
@@ -470,6 +471,15 @@ fn fota_decimal(field: &str) -> Option<u32> {
     return None;
   }
   field.parse().ok()
+}
+
+/// The `FOTA_NONE` argument for the image `sha` names: its first 8 hex characters as a number.
+/// 0 when they are not hex, which neither a decoded request nor a stored target can be.
+pub fn fota_none_arg(sha: &str) -> u32 {
+  sha
+    .get(..8)
+    .and_then(|prefix| u32::from_str_radix(prefix, 16).ok())
+    .unwrap_or(0)
 }
 
 /// Bytes a `FOTA_REQ` is served from `offset` of an image of `total` bytes: what it asked for, at
@@ -1258,6 +1268,14 @@ mod tests {
     assert_eq!(fota_span(9_999_999, 1, 1285), None);
   }
 
+  #[test]
+  fn fota_none_names_the_image_by_its_first_32_bits() {
+    assert_eq!(fota_none_arg("0123456789abcdef"), 0x0123_4567);
+    assert_eq!(fota_none_arg(&"f".repeat(64)), u32::MAX);
+    assert_eq!(fota_none_arg("0000000"), 0);
+    assert_eq!(fota_none_arg("0123456z89abcdef"), 0);
+  }
+
   /// The table docs/api.md and `~/pigeon`'s tests share, so the C encoder and this decoder agree
   /// byte for byte.
   fn cobs_golden_vectors() -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -1521,7 +1539,11 @@ mod tests {
       ),
       (STATUS_UNCLAIMED, 0, &b"\x822 0\nedba557d1f9f3445"[..]),
       (STATUS_UNCLAIMED, 1, &b"\x822 1\n6e3162e1b9f30649"[..]),
-      (STATUS_FOTA_NONE, 0, &b"\x823 0\ndf4fb0db6139e754"[..]),
+      (
+        STATUS_FOTA_NONE,
+        fota_none_arg("0123456789abcdef"),
+        &b"\x823 19088743\n9c9b89ac0a3b153f"[..],
+      ),
     ] {
       assert_eq!(signed(&FIXTURE_KEY, status_frame(code, arg)), expected);
     }

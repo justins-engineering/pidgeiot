@@ -2,9 +2,9 @@ use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_FOTA_CHUNK_BYTES, NIDD_FOTA_READ_LIMIT, NIDD_FOTA_SHA_CHARS,
   NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_FOTA_NONE, STATUS_PAUSED,
   STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_fota_request, decode_log,
-  decode_uplink, dedupe_key, fota_chunk_frame, fota_span, hello_key, nidd_object_name, notice_due,
-  parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due, shadow_reply_due, sign_frame,
-  status_frame, within,
+  decode_uplink, dedupe_key, fota_chunk_frame, fota_none_arg, fota_span, hello_key,
+  nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
+  shadow_reply_due, sign_frame, status_frame, within,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -3505,7 +3505,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
           None => {
             downlink = Some(NiddDownlink::Status {
               code: STATUS_FOTA_NONE,
-              arg: 0,
+              arg: fota_none_arg(request.sha16),
               key: None,
             });
             "fota_none"
@@ -3895,7 +3895,7 @@ async fn send_nidd_chunks(
     }
   };
   let Some(bytes) = bytes else {
-    let frame = status_frame(STATUS_FOTA_NONE, 0);
+    let frame = status_frame(STATUS_FOTA_NONE, fota_none_arg(sha256));
     let outcome = sign_and_send(env, pigeon_id, &identity.imei, identity.claim_key, frame).await;
     log_downlink("status", "", pigeon_id, &outcome);
     return;

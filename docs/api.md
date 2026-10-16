@@ -3473,7 +3473,7 @@ the decoded records, so the dashboard's log viewer reads NIDD chunks as it reads
 | `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
 | `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY`, `SHADOW_REPORT` and `LOG` that long, capped at 86400 |
 | `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops `TELEMETRY`, `SHADOW_REPORT` and `LOG` until its next boot; on `0`, sends `HELLO` again, at most hourly |
-| `3` | `FOTA_NONE` | `0` | Answers a `FOTA_REQ` that names no assigned image: stops that transfer, and starts again from the next shadow's `firmware` target |
+| `3` | `FOTA_NONE` | The request's image: the first 8 hex characters of its `<sha16>`, as a number | Answers a `FOTA_REQ` that names no assigned image: stops that transfer, and starts again from the next shadow's `firmware` target; one naming another image is ignored, since it answers a late copy of an older request |
 
 Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x06` upward,
 new platform frames `0x85` upward. An unknown type is logged and dropped by dovecote and ignored
@@ -3563,7 +3563,7 @@ The small frames, whole, tagged with the same fixture key:
 | `STATUS PAUSED 3600` | 24 | `82 31 20 33 36 30 30 0a` (`1 3600`, newline), then `1c273dd5d282365a` | `gjEgMzYwMAoxYzI3M2RkNWQyODIzNjVh` |
 | `STATUS UNCLAIMED 0` | 21 | `82 32 20 30 0a` (`2 0`, newline), then `edba557d1f9f3445` | `gjIgMAplZGJhNTU3ZDFmOWYzNDQ1` |
 | `STATUS UNCLAIMED 1` | 21 | `82 32 20 31 0a` (`2 1`, newline), then `6e3162e1b9f30649` | `gjIgMQo2ZTMxNjJlMWI5ZjMwNjQ5` |
-| `STATUS FOTA_NONE` | 21 | `82 33 20 30 0a` (`3 0`, newline), then `df4fb0db6139e754` | `gjMgMApkZjRmYjBkYjYxMzllNzU0` |
+| `STATUS FOTA_NONE` for `0123456789abcdef` | 28 | `82 33 20 31 39 30 38 38 37 34 33 0a` (`3 19088743`, newline), then `9c9b89ac0a3b153f` | `gjMgMTkwODg3NDMKOWM5Yjg5YWMwYTNiMTUzZg==` |
 | `HELLO` | 33 | `04`, then the key's 32 hex characters | 44 characters |
 
 `FOTA_REQ` for 1280 bytes from offset 1280 of the image whose sha256 opens `0123456789abcdef`: 28
