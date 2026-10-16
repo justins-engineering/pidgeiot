@@ -368,9 +368,9 @@ pub fn decode_uplink(frame: &[u8]) -> Uplink<'_> {
   }
 }
 
-/// What follows a `TELEMETRY` or `LOG` frame's sequence header: 1 to 10 decimal digits naming a u32, then
-/// a newline, the rule the device applies to a platform frame's header. `None` when the frame does
-/// not open with that.
+/// What follows a `TELEMETRY` or `LOG` frame's sequence header: 1 to 10 decimal digits naming a
+/// u32, then a newline, the rule the device applies to a platform frame's header. `None` when the
+/// frame does not open with that.
 fn after_sequence(rest: &[u8]) -> Option<&[u8]> {
   let end = rest
     .iter()
