@@ -224,9 +224,12 @@ fn write_device_seen(sql: &SqlStorage, at: i64) -> Result<()> {
 }
 
 /// Seeds an empty stamp from the evidence this object held before the stamp existed: the newest
-/// telemetry write, the newest log chunk, and the shadow's `updated_at` once a device has
+/// telemetry reading, the newest log chunk, and the shadow's `updated_at` once a device has
 /// reported into it. Without it every pigeon would read "never seen" until its next contact, and
 /// a dead one forever. Writes nothing while there is no evidence at all.
+///
+/// Telemetry is judged by its readings' own `reported_at`, not the blob row's `updated_at`: the
+/// legacy fold in `new` rewrites that row at wake, which would seed a dead pigeon as just seen.
 fn seed_device_seen(pigeons: &Pigeons) {
   let sql = &pigeons.sql;
   if read_device_seen(sql, "SELECT at FROM pigeon_seen;").is_some() {
@@ -235,12 +238,12 @@ fn seed_device_seen(pigeons: &Pigeons) {
 
   let mut newest = read_device_seen(
     sql,
-    "SELECT MAX(at) AS at FROM (
-      SELECT updated_at AS at FROM pigeon_telemetry_latest
-      UNION ALL
-      SELECT * FROM (SELECT received_at FROM pigeon_log_chunks ORDER BY id DESC LIMIT 1)
-    );",
+    "SELECT received_at AS at FROM pigeon_log_chunks ORDER BY id DESC LIMIT 1;",
   );
+  match read_telemetry_blob(sql) {
+    Ok(blob) => newest = newest.max(blob.values().map(|entry| entry.reported_at).max()),
+    Err(e) => console_error!("Pigeon contact stamp seed: telemetry READ error: {e}"),
+  }
   // An empty table is a deleted or not yet created pigeon, which has no shadow evidence.
   if let Ok(shadow) = read_shadow(pigeons)
     && !capsules::connection_state::has_never_reported(
