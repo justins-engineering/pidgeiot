@@ -69,8 +69,10 @@ pub const HEADER_BILLED: &str = "X-Nidd-Billed";
 /// changes.
 pub const NIDD_LOG_BILLED_MESSAGES: u32 = 0;
 
-/// Billable messages one answered `FOTA_REQ` counts. None: firmware is not priced. A paused
-/// account still gets its firmware, so a nonzero value here would bill an account the fuse holds.
+/// Billable messages one `FOTA_REQ` answered `chunk` counts. None: firmware is not priced. A
+/// paused account still gets its firmware, so a nonzero value here would bill an account the fuse
+/// holds. It would also bill every copy of a request, since none is de-duplicated, and a request
+/// the tail then answers with `FOTA_NONE` or nothing, since `chunk` is decided before R2 is read.
 pub const NIDD_FOTA_BILLED_MESSAGES: u32 = 0;
 
 /// Image bytes in one `FOTA_CHUNK`: a flash write-block multiple whose COBS, header and tag fit
