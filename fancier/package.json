@@ -2,12 +2,12 @@
   "name": "fancier",
   "private": true,
   "dependencies": {
-    "daisyui": "^5.7.42",
+    "daisyui": "^5.7.50",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.17.0",
     "@tailwindcss/cli": "^4.3.3",
-    "wrangler": "^4.136.0"
+    "wrangler": "^4.151.1"
   }
 }
