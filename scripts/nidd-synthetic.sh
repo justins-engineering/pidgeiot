@@ -225,6 +225,17 @@ telemetry() {
   { printf '\x01%s\n' "$seq"; printf '%s' "$1"; } >"$work/frame"
 }
 
+# log_frame <encoding> <records-hex> [sequence]: a LOG frame in $work/frame, numbered from the same
+# counter as TELEMETRY: the type byte, the sequence, the encoding byte, then the records' bytes.
+log_frame() {
+  local seq=${3-}
+  if [[ -z $seq ]]; then
+    seq=$next_seq
+    next_seq=$((next_seq + 1))
+  fi
+  { printf '\x03%s\n%s' "$seq" "$1"; printf '%s' "$2" | xxd -r -p; } >"$work/frame"
+}
+
 # hello <claim-key-hex>: a HELLO frame, the type byte then the key's 32 hex characters.
 hello() { { printf '\x04'; printf '%s' "$1"; } >"$work/frame"; }
 
@@ -1189,6 +1200,12 @@ r=$(rid s13d)
 frame 02 '{"current_config":{"telemetry_interval":900},"current_version":0}'
 uplink "SHADOW_REPORT while paused" "$r" 1 "$imei_a" "$iccid2"
 expect_log "a shadow report is paused as well" "$m" "outcome=paused pigeon=$pigeon request=$r"
+r=$(rid s13l)
+log_frame c 0211
+uplink "LOG while paused" "$r" 1 "$imei_a" "$iccid2"
+expect_log "a LOG is paused as well" "$m" "outcome=paused pigeon=$pigeon request=$r"
+api a GET "/pigeons/$pigeon/logs"
+expect "and no log chunk is stored" 0 "$(jq length "$resp")"
 expect_no_log "no second PAUSED within the hour" "$m" "nidd_dl .*pigeon=$pigeon"
 expect "notice_at unchanged" "$notice" "$(nidd_state "$pigeon" notice_at)"
 api a GET "/pigeons/$pigeon/telemetry"
@@ -1201,6 +1218,75 @@ telemetry '{"temp_c":"25.0"}'
 uplink "TELEMETRY after the allowance is restored" "$r" 1 "$imei_a" "$iccid2"
 expect_log "ingest resumes" "$m" "outcome=stored pigeon=$pigeon request=$r"
 note_log "$m"
+
+# Records chosen to hold NULs at the start, the middle and the end, which COBS carries as
+# 01 02 11 03 22 33 01 (docs/api.md, "NIDD frames").
+step 15 "LOG frames"
+m=$(mark)
+usage_before=$(usage_of "$org_a")
+records=001100223300
+chunks() {
+  api a GET "/pigeons/$pigeon/logs"
+  jq length "$resp"
+}
+newest_chunk() { jq -r '.[-1].data' "$resp" | base64 -d | xxd -p | tr -d '\n'; }
+r=$(rid s15a)
+log_frame c 01021103223301
+cp "$work/frame" "$work/frame-s15"
+uplink "a LOG frame" "$r" 1 "$imei_a" "$iccid2"
+expect "answers 200" 200 "$status"
+expect_log "it is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect "one chunk" 1 "$(chunks)"
+expect "holding the records exactly" "$records" "$(newest_chunk)"
+uplink "the same callback again" "$r" 2 "$imei_a" "$iccid2"
+expect_log "is a duplicate" "$m" "outcome=duplicate pigeon=$pigeon request=$r"
+r=$(rid s15c)
+uplink "the same frame under a new request id" "$r" 1 "$imei_a" "$iccid2"
+expect_log "is a repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r"
+expect "still one chunk" 1 "$(chunks)"
+r=$(rid s15d)
+log_frame c 01021103223301
+uplink "the same records at the next sequence" "$r" 1 "$imei_a" "$iccid2"
+expect_log "are a new send, stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect "two chunks" 2 "$(chunks)"
+r=$(rid s15e)
+{ printf '\x03c'; printf '01021103223301' | xxd -r -p; } >"$work/frame"
+uplink "a LOG frame with no sequence" "$r" 1 "$imei_a" "$iccid2"
+expect "a bad header answers 400" 400 "$status"
+r=$(rid s15f)
+log_frame c 0311
+uplink "a LOG frame whose COBS runs past its end" "$r" 1 "$imei_a" "$iccid2"
+expect_log "bad COBS is rejected" "$m" "outcome=rejected pigeon=$pigeon request=$r"
+r=$(rid s15g)
+log_frame x 0211
+uplink "a LOG frame with an unknown encoding byte" "$r" 1 "$imei_a" "$iccid2"
+expect_log "an unknown encoding is rejected" "$m" "outcome=rejected pigeon=$pigeon request=$r"
+expect "neither stored a chunk" 2 "$(chunks)"
+r=$(rid s15h)
+log_frame r "$records"
+uplink "a raw LOG frame" "$r" 1 "$imei_a" "$iccid2"
+expect_log "the raw encoding is stored" "$m" "outcome=stored pigeon=$pigeon request=$r"
+expect "with its bytes as they are" "3 $records" "$(chunks) $(newest_chunk)"
+r=$(rid s15i)
+log_frame c 01021103223301
+uplink "a LOG frame to the unclaimed pigeon Q" "$r" 1 "$imei_q" "$iccid1"
+expect_log "is dropped as unclaimed" "$m" "outcome=unclaimed pigeon=$pigeon_q request=$r"
+note_log "$m"
+
+m=$(mark)
+for i in $(seq 1 201); do
+  log_frame c "02$(printf '%02x' $(((i % 255) + 1)))"
+  uplink_body "$(rid "s15j$i")" 1 "$imei_a" "$iccid2" >"$work/body"
+  status=$(curl -sS -A "$ua" -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' --data-binary @"$work/body" \
+    "$base/internal/thingspace/nidd") || status=000
+  [[ $status == 200 ]] || break
+done
+expect "201 more LOG frames all answer 200" 200 "$status"
+expect "the ring keeps 200 chunks" 200 "$(chunks)"
+expect "the newest is the last sent" "$(printf '%02x' $(((201 % 255) + 1)))" "$(newest_chunk)"
+expect "no LOG billed a message" "$usage_before" "$(usage_of "$org_a")"
+note "  $(log_since "$m" | grep -c 'outcome=stored' || true) stored lines for the 201 frames"
 stop_wrangler
 
 # ======================================================================================
@@ -1231,7 +1317,7 @@ api a GET "/pigeons/$pigeon/telemetry/history?raw=true&keys=splits&since=$(iso_a
 expect "one history row" 1 "$(jq length "$resp")"
 note_log "$m"
 
-step 14 "after the thirteen: what the logs never hold"
+step 14 "after every other step: what the logs never hold"
 leaks=$(cat "$ev"/wrangler-*.log | grep -cFf <(printf '%s\n' "$cb_password" "$account" \
   "${claim_keys[@]}" "$imei_a" "$imei_q" "$imei_n" "$iccid1" "$iccid2" | awk 'length >= 8') || true)
 expect "no password, account name, claim key, IMEI or ICCID in any wrangler log" 0 "$leaks"
