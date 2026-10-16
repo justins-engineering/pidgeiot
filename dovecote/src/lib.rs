@@ -1450,6 +1450,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           pre_merged: false,
           metrics_json: String::new(),
           previous_values_json: None,
+          // The verify hop's header carries this route's stamp to `main`.
+          seen_at: None,
         };
 
         if telemetry_queue.send(message).await.is_err() {

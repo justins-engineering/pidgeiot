@@ -8,7 +8,7 @@ use crate::helpers::ResolvedReading;
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
   build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
-  post_line_protocol, stamp_forwarded_report, url_encode_component,
+  post_line_protocol, stamp_forwarded_report, stamp_last_seen, url_encode_component,
 };
 use crate::objects::pigeons::{
   PreviousTelemetryValue, TelemetryEndpointLookup, TelemetryWriteResult,
@@ -16,8 +16,9 @@ use crate::objects::pigeons::{
 
 /// Message enqueued by two producers: the `POST /device/pigeons/:id/telemetry`
 /// gateway route once it verifies the device's bearer token against the
-/// owning DO, and the WebSocket `telemetry` frame handler
-/// (`handle_ws_telemetry`, `objects/pigeons.rs`). `reported_at_ms` is when
+/// owning DO, and the WebSocket frame handler (`websocket_message`,
+/// `objects/pigeons.rs`), which also sends one with no readings to carry a
+/// contact stamp alone. `reported_at_ms` is when
 /// the report was accepted -- informational only for a batch, whose
 /// readings each carry their own already-clamped timestamp.
 ///
@@ -60,6 +61,11 @@ pub struct TelemetryMessage {
   /// message as already merged, the role `pre_merged` now fills.
   #[serde(default)]
   pub previous_values_json: Option<String>,
+  /// Unix seconds of a WebSocket device contact the pigeon's object found due a
+  /// `pigeons.last_seen_at` stamp. The consumer writes it so the object never opens Hyperdrive
+  /// for it; the HTTP routes stamp at the gateway instead and leave this `None`.
+  #[serde(default)]
+  pub seen_at: Option<i64>,
 }
 
 impl TelemetryMessage {
@@ -159,11 +165,18 @@ async fn dispatch_to_do(
     return;
   };
 
+  if let Some(at) = body.seen_at {
+    stamp_last_seen(env, &body.pigeon_id, at).await;
+  }
+
   let Some(readings) = body.readings_of() else {
-    console_error!(
-      "Telemetry consumer: empty/undecodable message for '{}', dropping",
-      body.pigeon_id
-    );
+    // A stamp alone carries no readings by design.
+    if body.seen_at.is_none() {
+      console_error!(
+        "Telemetry consumer: empty/undecodable message for '{}', dropping",
+        body.pigeon_id
+      );
+    }
     // Will never decode on retry either -- ack to drop.
     message.ack();
     return;
@@ -457,7 +470,19 @@ fn redact_endpoint_host(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use super::redact_endpoint_host;
+  use super::{TelemetryMessage, redact_endpoint_host};
+
+  #[test]
+  fn a_seen_only_message_and_an_old_message_both_decode() {
+    let old = r#"{"pigeon_id":"p","reported_at_ms":1,"readings_json":"[]","pre_merged":true}"#;
+    let old = serde_json::from_str::<TelemetryMessage>(old).unwrap();
+    assert_eq!(old.seen_at, None);
+
+    let seen = r#"{"pigeon_id":"p","reported_at_ms":1,"seen_at":1760000000}"#;
+    let seen = serde_json::from_str::<TelemetryMessage>(seen).unwrap();
+    assert_eq!(seen.seen_at, Some(1_760_000_000));
+    assert!(seen.readings_of().is_none());
+  }
 
   #[test]
   fn redact_endpoint_host_drops_userinfo_path_and_query() {

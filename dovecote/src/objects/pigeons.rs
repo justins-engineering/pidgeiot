@@ -623,6 +623,9 @@ impl DurableObject for Pigeons {
       }
     };
 
+    // Any frame that parses is the device alive, whatever becomes of it below.
+    let seen = note_device_seen(self);
+
     // Only the two frames that tally a billable message are fused; a
     // paused account can still ping and still answer a shell command,
     // neither of which is billed or stored.
@@ -632,12 +635,15 @@ impl DurableObject for Pigeons {
         Some(WS_CLOSE_INGEST_PAUSED),
         Some("free tier message allowance exhausted"),
       );
+      if let Some(at) = seen {
+        send_seen(self, at).await;
+      }
       return Ok(());
     }
 
-    match frame {
+    let carried = match frame {
       WsInboundFrame::Telemetry { metrics, reports } => {
-        handle_ws_telemetry(self, metrics, reports).await
+        handle_ws_telemetry(self, metrics, reports, seen).await
       }
       WsInboundFrame::ShadowReport {
         current_version,
@@ -650,20 +656,31 @@ impl DurableObject for Pigeons {
             current_config,
           },
         )
-        .await
+        .await;
+        false
       }
       WsInboundFrame::Ping => {
         if let Err(e) = ws.send(&WsOutboundFrame::Pong) {
           console_error!("WS: pong send failed for pigeon {}: {e}", self.state.id());
         }
+        false
       }
-      WsInboundFrame::Pong => {}
+      WsInboundFrame::Pong => false,
       WsInboundFrame::ShellOutput {
         request_id,
         output,
         exit_code,
         truncated,
-      } => handle_ws_shell_output(self, &request_id, output, exit_code, truncated),
+      } => {
+        handle_ws_shell_output(self, &request_id, output, exit_code, truncated);
+        false
+      }
+    };
+
+    if let Some(at) = seen
+      && !carried
+    {
+      send_seen(self, at).await;
     }
 
     Ok(())
@@ -2133,14 +2150,18 @@ async fn sync_shadow_report(env: &Env, pigeon_id: &str, shadow: &PigeonShadow) {
 /// flat `metrics` map, or a `reports` batch. The batch form is what makes
 /// this endpoint the cheap path for a bridge relaying many devices'
 /// readings -- one frame, one merge, one queue message.
+///
+/// Answers whether a due contact stamp (`seen_at`) went out with the readings, so the caller
+/// sends it alone otherwise.
 async fn handle_ws_telemetry(
   pigeons: &Pigeons,
   metrics: std::collections::HashMap<String, String>,
   reports: Vec<capsules::TelemetryReading>,
-) {
+  seen_at: Option<i64>,
+) -> bool {
   let body = if reports.is_empty() {
     if metrics.is_empty() {
-      return;
+      return false;
     }
     capsules::TelemetryReportBody::Flat(metrics)
   } else {
@@ -2152,11 +2173,47 @@ async fn handle_ws_telemetry(
   // 400. Dropping one frame beats closing a working socket over a report
   // the device can simply send fewer keys or fewer readings in. A failure
   // was logged where it happened.
-  if let TelemetryOutcome::Rejected(message) = ingest_telemetry(pigeons, body, "WS").await {
-    console_error!(
-      "WS telemetry: rejected report from pigeon {}: {message}",
-      pigeons.state.id()
-    );
+  match ingest_telemetry(pigeons, body, "WS", seen_at).await {
+    TelemetryOutcome::Stored => true,
+    TelemetryOutcome::Rejected(message) => {
+      console_error!(
+        "WS telemetry: rejected report from pigeon {}: {message}",
+        pigeons.state.id()
+      );
+      false
+    }
+    TelemetryOutcome::Failed => false,
+  }
+}
+
+/// Hands a WebSocket contact stamp to the queue consumer on a message of its own, so this object
+/// never opens Hyperdrive for it: a connection opened here can bill duration for minutes, which
+/// at one stamp a minute would keep a hibernating socket's object awake. Dev has no queue and
+/// writes directly, as `ingest_telemetry` does.
+async fn send_seen(pigeons: &Pigeons, at: i64) {
+  let pigeon_id = pigeons.state.id().to_string();
+  match pigeons.env.queue("TELEMETRY_QUEUE") {
+    Ok(queue) => {
+      let message = TelemetryMessage {
+        pigeon_id,
+        reported_at_ms: Date::now().as_millis(),
+        readings_json: None,
+        pre_merged: false,
+        metrics_json: String::new(),
+        previous_values_json: None,
+        seen_at: Some(at),
+      };
+      if let Err(e) = queue.send(message).await {
+        console_error!(
+          "WS contact stamp: enqueue failed for pigeon {}: {e}",
+          pigeons.state.id()
+        );
+      }
+    }
+    Err(_) if crate::helpers::is_local_dev(&pigeons.env) => {
+      crate::helpers::stamp_last_seen(&pigeons.env, &pigeon_id, at).await;
+    }
+    Err(e) => console_error!("WS contact stamp: TELEMETRY_QUEUE unavailable ({e})"),
   }
 }
 
@@ -2175,11 +2232,13 @@ enum TelemetryOutcome {
 /// store synchronously first (like every telemetry entry point), then either enqueues onto
 /// `TELEMETRY_QUEUE` for the shared consumer path (see `queue.rs`), or -- with no queue bound
 /// (dev) -- writes history directly so these surfaces don't silently skip what the HTTP route
-/// would have recorded. `source` names the surface in log lines.
+/// would have recorded. `source` names the surface in log lines. A `seen_at` contact stamp rides
+/// the same message, or is written directly in dev, whenever the outcome is `Stored`.
 async fn ingest_telemetry(
   pigeons: &Pigeons,
   body: capsules::TelemetryReportBody,
   source: &str,
+  seen_at: Option<i64>,
 ) -> TelemetryOutcome {
   let now_secs = (Date::now().as_millis() / 1000) as i64;
   let mut readings = match crate::helpers::readings_from_body(body, now_secs) {
@@ -2219,6 +2278,7 @@ async fn ingest_telemetry(
         pre_merged: true,
         metrics_json: String::new(),
         previous_values_json: None,
+        seen_at,
       };
 
       if queue.send(message).await.is_err() {
@@ -2257,6 +2317,9 @@ async fn ingest_telemetry(
         crate::helpers::check_telemetry_alerts_batch(&pigeons.env, &pigeon_id, &readings).await
       {
         console_error!("{source} telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
+      }
+      if let Some(at) = seen_at {
+        crate::helpers::stamp_last_seen(&pigeons.env, &pigeon_id, at).await;
       }
       TelemetryOutcome::Stored
     }
@@ -3382,7 +3445,8 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         Ok(body) => {
           // Nothing awaited since the wait loop found no attempt, so none can hold the frame.
           pigeons.nidd_in_flight.claim(&key);
-          let result = ingest_telemetry(pigeons, body, "NIDD").await;
+          // The callback route stamps NIDD contact at the gateway.
+          let result = ingest_telemetry(pigeons, body, "NIDD", None).await;
           // Before any early return below, or a waiting retry would never be answered.
           let decided = !matches!(result, TelemetryOutcome::Failed);
           pigeons.nidd_in_flight.settle(&key, decided);
