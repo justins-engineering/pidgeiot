@@ -94,6 +94,22 @@ pub fn latest_of(
   times.into_iter().flatten().max()
 }
 
+/// Least time between two `pigeons.last_seen_at` stamps of one pigeon. A contact inside it writes
+/// nothing, so a device in steady contact leaves a stamp up to this old.
+pub const LAST_SEEN_STAMP_SECS: i64 = 60;
+
+/// The contact `classify` should judge: the caller's own `evidence`, or the `last_seen_at`
+/// `stamp` credited with the window the device may have been in unstamped contact through, so a
+/// short `telemetry_interval` does not read a live device as stale between stamps. People are
+/// shown the raw times, never this one.
+pub fn contact_until(
+  stamp: Option<OffsetDateTime>,
+  evidence: Option<OffsetDateTime>,
+) -> Option<OffsetDateTime> {
+  let credited = stamp.map(|t| t + time::Duration::seconds(LAST_SEEN_STAMP_SECS));
+  latest_of([credited, evidence])
+}
+
 /// Classifies a pigeon's connection state from its most recent "seen"
 /// signal and (if known) its own reporting cadence. Clock skew tolerance:
 /// a `last_seen` in the future (device clock ahead of the dashboard's) is
@@ -302,5 +318,20 @@ mod tests {
       format_last_seen(Some(now - time::Duration::days(2)), now),
       "2d ago"
     );
+  }
+
+  #[test]
+  fn a_stamp_inside_its_window_keeps_a_short_interval_online() {
+    let now = datetime!(2026-10-16 18:30:00 UTC);
+    let ago = |secs| Some(now - time::Duration::seconds(secs));
+    // Ten-second cadence, telemetry held, still polling: the stamp is up to a minute old.
+    let held = contact_until(ago(55), ago(45 * 60));
+    assert_eq!(classify(held, Some(10), now), ConnectionState::Online);
+    // Once silent past the window it ages like any other signal.
+    let dead = contact_until(ago(LAST_SEEN_STAMP_SECS + 51), None);
+    assert_eq!(classify(dead, Some(10), now), ConnectionState::Offline);
+    // Newer evidence wins, and nothing at all is still never seen.
+    assert_eq!(contact_until(ago(600), ago(5)), ago(5));
+    assert_eq!(contact_until(None, None), None);
   }
 }

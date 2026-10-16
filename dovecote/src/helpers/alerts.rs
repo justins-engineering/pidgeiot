@@ -989,8 +989,8 @@ async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result
 struct PigeonLastSeen {
   /// Newest report: a shadow report-back, a stored telemetry row, a forwarded report.
   last_report: Option<OffsetDateTime>,
-  /// Newest contact of any kind: `last_report` or `pigeons.last_seen_at`.
-  last_contact: Option<OffsetDateTime>,
+  /// `pigeons.last_seen_at`: every accepted device contact, polls included.
+  last_seen_at: Option<OffsetDateTime>,
   interval_secs: Option<i64>,
   /// An operator holds this pigeon out of evaluation (`pigeons.suspended_at`).
   suspended: bool,
@@ -1008,8 +1008,9 @@ fn condition_holds(
       state,
       min_duration_secs,
     } => {
-      let last_seen = seen.last_contact;
-      let classified = connection_state::classify(last_seen, seen.interval_secs, now);
+      let last_seen = connection_state::latest_of([seen.last_report, seen.last_seen_at]);
+      let contact = connection_state::contact_until(seen.last_seen_at, seen.last_report);
+      let classified = connection_state::classify(contact, seen.interval_secs, now);
       let target = match state {
         ConnectionStateKind::Offline => ConnectionState::Offline,
         ConnectionStateKind::Stale => ConnectionState::Stale,
@@ -1019,7 +1020,7 @@ fn condition_holds(
         // How long the pigeon has been silent doubles as "how long it's been in this state" --
         // it entered Offline/Stale the moment it fell silent, so the age of its last contact
         // already is that duration.
-        let age_secs = last_seen
+        let age_secs = contact
           .map(|t| (now - t).whole_seconds())
           .unwrap_or(i64::MAX);
         matched = age_secs >= *min_secs;
@@ -1105,7 +1106,7 @@ async fn resolve_pigeon_last_seen(
     connection_state::latest_of([shadow_last_seen, telemetry_last_at, last_forwarded_at]);
   Ok(Some(PigeonLastSeen {
     last_report,
-    last_contact: connection_state::latest_of([last_report, last_seen_at]),
+    last_seen_at,
     interval_secs,
     suspended: suspended_at.is_some(),
   }))
@@ -1618,7 +1619,7 @@ mod scheduled_condition_tests {
     let at = |ago: Option<i64>| ago.map(|secs| now() - Duration::seconds(secs));
     PigeonLastSeen {
       last_report: at(report_ago),
-      last_contact: connection_state::latest_of([at(report_ago), at(contact_ago)]),
+      last_seen_at: at(contact_ago),
       interval_secs: None,
       suspended: false,
     }
@@ -1663,17 +1664,49 @@ mod scheduled_condition_tests {
   fn a_pigeon_that_only_polled_counts_as_seen() {
     let polled = seen(None, Some(30));
     assert_eq!(
-      connection_state::classify(polled.last_contact, polled.interval_secs, now()),
+      connection_state::classify(
+        connection_state::contact_until(polled.last_seen_at, polled.last_report),
+        polled.interval_secs,
+        now()
+      ),
       ConnectionState::Online
     );
     assert!(!fires(&offline_for(None), &polled));
 
     let never = seen(None, None);
     assert_eq!(
-      connection_state::classify(never.last_contact, never.interval_secs, now()),
+      connection_state::classify(
+        connection_state::contact_until(never.last_seen_at, never.last_report),
+        never.interval_secs,
+        now()
+      ),
       ConnectionState::Unknown
     );
     assert!(!fires(&offline_for(None), &never));
+  }
+
+  #[test]
+  fn a_fresh_stamp_holds_a_short_interval_out_of_offline() {
+    // Ten-second cadence with telemetry held: only the stamp, up to a minute old, shows contact.
+    let held = PigeonLastSeen {
+      interval_secs: Some(10),
+      ..seen(Some(45 * 60), Some(55))
+    };
+    let stale = AlertCondition::DeviceState {
+      state: ConnectionStateKind::Stale,
+      min_duration_secs: None,
+    };
+    assert!(!fires(&offline_for(None), &held));
+    assert!(!fires(&stale, &held));
+
+    let gone = PigeonLastSeen {
+      interval_secs: Some(10),
+      ..seen(Some(45 * 60), Some(200))
+    };
+    let (holds, last_seen) = condition_holds(&offline_for(None), &gone, now()).unwrap();
+    assert!(holds);
+    // The mail reports the stamp itself, not the credited time.
+    assert_eq!(last_seen, Some(now() - Duration::seconds(200)));
   }
 }
 

@@ -1,3 +1,4 @@
+use capsules::connection_state::LAST_SEEN_STAMP_SECS;
 use capsules::{
   CoapConfig, Connector, HttpsConfig, MqttConfig, NiddConfig, Pigeon, PigeonAcl, PigeonDetail,
   PigeonShadow, TelemetryEndpoint,
@@ -746,14 +747,11 @@ pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Res
 /// the response and strips it, so it never reaches a device, a terminator or ThingSpace.
 pub const SEEN_HEADER: &str = "X-Pigeon-Seen";
 
-/// Least time between two contact stamps of one pigeon, which bounds the Postgres writes a
-/// chatty device costs to one a minute.
-pub const SEEN_STAMP_SECS: i64 = 60;
-
-/// Whether a contact at `now` is due a stamp after the last one at `prev`. A clock that steps
-/// back waits until it passes the stored stamp, so the stamp never moves backwards.
+/// Whether a contact at `now` is due a stamp after the last one at `prev`, at most once per
+/// `LAST_SEEN_STAMP_SECS`, which bounds a chatty device to one Postgres write a minute. A clock
+/// that steps back waits until it passes the stored stamp, so the stamp never moves backwards.
 pub fn seen_stamp_due(prev: Option<i64>, now: i64) -> bool {
-  prev.is_none_or(|prev| now >= prev + SEEN_STAMP_SECS)
+  prev.is_none_or(|prev| now >= prev + LAST_SEEN_STAMP_SECS)
 }
 
 /// The `SEEN_HEADER` value for a stamp, which `parse_seen_header` reads back.
@@ -818,13 +816,16 @@ pub async fn stamp_last_seen(env: &Env, pigeon_id: &str, at: i64) {
 
 #[cfg(test)]
 mod seen_tests {
-  use super::{SEEN_STAMP_SECS, parse_seen_header, seen_header_value, seen_stamp_due};
+  use super::{LAST_SEEN_STAMP_SECS, parse_seen_header, seen_header_value, seen_stamp_due};
 
   #[test]
   fn seen_stamp_is_due_first_then_once_a_minute() {
     assert!(seen_stamp_due(None, 1_000));
-    assert!(!seen_stamp_due(Some(1_000), 1_000 + SEEN_STAMP_SECS - 1));
-    assert!(seen_stamp_due(Some(1_000), 1_000 + SEEN_STAMP_SECS));
+    assert!(!seen_stamp_due(
+      Some(1_000),
+      1_000 + LAST_SEEN_STAMP_SECS - 1
+    ));
+    assert!(seen_stamp_due(Some(1_000), 1_000 + LAST_SEEN_STAMP_SECS));
     assert!(!seen_stamp_due(Some(1_000), 900));
   }
 

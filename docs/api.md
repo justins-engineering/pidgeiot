@@ -1269,7 +1269,9 @@ from the claimed device. A request refused `401` or answered `5xx` is not contac
 `400`, `404`, `413` or `429` after a valid token is. It is absent until the first contact, and
 written at most once a minute, so it can trail the device by up to 60 seconds. It is read from
 the pigeon's own Durable Object, so no query cache applies; the dashboard's connection badge is
-classified from it. Every route that returns a stored pigeon carries it.
+classified from it. Every route that returns a stored pigeon carries it. The badge and the
+`DeviceState` alert credit the stamp with that minute when they classify, so a short
+`telemetry_interval` does not read a device in steady contact as stale between two stamps.
 
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \

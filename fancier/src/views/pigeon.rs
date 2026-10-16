@@ -83,18 +83,18 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
             let telemetry_seen = telemetry_latest().and_then(|latest| {
                 connection_state::latest_of(latest.iter().map(|t| Some(t.reported_at)))
             });
-            let last_seen = connection_state::latest_of([
-                pd.pigeon.last_seen_at,
+            let evidence = connection_state::latest_of([
                 shadow_seen,
                 telemetry_seen,
                 latest_log_received(),
             ]);
+            let last_seen = connection_state::latest_of([pd.pigeon.last_seen_at, evidence]);
             let interval_secs = connection_state::telemetry_interval_secs(
                 &pd.shadow.current_config,
             );
             let conn_state: ConnectionState = connection_state::classify(
                 pd.pigeon.suspended_at.is_some(),
-                last_seen,
+                connection_state::contact_until(pd.pigeon.last_seen_at, evidence),
                 interval_secs,
                 time::OffsetDateTime::now_utc(),
             );

@@ -18,7 +18,8 @@
 // the newer evidence it holds too, since the stamp can trail by a minute.
 use capsules::Pigeon;
 pub use capsules::connection_state::{
-  ConnectionState, format_last_seen, has_never_reported, latest_of, telemetry_interval_secs,
+  ConnectionState, contact_until, format_last_seen, has_never_reported, latest_of,
+  telemetry_interval_secs,
 };
 use time::OffsetDateTime;
 
@@ -44,7 +45,7 @@ pub fn classify(
 pub fn contact_state(pigeon: &Pigeon, now: OffsetDateTime) -> ConnectionState {
   classify(
     pigeon.suspended_at.is_some(),
-    pigeon.last_seen_at,
+    contact_until(pigeon.last_seen_at, None),
     None,
     now,
   )
