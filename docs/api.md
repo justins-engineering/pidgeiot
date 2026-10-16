@@ -1388,7 +1388,8 @@ Propagation: the ingest-time definition lookup is a Hyperdrive-cached read, so a
 arriving within about a minute of a toggle can still be evaluated the old way; after a suspend
 that means a `Threshold`/`RateOfChange`/`DeviceState` condition still true can restart its
 episode against the reset state and send one more "firing" mail before the hold takes effect.
-The sweep, which decides `MissingReport`, reads fresh. The dashboard's connection badge shows
+The sweep, which decides `MissingReport`, reads through the same minute-long cache but runs
+every five minutes, so its next run sees the hold. The dashboard's connection badge shows
 `Suspended` in place of the online/stale/offline classification.
 
 ```sh
