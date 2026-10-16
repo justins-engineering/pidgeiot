@@ -1667,8 +1667,8 @@ mod tests {
 
   #[test]
   fn a_comped_organization_does_not_count() {
-    // The operator's case: his only owned organization is a customer's,
-    // comped, and he still needs his own.
+    // An owner whose only owned organization is comped may still create one
+    // of their own.
     let comped = effective_plan(Some("perch"), Some("none"), Some("builder"));
     assert!(refusal(org_cap([comped])).is_none());
   }
