@@ -3590,9 +3590,9 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
   `TELEMETRY` or `LOG` frame already received is answered as a repeat whatever its `requestId`,
   which is why both carry a send sequence; a `TELEMETRY` one arriving while its first copy is
   still being stored waits for it (a `LOG` is stored without waiting on anything, so no copy can
-  arrive mid-store), and one whose first copy was dropped as unclaimed is judged afresh. A repeat is neither stored nor
-  billed, and, like any uplink from a device that is behind, carries the owed `SHADOW` when one is
-  due.
+  arrive mid-store), and one whose first copy was dropped as unclaimed is judged afresh. A repeat is
+  neither stored nor billed, and, like any uplink from a device that is behind, carries the owed
+  `SHADOW` when one is due.
 - **The dashboard never waits on ThingSpace.** A shadow `PUT` answers before the frame is sent and
   never fails because of it. A delivery report changes only whether the next uplink repeats the
   push: `Delivered` means the network took the frame, not that the device has it, and the
@@ -3681,11 +3681,11 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   are not billed; downlinks are unmetered. A `Nidd` pigeon counts as a
   connected device in any period in which it sent a billable message, like every other pigeon.
 - **The free-tier fuse** runs at the gateway, before the Durable Object, on `TELEMETRY`,
-  `SHADOW_REPORT` and `LOG` frames, as it does for the HTTP telemetry route. It fails open, including when
-  the check takes longer than one second. A paused account's ingest frame, a `LOG` included, is dropped, the
-  callback still answering `200` because a retry could not change the outcome, and the device
-  is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no `429` for a device to
-  read; the notice is its equivalent.
+  `SHADOW_REPORT` and `LOG` frames, as it does for the HTTP telemetry route. It fails open,
+  including when the check takes longer than one second. A paused account's ingest frame, a `LOG`
+  included, is dropped, the callback still answering `200` because a retry could not change the
+  outcome, and the device is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no
+  `429` for a device to read; the notice is its equivalent.
 
 ### NIDD SIM changes and deletion
 
@@ -3844,10 +3844,10 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a `TELEMETRY` or `LOG` frame
   already received under another `requestId` and not dropped as unclaimed there (the carrier
-  delivered one send twice), a frame whose body is malformed, over a cap or of an unknown type, a delivery report
-  (a `DeliveryFailed` or `Queued` one first marks the push it may have carried pending), a
-  configuration result, another account's callback, or an authenticated body of a shape dovecote
-  does not know.
+  delivered one send twice), a frame whose body is malformed, over a cap or of an unknown type, a
+  delivery report (a `DeliveryFailed` or `Queued` one first marks the push it may have carried
+  pending), a configuration result, another account's callback, or an authenticated body of a shape
+  dovecote does not know.
 - `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` or `LOG`
   whose sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable
   through support once a parser is fixed; such a frame without a sequence is refused by design,
@@ -3857,12 +3857,12 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 - `413`: body over 8 KiB.
 - `503`: NIDD is not configured in this environment (the callback password or the account name
   is unset), or a store the uplink needs failed (the pigeon's Durable Object, its log store or
-  the telemetry queue). **The uplink is lost** unless ThingSpace's one retry, about a second later, succeeds:
-  ThingSpace documents three resends at five-minute intervals, but makes that single immediate
-  retry and no other. Each such answer is logged as lost with its `requestId`, the only handle
-  for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback that
-  was in fact stored is recognised by its `requestId` and frame digest and never stored or billed
-  twice, and one that arrives while the first attempt is still storing it waits for that
+  the telemetry queue). **The uplink is lost** unless ThingSpace's one retry, about a second later,
+  succeeds: ThingSpace documents three resends at five-minute intervals, but makes that single
+  immediate retry and no other. Each such answer is logged as lost with its `requestId`, the only
+  handle for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback
+  that was in fact stored is recognised by its `requestId` and frame digest and never stored or
+  billed twice, and one that arrives while the first attempt is still storing it waits for that
   attempt's outcome.
 
 
