@@ -1262,6 +1262,15 @@ Returns `capsules::Pigeon` with the connector token/PSK stripped. For `Nidd`, `c
 keeps `endpoint` and `imei`, with `token` empty and `claim_key` null; the same holds for every
 route that returns a stored pigeon.
 
+`last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339
+stamp: every device route that answers after a valid token (a shadow poll or report, telemetry,
+a log upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame, and a NIDD uplink
+from the claimed device. A request refused `401` or answered `5xx` is not contact; one refused
+`400`, `404`, `413` or `429` after a valid token is. It is absent until the first contact, and
+written at most once a minute, so it can trail the device by up to 60 seconds. It is read from
+the pigeon's own Durable Object, so no query cache applies; the dashboard's connection badge is
+classified from it. Every route that returns a stored pigeon carries it.
+
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>'
@@ -1406,7 +1415,8 @@ registered again; see [NIDD SIM changes and deletion](#nidd-sim-changes-and-dele
 Bulk-fetches up to 48 pigeons by ID in parallel, skipping any the caller isn't authorized for,
 that don't exist, or that couldn't be reached (never errors on an individual bad ID — the
 response is just shorter than the request). Body: a plain JSON array of pigeon ID strings.
-`400` if more than 48 are requested.
+`400` if more than 48 are requested. Each pigeon carries the same `last_seen_at` as
+[`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id), which is what the flock list classifies from.
 
 **An ID absent from the response is a per-pigeon failure, not an empty result.** The response
 carries no marker for it, so subtract the response from what you asked for and show the
@@ -2152,9 +2162,13 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
   this long. A state has to survive a 60-second debounce before it fires, which in practice means
-  two consecutive sweeps.
+  two consecutive sweeps. The state is classified from the newest of the pigeon's reports and its
+  `last_seen_at`, so a device that only polls its shadow or downloads firmware is not Offline. The
+  sweep reads the Postgres copy of the stamp, which can trail the device by about two minutes (the
+  stamp's own minute plus Hyperdrive's minute-long read cache).
 - `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
-  this long. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
+  this long. Contact without a report does not hold this off: a device that polls while its
+  telemetry has stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
   the window crossed — an outage is reported within one sweep period of the window elapsing, not
   two. Evaluation is a sample rather than a scan of history, so a silence that both crosses the
   window and ends between two sweeps is not reported at all.
@@ -2800,6 +2814,8 @@ A copy of this catalog (anchored at the frontend origin) is also served statical
 
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
 `Authorization: Bearer <device_token>` — see [Device authentication](#device-authentication-bearer-token). None of these accept or check a Kratos session.
+Every request one of them accepts stamps the pigeon's `last_seen_at` (see
+[`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id)).
 
 ### Device shadow
 
