@@ -38,6 +38,9 @@ follow from it:
   that tier's message allowance, and its device count is a hard cap rather
   than the start of per-device billing. A grant with no meter behind it would
   be an unbounded one.
+- **A comped org does not count toward its owner's one free org.** The
+  organization gate counts only owned orgs served on the free tier, so the
+  owner of a comped org may still create one of their own.
 - **An unreadable value is no grant.** A typo in `comp_plan`, or the value
   `perch`, resolves to the free tier — under-serving loudly rather than
   over-serving silently. Check the org page after granting.
@@ -93,7 +96,9 @@ The org drops to the free tier immediately (or to its subscription, if it has
 one). Anything it holds above the free tier's limits keeps working — the
 gates only ever refuse *growth*, so no device, seat, alert or organization
 disappears. What changes is that the next one is refused, and the ingest fuse
-starts measuring against 300 K instead of the granted allowance.
+starts measuring against 300 K instead of the granted allowance. If it has no
+live subscription, a revoked org counts as its owner's free org again, and its
+owner is refused another organization until they own no free one.
 
 ## Listing what is granted
 
