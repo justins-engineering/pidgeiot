@@ -1,8 +1,8 @@
 use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_PAUSED,
-  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_uplink, dedupe_key, hello_key,
-  nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
-  shadow_reply_due, sign_frame, status_frame,
+  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_log, decode_uplink, dedupe_key,
+  hello_key, nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame,
+  shadow_push_due, shadow_reply_due, sign_frame, status_frame,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -3318,10 +3318,10 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// one send. It waits for an attempt storing the frame as a retry does, and is a repeat once that
 /// attempt decided; a copy dropped as unclaimed makes no repeat, since nothing judged it.
 ///
-/// Answers 200 with the outcome as the body, 400 for a telemetry frame whose sequence header does
-/// not parse, 404 when no pigeon is here, and 5xx when the frame was not read or stored, which the
-/// gateway answers 503 and logs as lost: ThingSpace retries once at once and never later. Billing,
-/// the Postgres sync and any downlink run after the response.
+/// Answers 200 with the outcome as the body, 400 for a `TELEMETRY` or `LOG` frame whose sequence
+/// header does not parse, 404 when no pigeon is here, and 5xx when the frame was not read or
+/// stored, which the gateway answers 503 and logs as lost: ThingSpace retries once at once and
+/// never later. Billing, the Postgres sync and any downlink run after the response.
 async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   use crate::helpers::nidd::{HEADER_INGEST, HEADER_LINE, HEADER_REQUEST_ID};
 
@@ -3390,10 +3390,11 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     // a resend once a parser takes it.
     Uplink::BadHeader => {
       console_log!(
-        "NIDD uplink: dropped TELEMETRY len={} with a malformed header for pigeon {pigeon_id}",
+        "NIDD uplink: dropped frame type={} len={} with a malformed header for pigeon {pigeon_id}",
+        frame.first().copied().unwrap_or(0),
         frame.len()
       );
-      return Response::error("Bad Request: malformed TELEMETRY sequence header", 400);
+      return Response::error("Bad Request: malformed sequence header", 400);
     }
     Uplink::Empty | Uplink::Unknown(_) => {
       console_log!(
@@ -3430,7 +3431,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
     // One reply per uplink: the notice when due, since it is what quiets the device, else the
     // shadow it is owed, sent while this uplink's connection is up.
-    Uplink::Telemetry(_) | Uplink::ShadowReport(_) if paused => {
+    Uplink::Telemetry(_) | Uplink::ShadowReport(_) | Uplink::Log(_) if paused => {
       downlink = plan_notice(&mut row, now, STATUS_PAUSED, NIDD_PAUSED_HOLD_SECS, None);
       if downlink.is_none() && shadow_reply_due(&row, now) {
         downlink = plan_shadow_push(pigeons, &mut row, now);
@@ -3438,7 +3439,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       "paused"
     }
     // Like any uplink it shows the device awake, so it still carries the owed shadow.
-    Uplink::Telemetry(_) if decided_elsewhere || row.has_seen_frame(&key) => {
+    Uplink::Telemetry(_) | Uplink::Log(_) if decided_elsewhere || row.has_seen_frame(&key) => {
       if shadow_reply_due(&row, now) {
         downlink = plan_shadow_push(pigeons, &mut row, now);
       }
@@ -3491,6 +3492,30 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       };
       // Sent while this uplink's connection is up, since a push to an idle device can be lost. A
       // refused frame still shows the device awake, and the owed config may fix its reporting.
+      if shadow_reply_due(&row, now) {
+        downlink = plan_shadow_push(pigeons, &mut row, now);
+      }
+      outcome
+    }
+    // Stored with no await, so no retry can interleave and nothing is claimed in flight. A failed
+    // store answers before the key is remembered, so ThingSpace's one retry can store it.
+    Uplink::Log(body) => {
+      let outcome = match decode_log(body) {
+        None => {
+          console_log!(
+            "NIDD uplink: LOG rejected len={} for pigeon {pigeon_id}",
+            frame.len()
+          );
+          "rejected"
+        }
+        Some(records) => {
+          if let Err(e) = store_log_chunk(&pigeons.sql, &records) {
+            console_error!("NIDD uplink: log chunk INSERT error for pigeon {pigeon_id}: {e}");
+            return Response::error("Service Unavailable: log not stored", 503);
+          }
+          "stored"
+        }
+      };
       if shadow_reply_due(&row, now) {
         downlink = plan_shadow_push(pigeons, &mut row, now);
       }

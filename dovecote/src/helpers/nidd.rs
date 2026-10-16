@@ -21,6 +21,9 @@ use std::time::Duration;
 pub const FRAME_TELEMETRY: u8 = 0x01;
 /// Device to platform: a shadow report body, exactly as the HTTPS report route takes it.
 pub const FRAME_SHADOW_REPORT: u8 = 0x02;
+/// Device to platform: a send-sequence header, an encoding byte, then whole dictionary log
+/// records in that encoding, stored as one chunk of the pigeon's log ring buffer.
+pub const FRAME_LOG: u8 = 0x03;
 /// Device to platform: the claim key as 32 lowercase hex characters, sent once per boot.
 pub const FRAME_HELLO: u8 = 0x04;
 /// Platform to device: a header of `target_version` and `current_version`, the raw
@@ -28,6 +31,12 @@ pub const FRAME_HELLO: u8 = 0x04;
 pub const FRAME_SHADOW: u8 = 0x81;
 /// Platform to device: a header of the status code and its argument, then the tag.
 pub const FRAME_STATUS: u8 = 0x82;
+
+/// `LOG` encoding byte: the records in COBS with no trailing delimiter, so the body holds no NUL.
+pub const LOG_COBS: u8 = b'c';
+/// `LOG` encoding byte: the records as they are, NULs included. Only for a carrier proven to pass
+/// a NUL uplink unaltered, which Verizon's is not yet, so no device sends it.
+pub const LOG_RAW: u8 = b'r';
 
 /// `STATUS` code: the report was stored; the argument is the version stored.
 pub const STATUS_STORED: u8 = 0x00;
@@ -47,7 +56,7 @@ pub const HEADER_LINE: &str = "X-Nidd-Line";
 pub const NIDD_TAG_CHARS: usize = 16;
 /// Bytes in a claim key, which a `HELLO` carries as twice as many hex characters.
 pub const NIDD_CLAIM_KEY_BYTES: usize = 16;
-/// Longest `TELEMETRY` header: a ten-digit send sequence and the newline.
+/// Longest `TELEMETRY` or `LOG` header: a ten-digit send sequence and the newline.
 const NIDD_SEQUENCE_HEADER_MAX: usize = 11;
 /// Longest `SHADOW` header: two ten-digit versions, the space between them and the newline.
 const NIDD_SHADOW_HEADER_MAX: usize = 22;
@@ -321,13 +330,16 @@ pub fn parse_error_line(context: &str, error: &serde_json::Error) -> String {
 pub enum Uplink<'a> {
   /// A telemetry body, its sequence header removed.
   Telemetry(&'a [u8]),
-  /// A telemetry frame whose sequence header does not parse.
+  /// A `TELEMETRY` or `LOG` frame whose sequence header does not parse.
   BadHeader,
   /// A shadow report body.
   ShadowReport(&'a [u8]),
   /// A `HELLO`'s body, meant to be the claim key's 32 hex characters.
   Hello(&'a [u8]),
-  /// A type this build does not know, including the reserved log upload.
+  /// A `LOG` body, its sequence header removed: the encoding byte and the encoded records, which
+  /// `decode_log` turns into the chunk.
+  Log(&'a [u8]),
+  /// A type this build does not know.
   Unknown(u8),
   /// No bytes at all.
   Empty,
@@ -341,12 +353,13 @@ pub fn decode_uplink(frame: &[u8]) -> Uplink<'_> {
       after_sequence(rest).map_or(Uplink::BadHeader, Uplink::Telemetry)
     }
     Some((&FRAME_SHADOW_REPORT, body)) => Uplink::ShadowReport(body),
+    Some((&FRAME_LOG, rest)) => after_sequence(rest).map_or(Uplink::BadHeader, Uplink::Log),
     Some((&FRAME_HELLO, body)) => Uplink::Hello(body),
     Some((&other, _)) => Uplink::Unknown(other),
   }
 }
 
-/// What follows a `TELEMETRY` frame's sequence header: 1 to 10 decimal digits naming a u32, then
+/// What follows a `TELEMETRY` or `LOG` frame's sequence header: 1 to 10 decimal digits naming a u32, then
 /// a newline, the rule the device applies to a platform frame's header. `None` when the frame does
 /// not open with that.
 fn after_sequence(rest: &[u8]) -> Option<&[u8]> {
@@ -362,9 +375,45 @@ fn after_sequence(rest: &[u8]) -> Option<&[u8]> {
   Some(&rest[end + 1..])
 }
 
-/// Whether a frame of this type is billed and so paused with the account.
-pub fn is_billable(frame_type: u8) -> bool {
-  matches!(frame_type, FRAME_TELEMETRY | FRAME_SHADOW_REPORT)
+/// Whether a frame of this type stores device data, and so is paused with the account. Not the
+/// same as billed: a `LOG` frame pauses but is not billed.
+pub fn is_ingest(frame_type: u8) -> bool {
+  matches!(
+    frame_type,
+    FRAME_TELEMETRY | FRAME_SHADOW_REPORT | FRAME_LOG
+  )
+}
+
+/// A `LOG` body's records, by its encoding byte. `None` for an unknown encoding, a malformed
+/// encoding or no records at all.
+pub fn decode_log(body: &[u8]) -> Option<Vec<u8>> {
+  let records = match body.split_first()? {
+    (&LOG_COBS, encoded) => cobs_decode(encoded)?,
+    (&LOG_RAW, raw) => raw.to_vec(),
+    _ => return None,
+  };
+  (!records.is_empty()).then_some(records)
+}
+
+/// Consistent Overhead Byte Stuffing, decoded, for a body with no trailing `00` delimiter: the
+/// carrier delimits frames. Each code byte c is followed by c - 1 data bytes and stands for a `00`
+/// after them, unless c is `ff` or the input ends there. `None` for a `00` anywhere in the input
+/// or a code that runs past its end.
+pub fn cobs_decode(input: &[u8]) -> Option<Vec<u8>> {
+  let mut out = Vec::with_capacity(input.len());
+  let mut rest = input;
+  while let Some((&code, tail)) = rest.split_first() {
+    let block = tail.get(..usize::from(code).checked_sub(1)?)?;
+    if block.contains(&0) {
+      return None;
+    }
+    out.extend_from_slice(block);
+    rest = &tail[block.len()..];
+    if code != 0xff && !rest.is_empty() {
+      out.push(0);
+    }
+  }
+  Some(out)
 }
 
 // ThingSpace refuses a downlink holding two adjacent NUL bytes, so every platform frame is
@@ -591,8 +640,8 @@ impl NiddRow {
 
   /// Whether a frame with this key's digest has settled its send under any request id. ThingSpace
   /// posts each carrier delivery of one device send under a request id of its own, so this is how
-  /// a repeated `TELEMETRY` frame is known; its send sequence keeps two sends of the same readings
-  /// apart, which no other frame type has.
+  /// a repeated `TELEMETRY` or `LOG` frame is known; its send sequence keeps two sends of the same
+  /// readings or records apart, which no other frame type has.
   pub fn has_seen_frame(&self, key: &str) -> bool {
     let digest = key_digest(key);
     self
@@ -983,10 +1032,126 @@ mod tests {
     assert_eq!(decode_uplink(b"\x017\n{}"), Uplink::Telemetry(b"{}"));
     assert_eq!(decode_uplink(&[0x02, b'{']), Uplink::ShadowReport(b"{"));
     assert_eq!(decode_uplink(&[0x04, 1, 2]), Uplink::Hello(&[1, 2]));
-    assert_eq!(decode_uplink(&[0x03, 9]), Uplink::Unknown(0x03));
+    assert_eq!(decode_uplink(b"\x039\nc\x01"), Uplink::Log(b"c\x01"));
+    assert_eq!(decode_uplink(&[0x05]), Uplink::Unknown(0x05));
     assert_eq!(decode_uplink(&[0x81]), Uplink::Unknown(0x81));
-    assert!(is_billable(FRAME_TELEMETRY) && is_billable(FRAME_SHADOW_REPORT));
-    assert!(!is_billable(FRAME_HELLO) && !is_billable(0x03));
+  }
+
+  #[test]
+  fn log_pauses_with_ingest() {
+    assert!(is_ingest(FRAME_TELEMETRY) && is_ingest(FRAME_SHADOW_REPORT) && is_ingest(FRAME_LOG));
+    assert!(!is_ingest(FRAME_HELLO) && !is_ingest(0x05));
+  }
+
+  /// The table docs/api.md and `~/pigeon`'s tests share, so the C encoder and this decoder agree
+  /// byte for byte.
+  fn cobs_golden_vectors() -> Vec<(Vec<u8>, Vec<u8>)> {
+    let run = |from: u8, to: u8| (from..=to).collect::<Vec<u8>>();
+    let join = |parts: &[&[u8]]| parts.concat();
+    vec![
+      (vec![0x00], vec![0x01, 0x01]),
+      (vec![0x00, 0x00], vec![0x01, 0x01, 0x01]),
+      (vec![0x00, 0x11, 0x00], vec![0x01, 0x02, 0x11, 0x01]),
+      (
+        vec![0x11, 0x22, 0x00, 0x33],
+        vec![0x03, 0x11, 0x22, 0x02, 0x33],
+      ),
+      (
+        vec![0x11, 0x22, 0x33, 0x44],
+        vec![0x05, 0x11, 0x22, 0x33, 0x44],
+      ),
+      (
+        vec![0x11, 0x00, 0x00, 0x00],
+        vec![0x02, 0x11, 0x01, 0x01, 0x01],
+      ),
+      (run(0x01, 0xfe), join(&[&[0xff], &run(0x01, 0xfe)])),
+      (run(0x00, 0xfe), join(&[&[0x01, 0xff], &run(0x01, 0xfe)])),
+      (
+        run(0x01, 0xff),
+        join(&[&[0xff], &run(0x01, 0xfe), &[0x02, 0xff]]),
+      ),
+      (
+        join(&[&run(0x02, 0xff), &[0x00]]),
+        join(&[&[0xff], &run(0x02, 0xff), &[0x01, 0x01]]),
+      ),
+      (
+        join(&[&run(0x03, 0xff), &[0x00, 0x01]]),
+        join(&[&[0xfe], &run(0x03, 0xff), &[0x02, 0x01]]),
+      ),
+    ]
+  }
+
+  #[test]
+  fn cobs_decodes_the_golden_vectors() {
+    for (plain, encoded) in cobs_golden_vectors() {
+      assert!(!encoded.contains(&0));
+      assert_eq!(cobs_decode(&encoded), Some(plain), "{encoded:02x?}");
+    }
+  }
+
+  #[test]
+  fn cobs_refuses_a_zero_and_an_overrun() {
+    for encoded in [
+      &[0x00][..],
+      &[0x03, 0x11, 0x00],
+      &[0x02, 0x11, 0x00, 0x01],
+      &[0x03, 0x11],
+      &[0x05, 0x11, 0x22, 0x33],
+      &[0xff, 0x01],
+    ] {
+      assert_eq!(cobs_decode(encoded), None, "{encoded:02x?}");
+    }
+    assert_eq!(cobs_decode(&[]), Some(Vec::new()));
+  }
+
+  #[test]
+  fn log_decodes_by_its_encoding_byte() {
+    assert_eq!(
+      decode_log(b"c\x03\x11\x22\x02\x33"),
+      Some(vec![0x11, 0x22, 0x00, 0x33])
+    );
+    assert_eq!(decode_log(b"r\x11\x00\x33"), Some(vec![0x11, 0x00, 0x33]));
+    // No records, an unknown or missing encoding, and COBS that does not decode.
+    for body in [
+      &b""[..],
+      b"c",
+      b"r",
+      b"x\x01",
+      b"C\x02\x11",
+      b"c\x03\x11",
+      b"c\x00",
+    ] {
+      assert_eq!(decode_log(body), None, "{body:02x?}");
+    }
+  }
+
+  #[test]
+  fn log_decodes_after_its_sequence() {
+    let frame = b"\x0342\nc\x05\x11\x22\x33\x44";
+    assert_eq!(decode_uplink(frame), Uplink::Log(b"c\x05\x11\x22\x33\x44"));
+    assert_eq!(
+      decode_log(b"c\x05\x11\x22\x33\x44"),
+      Some(vec![0x11, 0x22, 0x33, 0x44])
+    );
+    assert_eq!(decode_uplink(b"\x034294967295\n"), Uplink::Log(b""));
+  }
+
+  #[test]
+  fn log_with_a_bad_sequence_is_a_bad_header() {
+    for frame in [
+      &b"\x03c\x02\x11"[..],
+      b"\x03",
+      b"\x03\nc\x02\x11",
+      b"\x034294967296\nc\x02\x11",
+      b"\x0312345678901\nc\x02\x11",
+      b"\x03+7\nc\x02\x11",
+      b"\x03-1\nc\x02\x11",
+      b"\x037 c\x02\x11",
+      b"\x037\r\nc\x02\x11",
+      b"\x037",
+    ] {
+      assert_eq!(decode_uplink(frame), Uplink::BadHeader, "{frame:?}");
+    }
   }
 
   #[test]
@@ -1221,6 +1386,18 @@ mod tests {
     let mut odd = NiddRow::default();
     odd.remember(dedupe_key("a:b", first), true);
     assert!(odd.has_seen_frame(&redelivered));
+  }
+
+  #[test]
+  fn has_seen_frame_matches_a_log_redelivery() {
+    let first = b"\x0317\nc\x03\x11\x22";
+    let next_send = b"\x0318\nc\x03\x11\x22";
+    let mut row = NiddRow::default();
+    row.remember(dedupe_key("request-a", first), true);
+
+    assert!(row.has_seen_frame(&dedupe_key("request-b", first)));
+    // The same records sent again carry the next sequence, so they are a new frame.
+    assert!(!row.has_seen_frame(&dedupe_key("request-c", next_send)));
   }
 
   #[test]

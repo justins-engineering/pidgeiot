@@ -789,17 +789,17 @@ fn log_nidd_callback(
 ///
 /// A 2xx says the callback is handled, so it is answered only once a retry could not change the
 /// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
-/// anything a retry would repeat identically. A `TELEMETRY` frame whose sequence header does not
-/// parse answers 400, as a body that is not JSON does. A store that failed, or a deploy with NIDD
-/// half configured, answers 503, which is the truth but loses the callback: ThingSpace retries
-/// once, about a second later, and never after, so each such answer is logged as lost. It also
-/// retries a callback unanswered for about 4 s while the first attempt still runs; the Durable
-/// Object holds that retry until the first attempt has stored the uplink or failed. Billing, the
-/// Postgres sync and every downlink run in the Durable Object after it answers.
+/// anything a retry would repeat identically. A `TELEMETRY` or `LOG` frame whose sequence header
+/// does not parse answers 400, as a body that is not JSON does. A store that failed, or a deploy
+/// with NIDD half configured, answers 503, which is the truth but loses the callback: ThingSpace
+/// retries once, about a second later, and never after, so each such answer is logged as lost. It
+/// also retries a callback unanswered for about 4 s while the first attempt still runs; the
+/// Durable Object holds that retry until the first attempt has stored the uplink or failed.
+/// Billing, the Postgres sync and every downlink run in the Durable Object after it answers.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
     CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, PasswordMatch,
-    callback_imei, callback_line, delivery_missed, is_billable, match_callback_password,
+    callback_imei, callback_line, delivery_missed, is_ingest, match_callback_password,
     parse_error_line, within,
   };
   use base64::Engine as _;
@@ -987,7 +987,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
   // connection on the uplink path. The fuse has no deadline of its own and sits before the
   // acknowledgement, so it is raced against a second and fails open, its own error rule.
   let mut paused = false;
-  if is_billable(frame[0]) {
+  if is_ingest(frame[0]) {
     match within(FUSE_TIMEOUT, check_ingest_fuse(&ctx.env, &pigeon_id)).await {
       Some(fuse) => paused = matches!(fuse, IngestFuse::Pause),
       None => {
@@ -1009,7 +1009,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         200..=299 => Ok(body),
         // No pigeon behind that IMEI: an unprovisioned line, which a resend cannot help.
         404 => Ok("no_pigeon".to_string()),
-        // A TELEMETRY sequence header that does not parse, refused like a body that is not JSON.
+        // A sequence header that does not parse, refused like a body that is not JSON.
         400 => {
           log_nidd_callback(
             kind,
