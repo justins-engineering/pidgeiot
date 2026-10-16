@@ -154,13 +154,35 @@ fn held_failures(stored: LoginFailures, creds: &Credentials) -> Option<LoginFail
   (fingerprint(&salt, creds) == stored.fingerprint).then_some(stored)
 }
 
-/// The count one failed login leaves, given the count `held` against the same credentials (none
-/// after a success, which deletes it), or `None` when the attempt does not count.
-fn count_after_failure(held: Option<u32>, verdict: &LoginVerdict) -> Option<u32> {
-  match verdict {
-    LoginVerdict::Exempt | LoginVerdict::RetryWithFreshAccess => None,
-    LoginVerdict::Latch => Some(LOGIN_FAILURE_LIMIT),
-    LoginVerdict::Count => Some(held.unwrap_or(0) + 1),
+/// Whether a login may go ahead, given the read of the stored count: the count held against these
+/// credentials when it may, `Latched` at the limit, and `Unreachable` when the read failed. A
+/// failed read is not "no count": the login it let through could be past the latch, and the
+/// count that login recorded would overwrite the one that could not be read.
+fn login_gate(
+  read: std::result::Result<Option<LoginFailures>, ()>,
+  creds: &Credentials,
+) -> std::result::Result<Option<LoginFailures>, Unavailable> {
+  let Ok(stored) = read else {
+    return Err(Unavailable::Unreachable);
+  };
+  match stored.and_then(|stored| held_failures(stored, creds)) {
+    Some(held) if held.latched() => Err(Unavailable::Latched),
+    held => Ok(held),
+  }
+}
+
+/// The count a login run leaves stored, given the count `held` against the same credentials and
+/// the verdict on the attempt that failed, `None` when every call the run made succeeded.
+///
+/// A run that got its tokens clears the count whichever calls it made, an OAuth-only refresh
+/// included, because the count is of consecutive failures. That keeps the two-strike bound: a
+/// failed session login writes no session, so the run that clears its count logged in again.
+fn count_after_run(held: Option<u32>, failed: Option<&LoginVerdict>) -> Option<u32> {
+  match failed {
+    None => None,
+    Some(LoginVerdict::Exempt | LoginVerdict::RetryWithFreshAccess) => held,
+    Some(LoginVerdict::Latch) => Some(LOGIN_FAILURE_LIMIT),
+    Some(LoginVerdict::Count) => Some(held.unwrap_or(0) + 1),
   }
 }
 
@@ -566,72 +588,72 @@ impl ThingSpaceSession {
       return Ok(tokens);
     }
 
-    let failures = self.read_failures(creds).await;
-    if failures.as_ref().is_some_and(LoginFailures::latched) {
-      return Err(Unavailable::Latched);
+    let failures = self.read_failures(creds).await?;
+
+    let run = self.log_in(creds, &mut tokens, now, pigeon_id).await;
+    let held = failures.as_ref().map(|f| f.count);
+    let count = count_after_run(held, run.as_ref().err().map(|(verdict, _)| verdict));
+    if count != held {
+      self.store_failures(creds, failures, count).await;
+    }
+    match run {
+      Ok(()) => {
+        self.write_tokens(&tokens).await;
+        Ok(tokens)
+      }
+      Err((_, failure)) if count.is_some_and(|c| c >= LOGIN_FAILURE_LIMIT) => {
+        self.report_latch(&failure).await;
+        Err(Unavailable::Latched)
+      }
+      Err(_) => Err(Unavailable::Unreachable),
+    }
+  }
+
+  /// Refreshes whichever tokens are stale, the access token first. A failed attempt ends the run
+  /// with its verdict, except a bearer fault on the session login, which gets a new access token
+  /// and one more try.
+  async fn log_in(
+    &self,
+    creds: &Credentials,
+    tokens: &mut Tokens,
+    now: i64,
+    pigeon_id: &str,
+  ) -> std::result::Result<(), (LoginVerdict, CallFailure)> {
+    if !tokens.access_fresh(now) {
+      let (access, expires_in) = self
+        .fetch_access(creds, pigeon_id)
+        .await
+        .map_err(|failure| (classify_login(LoginStep::OAuth, &failure, false), failure))?;
+      tokens.access = access;
+      tokens.access_expires_at = now + expires_in;
     }
 
-    if !tokens.access_fresh(now) {
-      match self.fetch_access(creds, pigeon_id).await {
-        Ok((access, expires_in)) => {
+    if tokens.session_fresh(now) {
+      return Ok(());
+    }
+    let mut retried = false;
+    loop {
+      let failure = match self.fetch_session(creds, &tokens.access, pigeon_id).await {
+        Ok(session) => {
+          tokens.session = session;
+          tokens.session_used_at = now;
+          return Ok(());
+        }
+        Err(failure) => failure,
+      };
+      match classify_login(LoginStep::Session, &failure, retried) {
+        LoginVerdict::RetryWithFreshAccess => {
+          retried = true;
+          let (access, expires_in) = self
+            .fetch_access(creds, pigeon_id)
+            .await
+            .map_err(|failure| (classify_login(LoginStep::OAuth, &failure, true), failure))?;
           tokens.access = access;
           tokens.access_expires_at = now + expires_in;
         }
-        Err(failure) => {
-          let verdict = classify_login(LoginStep::OAuth, &failure, false);
-          return Err(
-            self
-              .record_failure(creds, failures, verdict, &failure)
-              .await,
-          );
-        }
+        verdict => return Err((verdict, failure)),
       }
     }
-
-    if !tokens.session_fresh(now) {
-      let mut retried = false;
-      loop {
-        match self.fetch_session(creds, &tokens.access, pigeon_id).await {
-          Ok(session) => {
-            tokens.session = session;
-            tokens.session_used_at = now;
-            if let Err(e) = self.state.storage().delete(LOGIN_FAILURES_KEY).await {
-              console_error!("thingspace_login: clearing the failure count failed: {e}");
-            }
-            break;
-          }
-          Err(failure) => match classify_login(LoginStep::Session, &failure, retried) {
-            LoginVerdict::RetryWithFreshAccess => {
-              retried = true;
-              match self.fetch_access(creds, pigeon_id).await {
-                Ok((access, expires_in)) => {
-                  tokens.access = access;
-                  tokens.access_expires_at = now + expires_in;
-                }
-                Err(failure) => {
-                  let verdict = classify_login(LoginStep::OAuth, &failure, true);
-                  return Err(
-                    self
-                      .record_failure(creds, failures, verdict, &failure)
-                      .await,
-                  );
-                }
-              }
-            }
-            verdict => {
-              return Err(
-                self
-                  .record_failure(creds, failures, verdict, &failure)
-                  .await,
-              );
-            }
-          },
-        }
-      }
-    }
-
-    self.write_tokens(&tokens).await;
-    Ok(tokens)
   }
 
   /// OAuth: the access token and its lifetime in seconds.
@@ -689,17 +711,18 @@ impl ThingSpaceSession {
     result
   }
 
-  /// Counts a failed login and answers whether the object is now latched. Latching logs once
-  /// and sends one ops email.
-  async fn record_failure(
+  /// Stores the count a login run left: `None` deletes it, and a first count gets a fresh salt.
+  async fn store_failures(
     &self,
     creds: &Credentials,
     existing: Option<LoginFailures>,
-    verdict: LoginVerdict,
-    failure: &CallFailure,
-  ) -> Unavailable {
-    let Some(count) = count_after_failure(existing.as_ref().map(|f| f.count), &verdict) else {
-      return Unavailable::Unreachable;
+    count: Option<u32>,
+  ) {
+    let Some(count) = count else {
+      if let Err(e) = self.state.storage().delete(LOGIN_FAILURES_KEY).await {
+        console_error!("thingspace_login: clearing the failure count failed: {e}");
+      }
+      return;
     };
 
     let mut failures = existing.unwrap_or_else(|| {
@@ -721,11 +744,10 @@ impl ThingSpaceSession {
     {
       console_error!("thingspace_login: recording the failure count failed: {e}");
     }
+  }
 
-    if !failures.latched() {
-      return Unavailable::Unreachable;
-    }
-
+  /// Logs a latch once and sends one ops email.
+  async fn report_latch(&self, failure: &CallFailure) {
     let status = failure
       .status()
       .map_or_else(|| "none".to_string(), |s| s.to_string());
@@ -736,24 +758,21 @@ impl ThingSpaceSession {
     text.push_str(&status);
     text.push_str(LATCH_EMAIL_TAIL);
     crate::helpers::send_ops_email(&self.env, "ThingSpace login latched", &text).await;
-    Unavailable::Latched
   }
 
-  /// The stored failure count, when it was recorded against these exact credentials and epoch.
-  async fn read_failures(&self, creds: &Credentials) -> Option<LoginFailures> {
-    let stored = match self
+  /// The stored failure count, when it was recorded against these exact credentials and epoch,
+  /// or why no login may go ahead (`login_gate`).
+  async fn read_failures(
+    &self,
+    creds: &Credentials,
+  ) -> std::result::Result<Option<LoginFailures>, Unavailable> {
+    let read = self
       .state
       .storage()
       .get::<LoginFailures>(LOGIN_FAILURES_KEY)
       .await
-    {
-      Ok(stored) => stored?,
-      Err(e) => {
-        console_error!("thingspace_login: reading the failure count failed: {e}");
-        return None;
-      }
-    };
-    held_failures(stored, creds)
+      .map_err(|e| console_error!("thingspace_login: reading the failure count failed: {e}"));
+    login_gate(read, creds)
   }
 
   /// The cached tokens; empty ones when none are stored or the read fails.
@@ -965,7 +984,7 @@ mod tests {
     );
   }
 
-  /// A count as `record_failure` stores it for these credentials.
+  /// A count as `store_failures` stores it for these credentials.
   fn stored(creds: &Credentials, count: u32) -> LoginFailures {
     let salt = [7u8; 16];
     LoginFailures {
@@ -978,19 +997,51 @@ mod tests {
   #[test]
   fn the_second_counted_failure_in_a_row_latches() {
     // No count held: the first failure, or the first after a success deleted the count.
-    let first = count_after_failure(None, &LoginVerdict::Count);
+    let first = count_after_run(None, Some(&LoginVerdict::Count));
     assert_eq!(first, Some(1));
     assert!(!stored(&creds(), 1).latched());
-    let second = count_after_failure(first, &LoginVerdict::Count);
+    let second = count_after_run(first, Some(&LoginVerdict::Count));
     assert_eq!(second, Some(LOGIN_FAILURE_LIMIT));
     assert!(stored(&creds(), LOGIN_FAILURE_LIMIT).latched());
+  }
+
+  #[test]
+  fn a_failed_read_of_the_count_refuses_the_login() {
+    assert_eq!(
+      login_gate(Err(()), &creds()).err(),
+      Some(Unavailable::Unreachable)
+    );
+    assert!(matches!(login_gate(Ok(None), &creds()), Ok(None)));
+    assert!(
+      login_gate(Ok(Some(stored(&creds(), 1))), &creds())
+        .is_ok_and(|held| held.is_some_and(|held| held.count == 1))
+    );
+    assert_eq!(
+      login_gate(Ok(Some(stored(&creds(), LOGIN_FAILURE_LIMIT))), &creds()).err(),
+      Some(Unavailable::Latched)
+    );
+  }
+
+  #[test]
+  fn a_run_that_logs_in_ends_the_failures_whichever_calls_it_made() {
+    // An OAuth refresh answers 503. The next run refreshes the access token alone, since the
+    // session is still fresh, and succeeds. A later refresh times out: the two failures were not
+    // in a row, so nothing latches.
+    let first = count_after_run(None, Some(&LoginVerdict::Count));
+    assert_eq!(first, Some(1));
+    let refreshed = count_after_run(first, None);
+    assert_eq!(refreshed, None);
+    assert_eq!(
+      count_after_run(refreshed, Some(&LoginVerdict::Count)),
+      Some(1)
+    );
   }
 
   #[test]
   fn a_credential_refusal_latches_whatever_the_count() {
     for held in [None, Some(0), Some(1)] {
       assert_eq!(
-        count_after_failure(held, &LoginVerdict::Latch),
+        count_after_run(held, Some(&LoginVerdict::Latch)),
         Some(LOGIN_FAILURE_LIMIT)
       );
     }
@@ -999,10 +1050,10 @@ mod tests {
   #[test]
   fn an_exempt_or_retried_login_is_not_counted() {
     for held in [None, Some(1)] {
-      assert_eq!(count_after_failure(held, &LoginVerdict::Exempt), None);
+      assert_eq!(count_after_run(held, Some(&LoginVerdict::Exempt)), held);
       assert_eq!(
-        count_after_failure(held, &LoginVerdict::RetryWithFreshAccess),
-        None
+        count_after_run(held, Some(&LoginVerdict::RetryWithFreshAccess)),
+        held
       );
     }
   }

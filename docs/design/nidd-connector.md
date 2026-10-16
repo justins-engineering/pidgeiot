@@ -339,7 +339,7 @@ Verizon's Terms reserve resale and making "the Services available to any third p
 (https://thingspace.verizon.com/legal/terms-of-service.html, read by the readers on 2026-09-24).
 Whether customer lines may run on JES's account is decision D2. Until it is answered, NIDD is used
 for JES's own devices, and the create route enforces that: a Nidd create is refused 403 unless the
-flock belongs to an organization listed in `NIDD_ALLOWED_ORG_IDS`, a fail-closed var where empty
+flock belongs to an organization listed in `NIDD_ALLOWED_ORG_IDS`, a fail-closed secret where unset
 denies, the convention `DEMO_PIGEON_IDS` follows (`dovecote/src/helpers/demo.rs:3-9`). Without it
 any account could probe JES's IMEIs through the create route's 409 and squat them, and a support
 deletion would race the squatter's next create. The allowlist keeps other accounts out of create;
@@ -1245,16 +1245,18 @@ the comment block above `[vars]` the way `COAP_SERVICE_SECRET` is (`dovecote/wra
 | `THINGSPACE_ACCOUNT_NAME` | The billing account (`<10 digits>-<5 digits>` [SEND]); also this environment's NIDD switch | callback 503, Nidd create 403, no downlinks |
 | `THINGSPACE_CALLBACK_PASSWORD` | 40 random hex characters (160 bits), its own value per environment, never the UWS password [REG] | callback 503 |
 | `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` | The listener password the last rotation replaced, set by the runbook's step 3 and deleted by the owner 24 hours later (8.4) | only the current password is accepted |
+| `NIDD_ALLOWED_ORG_IDS` | The create gate of 4.6 (8.2): JES's own organization ids in production, its test organization's on staging | every Nidd create answers 403 |
 
 The account name is not a credential, but it identifies a Verizon billing account and the
-repository is public, so it stays out of `wrangler.toml`.
+repository is public, so it stays out of `wrangler.toml`. The organization allowlist stays out for
+the same reason: an organization id names a customer's account.
 
 ### 8.2 Vars and bindings per environment
 
 | Name | Kind | Production `[vars]` | `[env.staging.vars]` | `[env.dev.vars]` |
 |---|---|---|---|---|
-| `THINGSPACE_CALLBACK_ALLOWED_IPS` | var | `""` until cutover, then the eight addresses | the eight addresses during bring-up, `""` after cutover | `"127.0.0.1,::1"` |
-| `NIDD_ALLOWED_ORG_IDS` | var | `""` until cutover, then JES's own organization ids | JES's test organization's id | the local test organization's id |
+| `THINGSPACE_CALLBACK_ALLOWED_IPS` | var | the eight addresses | the eight addresses during bring-up, `""` after cutover | `"127.0.0.1,::1"` |
+| `NIDD_ALLOWED_ORG_IDS` | secret (8.1), a var in dev only | not in `[vars]` | not in `[vars]` | the local test organization's id |
 | `THINGSPACE_LOGIN_EPOCH` | var | `"1"` | `"1"` | `"1"` |
 | `THINGSPACE` | Durable Object binding | `ThingSpaceSession` | same | same |
 
@@ -1269,14 +1271,16 @@ answers 503 `not_configured` whenever `THINGSPACE_CALLBACK_ALLOWED_IPS` is empty
 staging loses its account name, API secrets and callback password, not only its allowlist (8.5),
 and dev never holds ThingSpace API secrets.
 
-`NIDD_ALLOWED_ORG_IDS` is the create gate of 4.6: comma-separated organization ids, empty denying
-every Nidd create. `THINGSPACE_LOGIN_EPOCH` is folded into the login latch's fingerprint (8.3);
+`NIDD_ALLOWED_ORG_IDS` is the create gate of 4.6: comma-separated organization ids, unset or empty
+denying every Nidd create. dovecote reads it with `Env::var`, which returns a secret as readily as
+a `[vars]` entry. `THINGSPACE_LOGIN_EPOCH` is folded into the login latch's fingerprint (8.3);
 bumping it is how a false latch is cleared without rotating a Verizon credential.
 
 `dovecote/wrangler.toml` edits:
 
-- The three vars in all three blocks (`[vars]` at `:102`, `[env.staging.vars]` at `:338`,
-  `[env.dev.vars]` at `:446`), under a comment block modelled on `COAP_SERVICE_ALLOWED_IPS`'s
+- The allowlist and the epoch in all three blocks, the org list in `[env.dev.vars]` only
+  (`[vars]` at `:102`, `[env.staging.vars]` at `:338`, `[env.dev.vars]` at `:446`), under a
+  comment block modelled on `COAP_SERVICE_ALLOWED_IPS`'s
   (`:92-101`), saying why the allowlist is its own var, what the org list and the epoch do, and
   naming the six secrets.
 - The binding `{ name = "THINGSPACE", class_name = "ThingSpaceSession" }` beside `PIGEONS` in all
@@ -1321,7 +1325,8 @@ object and are never logged.
 4. Read `login_failures`. Its fingerprint is `SHA-256(salt, login_epoch, 0x00, public_key, 0x00,
    private_key, 0x00, uws_username, 0x00, uws_password)`, `login_epoch` being the plain
    `THINGSPACE_LOGIN_EPOCH` var. A fingerprint that does not match is discarded: the credentials or
-   the epoch changed. A match with `count >= 2`: `latched`, no request.
+   the epoch changed. A match with `count >= 2`: `latched`, no request. A read that fails:
+   `unreachable`, no request, since a login it let through could be past the latch.
 5. Stale access token: `get_access_token`; `access_expires_at = now + expires_in`. Stale session:
    `get_session_token`. Each call is raced against a 10-second `Delay`, the pattern at
    `dovecote/src/helpers/turnstile.rs:118-132`; the SDK takes no abort signal, so a timed-out
@@ -1465,9 +1470,9 @@ by running the script again, and 24 hours after any run that set
 `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS` the owner deletes it.
 
 **Cutover to production**, each step on the owner's word: put the six production secrets
-(`wrangler secret put` with no `--env`, production being the default environment); commit the
-eight addresses into production's `[vars]` allowlist and JES's organization ids into its
-`NIDD_ALLOWED_ORG_IDS`, and deploy; run the script with `env_flag=()` and the URL
+(`wrangler secret put` with no `--env`, production being the default environment) and its
+`NIDD_ALLOWED_ORG_IDS` from `secrets.env`; deploy, production's `[vars]` already carrying the
+eight addresses; run the script with `env_flag=()` and the URL
 `https://api.pidgeiot.com/internal/thingspace/nidd`, then steps 7 and 8; then delete staging's
 `THINGSPACE_ACCOUNT_NAME`, its four API secrets and its callback password (`wrangler secret delete
 <NAME> --env staging`), set its allowlist back to `""`, and deploy staging. From then on staging
