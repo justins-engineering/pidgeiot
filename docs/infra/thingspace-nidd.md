@@ -126,7 +126,9 @@ done
 
 ## 2. Register the listener
 
-Registering displaces whatever holds `NiddService` on the account. Save the script as a file
+Registering displaces whatever holds `NiddService` on the account. It does not move the
+account's global Callback URL, which the ThingSpace portal holds and delivery follows; change
+that too when the environment changes (see Cutover, step 3). Save the script as a file
 outside the repository, set `env_flag` and `url` for the environment, and run it with `bash` from
 the repository root:
 
@@ -304,7 +306,11 @@ the same floor at its first NIDD deploy.
    addresses in `THINGSPACE_CALLBACK_ALLOWED_IPS`; re-read Verizon's list first and commit any
    change.
 3. Run the registration script with `env_flag=()` and
-   `url=https://api.pidgeiot.com/internal/thingspace/nidd`, then steps 7 and 8.
+   `url=https://api.pidgeiot.com/internal/thingspace/nidd`, then set the account's global
+   Callback URL in the ThingSpace portal to the same URL, keeping its password. The API
+   registration moves the `NiddService` record, but delivery follows the portal's global URL:
+   until it is changed the carrier keeps posting to the old environment, which refuses a device
+   claimed on the new one. Then steps 7 and 8.
 4. Take NIDD off staging entirely: delete its account name, its four API secrets, its callback
    password, its `NIDD_ALLOWED_ORG_IDS` (and `THINGSPACE_CALLBACK_PASSWORD_PREVIOUS`, if still set)
    with
