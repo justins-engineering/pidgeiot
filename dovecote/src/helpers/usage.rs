@@ -986,7 +986,7 @@ fn org_cap(owned: impl IntoIterator<Item = BillingPlan>) -> EntitlementCap {
 /// Whether this user may create another organization. Counts the ones
 /// they own, not the ones they belong to: being invited into somebody
 /// else's organization spends none of their own allowance, and deleting
-/// an organization frees its slot again.
+/// the free organization frees its slot again.
 ///
 /// Each owned organization is read at its own served tier through
 /// `effective_plan`, so a lapsed subscription or an unreadable comp

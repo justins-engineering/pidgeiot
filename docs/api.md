@@ -539,7 +539,7 @@ tier; `403` when it already owns one (see [Per-tier limits](#per-tier-limits)). 
 on a live subscription or a complimentary tier do not count, and one whose subscription has
 lapsed counts as free, since it is served free. Only organizations this person *owns* count,
 so belonging to somebody else's spends none of their allowance. To add one, upgrade the free
-organization you have. Deleting an organization frees its slot.
+organization you have. Deleting the free organization frees its slot.
 
 #### `GET /orgs`
 
