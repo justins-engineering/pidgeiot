@@ -1273,6 +1273,11 @@ classified from it. Every route that returns a stored pigeon carries it. The bad
 `DeviceState` alert credit the stamp with that minute when they classify, so a short
 `telemetry_interval` does not read a device in steady contact as stale between two stamps.
 
+`telemetry_interval_secs` is the `telemetry_interval` in the shadow's `current_config`, the
+cadence the device is running, carried beside `last_seen_at` so the flock list classifies it
+against the same interval the pigeon page and the alert do. It is absent while unset (the badge
+then falls back to five and thirty minutes) and on the pigeon a create returns.
+
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>'
@@ -1417,8 +1422,9 @@ registered again; see [NIDD SIM changes and deletion](#nidd-sim-changes-and-dele
 Bulk-fetches up to 48 pigeons by ID in parallel, skipping any the caller isn't authorized for,
 that don't exist, or that couldn't be reached (never errors on an individual bad ID — the
 response is just shorter than the request). Body: a plain JSON array of pigeon ID strings.
-`400` if more than 48 are requested. Each pigeon carries the same `last_seen_at` as
-[`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id), which is what the flock list classifies from.
+`400` if more than 48 are requested. Each pigeon carries the same `last_seen_at` and
+`telemetry_interval_secs` as [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id), which are what
+the flock list classifies from.
 
 **An ID absent from the response is a per-pigeon failure, not an empty result.** The response
 carries no marker for it, so subtract the response from what you asked for and show the

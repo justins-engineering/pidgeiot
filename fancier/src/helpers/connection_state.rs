@@ -39,14 +39,15 @@ pub fn classify(
   capsules::connection_state::classify(last_seen, interval_secs, now)
 }
 
-/// A pigeon's state from its own `last_seen_at`, for the views that hold no
-/// shadow: the flock list and the fleet dashboard. Without a
-/// `current_config` they classify against the default thresholds.
+/// A pigeon's state from its own `last_seen_at` and running
+/// `telemetry_interval`, for the views that hold no shadow: the flock list
+/// and the fleet dashboard. The pigeon page calibrates from the same
+/// interval, so the two agree on the same stamp.
 pub fn contact_state(pigeon: &Pigeon, now: OffsetDateTime) -> ConnectionState {
   classify(
     pigeon.suspended_at.is_some(),
     contact_until(pigeon.last_seen_at, None),
-    None,
+    pigeon.telemetry_interval_secs,
     now,
   )
 }
@@ -159,6 +160,24 @@ mod classify_tests {
     );
     assert_eq!(contact_state(&seen(1), now), ConnectionState::Online);
     assert_eq!(contact_state(&seen(40), now), ConnectionState::Offline);
+  }
+
+  #[test]
+  fn contact_state_calibrates_from_the_running_interval_like_the_page() {
+    let now = datetime!(2026-10-16 18:30:00 UTC);
+    let slow = Pigeon {
+      last_seen_at: Some(now - time::Duration::seconds(400)),
+      telemetry_interval_secs: Some(600),
+      ..Pigeon::default()
+    };
+    let page = classify(
+      false,
+      contact_until(slow.last_seen_at, None),
+      Some(600),
+      now,
+    );
+    assert_eq!(contact_state(&slow, now), ConnectionState::Online);
+    assert_eq!(contact_state(&slow, now), page);
   }
 
   #[test]

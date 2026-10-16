@@ -228,6 +228,10 @@ pub struct PigeonRow {
   // absent from a fresh pigeon's `RETURNING` row.
   #[serde(default)]
   pub last_seen_at: Option<f64>,
+  // The shadow's `current_config` text, read beside `last_seen_at` only for
+  // the `telemetry_interval` that calibrates it; never sent as-is.
+  #[serde(default)]
+  pub current_config: Option<String>,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
   pub updated_at: i64,
   #[serde(deserialize_with = "deserialize_unix_float_to_i64")]
@@ -255,6 +259,10 @@ impl From<PigeonRow> for Pigeon {
       last_seen_at: row
         .last_seen_at
         .and_then(|t| OffsetDateTime::from_unix_timestamp(t as i64).ok()),
+      telemetry_interval_secs: row
+        .current_config
+        .and_then(|raw| JsonString::new(raw).ok())
+        .and_then(|config| connection_state::telemetry_interval_secs(&config)),
       updated_at: OffsetDateTime::from_unix_timestamp(row.updated_at)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH),
       created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
@@ -293,6 +301,10 @@ pub struct Pigeon {
     skip_serializing_if = "Option::is_none"
   )]
   pub last_seen_at: Option<OffsetDateTime>,
+  /// The `telemetry_interval` the device is running, which calibrates how `last_seen_at` is
+  /// classified (`connection_state::classify`); absent when unset or on a fresh pigeon.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub telemetry_interval_secs: Option<i64>,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
@@ -313,6 +325,7 @@ impl Default for Pigeon {
       board: None,
       suspended_at: None,
       last_seen_at: None,
+      telemetry_interval_secs: None,
       updated_at: OffsetDateTime::UNIX_EPOCH,
       created_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -1037,6 +1050,26 @@ mod pigeon_last_seen_tests {
     assert_eq!(
       Pigeon::from(row(r#","last_seen_at":1760000000"#)).last_seen_at,
       Some(OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap())
+    );
+  }
+
+  #[test]
+  fn the_running_interval_rides_the_row_and_nothing_else_does() {
+    let interval = |extra: &str| Pigeon::from(row(extra)).telemetry_interval_secs;
+    assert_eq!(interval(""), None);
+    assert_eq!(interval(r#","current_config":null"#), None);
+    assert_eq!(interval(r#","current_config":"{}""#), None);
+    assert_eq!(interval(r#","current_config":"not json""#), None);
+    let running = r#","current_config":"{\"telemetry_interval\":600,\"log\":\"inf\"}""#;
+    assert_eq!(interval(running), Some(600));
+
+    let json = serde_json::to_string(&Pigeon::from(row(running))).unwrap();
+    assert!(json.contains(r#""telemetry_interval_secs":600"#));
+    assert!(!json.contains("current_config"));
+    assert!(
+      !serde_json::to_string(&Pigeon::default())
+        .unwrap()
+        .contains("telemetry_interval")
     );
   }
 }

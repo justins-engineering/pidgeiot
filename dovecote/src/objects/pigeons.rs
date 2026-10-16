@@ -34,9 +34,12 @@ use worker::{
 /// silently go missing from one of the near-identical queries.
 const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, suspended_at, updated_at, created_at";
 
-/// Appended to `PIGEON_COLUMNS` on the reads that answer the dashboard. Not on `RETURNING` (a
-/// fresh pigeon has no stamp) nor on the reads that never answer with a `Pigeon`.
-const LAST_SEEN_COLUMN: &str = "(SELECT at FROM pigeon_seen) AS last_seen_at";
+/// Appended to `PIGEON_COLUMNS` on the reads that answer the dashboard: the contact stamp and the
+/// running config whose `telemetry_interval` calibrates it, so the flock list classifies exactly
+/// as the pigeon page does. Not on `RETURNING` (a fresh pigeon has neither) nor on the reads that
+/// never answer with a `Pigeon`.
+const CONTACT_COLUMNS: &str = "(SELECT at FROM pigeon_seen) AS last_seen_at,
+  (SELECT current_config FROM pigeon_shadow) AS current_config";
 
 // A missing DEVICE_API_HOST binding should degrade to prod's own host
 // rather than emit a garbage endpoint.
@@ -854,7 +857,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -879,7 +882,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   let mut pigeon = match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1313,7 +1316,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       }
 
       match pigeons.sql.exec(
-        &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
+        &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1561,7 +1564,7 @@ async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Respon
 /// any reason to hand one back.
 fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS}, {LAST_SEEN_COLUMN} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
