@@ -1262,18 +1262,18 @@ Returns `capsules::Pigeon` with the connector token/PSK stripped. For `Nidd`, `c
 keeps `endpoint` and `imei`, with `token` empty and `claim_key` null; the same holds for every
 route that returns a stored pigeon.
 
-`last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339
-stamp: every device route that answers after a valid token (a shadow poll or report, telemetry,
-a log upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that parses, and a
-NIDD uplink from the claimed device. A request refused `401`, or one the pigeon's object fails
-with a `5xx`, is not contact; one refused `400`, `404`, `413` or `429` after a valid token is,
-and so is one the gateway fails after the object accepted it. A binary, oversized, over-rate or
-unparseable WebSocket frame closes the socket without a stamp. It is absent until the first contact, and
-written at most once a minute, so it can trail the device by up to 60 seconds. It is read from
-the pigeon's own Durable Object, so no query cache applies; the dashboard's connection badge is
-classified from it. Every route that returns a stored pigeon carries it. The badge and the
-`DeviceState` alert credit the stamp with that minute when they classify, so a short
-`telemetry_interval` does not read a device in steady contact as stale between two stamps.
+`last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339 stamp:
+every device route that answers after a valid token (a shadow poll or report, telemetry, a log
+upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that parses, and a NIDD uplink
+from the claimed device. A request refused `401`, or one the pigeon's object fails with a `5xx`, is
+not contact; one refused `400`, `404`, `413` or `429` after a valid token is, and so is one the
+gateway fails after the object accepted it. A binary, oversized, over-rate or unparseable WebSocket
+frame closes the socket without a stamp. It is absent until the first contact, and written at most
+once a minute, so it can trail the device by up to 60 seconds. It is read from the pigeon's own
+Durable Object, so no query cache applies; the dashboard's connection badge is classified from it.
+Every route that returns a stored pigeon carries it. The badge and the `DeviceState` alert credit
+the stamp with that minute when they classify, so a short `telemetry_interval` does not read a
+device in steady contact as stale between two stamps.
 
 `telemetry_interval_secs` is the `telemetry_interval` in the shadow's `current_config`, the
 cadence the device is running, carried beside `last_seen_at` so the flock list classifies it
@@ -2180,12 +2180,12 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   is best-effort: a write lost to a Postgres or queue failure leaves it at the previous stamp until
   the device's next contact due one, which for a device that calls in every 15 minutes is 15
   minutes later.
-- `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
-  this long. Contact without a report does not hold this off: a device that polls while its
-  telemetry has stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
-  the window crossed — an outage is reported within one sweep period of the window elapsing, not
-  two. Evaluation is a sample rather than a scan of history, so a silence that both crosses the
-  window and ends between two sweeps is not reported at all.
+- `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least this
+  long. Contact without a report does not hold this off: a device that polls while its telemetry has
+  stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first
+  sweep that sees the window crossed — an outage is reported within one sweep period of the window
+  elapsing, not two. Evaluation is a sample rather than a scan of history, so a silence that both
+  crosses the window and ends between two sweeps is not reported at all.
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window.
 
