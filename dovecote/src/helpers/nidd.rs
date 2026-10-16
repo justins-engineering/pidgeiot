@@ -51,6 +51,15 @@ pub const HEADER_REQUEST_ID: &str = "X-Nidd-Request-Id";
 pub const HEADER_INGEST: &str = "X-Nidd-Ingest";
 /// The line the uplink came from, when the callback named one.
 pub const HEADER_LINE: &str = "X-Nidd-Line";
+/// Internal header on the callback route's answer when a stored frame is billed, valued as
+/// `SEEN_HEADER` is (`<count> <pigeon id>`); `main` strips it and bills after the response, so
+/// ThingSpace's acknowledgement never waits on Postgres.
+pub const HEADER_BILLED: &str = "X-Nidd-Billed";
+
+/// Billable messages one stored `LOG` frame counts. None yet: Verizon does not bill NIDD frames
+/// and PidgeIoT has not priced logs, so the callback route's billing hook stays idle until this
+/// changes.
+pub const NIDD_LOG_BILLED_MESSAGES: u32 = 0;
 
 /// Lowercase hex characters that end every platform frame: the first 8 bytes of HMAC-SHA256.
 pub const NIDD_TAG_CHARS: usize = 16;
@@ -1038,9 +1047,11 @@ mod tests {
   }
 
   #[test]
-  fn log_pauses_with_ingest() {
+  fn log_pauses_with_ingest_and_bills_nothing() {
     assert!(is_ingest(FRAME_TELEMETRY) && is_ingest(FRAME_SHADOW_REPORT) && is_ingest(FRAME_LOG));
     assert!(!is_ingest(FRAME_HELLO) && !is_ingest(0x05));
+    // Unbilled by decision: changing this is a pricing change, not a code fix.
+    assert_eq!(NIDD_LOG_BILLED_MESSAGES, 0);
   }
 
   /// The table docs/api.md and `~/pigeon`'s tests share, so the C encoder and this decoder agree
