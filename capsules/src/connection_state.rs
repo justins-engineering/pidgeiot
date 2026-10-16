@@ -22,8 +22,7 @@
 // "seen" right after someone edits its config. This is self-correcting
 // (the timestamp doesn't keep advancing, so the pigeon falls back to
 // stale/offline once the classification window elapses).
-use crate::{JsonString, TelemetryHistoryPoint};
-use std::collections::HashMap;
+use crate::JsonString;
 use time::OffsetDateTime;
 
 /// Fallback thresholds used when a pigeon's shadow has no
@@ -95,6 +94,22 @@ pub fn latest_of(
   times.into_iter().flatten().max()
 }
 
+/// Least time between two `pigeons.last_seen_at` stamps of one pigeon. A contact inside it writes
+/// nothing, so a device in steady contact leaves a stamp up to this old.
+pub const LAST_SEEN_STAMP_SECS: i64 = 60;
+
+/// The contact `classify` should judge: the caller's own `evidence`, or the `last_seen_at`
+/// `stamp` credited with the window the device may have been in unstamped contact through, so a
+/// short `telemetry_interval` does not read a live device as stale between stamps. People are
+/// shown the raw times, never this one.
+pub fn contact_until(
+  stamp: Option<OffsetDateTime>,
+  evidence: Option<OffsetDateTime>,
+) -> Option<OffsetDateTime> {
+  let credited = stamp.map(|t| t + time::Duration::seconds(LAST_SEEN_STAMP_SECS));
+  latest_of([credited, evidence])
+}
+
 /// Classifies a pigeon's connection state from its most recent "seen"
 /// signal and (if known) its own reporting cadence. Clock skew tolerance:
 /// a `last_seen` in the future (device clock ahead of the dashboard's) is
@@ -147,27 +162,6 @@ pub fn format_last_seen(last_seen: Option<OffsetDateTime>, now: OffsetDateTime) 
   } else {
     format!("{}d ago", age_secs / 86400)
   }
-}
-
-/// Per-pigeon last-seen map from one flock-scoped telemetry history query
-/// (`GET /flocks/:id/telemetry/history`) -- deliberately the only fetch
-/// the flock pigeon-list makes for this feature (see `fancier`'s
-/// `views/pigeons.rs`): no per-pigeon fan-out, no shadow/log signals, just
-/// the newest `reported_at` per `pigeon_id` within whatever window the
-/// caller queried.
-pub fn latest_seen_by_pigeon(points: &[TelemetryHistoryPoint]) -> HashMap<String, OffsetDateTime> {
-  let mut latest: HashMap<String, OffsetDateTime> = HashMap::new();
-  for point in points {
-    latest
-      .entry(point.pigeon_id.clone())
-      .and_modify(|t| {
-        if point.reported_at > *t {
-          *t = point.reported_at;
-        }
-      })
-      .or_insert(point.reported_at);
-  }
-  latest
 }
 
 #[cfg(test)]
@@ -327,22 +321,17 @@ mod tests {
   }
 
   #[test]
-  fn latest_seen_by_pigeon_takes_the_max_per_pigeon() {
-    fn point(pigeon_id: &str, reported_at: OffsetDateTime) -> TelemetryHistoryPoint {
-      TelemetryHistoryPoint {
-        pigeon_id: pigeon_id.to_string(),
-        key: "battery_mv".to_string(),
-        value: "4000".to_string(),
-        value_num: Some(4000.0),
-        reported_at,
-      }
-    }
-    let t1 = datetime!(2026-07-18 10:00:00 UTC);
-    let t2 = datetime!(2026-07-18 11:00:00 UTC);
-    let points = vec![point("a", t1), point("a", t2), point("b", t1)];
-    let latest = latest_seen_by_pigeon(&points);
-    assert_eq!(latest.get("a"), Some(&t2));
-    assert_eq!(latest.get("b"), Some(&t1));
-    assert_eq!(latest.get("c"), None);
+  fn a_stamp_inside_its_window_keeps_a_short_interval_online() {
+    let now = datetime!(2026-10-16 18:30:00 UTC);
+    let ago = |secs| Some(now - time::Duration::seconds(secs));
+    // Ten-second cadence, telemetry held, still polling: the stamp is up to a minute old.
+    let held = contact_until(ago(55), ago(45 * 60));
+    assert_eq!(classify(held, Some(10), now), ConnectionState::Online);
+    // Once silent past the window it ages like any other signal.
+    let dead = contact_until(ago(LAST_SEEN_STAMP_SECS + 51), None);
+    assert_eq!(classify(dead, Some(10), now), ConnectionState::Offline);
+    // Newer evidence wins, and nothing at all is still never seen.
+    assert_eq!(contact_until(ago(600), ago(5)), ago(5));
+    assert_eq!(contact_until(None, None), None);
   }
 }

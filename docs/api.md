@@ -1262,6 +1262,24 @@ Returns `capsules::Pigeon` with the connector token/PSK stripped. For `Nidd`, `c
 keeps `endpoint` and `imei`, with `token` empty and `claim_key` null; the same holds for every
 route that returns a stored pigeon.
 
+`last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339 stamp:
+every device route that answers after a valid token (a shadow poll or report, telemetry, a log
+upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that parses, and a NIDD uplink
+from the claimed device. A request refused `401`, or one the pigeon's object fails with a `5xx`, is
+not contact; one refused `400`, `404`, `413` or `429` after a valid token is, and so is one the
+gateway fails after the object accepted it. A binary, oversized, over-rate or unparseable WebSocket
+frame closes the socket without a stamp. It is absent until the first contact, and written at most
+once a minute, so it can trail the device by up to 60 seconds. It is read from the pigeon's own
+Durable Object, so no query cache applies; the dashboard's connection badge is classified from it.
+Every route that returns a stored pigeon carries it. The badge and the `DeviceState` alert credit
+the stamp with that minute when they classify, so a short `telemetry_interval` does not read a
+device in steady contact as stale between two stamps.
+
+`telemetry_interval_secs` is the `telemetry_interval` in the shadow's `current_config`, the
+cadence the device is running, carried beside `last_seen_at` so the flock list classifies it
+against the same interval the pigeon page and the alert do. It is absent while unset (the badge
+then falls back to five and thirty minutes) and on the pigeon a create returns.
+
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
   -H 'Cookie: ory_kratos_session=<session_token>'
@@ -1372,7 +1390,8 @@ Propagation: the ingest-time definition lookup is a Hyperdrive-cached read, so a
 arriving within about a minute of a toggle can still be evaluated the old way; after a suspend
 that means a `Threshold`/`RateOfChange`/`DeviceState` condition still true can restart its
 episode against the reset state and send one more "firing" mail before the hold takes effect.
-The sweep, which decides `MissingReport`, reads fresh. The dashboard's connection badge shows
+The sweep, which decides `MissingReport`, reads through the same minute-long cache but runs
+every five minutes, so its next run sees the hold. The dashboard's connection badge shows
 `Suspended` in place of the online/stale/offline classification.
 
 ```sh
@@ -1406,7 +1425,9 @@ registered again; see [NIDD SIM changes and deletion](#nidd-sim-changes-and-dele
 Bulk-fetches up to 48 pigeons by ID in parallel, skipping any the caller isn't authorized for,
 that don't exist, or that couldn't be reached (never errors on an individual bad ID — the
 response is just shorter than the request). Body: a plain JSON array of pigeon ID strings.
-`400` if more than 48 are requested.
+`400` if more than 48 are requested. Each pigeon carries the same `last_seen_at` and
+`telemetry_interval_secs` as [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id), which are what
+the flock list classifies from.
 
 **An ID absent from the response is a per-pigeon failure, not an empty result.** The response
 carries no marker for it, so subtract the response from what you asked for and show the
@@ -2152,12 +2173,19 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
   this long. A state has to survive a 60-second debounce before it fires, which in practice means
-  two consecutive sweeps.
-- `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least
-  this long. `max_silence_secs` is itself the debounce, so this fires on the first sweep that sees
-  the window crossed — an outage is reported within one sweep period of the window elapsing, not
-  two. Evaluation is a sample rather than a scan of history, so a silence that both crosses the
-  window and ends between two sweeps is not reported at all.
+  two consecutive sweeps. The state is classified from the newest of the pigeon's reports and its
+  `last_seen_at`, so a device that only polls its shadow or downloads firmware is not Offline. The
+  sweep reads the Postgres copy of the stamp, which can trail the device by about two minutes (the
+  stamp's own minute plus Hyperdrive's minute-long read cache) while its writes succeed. The copy
+  is best-effort: a write lost to a Postgres or queue failure leaves it at the previous stamp until
+  the device's next contact due one, which for a device that calls in every 15 minutes is 15
+  minutes later.
+- `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least this
+  long. Contact without a report does not hold this off: a device that polls while its telemetry has
+  stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first
+  sweep that sees the window crossed — an outage is reported within one sweep period of the window
+  elapsing, not two. Evaluation is a sample rather than a scan of history, so a silence that both
+  crosses the window and ends between two sweeps is not reported at all.
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window.
 
@@ -2800,6 +2828,8 @@ A copy of this catalog (anchored at the frontend origin) is also served statical
 
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
 `Authorization: Bearer <device_token>` — see [Device authentication](#device-authentication-bearer-token). None of these accept or check a Kratos session.
+Every request one of them accepts stamps the pigeon's `last_seen_at` (see
+[`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id)).
 
 ### Device shadow
 

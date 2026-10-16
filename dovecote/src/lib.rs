@@ -1,7 +1,7 @@
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
-  INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
+  INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal, SEEN_HEADER,
   STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
   TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite,
   allowed_alert_recipients, apply_subscription, attach_stripe_customer, authenticate_browser,
@@ -21,15 +21,16 @@ use crate::helpers::{
   list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
   load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
   load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
-  nidd_uplink_via_do, notify_contact_submission, org_role_of, pigeon_move_shares_owner,
-  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  nidd_uplink_via_do, notify_contact_submission, org_role_of, parse_seen_header,
+  pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
-  resolve_checkout_prices, revoke_invite, root_url, send_feedback_email, send_invite_email,
-  send_ops_email, sha256_hex, store_contact_submission, store_dashboard_state, stripe_configured,
-  sync_customer_tax_identity, update_alert_definition, update_organization, update_pigeon_pg_db,
+  resolve_checkout_prices, revoke_invite, root_url, seen_of, send_feedback_email,
+  send_invite_email, send_ops_email, set_seen, sha256_hex, stamp_last_seen,
+  store_contact_submission, store_dashboard_state, stripe_configured, sync_customer_tax_identity,
+  update_alert_definition, update_organization, update_pigeon_pg_db,
   update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
   update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
   verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
@@ -997,8 +998,11 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
 
   let line = callback_line(&callback);
   let dispatched = nidd_uplink_via_do(&obj_id, &frame, &request_id, paused, line.as_deref()).await;
+  // The object decides whether this uplink is due a contact stamp; `main` writes it.
+  let mut seen = None;
   let stored = match dispatched {
     Ok(mut response) => {
+      seen = seen_of(&response);
       let status = response.status_code();
       let body = response.text().await.unwrap_or_default();
       match status {
@@ -1040,7 +1044,9 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         &outcome
       };
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
-      Response::ok("").unwrap().with_cors(&cors)
+      let acknowledged = Response::ok("").unwrap();
+      set_seen(acknowledged.headers(), seen.as_deref());
+      acknowledged.with_cors(&cors)
     }
     Err(outcome) => {
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
@@ -1082,13 +1088,31 @@ async fn terms_assent_response(
   response.with_cors(cors)
 }
 
+/// Turns a pigeon object's `SEEN_HEADER` into its Postgres stamp, made after the response so a
+/// device never waits on it, and strips the header so it never leaves dovecote. Here rather than
+/// per route because only `main` holds the `Context`.
+fn stamp_seen_after_response(ctx: &Context, env: Env, response: &mut Response) {
+  let Ok(Some(value)) = response.headers().get(SEEN_HEADER) else {
+    return;
+  };
+  if let Err(e) = response.headers_mut().delete(SEEN_HEADER) {
+    console_error!("Failed to strip the device contact stamp header: {e}");
+  }
+  let Some((pigeon_id, at)) = parse_seen_header(&value) else {
+    return;
+  };
+  let pigeon_id = pigeon_id.to_string();
+  ctx.wait_until(async move { stamp_last_seen(&env, &pigeon_id, at).await });
+}
+
 #[event(fetch, respond_with_errors)]
-async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
+async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> {
   // Used only by the catch-all panic guard below, after `env` is moved
   // into `.run()` — every route closure computes its own from `ctx.env`
   // instead (see `build_cors`), since a single `Cors` can't be shared
   // by-reference across multiple `async move` closures.
   let fallback_cors = build_cors(&env, &req);
+  let stamp_env = env.clone();
 
   // Only enforced when CF_ACCESS_AUD/CF_ACCESS_CERTS_URL are configured
   // (staging's uploaded-version vars) — dev and production don't set
@@ -1224,6 +1248,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
       // confirmation.
       count_billable_messages(&ctx.env, &pigeon_id, 1).await;
 
+      let seen = seen_of(&do_response);
       let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
 
       match get_db_client(&ctx.env).await {
@@ -1235,7 +1260,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         Err(err) => console_error!("Sync skipped: Hyperdrive connection failed: {err}"),
       }
 
-      Response::from_json(&shadow)?.with_cors(&cors)
+      let response = Response::from_json(&shadow)?;
+      set_seen(response.headers(), seen.as_deref());
+      response.with_cors(&cors)
     })
     // Real-time channel for non-cellular (WiFi/mains-powered) devices -- a
     // persistent, hibernation-backed WebSocket in place of the poll/report
@@ -1386,6 +1413,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           }
           return verify_resp.with_cors(&cors);
         }
+        // The verify hop decided the contact stamp, and every answer below replaces its response.
+        let seen = seen_of(&verify_resp);
 
         // Free-tier fuse, checked after auth so only a real device ever
         // sees it: a free account past its monthly message allowance gets
@@ -1397,9 +1426,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           check_ingest_fuse(&ctx.env, &pigeon_id).await,
           IngestFuse::Pause
         ) {
-          return Response::error(INGEST_PAUSED_MESSAGE, 429)
-            .unwrap()
-            .with_cors(&cors);
+          let paused = Response::error(INGEST_PAUSED_MESSAGE, 429).unwrap();
+          set_seen(paused.headers(), seen.as_deref());
+          return paused.with_cors(&cors);
         }
 
         // Pre-serialize the readings here: a Vec round-tripped through
@@ -1426,19 +1455,21 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           pre_merged: false,
           metrics_json: String::new(),
           previous_values_json: None,
+          // The verify hop's header carries this route's stamp to `main`.
+          seen_at: None,
         };
 
         if telemetry_queue.send(message).await.is_err() {
           console_error!("Failed to enqueue telemetry for pigeon {pigeon_id}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          // The object already advanced its stamp, so the mirror write must not be dropped too.
+          let failed = Response::error("Internal Server Error", 500).unwrap();
+          set_seen(failed.headers(), seen.as_deref());
+          return failed.with_cors(&cors);
         }
 
-        Response::ok("{}")
-          .unwrap()
-          .with_status(202)
-          .with_cors(&cors)
+        let accepted = Response::ok("{}").unwrap().with_status(202);
+        set_seen(accepted.headers(), seen.as_deref());
+        accepted.with_cors(&cors)
       },
     )
     .post_async("/device/pigeons/:pigeon_id/logs", |req, ctx| async move {
@@ -1525,13 +1556,18 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           return do_response.with_cors(&cors);
         }
 
+        let seen = seen_of(&do_response);
+        // The object already advanced its stamp, so a refusal of our own still carries it.
+        let refuse = |message: &str, status: u16| {
+          let response = Response::error(message, status).unwrap();
+          set_seen(response.headers(), seen.as_deref());
+          response.with_cors(&cors)
+        };
         let target = parse_do_response::<FirmwareTarget>(do_response).await?;
 
         let Ok(bucket) = ctx.env.bucket("FIRMWARE_BUCKET") else {
           console_error!("Failed to bind FIRMWARE_BUCKET");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         let object_key = format!("firmware/{}.bin", target.sha256);
@@ -1542,23 +1578,17 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         let Ok(Some(object)) = get_builder.execute().await else {
           console_error!("Firmware object missing from R2: {object_key}");
-          return Response::error("Not Found: Firmware object missing from storage", 404)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Not Found: Firmware object missing from storage", 404);
         };
 
         let Some(body) = object.body() else {
           console_error!("R2 object body unexpectedly absent for {object_key}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         let Ok(response_body) = body.response_body() else {
           console_error!("Failed to build streamed response body for {object_key}");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         // target.size is the total from the pigeon's own shadow — treated as
@@ -1575,6 +1605,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         ok &= headers.set("X-Firmware-Sha256", &target.sha256).is_ok();
         ok &= headers.set("X-Firmware-Version", &target.version).is_ok();
         ok &= headers.set("X-Firmware-Size", &total.to_string()).is_ok();
+        set_seen(&headers, seen.as_deref());
 
         let status = match range {
           Some(r) => {
@@ -1595,9 +1626,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
         if !ok {
           console_error!("Failed to set one or more firmware response headers");
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         }
 
         let Ok(builder) = ResponseBuilder::new()
@@ -1605,9 +1634,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
           .with_headers(headers)
           .with_cors(&cors)
         else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
+          return refuse("Internal Server Error", 500);
         };
 
         Ok(builder.body(response_body))
@@ -6143,7 +6170,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 
   // Global Framework Escape Catchment Guard
   match router.await {
-    Ok(response) => Ok(response),
+    Ok(mut response) => {
+      stamp_seen_after_response(&ctx, stamp_env, &mut response);
+      Ok(response)
+    }
     Err(err) => {
       console_error!("Gateway Isolation Panic Intercepted: {:?}", err);
       Response::error("Internal Server Error", 500)

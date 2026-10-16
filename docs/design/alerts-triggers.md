@@ -269,10 +269,10 @@ an existing cron.
 
 Design: run every few minutes, query Postgres for every `alert_definitions` row
 with a `MissingReport` condition (`enabled = true`), resolve each to its
-scope's pigeon(s), and check "last seen" the same way the flock pigeon-list view
-already does — `query_telemetry_history_for_flock` (or a new equivalent scoped
-query) feeding `capsules::connection_state::latest_seen_by_pigeon` (post-move,
-§1.3) — rather than fanning out to every pigeon's own DO individually (expensive
+scope's pigeon(s), and check "last seen" from Postgres — one query per pigeon
+(`resolve_pigeon_last_seen`) reading its reports and its mirrored
+`pigeons.last_seen_at`, classified through `capsules::connection_state`
+(post-move, §1.3) — rather than fanning out to every pigeon's own DO individually (expensive
 at fleet scale, and exactly the kind of per-DO fan-out `tenancy-isolation.md`
 already flagged as a cost worth avoiding for the analogous per-flock-database
 Greptime option). Feed the result through the same `alert_state`

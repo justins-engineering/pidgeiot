@@ -34,6 +34,13 @@ use worker::{
 /// silently go missing from one of the near-identical queries.
 const PIGEON_COLUMNS: &str = "id, flock_id, serial, name, tags, connector, token_expires_at, telemetry_endpoint, board, suspended_at, updated_at, created_at";
 
+/// Appended to `PIGEON_COLUMNS` on the reads that answer the dashboard: the contact stamp and the
+/// running config whose `telemetry_interval` calibrates it, so the flock list classifies exactly
+/// as the pigeon page does. Not on `RETURNING` (a fresh pigeon has neither) nor on the reads that
+/// never answer with a `Pigeon`.
+const CONTACT_COLUMNS: &str = "(SELECT at FROM pigeon_seen) AS last_seen_at,
+  (SELECT current_config FROM pigeon_shadow) AS current_config";
+
 // A missing DEVICE_API_HOST binding should degrade to prod's own host
 // rather than emit a garbage endpoint.
 const DEFAULT_DEVICE_API_HOST: &str = "api.pidgeiot.com";
@@ -185,6 +192,135 @@ fn one_row<T: serde::de::DeserializeOwned>(cursor: &worker::SqlCursor) -> Result
     Some(row) => Ok(row),
     None => Err(worker::Error::RustError("Pigeon not found".into())),
   }
+}
+
+#[derive(serde::Deserialize)]
+struct SeenRow {
+  at: Option<f64>,
+}
+
+/// The stored contact stamp, `None` before the first. A failed read is logged and also `None`.
+fn read_device_seen(sql: &SqlStorage, query: &str) -> Option<i64> {
+  match sql
+    .exec(query, None)
+    .and_then(|cursor| cursor.to_array::<SeenRow>())
+  {
+    Ok(rows) => rows
+      .into_iter()
+      .next()
+      .and_then(|row| row.at)
+      .map(|at| at as i64),
+    Err(e) => {
+      console_error!("Pigeon contact stamp READ error: {e}");
+      None
+    }
+  }
+}
+
+fn write_device_seen(sql: &SqlStorage, at: i64) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_seen (id, at) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET at = excluded.at;",
+    vec![(at as f64).into()],
+  )?;
+  Ok(())
+}
+
+/// Seeds an empty stamp from the evidence this object held before the stamp existed: the newest
+/// telemetry reading, the newest log chunk, and the shadow's `updated_at` once a device has
+/// reported into it. Without it every pigeon would read "never seen" until its next contact, and
+/// a dead one forever. Writes nothing while there is no evidence at all.
+///
+/// Telemetry is judged by its readings' own `reported_at`, not the blob row's `updated_at`: the
+/// legacy fold in `new` rewrites that row at wake, which would seed a dead pigeon as just seen.
+fn seed_device_seen(pigeons: &Pigeons) {
+  let sql = &pigeons.sql;
+  if read_device_seen(sql, "SELECT at FROM pigeon_seen;").is_some() {
+    return;
+  }
+
+  let mut newest = read_device_seen(
+    sql,
+    "SELECT received_at AS at FROM pigeon_log_chunks ORDER BY id DESC LIMIT 1;",
+  );
+  match read_telemetry_blob(sql) {
+    Ok(blob) => newest = newest.max(blob.values().map(|entry| entry.reported_at).max()),
+    Err(e) => console_error!("Pigeon contact stamp seed: telemetry READ error: {e}"),
+  }
+  // An empty table is a deleted or not yet created pigeon, which has no shadow evidence.
+  if let Ok(shadow) = read_shadow(pigeons)
+    && !capsules::connection_state::has_never_reported(
+      shadow.current_version,
+      &shadow.current_config,
+    )
+  {
+    newest = newest.max(Some(shadow.updated_at));
+  }
+
+  if let Some(at) = newest
+    && let Err(e) = write_device_seen(sql, at)
+  {
+    console_error!("Pigeon contact stamp seed error: {e}");
+  }
+}
+
+/// Records a device contact and answers the stamp when one is due (see `seen_stamp_due`), which
+/// is when the Postgres mirror must be written. Nothing is awaited between the read and the
+/// write, so two contacts interleaving in this object cannot both stamp, and the stamp is
+/// persisted, so the throttle holds across an eviction.
+fn note_device_seen(pigeons: &Pigeons) -> Option<i64> {
+  let now = (Date::now().as_millis() / 1000) as i64;
+  let prev = read_device_seen(&pigeons.sql, "SELECT at FROM pigeon_seen;");
+  if !crate::helpers::seen_stamp_due(prev, now) {
+    return None;
+  }
+  match write_device_seen(&pigeons.sql, now) {
+    Ok(()) => Some(now),
+    Err(e) => {
+      console_error!("Pigeon contact stamp WRITE error: {e}");
+      None
+    }
+  }
+}
+
+/// The routes a device itself calls. The consumer's `/telemetry/write` and `/endpoint` hops are
+/// not device contact: they replay a report the verify hop already counted.
+fn is_device_contact_path(path: &str) -> bool {
+  matches!(
+    path,
+    "/pigeon/device/shadow"
+      | "/pigeon/device/shadow/report"
+      | "/pigeon/device/ws"
+      | "/pigeon/device/firmware/target"
+      | "/pigeon/device/telemetry"
+      | "/pigeon/device/telemetry/verify"
+      | "/pigeon/device/logs"
+  )
+}
+
+/// Whether a device route's answer means the device proved itself. `is_authorized_device` runs
+/// first in every device handler and is the only source of 401 there, so anything below 500 but
+/// 401 came after a good token: a refused report is still a live device.
+fn counts_as_contact(status: u16) -> bool {
+  status != 401 && status < 500
+}
+
+/// Records a device contact on the answer to it and, when the mirror is due, sets the
+/// `SEEN_HEADER` the gateway turns into the Postgres write.
+fn stamp_contact(pigeons: &Pigeons, response: &Response) {
+  if let Some(at) = note_device_seen(pigeons) {
+    let value = crate::helpers::seen_header_value(&pigeons.state.id().to_string(), at);
+    crate::helpers::set_seen(response.headers(), Some(&value));
+  }
+}
+
+/// `stamp_contact` for a device route's answer that `counts_as_contact`.
+fn mark_device_contact(pigeons: &Pigeons, response: Result<Response>) -> Result<Response> {
+  let response = response?;
+  if counts_as_contact(response.status_code()) {
+    stamp_contact(pigeons, &response);
+  }
+  Ok(response)
 }
 
 impl DurableObject for Pigeons {
@@ -378,19 +514,35 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_nidd table");
 
-    Pigeons {
+    // When a device was last in contact, in its own row for the telemetry blob's billing reason:
+    // the rowid key carries no index, and `pigeons` is left alone because its `set_updated_at`
+    // trigger would turn every stamp into a second written row and a moving `updated_at`. No
+    // foreign key to `pigeons`, so `delete` wipes it explicitly.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_seen (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          at INTEGER NOT NULL
+        );",
+        None,
+      )
+      .expect("created pigeon_seen table");
+
+    let pigeons = Pigeons {
       sql,
       state,
       env,
       shell_waiters: RefCell::new(HashMap::new()),
       nidd_in_flight: NiddInFlight::default(),
-    }
+    };
+    seed_device_seen(&pigeons);
+    pigeons
   }
 
   async fn fetch(&self, req: Request) -> Result<Response> {
     let path = req.path();
 
-    match path.as_str() {
+    let response = match path.as_str() {
       "/pigeon/get" => get(self, req).await,
       "/pigeon/detail" => get_detail(self, req).await,
       "/pigeon/create" => create(self, req).await,
@@ -427,7 +579,12 @@ impl DurableObject for Pigeons {
       "/pigeon/nidd/uplink" => nidd_uplink(self, req).await,
       "/pigeon/nidd/missed" => nidd_missed(self),
       _ => Response::error("Not Found", 404),
+    };
+
+    if is_device_contact_path(&path) {
+      return mark_device_contact(self, response);
     }
+    response
   }
 
   /// Runs for every frame on a hibernation-accepted socket, including ones
@@ -472,6 +629,9 @@ impl DurableObject for Pigeons {
       }
     };
 
+    // Any frame that parses is the device alive, whatever becomes of it below.
+    let seen = note_device_seen(self);
+
     // Only the two frames that tally a billable message are fused; a
     // paused account can still ping and still answer a shell command,
     // neither of which is billed or stored.
@@ -481,12 +641,15 @@ impl DurableObject for Pigeons {
         Some(WS_CLOSE_INGEST_PAUSED),
         Some("free tier message allowance exhausted"),
       );
+      if let Some(at) = seen {
+        send_seen(self, at).await;
+      }
       return Ok(());
     }
 
-    match frame {
+    let carried = match frame {
       WsInboundFrame::Telemetry { metrics, reports } => {
-        handle_ws_telemetry(self, metrics, reports).await
+        handle_ws_telemetry(self, metrics, reports, seen).await
       }
       WsInboundFrame::ShadowReport {
         current_version,
@@ -499,20 +662,31 @@ impl DurableObject for Pigeons {
             current_config,
           },
         )
-        .await
+        .await;
+        false
       }
       WsInboundFrame::Ping => {
         if let Err(e) = ws.send(&WsOutboundFrame::Pong) {
           console_error!("WS: pong send failed for pigeon {}: {e}", self.state.id());
         }
+        false
       }
-      WsInboundFrame::Pong => {}
+      WsInboundFrame::Pong => false,
       WsInboundFrame::ShellOutput {
         request_id,
         output,
         exit_code,
         truncated,
-      } => handle_ws_shell_output(self, &request_id, output, exit_code, truncated),
+      } => {
+        handle_ws_shell_output(self, &request_id, output, exit_code, truncated);
+        false
+      }
+    };
+
+    if let Some(at) = seen
+      && !carried
+    {
+      send_seen(self, at).await;
     }
 
     Ok(())
@@ -683,7 +857,7 @@ async fn get(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -708,7 +882,7 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
   let mut pigeon = match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1142,7 +1316,7 @@ async fn refresh_token(pigeons: &Pigeons, req: Request) -> Result<Response> {
       }
 
       match pigeons.sql.exec(
-        &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+        &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
         None,
       ) {
         Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1218,8 +1392,8 @@ async fn get_device_psk_internal(pigeons: &Pigeons, _req: Request) -> Result<Res
 /// empty — so this wipes every row this DO owns instead. `pigeon_shadow`
 /// cascades via its foreign key; the tables scoped to this DO's single
 /// pigeon rather than keyed by pigeon id — `pigeon_acl`,
-/// `pigeon_telemetry_latest`, `pigeon_log_chunks` and `pigeon_nidd` — have
-/// none, so each is cleared explicitly.
+/// `pigeon_telemetry_latest`, `pigeon_log_chunks`, `pigeon_nidd` and
+/// `pigeon_seen` — have none, so each is cleared explicitly.
 async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
@@ -1250,6 +1424,13 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   // starts unclaimed.
   if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_nidd;", None) {
     console_error!("Pigeon NIDD state delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // A Nidd pigeon recreated under the same IMEI reuses this object, and must not inherit the
+  // old device's contact.
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_seen;", None) {
+    console_error!("Pigeon contact stamp delete execution error: {e}");
     return Response::error("Internal Server Error", 500);
   }
 
@@ -1383,7 +1564,7 @@ async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Respon
 /// any reason to hand one back.
 fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
   match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS} FROM pigeons LIMIT 1;"),
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
     None,
   ) {
     Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
@@ -1975,14 +2156,18 @@ async fn sync_shadow_report(env: &Env, pigeon_id: &str, shadow: &PigeonShadow) {
 /// flat `metrics` map, or a `reports` batch. The batch form is what makes
 /// this endpoint the cheap path for a bridge relaying many devices'
 /// readings -- one frame, one merge, one queue message.
+///
+/// Answers whether a due contact stamp (`seen_at`) went out with the readings, so the caller
+/// sends it alone otherwise.
 async fn handle_ws_telemetry(
   pigeons: &Pigeons,
   metrics: std::collections::HashMap<String, String>,
   reports: Vec<capsules::TelemetryReading>,
-) {
+  seen_at: Option<i64>,
+) -> bool {
   let body = if reports.is_empty() {
     if metrics.is_empty() {
-      return;
+      return false;
     }
     capsules::TelemetryReportBody::Flat(metrics)
   } else {
@@ -1994,11 +2179,47 @@ async fn handle_ws_telemetry(
   // 400. Dropping one frame beats closing a working socket over a report
   // the device can simply send fewer keys or fewer readings in. A failure
   // was logged where it happened.
-  if let TelemetryOutcome::Rejected(message) = ingest_telemetry(pigeons, body, "WS").await {
-    console_error!(
-      "WS telemetry: rejected report from pigeon {}: {message}",
-      pigeons.state.id()
-    );
+  match ingest_telemetry(pigeons, body, "WS", seen_at).await {
+    TelemetryOutcome::Stored => true,
+    TelemetryOutcome::Rejected(message) => {
+      console_error!(
+        "WS telemetry: rejected report from pigeon {}: {message}",
+        pigeons.state.id()
+      );
+      false
+    }
+    TelemetryOutcome::Failed => false,
+  }
+}
+
+/// Hands a WebSocket contact stamp to the queue consumer on a message of its own, so this object
+/// never opens Hyperdrive for it: a connection opened here can bill duration for minutes, which
+/// at one stamp a minute would keep a hibernating socket's object awake. Dev has no queue and
+/// writes directly, as `ingest_telemetry` does.
+async fn send_seen(pigeons: &Pigeons, at: i64) {
+  let pigeon_id = pigeons.state.id().to_string();
+  match pigeons.env.queue("TELEMETRY_QUEUE") {
+    Ok(queue) => {
+      let message = TelemetryMessage {
+        pigeon_id,
+        reported_at_ms: Date::now().as_millis(),
+        readings_json: None,
+        pre_merged: false,
+        metrics_json: String::new(),
+        previous_values_json: None,
+        seen_at: Some(at),
+      };
+      if let Err(e) = queue.send(message).await {
+        console_error!(
+          "WS contact stamp: enqueue failed for pigeon {}: {e}",
+          pigeons.state.id()
+        );
+      }
+    }
+    Err(_) if crate::helpers::is_local_dev(&pigeons.env) => {
+      crate::helpers::stamp_last_seen(&pigeons.env, &pigeon_id, at).await;
+    }
+    Err(e) => console_error!("WS contact stamp: TELEMETRY_QUEUE unavailable ({e})"),
   }
 }
 
@@ -2017,11 +2238,13 @@ enum TelemetryOutcome {
 /// store synchronously first (like every telemetry entry point), then either enqueues onto
 /// `TELEMETRY_QUEUE` for the shared consumer path (see `queue.rs`), or -- with no queue bound
 /// (dev) -- writes history directly so these surfaces don't silently skip what the HTTP route
-/// would have recorded. `source` names the surface in log lines.
+/// would have recorded. `source` names the surface in log lines. A `seen_at` contact stamp rides
+/// the same message, or is written directly in dev, whenever the outcome is `Stored`.
 async fn ingest_telemetry(
   pigeons: &Pigeons,
   body: capsules::TelemetryReportBody,
   source: &str,
+  seen_at: Option<i64>,
 ) -> TelemetryOutcome {
   let now_secs = (Date::now().as_millis() / 1000) as i64;
   let mut readings = match crate::helpers::readings_from_body(body, now_secs) {
@@ -2061,6 +2284,7 @@ async fn ingest_telemetry(
         pre_merged: true,
         metrics_json: String::new(),
         previous_values_json: None,
+        seen_at,
       };
 
       if queue.send(message).await.is_err() {
@@ -2099,6 +2323,9 @@ async fn ingest_telemetry(
         crate::helpers::check_telemetry_alerts_batch(&pigeons.env, &pigeon_id, &readings).await
       {
         console_error!("{source} telemetry: alert evaluation failed for pigeon {pigeon_id}: {e}");
+      }
+      if let Some(at) = seen_at {
+        crate::helpers::stamp_last_seen(&pigeons.env, &pigeon_id, at).await;
       }
       TelemetryOutcome::Stored
     }
@@ -3174,7 +3401,8 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
     Uplink::Hello(presented) => {
       let Some(presented) = hello_key(presented) else {
-        return finish_nidd_uplink(pigeons, row, key, "rejected", identity, None, None);
+        let contact = nidd_is_contact("rejected", on_claimed_line);
+        return finish_nidd_uplink(pigeons, row, key, "rejected", contact, identity, None, None);
       };
       let claim_key = identity.as_ref().and_then(|found| found.claim_key);
       if claim_key.is_some_and(|expected| constant_time_eq(&expected, &presented)) {
@@ -3224,7 +3452,8 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
         Ok(body) => {
           // Nothing awaited since the wait loop found no attempt, so none can hold the frame.
           pigeons.nidd_in_flight.claim(&key);
-          let result = ingest_telemetry(pigeons, body, "NIDD").await;
+          // The callback route stamps NIDD contact at the gateway.
+          let result = ingest_telemetry(pigeons, body, "NIDD", None).await;
           // Before any early return below, or a waiting retry would never be answered.
           let decided = !matches!(result, TelemetryOutcome::Failed);
           pigeons.nidd_in_flight.settle(&key, decided);
@@ -3247,7 +3476,10 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
               console_error!(
                 "NIDD uplink: state READ error for pigeon {pigeon_id} after {outcome}: {e}"
               );
-              return Response::ok(outcome);
+              // Still the claimed device on its line, whatever became of the frame.
+              let response = Response::ok(outcome)?;
+              stamp_contact(pigeons, &response);
+              return Ok(response);
             }
           };
           outcome
@@ -3326,11 +3558,13 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     row.pushed_at = 0;
     downlink = None;
   }
+  let contact = nidd_is_contact(outcome, on_claimed_line);
   finish_nidd_uplink(
     pigeons,
     row,
     key,
     outcome,
+    contact,
     identity,
     stored_report,
     downlink,
@@ -3367,15 +3601,27 @@ fn nidd_missed(pigeons: &Pigeons) -> Result<Response> {
   }
 }
 
+/// Whether an uplink is device contact for `last_seen_at`: a HELLO that proved the claim key, or
+/// any frame the claimed line sent, refused or not, as an HTTPS 400 after a valid token is.
+/// `unclaimed` proves no key, and `duplicate` (answered before this) is ThingSpace retrying a
+/// callback already counted.
+fn nidd_is_contact(outcome: &str, on_claimed_line: bool) -> bool {
+  outcome == "claimed" || (on_claimed_line && outcome != "unclaimed")
+}
+
 /// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
 /// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
 /// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
-/// outcome and still runs the tail, so a stored report is billed and synced.
+/// outcome and still runs the tail, so a stored report is billed and synced. A `contact` uplink
+/// (`nidd_is_contact`) carries the `SEEN_HEADER` when a stamp is due, which the callback route
+/// copies onto its own answer for `main` to write.
+#[allow(clippy::too_many_arguments)]
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,
   key: String,
   outcome: &str,
+  contact: bool,
   identity: Option<NiddIdentity>,
   stored_report: Option<PigeonShadow>,
   downlink: Option<NiddDownlink>,
@@ -3392,7 +3638,11 @@ fn finish_nidd_uplink(
     }
   }
   spawn_nidd_tail(pigeons, identity, stored_report, downlink);
-  Response::ok(outcome)
+  let response = Response::ok(outcome)?;
+  if contact {
+    stamp_contact(pigeons, &response);
+  }
+  Ok(response)
 }
 
 /// Runs what an uplink or a dashboard write leaves for after the response, in order: the planned
@@ -3484,8 +3734,46 @@ async fn send_nidd_downlink(
 
 #[cfg(test)]
 mod tests {
-  use super::{awaiting, build_nidd_endpoint, host_without_port};
+  use super::{
+    awaiting, build_nidd_endpoint, counts_as_contact, host_without_port, is_device_contact_path,
+    nidd_is_contact,
+  };
   use capsules::PigeonShadow;
+
+  #[test]
+  fn nidd_contact_outcomes() {
+    for outcome in ["claimed", "stored", "paused", "repeat", "rejected"] {
+      assert!(nidd_is_contact(outcome, true), "{outcome}");
+    }
+    assert!(!nidd_is_contact("unclaimed", true));
+    // Before the claim only a HELLO with the key proves the device.
+    assert!(nidd_is_contact("claimed", false));
+    for outcome in ["unclaimed", "rejected"] {
+      assert!(!nidd_is_contact(outcome, false), "{outcome}");
+    }
+  }
+
+  #[test]
+  fn only_authenticated_device_answers_count_as_contact() {
+    for status in [101, 200, 202, 206, 400, 404, 413, 429] {
+      assert!(counts_as_contact(status), "{status}");
+    }
+    for status in [401, 500, 503] {
+      assert!(!counts_as_contact(status), "{status}");
+    }
+    assert!(is_device_contact_path("/pigeon/device/shadow"));
+    assert!(is_device_contact_path("/pigeon/device/telemetry/verify"));
+    for path in [
+      "/pigeon/get",
+      "/pigeon/token/refresh",
+      "/pigeon/internal/psk",
+      "/pigeon/device/telemetry/write",
+      "/pigeon/device/telemetry/endpoint",
+      "/pigeon/nidd/uplink",
+    ] {
+      assert!(!is_device_contact_path(path), "{path}");
+    }
+  }
 
   #[test]
   fn the_nidd_endpoint_names_verizons_apn() {

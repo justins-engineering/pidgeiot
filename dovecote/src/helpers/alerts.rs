@@ -85,7 +85,8 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
       ALTER TABLE alert_definitions ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
       ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;
-      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;",
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;",
     )
     .await
     .map_err(|e| {
@@ -850,10 +851,16 @@ fn evaluate_ingest_condition(
 /// resolved entirely from Postgres, via `resolve_pigeon_last_seen` below:
 /// `pigeon_shadow.updated_at` (filtered through
 /// `connection_state::has_never_reported`, same rule `fancier`'s
-/// `PigeonView` already applies) merged with the newest
-/// `pigeon_telemetry_history` row, through the same
-/// `connection_state::classify`/`latest_of` this crate shares with
-/// `fancier`'s connection badge (`capsules::connection_state`).
+/// `PigeonView` already applies), the newest `pigeon_telemetry_history`
+/// row and the forwarded-report stamp merge into the pigeon's last
+/// *report*, which `MissingReport` judges. `DeviceState` judges its last
+/// *contact*: the report merged with `pigeons.last_seen_at`, so a device
+/// that only polls or downloads firmware is not Offline. Both go
+/// through the same `connection_state::classify`/`latest_of` this crate
+/// shares with `fancier`'s connection badge (`capsules::connection_state`).
+/// The Postgres stamp trails the device by up to a minute and Hyperdrive's
+/// read cache by up to another, so a sweep can see contact about two
+/// minutes late.
 ///
 /// Known gap, documented rather than silently accepted: a pigeon with a
 /// user-configured `telemetry_endpoint` never gets a row in
@@ -921,46 +928,11 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
         }
       };
 
-      let is_true = match &def.condition {
-        AlertCondition::DeviceState {
-          state,
-          min_duration_secs,
-        } => {
-          let classified = connection_state::classify(seen.last_seen, seen.interval_secs, now);
-          let target = match state {
-            ConnectionStateKind::Offline => ConnectionState::Offline,
-            ConnectionStateKind::Stale => ConnectionState::Stale,
-          };
-          let mut matched = classified == target;
-          if matched {
-            if let Some(min_secs) = min_duration_secs {
-              // How long the pigeon has been silent doubles as "how long
-              // it's been in this state" -- it entered Offline/Stale the
-              // moment it stopped reporting, so the age of its last-seen
-              // signal already is that duration.
-              let age_secs = seen
-                .last_seen
-                .map(|t| (now - t).whole_seconds())
-                .unwrap_or(i64::MAX);
-              matched = age_secs >= *min_secs;
-            }
-          }
-          matched
-        }
-        AlertCondition::MissingReport { max_silence_secs } => match seen.last_seen {
-          None => true,
-          Some(t) => (now - t).whole_seconds() >= *max_silence_secs,
-        },
-        // The query above only ever selects DeviceState/MissingReport
-        // definitions -- Threshold/RateOfChange never reach this loop, but
-        // the match stays exhaustive rather than reaching for a wildcard
-        // arm that would silently swallow a future variant too.
-        AlertCondition::Threshold { .. } | AlertCondition::RateOfChange { .. } => continue,
+      let Some((is_true, last_seen)) = condition_holds(&def.condition, &seen, now) else {
+        continue;
       };
 
-      let observation = AlertObservation::Silence {
-        last_seen: seen.last_seen,
-      };
+      let observation = AlertObservation::Silence { last_seen };
       if let Err(e) =
         apply_alert_transition(&client, env, &def, &pigeon_id, is_true, &observation, now).await
       {
@@ -1010,15 +982,62 @@ async fn resolve_scope_pigeon_ids(client: &Client, scope: &AlertScope) -> Result
   }
 }
 
-/// One pigeon's merged "last seen" signal + its own reporting cadence, as
+/// One pigeon's merged "last seen" signals + its own reporting cadence, as
 /// resolved from Postgres for `evaluate_scheduled_alerts` -- see that
 /// function's doc comment for the merge rule and its documented gap
 /// (telemetry-endpoint-forwarding pigeons).
 struct PigeonLastSeen {
-  last_seen: Option<OffsetDateTime>,
+  /// Newest report: a shadow report-back, a stored telemetry row, a forwarded report.
+  last_report: Option<OffsetDateTime>,
+  /// `pigeons.last_seen_at`: every accepted device contact, polls included.
+  last_seen_at: Option<OffsetDateTime>,
   interval_secs: Option<i64>,
   /// An operator holds this pigeon out of evaluation (`pigeons.suspended_at`).
   suspended: bool,
+}
+
+/// Whether a scheduled condition holds for one pigeon at `now`, with the signal it judged (which
+/// the alert mail reports as last seen); `None` for the ingest-time conditions.
+fn condition_holds(
+  condition: &AlertCondition,
+  seen: &PigeonLastSeen,
+  now: OffsetDateTime,
+) -> Option<(bool, Option<OffsetDateTime>)> {
+  match condition {
+    AlertCondition::DeviceState {
+      state,
+      min_duration_secs,
+    } => {
+      let last_seen = connection_state::latest_of([seen.last_report, seen.last_seen_at]);
+      let contact = connection_state::contact_until(seen.last_seen_at, seen.last_report);
+      let classified = connection_state::classify(contact, seen.interval_secs, now);
+      let target = match state {
+        ConnectionStateKind::Offline => ConnectionState::Offline,
+        ConnectionStateKind::Stale => ConnectionState::Stale,
+      };
+      let mut matched = classified == target;
+      if matched && let Some(min_secs) = min_duration_secs {
+        // How long the pigeon has been silent doubles as "how long it's been in this state" --
+        // it entered Offline/Stale the moment it fell silent, so the age of its last contact
+        // already is that duration.
+        let age_secs = contact
+          .map(|t| (now - t).whole_seconds())
+          .unwrap_or(i64::MAX);
+        matched = age_secs >= *min_secs;
+      }
+      Some((matched, last_seen))
+    }
+    // Judged on reports, not contact: a device that polls but has stopped reporting is the
+    // stall this condition exists to catch.
+    AlertCondition::MissingReport { max_silence_secs } => {
+      let last_seen = seen.last_report;
+      let silent = last_seen.is_none_or(|t| (now - t).whole_seconds() >= *max_silence_secs);
+      Some((silent, last_seen))
+    }
+    // The sweep only ever selects DeviceState/MissingReport definitions, but the match stays
+    // exhaustive rather than reaching for a wildcard arm that would swallow a future variant.
+    AlertCondition::Threshold { .. } | AlertCondition::RateOfChange { .. } => None,
+  }
 }
 
 /// Resolves one pigeon's shadow + telemetry-history state in a single
@@ -1029,9 +1048,9 @@ struct PigeonLastSeen {
 /// `GROUP BY` always returns exactly one row, even when zero telemetry
 /// rows match, so `ON true` always finds a match -- this can only return
 /// `Ok(None)` when `pigeon_shadow` itself has no row, i.e. an already
-/// (or concurrently) deleted pigeon). Returns `Ok(Some(_))` with
-/// `last_seen: None` for a pigeon that has genuinely never reported
-/// anything, matching `classify`'s own `Unknown` handling.
+/// (or concurrently) deleted pigeon). Returns `Ok(Some(_))` with both
+/// signals `None` for a pigeon that has genuinely never been heard from,
+/// matching `classify`'s own `Unknown` handling.
 async fn resolve_pigeon_last_seen(
   client: &Client,
   pigeon_id: &str,
@@ -1040,7 +1059,7 @@ async fn resolve_pigeon_last_seen(
     .query_typed_opt(
       "SELECT s.current_version, s.current_config::text AS current_config,
               s.updated_at AS shadow_updated_at, t.last_at, p.last_forwarded_at,
-              p.suspended_at
+              p.suspended_at, p.last_seen_at
        FROM pigeon_shadow s
        LEFT JOIN pigeons p ON p.id = s.id
        LEFT JOIN (
@@ -1069,6 +1088,8 @@ async fn resolve_pigeon_last_seen(
   // so this stamp is the only signal its reports leave behind.
   let last_forwarded_at: Option<OffsetDateTime> = row.get("last_forwarded_at");
   let suspended_at: Option<OffsetDateTime> = row.get("suspended_at");
+  // Every accepted device contact, polls included, at most a minute behind the device.
+  let last_seen_at: Option<OffsetDateTime> = row.get("last_seen_at");
 
   let config = JsonString::new(current_config_raw).ok();
 
@@ -1081,12 +1102,11 @@ async fn resolve_pigeon_last_seen(
     .as_ref()
     .and_then(connection_state::telemetry_interval_secs);
 
+  let last_report =
+    connection_state::latest_of([shadow_last_seen, telemetry_last_at, last_forwarded_at]);
   Ok(Some(PigeonLastSeen {
-    last_seen: connection_state::latest_of([
-      shadow_last_seen,
-      telemetry_last_at,
-      last_forwarded_at,
-    ]),
+    last_report,
+    last_seen_at,
     interval_secs,
     suspended: suspended_at.is_some(),
   }))
@@ -1581,6 +1601,112 @@ async fn send_via_binding(
       message.push_str(&reason);
       Err(Error::RustError(message))
     }
+  }
+}
+
+#[cfg(test)]
+mod scheduled_condition_tests {
+  use super::{PigeonLastSeen, condition_holds};
+  use capsules::connection_state::{self, ConnectionState};
+  use capsules::{AlertCondition, ConnectionStateKind};
+  use time::{Duration, OffsetDateTime};
+
+  fn now() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap()
+  }
+
+  fn seen(report_ago: Option<i64>, contact_ago: Option<i64>) -> PigeonLastSeen {
+    let at = |ago: Option<i64>| ago.map(|secs| now() - Duration::seconds(secs));
+    PigeonLastSeen {
+      last_report: at(report_ago),
+      last_seen_at: at(contact_ago),
+      interval_secs: None,
+      suspended: false,
+    }
+  }
+
+  fn fires(condition: &AlertCondition, seen: &PigeonLastSeen) -> bool {
+    condition_holds(condition, seen, now()).unwrap().0
+  }
+
+  fn offline_for(min_secs: Option<i64>) -> AlertCondition {
+    AlertCondition::DeviceState {
+      state: ConnectionStateKind::Offline,
+      min_duration_secs: min_secs,
+    }
+  }
+
+  #[test]
+  fn device_state_reads_contact_not_reports() {
+    // Telemetry held for a 45-minute firmware download while the device kept polling.
+    let stalled = seen(Some(45 * 60), Some(30));
+    assert!(!fires(&offline_for(Some(1800)), &stalled));
+    assert!(!fires(&offline_for(None), &stalled));
+
+    let silent = seen(Some(45 * 60), Some(40 * 60));
+    let (holds, last_seen) = condition_holds(&offline_for(Some(1800)), &silent, now()).unwrap();
+    assert!(holds);
+    assert_eq!(last_seen, Some(now() - Duration::seconds(40 * 60)));
+  }
+
+  #[test]
+  fn missing_report_still_sees_a_telemetry_stall() {
+    let stalled = seen(Some(45 * 60), Some(30));
+    let condition = AlertCondition::MissingReport {
+      max_silence_secs: 1200,
+    };
+    let (holds, last_seen) = condition_holds(&condition, &stalled, now()).unwrap();
+    assert!(holds);
+    assert_eq!(last_seen, Some(now() - Duration::seconds(45 * 60)));
+  }
+
+  #[test]
+  fn a_pigeon_that_only_polled_counts_as_seen() {
+    let polled = seen(None, Some(30));
+    assert_eq!(
+      connection_state::classify(
+        connection_state::contact_until(polled.last_seen_at, polled.last_report),
+        polled.interval_secs,
+        now()
+      ),
+      ConnectionState::Online
+    );
+    assert!(!fires(&offline_for(None), &polled));
+
+    let never = seen(None, None);
+    assert_eq!(
+      connection_state::classify(
+        connection_state::contact_until(never.last_seen_at, never.last_report),
+        never.interval_secs,
+        now()
+      ),
+      ConnectionState::Unknown
+    );
+    assert!(!fires(&offline_for(None), &never));
+  }
+
+  #[test]
+  fn a_fresh_stamp_holds_a_short_interval_out_of_offline() {
+    // Ten-second cadence with telemetry held: only the stamp, up to a minute old, shows contact.
+    let held = PigeonLastSeen {
+      interval_secs: Some(10),
+      ..seen(Some(45 * 60), Some(55))
+    };
+    let stale = AlertCondition::DeviceState {
+      state: ConnectionStateKind::Stale,
+      min_duration_secs: None,
+    };
+    assert!(!fires(&offline_for(None), &held));
+    assert!(!fires(&stale, &held));
+
+    let gone = PigeonLastSeen {
+      interval_secs: Some(10),
+      ..seen(Some(45 * 60), Some(200))
+    };
+    let (holds, last_seen) = condition_holds(&offline_for(None), &gone, now()).unwrap();
+    assert!(holds);
+    // The mail reports the stamp itself, not the credited time.
+    assert_eq!(last_seen, Some(now() - Duration::seconds(200)));
   }
 }
 

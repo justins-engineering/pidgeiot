@@ -86,12 +86,9 @@ async fn fetch_history(path: &str) -> Option<TelemetryHistory> {
 /// Raw shape (`raw=true`): flat, truncating at
 /// `capsules::TELEMETRY_HISTORY_MAX_POINTS`. dovecote buckets by default
 /// now (see `get_history_buckets` below) -- this stays explicitly raw for
-/// the two callers that need real per-report values rather than a
-/// bucket's aggregate: `gps_track::gps_fixes_from_history` pairs
-/// `gps_lat`/`gps_lon` from the same report, which a bucket mean can't
-/// reconstruct, and `connection_state::latest_seen_by_pigeon` needs the
-/// true latest timestamp, not a bucket's start (which can understate
-/// "last seen" by up to one bucket width).
+/// callers that need real per-report values rather than a bucket's
+/// aggregate: `gps_track::gps_fixes_from_history` pairs `gps_lat`/`gps_lon`
+/// from the same report, which a bucket mean can't reconstruct.
 pub async fn get_history(
   pigeon_id: &str,
   since: OffsetDateTime,
