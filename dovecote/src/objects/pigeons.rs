@@ -2337,27 +2337,29 @@ struct TargetConfigRow {
   target_config: String,
 }
 
-/// Reads this pigeon's `target_config` and extracts the `firmware` key so
-/// the gateway can resolve which R2 object to stream in one DO round trip
-/// — the firmware bytes themselves never pass through this DO (SQLite is
-/// no place for MB-sized blobs). 404 when no firmware is assigned.
-async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+/// Why `read_firmware_target` found no usable target. Each is logged where it happens.
+enum FirmwareTargetError {
+  /// The shadow row, or the JSON in it, could not be read.
+  Read,
+  /// `target_config.firmware` is present but is not a `FirmwareTarget`.
+  Malformed,
+}
 
-  let target_config = match pigeons
-    .sql
-    .exec("SELECT target_config FROM pigeon_shadow LIMIT 1;", None)
-  {
+/// The `firmware` key of this pigeon's `target_config`, `None` when no firmware is assigned.
+fn read_firmware_target(
+  sql: &SqlStorage,
+) -> std::result::Result<Option<FirmwareTarget>, FirmwareTargetError> {
+  let target_config = match sql.exec("SELECT target_config FROM pigeon_shadow LIMIT 1;", None) {
     Ok(cursor) => match one_row::<TargetConfigRow>(&cursor) {
       Ok(row) => row.target_config,
       Err(e) => {
         console_error!("Shadow target_config READ error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return Err(FirmwareTargetError::Read);
       }
     },
     Err(e) => {
       console_error!("Shadow target_config READ error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return Err(FirmwareTargetError::Read);
     }
   };
 
@@ -2365,18 +2367,35 @@ async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<R
     Ok(v) => v,
     Err(e) => {
       console_error!("target_config JSON parse error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return Err(FirmwareTargetError::Read);
     }
   };
 
   let Some(firmware_value) = parsed.get("firmware") else {
-    return Response::error("Not Found: No firmware assigned to this pigeon", 404);
+    return Ok(None);
   };
 
   match serde_json::from_value::<FirmwareTarget>(firmware_value.clone()) {
-    Ok(target) => Response::from_json(&target),
+    Ok(target) => Ok(Some(target)),
     Err(e) => {
       console_error!("Malformed firmware target in shadow: {e}");
+      Err(FirmwareTargetError::Malformed)
+    }
+  }
+}
+
+/// Reads this pigeon's `target_config` and extracts the `firmware` key so
+/// the gateway can resolve which R2 object to stream in one DO round trip
+/// — the firmware bytes themselves never pass through this DO (SQLite is
+/// no place for MB-sized blobs). 404 when no firmware is assigned.
+async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  match read_firmware_target(&pigeons.sql) {
+    Ok(Some(target)) => Response::from_json(&target),
+    Ok(None) => Response::error("Not Found: No firmware assigned to this pigeon", 404),
+    Err(FirmwareTargetError::Read) => Response::error("Internal Server Error", 500),
+    Err(FirmwareTargetError::Malformed) => {
       Response::error("Bad Request: Malformed firmware target in shadow", 400)
     }
   }
