@@ -291,7 +291,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
 | NIDD status notices (`PAUSED`, `UNCLAIMED`) | 1 / hour, per pigeon | `helpers/nidd.rs::notice_due` |
 | Unsolicited NIDD shadow pushes | 1 / 15 min, per pigeon | `helpers/nidd.rs::shadow_push_due`; the newest target rides the next push or the next uplink's reply |
-| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails. A telemetry frame is also matched by its digest alone, so the carrier's second delivery of one send, posted under a new `requestId`, is a repeat too, waiting like a retry if the first is still being stored; a copy first dropped as unclaimed does not count |
+| NIDD uplink de-duplication window | The last 64 uplinks, per pigeon | `helpers/nidd.rs`; a repeat answers `200` and is neither stored nor billed. A retry arriving while its first attempt is still storing a telemetry frame waits for that attempt, and stores the frame itself if that attempt fails. A `TELEMETRY` or `LOG` frame is also matched by its digest alone, so the carrier's second delivery of one send, posted under a new `requestId`, is a repeat too, waiting like a retry if the first is still being stored; a copy first dropped as unclaimed does not count |
 | Pooled messages per billing period, for an account with no subscription to bill (free, or complimentary) | That account's served tier allowance (see [Billing](#billing)) | `helpers/usage.rs::check_ingest_fuse`; every device ingest surface `429`s past it (WebSocket: upgrade `429`, open socket closed `4029`) |
 | Devices per account | Served tier's included count, for an account with no subscription to bill (see [Per-tier limits](#per-tier-limits)) | `helpers/usage.rs::check_device_cap`, `403` at `POST /flock/pigeons` |
 | Seats per organization | Tier's seat count — members plus pending invites | `helpers/usage.rs::check_seat_cap`, `403` at `POST /orgs/:org_id/invites` |
@@ -2065,7 +2065,9 @@ Returns every currently-stored device log chunk for this pigeon, oldest first, a
 base64-encoded binary (see [device logs](#post-devicepigeonspigeon_idlogs) below for what's
 actually in them — dovecote treats the bytes as opaque). At most the 200 most recently received
 chunks are kept per pigeon; older ones are silently pruned on ingest, not deleted via this
-route.
+route. A `Nidd` pigeon's chunks come from its `LOG` frames instead, one chunk per frame and at
+most 1255 bytes each, already decoded to the records the device sent (see
+[NIDD frames](#nidd-frames)); the two kinds share the one ring buffer.
 
 ```sh
 curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/logs \
@@ -2980,7 +2982,8 @@ Ingests one binary log chunk — the request body **is** the chunk, sent as raw 
 wrapped in JSON, no base64 encoding needed on the way in — that only happens on the read side,
 `GET /pigeons/:pigeon_id/logs`). Intended for Zephyr's `CONFIG_LOG_DICTIONARY_SUPPORT`
 token-compressed log records, but dovecote never inspects the contents — it's opaque storage,
-decoded host-side against the firmware's own dictionary/ELF.
+decoded host-side against the firmware's own dictionary/ELF. A NIDD device has no IP route here
+and sends `LOG` frames instead, into the same store (see [NIDD frames](#nidd-frames)).
 
 - `400` if the body is empty.
 - `413 Payload Too Large` if the body exceeds 16 KiB (`capsules::MAX_LOG_CHUNK_BYTES`).
@@ -3407,8 +3410,8 @@ contract a NIDD device follows; the surface has no HTTP route of its own.
 A NIDD frame is the bytes the device hands `send()` on its raw socket, and the bytes ThingSpace's
 base64 `message` field decodes to on either leg. Byte 0 is the type; the rest is the body. There
 is no length field (the carrier delivers whole messages) and no version byte (a new shape is a new
-type). Only `TELEMETRY` carries a sequence number; replies name the shadow version they confirm,
-and a callback's resends repeat its `requestId`.
+type). Only `TELEMETRY` and `LOG` carry a sequence number; replies name the shadow version they
+confirm, and a callback's resends repeat its `requestId`.
 
 **No frame holds a NUL byte.** ThingSpace's send API refuses any message holding two adjacent NUL
 bytes (`400 NiddService.INPUT_INVALID.Message.AdjacentNullCharacters`), so a platform frame's
@@ -3417,16 +3420,18 @@ space between them and a newline after (`8 7\n`), at most 22 bytes. A version is
 2147483647, and a negative one, which only a misbehaving device can report, is sent as 0; a
 `STATUS` argument is 0 to 4294967295. The JSON a frame carries is serde_json's serialization,
 which escapes every control character. Device frames follow the same rule: `HELLO` carries the
-claim key as hex, a `TELEMETRY` sequence is decimal text, and JSON holds no NUL.
+claim key as hex, a `TELEMETRY` or `LOG` sequence is decimal text, JSON holds no NUL, and a `LOG`
+frame's binary records travel COBS-encoded, which holds none either.
 
-**A `TELEMETRY` frame opens with a send sequence**: after the type byte, one to ten decimal digits
-naming an unsigned 32-bit number and a newline (`3141592653\n`, at most 11 bytes), then the body.
-Start it at a random value at boot and add one per frame. The carrier can deliver one frame
-twice, and ThingSpace posts each delivery under a `requestId` of its own, so dovecote stores a
-telemetry frame it has already seen only once, matched by its bytes; the sequence is what keeps
-two sends of the same readings apart, and the random start does the same across reboots. A frame
-whose header does not parse is refused (`400` to ThingSpace) and never stored, so a device must
-send it. `HELLO` and `SHADOW_REPORT` carry none.
+**A `TELEMETRY` or `LOG` frame opens with a send sequence**: after the type byte, one to ten
+decimal digits naming an unsigned 32-bit number and a newline (`3141592653\n`, at most 11 bytes),
+then the body. Start it at a random value at boot and add one per frame, one counter across both
+types. The carrier can deliver one frame twice, and ThingSpace posts each delivery under a
+`requestId` of its own, so dovecote stores a `TELEMETRY` or `LOG` frame it has already seen only
+once, matched by its bytes; the sequence is what keeps two sends of the same readings or records
+apart, and the random start does the same across reboots. A frame whose header does not parse is
+refused (`400` to ThingSpace) and never stored, so a device must send it. `HELLO` and
+`SHADOW_REPORT` carry none.
 
 Every platform frame ends in a 16-character tag: the first 8 bytes of HMAC-SHA256 over every byte
 before it, keyed by the pigeon's 16-byte claim key, written as lowercase hex. The device drops a
@@ -3437,19 +3442,29 @@ tag.
 |---|---|---|---|
 | `0x01` | `TELEMETRY` | device to platform | Header `<sequence>\n`, then UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry) body: the flat map or `{"reports":[...]}` |
 | `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) body |
-| `0x03` | reserved | device to platform | Log upload, not offered |
+| `0x03` | `LOG` | device to platform | Header `<sequence>\n`, an encoding byte, then whole Zephyr dictionary log records in that encoding; stored as one chunk of [`GET /pigeons/:pigeon_id/logs`](#get-pigeonspigeon_idlogs) |
 | `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
 | `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
 | `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
 | `0x83` | reserved | platform to device | Application data, not offered |
+
+**A `LOG` body is an encoding byte, then the records.** `c` (`0x63`) is COBS: Consistent Overhead
+Byte Stuffing with no trailing `00` delimiter, since the carrier delimits frames. Each code byte
+c, never `00`, is followed by c - 1 data bytes and stands for a `00` after them, unless c is `ff`
+or the body ends there; so `11 22 00 33` travels as `03 11 22 02 33` and a lone `00` as `01 01`.
+`r` (`0x72`) is the records as they are, NULs included, kept for a carrier proven to pass a NUL
+uplink unaltered; Verizon's is not, so no device sends it. A device puts only whole records in a
+frame, at most 1255 bytes of them, which COBS turns into at most 1260; a body with no records, an
+unknown encoding byte or COBS that does not decode is dropped (`rejected`). The chunk stored is
+the decoded records, so the dashboard's log viewer reads NIDD chunks as it reads HTTPS ones.
 
 `STATUS` codes, written in the header in decimal:
 
 | Code | Name | `arg` | What the device does |
 |---|---|---|---|
 | `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
-| `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY` and `SHADOW_REPORT` that long, capped at 86400 |
-| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops billable sends until its next boot; on `0`, sends `HELLO` again, at most hourly |
+| `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY`, `SHADOW_REPORT` and `LOG` that long, capped at 86400 |
+| `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops `TELEMETRY`, `SHADOW_REPORT` and `LOG` until its next boot; on `0`, sends `HELLO` again, at most hourly |
 
 Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x05` upward,
 new platform frames `0x84` upward. An unknown type is logged and dropped by dovecote and ignored
@@ -3534,11 +3549,11 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 | A `HELLO` that matches | `SHADOW`, always: the device asked |
 | A shadow report from a device that is behind | `SHADOW` |
 | A shadow report from a converged device | `STATUS STORED <version>` |
-| Telemetry (a repeat included), or a billable frame while paused with no notice due, from a device still owed a shadow | `SHADOW`, unless the newest went out under 30 seconds ago and has not been reported missed |
+| Telemetry or a `LOG` (a repeat included), or an ingest frame while paused with no notice due, from a device still owed a shadow | `SHADOW`, unless the newest went out under 30 seconds ago and has not been reported missed |
 | A `HELLO` that does not match | `STATUS UNCLAIMED 1`, at most once an hour |
 | Any other frame from an unclaimed pigeon or an unpinned line | `STATUS UNCLAIMED 0`, at most once an hour |
-| A billable frame while the account is paused | `STATUS PAUSED 3600`, at most once an hour |
-| Telemetry from a converged device | None |
+| An ingest frame (`TELEMETRY`, `SHADOW_REPORT`, `LOG`) while the account is paused | `STATUS PAUSED 3600`, at most once an hour |
+| Telemetry or a `LOG` from a converged device | None |
 
 - **Pushes are bounded.** At most one unsolicited `SHADOW` per 15 minutes per pigeon, so an
   operator saving repeatedly does not flood a device; none at all while the device is converged.
@@ -3572,11 +3587,12 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
   a support resend repeats one; uplink is de-duplicated on the callback's `requestId` plus a
   digest of the frame, over the last 64 uplinks per pigeon. The carrier can also deliver one
   frame twice, which ThingSpace posts under a new `requestId`, two minutes later on the bench; a
-  `TELEMETRY` frame already received is answered as a repeat whatever its `requestId`, which is why
-  it carries a send sequence; one arriving while its first copy is still being stored waits for it,
-  and one whose first copy was dropped as unclaimed is judged afresh. A repeat is neither stored nor
-  billed, and, like any uplink from a device that is behind, carries the owed `SHADOW` when one is
-  due.
+  `TELEMETRY` or `LOG` frame already received is answered as a repeat whatever its `requestId`,
+  which is why both carry a send sequence; a `TELEMETRY` one arriving while its first copy is
+  still being stored waits for it (a `LOG` is stored without waiting on anything, so no copy can
+  arrive mid-store), and one whose first copy was dropped as unclaimed is judged afresh. A repeat is
+  neither stored nor billed, and, like any uplink from a device that is behind, carries the owed
+  `SHADOW` when one is due.
 - **The dashboard never waits on ThingSpace.** A shadow `PUT` answers before the frame is sent and
   never fails because of it. A delivery report changes only whether the next uplink repeats the
   push: `Delivered` means the network took the frame, not that the device has it, and the
@@ -3596,6 +3612,7 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
 | `TELEMETRY`, batch of ten realistic keys, 8 readings | 1435 | no |
 | `SHADOW_REPORT` at the library's default `CONFIG_PIGEON_SHADOW_CONFIG_MAX` | 385 | yes |
 | `HELLO` | 33 | yes |
+| `LOG`, 1255 bytes of records at COBS's worst case | 1273 | yes, by construction |
 | `SHADOW` with `target_config` at its cap | 1358 | yes, by construction |
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
 | `STATUS` | 21 to 30 | yes |
@@ -3632,6 +3649,11 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   hour for a paged push, and a reply riding its uplink's connection costs none.
 - **Batch readings.** Take readings as often as needed and send them with their `age_secs` inside
   one `TELEMETRY` frame per wake. Billing counts readings either way.
+- **Logs ride the telemetry wake.** The `pigeon` library sends its buffered log records as up to
+  `CONFIG_PIGEON_NIDD_LOG_FRAMES_PER_WAKE` `LOG` frames (default 1, at most 4) right after a
+  `TELEMETRY` frame that sent, inside the connection that frame opened, so they cost no radio
+  access of their own. It never sends logs on a timer, and a frame that fails to send drops the
+  records it carried.
 - **Hold the connection for the reply, then release it.** Any frame from a device that is behind
   can draw a `SHADOW`, which is reliable only while the connection that frame opened is up; on the
   bench each reply reached the device 1.1 to 4.7 seconds after its connection came up. So do not
@@ -3655,15 +3677,15 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
 
 - **What bills.** One billable message per telemetry reading (a batch of M readings is M, as on
   every surface) and per stored shadow report, once per send: a repeated callback, a telemetry
-  frame the carrier delivered twice, an identical report, a `HELLO` and every downlink are not
-  billed; downlinks are unmetered. A `Nidd` pigeon counts as a
+  frame the carrier delivered twice, an identical report, a `HELLO`, a `LOG` and every downlink
+  are not billed; downlinks are unmetered. A `Nidd` pigeon counts as a
   connected device in any period in which it sent a billable message, like every other pigeon.
-- **The free-tier fuse** runs at the gateway, before the Durable Object, on `TELEMETRY` and
-  `SHADOW_REPORT` frames, as it does for the HTTP telemetry route. It fails open, including when
-  the check takes longer than one second. A paused account's billable frame is dropped, the
-  callback still answering `200` because a retry could not change the outcome, and the device
-  is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no `429` for a device to
-  read; the notice is its equivalent.
+- **The free-tier fuse** runs at the gateway, before the Durable Object, on `TELEMETRY`,
+  `SHADOW_REPORT` and `LOG` frames, as it does for the HTTP telemetry route. It fails open,
+  including when the check takes longer than one second. A paused account's ingest frame, a `LOG`
+  included, is dropped, the callback still answering `200` because a retry could not change the
+  outcome, and the device is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no
+  `429` for a device to read; the notice is its equivalent.
 
 ### NIDD SIM changes and deletion
 
@@ -3820,27 +3842,27 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
 
 - `200`, empty body: processed, or deliberately dropped because a retry could not change the
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
-  over its free-tier allowance, a repeat of a callback already stored, a telemetry frame already
-  received under another `requestId` and not dropped as unclaimed there (the carrier delivered one
-  send twice), a frame whose body is malformed, over a cap or of an unknown type, a delivery report
-  (a `DeliveryFailed` or `Queued` one first marks the push it may have carried pending), a
-  configuration result, another account's callback, or an authenticated body of a shape dovecote
-  does not know.
-- `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` whose
-  sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable through
-  support once a parser is fixed; a `TELEMETRY` frame without a sequence is refused by design, so
-  a resend of one meets the same `400`.
+  over its free-tier allowance, a repeat of a callback already stored, a `TELEMETRY` or `LOG` frame
+  already received under another `requestId` and not dropped as unclaimed there (the carrier
+  delivered one send twice), a frame whose body is malformed, over a cap or of an unknown type, a
+  delivery report (a `DeliveryFailed` or `Queued` one first marks the push it may have carried
+  pending), a configuration result, another account's callback, or an authenticated body of a shape
+  dovecote does not know.
+- `400`: the body is not JSON, or carries no `password`, or its frame is a `TELEMETRY` or `LOG`
+  whose sequence header does not parse. ThingSpace keeps it in its 30-day archive, resendable
+  through support once a parser is fixed; such a frame without a sequence is refused by design,
+  so a resend of one meets the same `400`.
 - `403`: source address outside the allowlist, or a wrong password. **Never `401`**, for the same
   reason as [`POST /internal/consent`](#post-internalconsent).
 - `413`: body over 8 KiB.
 - `503`: NIDD is not configured in this environment (the callback password or the account name
-  is unset), or a store the uplink needs failed (the pigeon's Durable Object or the telemetry
-  queue). **The uplink is lost** unless ThingSpace's one retry, about a second later, succeeds:
-  ThingSpace documents three resends at five-minute intervals, but makes that single immediate
-  retry and no other. Each such answer is logged as lost with its `requestId`, the only handle
-  for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback that
-  was in fact stored is recognised by its `requestId` and frame digest and never stored or billed
-  twice, and one that arrives while the first attempt is still storing it waits for that
+  is unset), or a store the uplink needs failed (the pigeon's Durable Object, its log store or
+  the telemetry queue). **The uplink is lost** unless ThingSpace's one retry, about a second later,
+  succeeds: ThingSpace documents three resends at five-minute intervals, but makes that single
+  immediate retry and no other. Each such answer is logged as lost with its `requestId`, the only
+  handle for asking Verizon support to resend it from ThingSpace's archive. A retry of a callback
+  that was in fact stored is recognised by its `requestId` and frame digest and never stored or
+  billed twice, and one that arrives while the first attempt is still storing it waits for that
   attempt's outcome.
 
 

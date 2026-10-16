@@ -27,8 +27,8 @@ use crate::helpers::{
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
-  resolve_checkout_prices, revoke_invite, root_url, seen_of, send_feedback_email,
-  send_invite_email, send_ops_email, set_seen, sha256_hex, stamp_last_seen,
+  resolve_checkout_prices, revoke_invite, root_url, seen_header_value, seen_of,
+  send_feedback_email, send_invite_email, send_ops_email, set_seen, sha256_hex, stamp_last_seen,
   store_contact_submission, store_dashboard_state, stripe_configured, sync_customer_tax_identity,
   update_alert_definition, update_organization, update_pigeon_pg_db,
   update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
@@ -789,18 +789,20 @@ fn log_nidd_callback(
 ///
 /// A 2xx says the callback is handled, so it is answered only once a retry could not change the
 /// outcome: after the pigeon's Durable Object stored the uplink and enqueued its history, or for
-/// anything a retry would repeat identically. A `TELEMETRY` frame whose sequence header does not
-/// parse answers 400, as a body that is not JSON does. A store that failed, or a deploy with NIDD
-/// half configured, answers 503, which is the truth but loses the callback: ThingSpace retries
-/// once, about a second later, and never after, so each such answer is logged as lost. It also
-/// retries a callback unanswered for about 4 s while the first attempt still runs; the Durable
-/// Object holds that retry until the first attempt has stored the uplink or failed. Billing, the
-/// Postgres sync and every downlink run in the Durable Object after it answers.
+/// anything a retry would repeat identically. A `TELEMETRY` or `LOG` frame whose sequence header
+/// does not parse answers 400, as a body that is not JSON does. A store that failed, or a deploy
+/// with NIDD half configured, answers 503, which is the truth but loses the callback: ThingSpace
+/// retries once, about a second later, and never after, so each such answer is logged as lost. It
+/// also retries a callback unanswered for about 4 s while the first attempt still runs; the
+/// Durable Object holds that retry until the first attempt has stored the uplink or failed.
+/// The Postgres sync and every downlink run in the Durable Object after it answers. A `TELEMETRY`
+/// frame bills in the queue consumer, a `SHADOW_REPORT` in the object's tail, and a stored `LOG`
+/// here, after the response, through `main`.
 async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
   use crate::helpers::nidd::{
-    CallbackAuth, NIDD_CALLBACK_MAX_BYTES, NiddCallback, NiddResponse, PasswordMatch,
-    callback_imei, callback_line, delivery_missed, is_billable, match_callback_password,
-    parse_error_line, within,
+    CallbackAuth, FRAME_LOG, HEADER_BILLED, NIDD_CALLBACK_MAX_BYTES, NIDD_LOG_BILLED_MESSAGES,
+    NiddCallback, NiddResponse, PasswordMatch, callback_imei, callback_line, delivery_missed,
+    is_ingest, match_callback_password, parse_error_line, within,
   };
   use base64::Engine as _;
   use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -987,7 +989,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
   // connection on the uplink path. The fuse has no deadline of its own and sits before the
   // acknowledgement, so it is raced against a second and fails open, its own error rule.
   let mut paused = false;
-  if is_billable(frame[0]) {
+  if is_ingest(frame[0]) {
     match within(FUSE_TIMEOUT, check_ingest_fuse(&ctx.env, &pigeon_id)).await {
       Some(fuse) => paused = matches!(fuse, IngestFuse::Pause),
       None => {
@@ -1009,7 +1011,7 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
         200..=299 => Ok(body),
         // No pigeon behind that IMEI: an unprovisioned line, which a resend cannot help.
         404 => Ok("no_pigeon".to_string()),
-        // A TELEMETRY sequence header that does not parse, refused like a body that is not JSON.
+        // A sequence header that does not parse, refused like a body that is not JSON.
         400 => {
           log_nidd_callback(
             kind,
@@ -1046,6 +1048,14 @@ async fn nidd_callback(mut req: Request, ctx: RouteContext<()>) -> worker::Resul
       log_nidd_callback(kind, outcome, &pigeon_id, &request_id, &attempt, started);
       let acknowledged = Response::ok("").unwrap();
       set_seen(acknowledged.headers(), seen.as_deref());
+      // TELEMETRY bills in the queue consumer and SHADOW_REPORT in the object's tail; LOG has
+      // neither, so it bills here, after the response, through `main`.
+      if frame[0] == FRAME_LOG && outcome == "stored" && NIDD_LOG_BILLED_MESSAGES != 0 {
+        let billed = seen_header_value(&pigeon_id, i64::from(NIDD_LOG_BILLED_MESSAGES));
+        if let Err(e) = acknowledged.headers().set(HEADER_BILLED, &billed) {
+          console_error!("nidd_cb: failed to carry the LOG bill for pigeon {pigeon_id}: {e}");
+        }
+      }
       acknowledged.with_cors(&cors)
     }
     Err(outcome) => {
@@ -1103,6 +1113,24 @@ fn stamp_seen_after_response(ctx: &Context, env: Env, response: &mut Response) {
   };
   let pigeon_id = pigeon_id.to_string();
   ctx.wait_until(async move { stamp_last_seen(&env, &pigeon_id, at).await });
+}
+
+/// Turns the callback route's `HEADER_BILLED` into its tally after the response, and strips the
+/// header so it never reaches ThingSpace.
+fn bill_after_response(ctx: &Context, env: Env, response: &mut Response) {
+  use crate::helpers::nidd::HEADER_BILLED;
+
+  let Ok(Some(value)) = response.headers().get(HEADER_BILLED) else {
+    return;
+  };
+  if let Err(e) = response.headers_mut().delete(HEADER_BILLED) {
+    console_error!("Failed to strip the NIDD bill header: {e}");
+  }
+  let Some((pigeon_id, count)) = parse_seen_header(&value) else {
+    return;
+  };
+  let pigeon_id = pigeon_id.to_string();
+  ctx.wait_until(async move { count_billable_messages(&env, &pigeon_id, count).await });
 }
 
 #[event(fetch, respond_with_errors)]
@@ -6171,6 +6199,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
   // Global Framework Escape Catchment Guard
   match router.await {
     Ok(mut response) => {
+      bill_after_response(&ctx, stamp_env.clone(), &mut response);
       stamp_seen_after_response(&ctx, stamp_env, &mut response);
       Ok(response)
     }

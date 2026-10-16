@@ -474,13 +474,13 @@ return is `.with_cors(&cors)`; every refusal an explicit `let ... else`, never `
    - **Uplink.** `accountName` differs: 200 and a log line. `callback_imei(&callback)` finds no
      IMEI, or the `message` is not standard base64, or it decodes to zero bytes: 200 and a log line.
      Otherwise derive the object with `namespace.id_from_name(&nidd_object_name(&imei))`. If byte 0
-     is a billable type (`TELEMETRY` or `SHADOW_REPORT`), run `check_ingest_fuse(&ctx.env,
+     is an ingest type (`TELEMETRY`, `SHADOW_REPORT` or `LOG`), run `check_ingest_fuse(&ctx.env,
      &pigeon_id)` here, exactly where the HTTP telemetry route runs it (`lib.rs:981-988`), raced
      against a one-second `Delay` in the pattern at `dovecote/src/helpers/turnstile.rs:118-132`, and
      carry the answer as `X-Nidd-Ingest: paused` or `open`. The race is needed because the fuse
      opens a Hyperdrive socket and runs an uncached query with no deadline of its own
      (`dovecote/src/helpers/usage.rs:603-639`, `dovecote/src/helpers/hyperdrive.rs:18-31`), before
-     the acknowledgement, on every billable callback, resends included. A timeout fails open and is
+     the acknowledgement, on every ingest callback, resends included. A timeout fails open and is
      logged, the fuse's own error rule (`usage.rs:597-599`). Then `nidd_uplink_via_do(&obj_id,
      &frame, &request_id, ingest, line)` (new, in `helpers/pigeons.rs` beside `psk_lookup_via_do`,
      `:130`: a bare internal POST of the raw frame bytes to `/pigeon/nidd/uplink` in the binary-safe
@@ -739,7 +739,7 @@ frame under another request id. A refused callback is retried once, 1.2 to
    a `HELLO`, never for silence: callbacks arrive out of order (7.4), so a notice planned for a
    frame processed before the same wake's `HELLO` can reach a device whose claim has just
    succeeded. Only a failed `HELLO` draws argument 1, the one that stops billable sends.
-6. Billable type (`TELEMETRY`, `SHADOW_REPORT`) with `X-Nidd-Ingest: paused`: plan a `PAUSED`
+6. Ingest type (`TELEMETRY`, `SHADOW_REPORT`, `LOG`) with `X-Nidd-Ingest: paused`: plan a `PAUSED`
    notice (argument 3600) if due, record the key, 200 `paused`. The gateway ran the fuse, as the
    HTTP telemetry route does, so this path opens no Postgres connection. That departs from the rule
    `device_ingest_paused`'s rustdoc states (`dovecote/src/objects/pigeons.rs:1481-1495`: the check
@@ -775,7 +775,7 @@ frame under another request id. A refused callback is retried once, 1.2 to
    `awaiting_version` becomes `target_version` if the device is behind, else 0. Reply: a `SHADOW`
    when `target_version > current_version`, else `STATUS STORED` carrying the version. The
    report is the one confirmed call in the device library, so it always gets exactly one reply.
-9. After a `TELEMETRY`, stored, refused or repeated, and after a billable frame dropped while paused
+9. After a `TELEMETRY`, stored, refused or repeated, and after an ingest frame dropped while paused
    when no notice is due, plan a `SHADOW` if `shadow_reply_due(&row, now)` (6.4): the reply goes out
    while the connection the uplink opened is still up. `HELLO` and reports plan theirs in steps 4
    and 8.
@@ -874,10 +874,10 @@ another path stops being owed one.
 | `HELLO` that matches | `SHADOW` always (the device asked) | `claimed_at`, `pushed_*`; `awaiting_version` = target if behind, else 0 |
 | Shadow report, device behind | `SHADOW` (the reply) | `awaiting_version` = target, `pushed_*` |
 | Shadow report, device converged | `STATUS STORED <version>` | `awaiting_version = 0` |
-| Telemetry (a repeat included), or a billable frame while paused with no notice due, reply due (the newest target held, unsent, marked missed, or out over 30 s unconfirmed) | `SHADOW` (the reply) | `awaiting_version`, `pushed_*` |
+| Telemetry (a repeat included), or an ingest frame while paused with no notice due, reply due (the newest target held, unsent, marked missed, or out over 30 s unconfirmed) | `SHADOW` (the reply) | `awaiting_version`, `pushed_*` |
 | `DeliveryFailed` or `Queued` report while the device is behind | none; the next uplink carries the push | `pushed_version = 0` (pending) |
 | `HELLO` that does not match | `STATUS UNCLAIMED 1`, signed with the presented key, at most one an hour | `notice_at` |
-| Other frame from an unclaimed pigeon or an unpinned line, or a billable frame while paused | `STATUS UNCLAIMED 0` or `STATUS PAUSED 3600`, at most one an hour | `notice_at` |
+| Other frame from an unclaimed pigeon or an unpinned line, or an ingest frame while paused | `STATUS UNCLAIMED 0` or `STATUS PAUSED 3600`, at most one an hour | `notice_at` |
 | Converged device sending telemetry | none | none |
 
 **Sending.** The tail builds the frame (`shadow_frame` or `status_frame`, section 6.6), appends its
@@ -967,7 +967,7 @@ One new file for the codec and the pure functions, all unit-tested on the host t
   `Display`, which quotes the offending value (5.1, step 7). Every NIDD parse failure logs through
   it.
 - Frame constants (`TELEMETRY` 0x01, `SHADOW_REPORT` 0x02, `HELLO` 0x04, `SHADOW` 0x81, `STATUS`
-  0x82, status codes 0, 1, 2, `NIDD_TAG_CHARS` 16), `is_billable(frame_type)`,
+  0x82, status codes 0, 1, 2, `NIDD_TAG_CHARS` 16), `is_ingest(frame_type)`,
   `shadow_frame(&PigeonShadow) -> Vec<u8>` and `status_frame(code, arg) -> Vec<u8>` (unsigned,
   their text header written by one `push_header`), `shadow_config_cap(target, current)` (6.4) and
   `hello_key(body)`, the claim key a `HELLO`'s 32 hex characters present.
@@ -1065,7 +1065,7 @@ carry no tag (D12).
 |---|---|---|---|
 | `0x01` | `TELEMETRY` | device to platform | Header `<sequence>\n`, then UTF-8 JSON, exactly a `POST /device/pigeons/:pigeon_id/telemetry` body: the flat map or `{"reports":[...]}` |
 | `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a `POST /device/pigeons/:pigeon_id/shadow` body |
-| `0x03` | reserved | device to platform | Log upload, not in v1 |
+| `0x03` | `LOG` | device to platform | Added after v1 (7.6): header `<sequence>\n`, an encoding byte, then whole dictionary log records |
 | `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
 | `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
 | `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
@@ -1229,6 +1229,30 @@ counted with its sequence at ten digits, 11 bytes, as the device's build asserts
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
 | `STATUS` | 21 to 30 | yes |
 | Callback body around a 1273-byte uplink, measured (B5: 564 bytes plus the frame's base64) | 2264 | under the 8 KiB route cap |
+| `LOG`, 1255 record bytes at COBS's worst case (7.6) | 1 + 11 + 1 + 1260 = 1273 | yes, by construction |
+
+### 7.6 `LOG`, added after v1
+
+A NIDD-only board has no IP route to `POST /device/pigeons/:id/logs`, so its dictionary log
+records ride type `0x03`: the `TELEMETRY` sequence header (one counter across both types, so the
+digest rule tells a carrier repeat from a new send), an encoding byte, then whole records.
+`docs/api.md`'s "NIDD frames" is the contract.
+
+- **Encoding.** `c` is COBS without a trailing delimiter, which holds no NUL and is what devices
+  send; `r` is the records raw, kept for a carrier proven to pass a NUL uplink unaltered. The
+  device picks by Kconfig, dovecote by that byte (`decode_log`), so a carrier verdict changes a
+  default and no frame layout.
+- **Store.** The decoded records become one chunk of the existing 200-chunk ring buffer
+  (`store_log_chunk`, shared with the HTTPS route), stored with no await, so no `NiddInFlight`
+  claim; a failed insert answers 503 before the key is remembered.
+- **Rules it shares.** The claim gate, line pin, `repeat` by digest, the owed `SHADOW` as reply,
+  and the gateway fuse (`is_ingest`): a paused account's `LOG` is dropped with the hourly notice.
+  It is never answered with a `STATUS`.
+- **Billing.** None (`NIDD_LOG_BILLED_MESSAGES = 0`). The callback route carries a hook that bills
+  after the response through `main` once that constant is raised.
+- **Device.** Records are framed whole in the log ring, and up to
+  `CONFIG_PIGEON_NIDD_LOG_FRAMES_PER_WAKE` frames follow a `TELEMETRY` that sent, on its
+  connection; no timer and no size trigger, which would each be a radio access.
 
 ## 8. ThingSpace credentials, cache and session
 
@@ -1759,7 +1783,7 @@ or "or later" is the owner's call (D3) and does not block this work.
 | 40 | The object resets (a deploy, an exceeded limit) while a telemetry uplink awaits its enqueue | The gateway answers 503 `dispatch_failed`, logged as lost; the in-memory claim ends with it, so the retry stores the uplink | Stored twice if the enqueue had landed before the reset, as before the claim existed; a claim that outlived the attempt would lose the uplink instead |
 | 41 | The state re-read or the final write fails after the uplink was stored | Logged, 200 with the outcome, key not recorded; after a failed write the tail still sends the planned reply and bills and syncs a stored report, after a failed re-read nothing more is written or sent (6.3 step 10) | A 5xx would draw ThingSpace's retry, which would store and bill it again. A support resend of it would too, so resends are asked only for request ids logged as lost. So would a carrier re-delivery of a `TELEMETRY` frame arriving after that attempt ended (row 43), since its digest never reached `seen`; one that waited for the attempt is a repeat |
 | 42 | A Nidd create fails inside the DO after its `pigeons` INSERT (the row's read-back, the ACL or the shadow insert), or its dispatch to the DO fails | Inside the DO: the rows it wrote are deleted and it answers 500, so the IMEI is free for the retry. A dispatch error: 503, the derived pigeon id logged, nothing undone. If the create had landed, the pigeon has no Postgres row, so no list shows it, and every retry answers 409 until its creator, given that id from the log once Postgres shows no `pigeons` row for it, deletes it (`DELETE /pigeons/:pigeon_id`); a row there may be a live pigeon that also answers 409, so the id is left alone | The dispatch error may have hidden a 409 for a pigeon that already held the IMEI, and an undo as this principal would delete it wherever `is_owner` admits an organization owner or admin. The residual needs a transport failure after the DO committed; a failed clean-up inside the DO is logged by pigeon id too. A landed but unlisted pigeon also sits over any leftovers of an earlier pigeon with its id, since neither the mirror insert's clean-up nor the dictionary delete ran: the earlier pigeon's telemetry history is served to the new creator, and the new pigeon's uplinks bill a leftover `pigeons` row's organization, or nobody without one, until the delete's Postgres sync clears them. Leftovers need an earlier delete whose best-effort clean-up failed too |
-| 43 | The carrier delivers one device send twice, and ThingSpace posts each delivery under its own request id (the soak: one `TELEMETRY` frame 129 s apart, the second at the device's reconnect, 13.3) | A `TELEMETRY` frame whose digest is in `seen`, recorded settled, answers 200 `repeat`: nothing stored or billed, its request-id key recorded, the owed `SHADOW` sent if due (6.3 step 7, 7.4). One landing while the first delivery is still inside its enqueue await waits for it as a retry does and answers `repeat` once that attempt decided (6.3 step 2). A first delivery dropped as unclaimed settled nothing, so a copy after the claim is stored once (row 39) | One send, one charge, as billing promises. One residual: a second delivery arriving after 64 later uplinks from that pigeon (16 hours at the contract's four an hour) is stored again. A `HELLO` delivered twice draws a second `SHADOW`, which the version rule settles. A `SHADOW_REPORT` is compared with the stored shadow, not with `seen`, so one re-delivered after a newer report was stored writes its older version back and bills again, and the `SHADOW` it draws has the device report the newer version once more, billed again too |
+| 43 | The carrier delivers one device send twice, and ThingSpace posts each delivery under its own request id (the soak: one `TELEMETRY` frame 129 s apart, the second at the device's reconnect, 13.3) | A `TELEMETRY` frame whose digest is in `seen`, recorded settled, answers 200 `repeat`: nothing stored or billed, its request-id key recorded, the owed `SHADOW` sent if due (6.3 step 7, 7.4). One landing while the first delivery is still inside its enqueue await waits for it as a retry does and answers `repeat` once that attempt decided (6.3 step 2). A first delivery dropped as unclaimed settled nothing, so a copy after the claim is stored once (row 39) | One send, one charge, as billing promises. One residual: a second delivery arriving after 64 later uplinks from that pigeon (16 hours at the contract's four an hour, 8 when each wake also sends a `LOG`, which takes a key of its own) is stored again. A `HELLO` delivered twice draws a second `SHADOW`, which the version rule settles. A `SHADOW_REPORT` is compared with the stored shadow, not with `seen`, so one re-delivered after a newer report was stored writes its older version back and bills again, and the `SHADOW` it draws has the device report the newer version once more, billed again too |
 | 44 | A device reports a constant value, so two sends carry the same readings and, with `age_secs` 0, the same body | Each frame carries the next send sequence, so its digest differs and each is stored and billed | Without the sequence a digest match would drop every such send after the first as a repeat. The sequence starts at a random value each boot, so frames of two boots coincide only if their starts land within 64 sends of each other among 2^32 values and their readings match as well. The build refuses the timer random generator (14.2); an entropy read that fails at boot falls back to the cycle counter, which no build check can see |
 | 45 | A `TELEMETRY` frame whose sequence header does not parse (a build from before the sequence, a firmware bug) | 400, logged `malformed` with the length, nothing stored, no key; ThingSpace's one retry meets the same answer | Refused like row 7, but no parser will take it: a support resend meets the same 400, so the frame is lost. A device built before the sequence reports nothing until it is rebuilt, so the device and dovecote change together, the reflash straight after the deploy |
 
@@ -1790,7 +1814,10 @@ x86_64-unknown-linux-gnu`.
   `callbackCount`; an unknown variant), as fixtures with placeholders where Verizon's examples carry
   credentials; `dedupe_key`; the `TELEMETRY` sequence header, parsed as the device writes it
   and refused in every malformed form, and frame 1 of 7.2 decoding to its body with its digest;
-  `has_seen_frame` matching a second delivery under a new request id and not the next send;
+  `has_seen_frame` matching a second delivery under a new request id and not the next send, for a
+  `TELEMETRY` and a `LOG`; COBS decode of the golden vectors `~/pigeon`'s encoder test shares, and
+  its refusal of a `00` or an overrun; the `LOG` encoding byte; the `LOG` sequence header in every
+  malformed form; `is_ingest` taking `LOG` and its billed count pinned at 0;
   a key remembered as `unclaimed`, read back from the table's JSON, still found by `has_seen` and
   skipped by `has_seen_frame`; `remember` trimming at 64; `NiddInFlight` answering each waiting
   retry, and a second delivery under another request id found by its digest; `notice_due`; a truth
@@ -1869,6 +1896,11 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
 12. Delivery report and configuration bodies: 200, one log line each, none naming the IMEI or
     ICCID; a body carrying the IMEI as a JSON number logs none of its digits.
 13. A dev account forced over its allowance: `PAUSED` planned once, not again within the hour.
+14. The log scan: no line any step wrote holds a claim key, IMEI or credential.
+15. `LOG` frames (7.6): one stores one chunk whose bytes the logs route returns exactly; the same
+    callback again is `duplicate`; the frame under a new request id is `repeat`; the next
+    sequence stores a second chunk; a bad header 400; bad COBS `rejected`; unclaimed `unclaimed`;
+    paused `paused`; 201 frames leave 200 chunks; and the billed count does not move.
 
 Dev has no Hyperdrive query cache (`[env.dev]` uses a `localConnectionString`), which does not
 matter here: no NIDD path reads Postgres before a write it then relies on.
@@ -2243,8 +2275,8 @@ the reason is given in place.
 
 | Transport call | Behaviour | Returns |
 |---|---|---|
-| `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do | 0 when the modem took it; `-EAGAIN` with `res->retry_after_sec`, only while paused; `-EACCES`; `-ETIMEDOUT` with `res` zeroed when the modem did not take the frame in time |
-| `pigeon_transport_upload_logs` | Not defined: `PIGEON_LOG_UPLOAD` cannot be enabled on NIDD, so nothing references it (the CoAP connector's precedent) | links nowhere |
+| `pigeon_transport_report_telemetry` | Refused early while paused or unclaimed; else one `TELEMETRY` frame, `res` zeroed as CoAP and MQTT do, then, if it went, up to `CONFIG_PIGEON_NIDD_LOG_FRAMES_PER_WAKE` `LOG` frames on its connection under the same lock, stopping at the first that fails (7.6) | 0 when the modem took the `TELEMETRY`, whatever became of the `LOG` frames; `-EAGAIN` with `res->retry_after_sec`, only while paused; `-EACCES`; `-ETIMEDOUT` with `res` zeroed when the modem did not take the frame in time |
+| `pigeon_transport_upload_logs` | Not defined: on NIDD, `PIGEON_LOG_UPLOAD` sends `LOG` frames after telemetry instead (7.6) | links nowhere |
 | `pigeon_shadow_report` | One `SHADOW_REPORT`, then a wait up to `REPLY_WAIT` for its confirmation; a late one folds into the cache when it arrives | 0 confirmed; `-ETIMEDOUT` for no confirmation in time or a frame the modem did not take in time (re-report next wake, harmless); `-EAGAIN` only while paused; `-EACCES`; `-EDEADLK` from the event callback |
 | `pigeon_shadow_get` | A copy of the cached target; with none cached, a call waits only while a `HELLO`'s reply is owed, up to `SHADOW_WAIT` after that `HELLO` (an `UNCLAIMED 1` ends the wait), and otherwise answers `-EAGAIN` at once, so a refused key or an oversize target does not stall every wake. `current_version` is the newest version the platform has named, `current_config` the config this device last reported this boot (`""` before its first report), `updated_at` 0 | 0; `-EAGAIN` |
 | `pigeon_transport_download_firmware` | Not in this file: `pigeon_https.c` over the IP PDN | as today |
