@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- what dovecote's helpers/alerts.rs reads). The device keeps reporting
   -- and billing is unchanged.
   suspended_at TIMESTAMPTZ,
+  -- Last accepted device contact on any transport, NULL until the first.
+  -- Mirrors the DO's own `pigeon_seen` row (that copy is what the dashboard
+  -- reads; this one is what dovecote's DeviceState alert sweep reads).
+  -- Stamped at most once a minute by helpers/pigeons.rs::stamp_last_seen.
+  last_seen_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -93,6 +98,7 @@ ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons

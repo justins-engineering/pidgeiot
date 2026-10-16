@@ -85,7 +85,8 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
       ALTER TABLE alert_definitions ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
       ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;
-      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;",
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+      ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;",
     )
     .await
     .map_err(|e| {
