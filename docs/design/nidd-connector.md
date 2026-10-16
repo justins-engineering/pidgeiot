@@ -1951,7 +1951,9 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
     and the same bytes under a new request id each answered with a chunk again, never
     `duplicate` or `repeat`; a paused account still served; an offset past the end and a
     malformed body `rejected`; an unclaimed line `unclaimed`; 70 requests leave a telemetry
-    re-delivery still a `repeat`; and the billed count does not move.
+    re-delivery still a `repeat`; a target whose `size` disagrees with its object, and one
+    catalogued with no object, each stop with `FOTA_NONE` from the tail; and the billed count does
+    not move.
 
 Dev has no Hyperdrive query cache (`[env.dev]` uses a `localConnectionString`), which does not
 matter here: no NIDD path reads Postgres before a write it then relies on.

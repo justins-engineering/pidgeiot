@@ -1314,9 +1314,11 @@ api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"firmware\":$firmware}
 expect "the firmware target is assigned" 200 "$status"
 note_log "$m"
 
-# chunk_offsets <mark>: the offsets of the chunk lines since the mark, in log order.
+# chunk_offsets <mark>: the offsets of the chunks sent since the mark, in log order; a tail that
+# read nothing logs its own outcome instead.
 chunk_offsets() {
-  log_since "$1" | sed -n "s/.*nidd_dl kind=chunk .*offset=\([0-9]*\) pigeon=$pigeon.*/\1/p" |
+  local sent='outcome=\(sent\|unavailable\|refused\)'
+  log_since "$1" | sed -n "s/.*nidd_dl kind=chunk $sent .*offset=\([0-9]*\) pigeon=$pigeon.*/\2/p" |
     tr '\n' ' ' | sed 's/ $//'
 }
 
@@ -1440,6 +1442,48 @@ r=$(rid s16n)
 uplink "the telemetry under a new request id" "$r" 1 "$imei_a" "$iccid2"
 expect_log "is still a repeat" "$m" "outcome=repeat pigeon=$pigeon request=$r"
 note "  $(log_since "$m" | grep -c 'outcome=chunk' || true) chunk answers for the 70 requests"
+note_log "$m"
+
+# The tail's own refusals. The shadow PUT checks a target's sha256 against the catalog but not its
+# size, and a catalog row written straight to Postgres has no object behind it, so each of these
+# reaches the tail's R2 read and must stop the device with FOTA_NONE rather than say nothing.
+m=$(mark)
+big="{\"version\":\"nidd-synthetic\",\"size\":$((image_size + 1280)),\"sha256\":\"$sha\"}"
+api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"firmware\":$big}}"
+expect "a target 1280 bytes larger than its object is assigned" 200 "$status"
+sizes="size=$image_size total=$((image_size + 1280))"
+for at in 0 6400; do
+  r=$(rid "s16p$at")
+  fota_req "$sha16" "$at" 1280
+  uplink "a FOTA_REQ at $at against that target" "$r" 1 "$imei_a" "$iccid2"
+  expect_log "is answered as a chunk request" "$m" "outcome=chunk pigeon=$pigeon request=$r"
+  expect_log "which the tail finds the wrong size" "$m" \
+    "nidd_dl kind=chunk outcome=size_mismatch offset=$at $sizes pigeon=$pigeon"
+done
+status_lines() { log_since "$m" | grep -c "nidd_dl kind=status .*pigeon=$pigeon" || true; }
+for _ in $(seq 1 20); do
+  (($(status_lines) >= 2)) && break
+  sleep 0.5
+done
+expect "each stops with FOTA_NONE" 2 "$(status_lines)"
+expect "and no chunk is sent" "" "$(chunk_offsets "$m")"
+note_log "$m"
+
+m=$(mark)
+gone=$(head -c 32 /dev/urandom | xxd -p -c 64)
+sql "INSERT INTO flock_firmware (flock_id, version, size, sha256, board)
+  VALUES ('$flock_a', 'nidd-synthetic-gone-$(date +%s)', 1280, '$gone', '$board');" >/dev/null
+firmware="{\"version\":\"gone\",\"size\":1280,\"sha256\":\"$gone\"}"
+api a PUT "/pigeons/$pigeon/shadow" "{\"target_config\":{\"firmware\":$firmware}}"
+expect "a catalogued target R2 holds no object for is assigned" 200 "$status"
+r=$(rid s16q)
+fota_req "${gone:0:16}" 0 1280
+uplink "a FOTA_REQ for it" "$r" 1 "$imei_a" "$iccid2"
+expect_log "is answered as a chunk request" "$m" "outcome=chunk pigeon=$pigeon request=$r"
+expect_log "which the tail finds missing" "$m" \
+  "nidd_dl kind=chunk outcome=no_object offset=0 pigeon=$pigeon"
+expect_log "and stops with FOTA_NONE" "$m" "nidd_dl kind=status .*pigeon=$pigeon"
+expect "and no chunk is sent" "" "$(chunk_offsets "$m")"
 note_log "$m"
 
 m=$(mark)
