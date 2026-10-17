@@ -42,7 +42,7 @@ file.
 | Condition | Inputs | Evaluated from |
 |---|---|---|
 | Threshold | telemetry `key`, comparator (`>`, `<`, `>=`, `<=`, `==`), numeric `value` | the metric just written (needs `value_num`, i.e. `TelemetryHistoryPoint`'s existing numeric-parse convention — `capsules::TelemetryHistoryPoint::value_num`, already `None` for non-numeric values per `helpers/telemetry.rs::write_telemetry_history`) |
-| Device-state | target state (`Offline`, `Stale`), optional minimum duration in that state, counted from when the silence crossed into it (`capsules::connection_state::thresholds`), not from the last contact | `fancier::helpers::connection_state::classify` — see §1.3, this needs to move |
+| Device-state | target state (`Offline`, `Stale`), optional minimum duration in that state, counted from when the silence crossed into it (`capsules::connection_state::thresholds`), not from the last contact | `capsules::connection_state::classify`, moved there per §1.3 |
 | Rate-of-change | telemetry `key`, delta threshold, window (e.g. "dropped more than 500 in 5 minutes") | current value vs. the previous reported value for the same key |
 | Missing-report / heartbeat | optional specific `key` (defaults to "any telemetry from this pigeon") | absence of a signal within an expected window — cannot be ingest-triggered, see §2.2 |
 
