@@ -856,7 +856,7 @@ fn AlertFormModal(
                 }
               }
               p { class: "text-xs text-base-content/60 -mt-2",
-                "Fires when this pigeon is classified in the chosen state for at least the given duration (checked every few minutes, not instantly)."
+                "Fires when this pigeon is classified in the chosen state for at least the given duration, counted from when it entered the state rather than from its last contact (checked every few minutes, not instantly)."
               }
             } else if condition_kind() == ConditionKind::MissingReport {
               div {

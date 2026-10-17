@@ -2174,14 +2174,21 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`).
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
-  this long. A state has to survive a 60-second debounce before it fires, which in practice means
-  two consecutive sweeps. The state is classified from the newest of the pigeon's reports and its
-  `last_seen_at`, so a device that only polls its shadow or downloads firmware is not Offline. The
-  sweep reads the Postgres copy of the stamp, which can trail the device by about two minutes (the
-  stamp's own minute plus Hyperdrive's minute-long read cache) while its writes succeed. The copy
-  is best-effort: a write lost to a Postgres or queue failure leaves it at the previous stamp until
-  the device's next contact due one, which for a device that calls in every 15 minutes is 15
-  minutes later.
+  this long, counted from when its silence crossed into the state, not from its last contact. It is
+  Stale past twice the `telemetry_interval` the device runs and Offline past five times it (five and
+  thirty minutes while it is unset), so the example on a 60-second interval holds 600 seconds after
+  the last contact, `last_seen_at` credited with its minute as the badge credits it; without
+  `min_duration_secs` the state alone holds. A state has to survive a 60-second debounce before it
+  fires, which in practice means two consecutive sweeps five minutes apart, so the mail goes out one
+  to two sweeps after the minimum is reached. A Stale alert fires only if both sweeps fall inside
+  the Stale window (three intervals, or 25 minutes) less the minimum, so it never fires when that is
+  under five minutes, and it clears when the pigeon goes on to Offline. The state is classified from
+  the newest of the pigeon's reports and its `last_seen_at`, so a device that only polls its shadow
+  or downloads firmware is not Offline. The sweep reads the Postgres copy of the stamp, which can
+  trail the device by about two minutes (the stamp's own minute plus Hyperdrive's minute-long read
+  cache) while its writes succeed. The copy is best-effort: a write lost to a Postgres or queue
+  failure leaves it at the previous stamp until the device's next contact due one, which for a
+  device that calls in every 15 minutes is 15 minutes later.
 - `{"MissingReport":{"max_silence_secs":600}}` — no telemetry of any kind reported in at least this
   long. Contact without a report does not hold this off: a device that polls while its telemetry has
   stalled still fires it. `max_silence_secs` is itself the debounce, so this fires on the first
