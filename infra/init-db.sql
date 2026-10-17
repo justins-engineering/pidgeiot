@@ -568,7 +568,14 @@ CREATE INDEX IF NOT EXISTS idx_pigeons_flock_id ON pigeons(flock_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_entity_id ON pigeon_acl(entity_id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_acl_id ON pigeon_acl(id);
 CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported ON pigeon_telemetry_history(pigeon_id, reported_at);
-CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_key ON pigeon_telemetry_history(key);
+-- Covers the per-key graph and raw queries; never query this table by key
+-- alone. The fixed insert threshold keeps the not-yet-visible tail short,
+-- without which an index-only scan over the newest rows is slower than no
+-- index (see migrations/2026-10-17-history-key-index.sql).
+CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_key_reported
+  ON pigeon_telemetry_history(pigeon_id, key, reported_at) INCLUDE (value, value_num);
+ALTER TABLE pigeon_telemetry_history
+  SET (autovacuum_vacuum_insert_threshold = 10000, autovacuum_vacuum_insert_scale_factor = 0);
 CREATE INDEX IF NOT EXISTS idx_error_events_signature ON error_events(signature);
 -- Received (server clock), not occurred (client-claimed): the retention
 -- sweep must never trust a client-stamped timestamp.

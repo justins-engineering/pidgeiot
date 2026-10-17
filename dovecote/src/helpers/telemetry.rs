@@ -14,7 +14,14 @@ use crate::helpers::get_db_client;
 /// `objects/pigeons.rs::DurableObject::new`. No environment has a separate
 /// migration runner against its Hyperdrive Postgres, so
 /// each write/read path calls this first rather than relying on a one-time
-/// manual migration. Cheap no-op after the first call (`IF NOT EXISTS`).
+/// manual migration. After the first call it reads only the catalog and takes no table lock: a
+/// bare `CREATE INDEX IF NOT EXISTS` takes a SHARE lock before checking, which deadlocks a
+/// concurrent index build and cancels a running autovacuum, hence the `to_regclass` guard.
+///
+/// The covering per-key index is operator-applied
+/// (`infra/migrations/2026-10-17-history-key-index.sql`), never built here: on a populated
+/// table that build would run inside a request while blocking inserts, and no query needs it
+/// for correctness.
 pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
   client
     .batch_execute(
@@ -26,10 +33,12 @@ pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
         value_num DOUBLE PRECISION,
         reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
-      CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported
-        ON pigeon_telemetry_history (pigeon_id, reported_at);
-      CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_key
-        ON pigeon_telemetry_history (key);",
+      DO $$ BEGIN
+        IF to_regclass('idx_pigeon_telemetry_history_pigeon_reported') IS NULL THEN
+          CREATE INDEX IF NOT EXISTS idx_pigeon_telemetry_history_pigeon_reported
+            ON pigeon_telemetry_history (pigeon_id, reported_at);
+        END IF;
+      END $$;",
     )
     .await
     .map_err(|e| {
