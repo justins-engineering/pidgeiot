@@ -129,23 +129,30 @@ pub async fn sweep_telemetry_history_retention(env: &Env) -> Result<()> {
   let exclude = demo_pigeon_ids(env);
   let (org_ids, org_rungs) = org_retention_rungs(&client).await?;
 
-  // The subselect + `id IN (...)` is Postgres's standard stand-in for
-  // `DELETE ... LIMIT`, which doesn't exist -- `id` is `BIGSERIAL PRIMARY
-  // KEY`, so the inner scan can use the primary key index rather than a
-  // second full predicate evaluation.
+  // `id IN (subselect ... LIMIT)` stands in for `DELETE ... LIMIT`, which
+  // Postgres lacks. Driven from `pigeons`, so each pigeon's overdue rows are
+  // one range scan on (pigeon_id, reported_at) rather than a scan of the whole
+  // table. The inner LIMIT keeps Postgres from flattening the LATERAL;
+  // flattened, the per-pigeon cutoff is unestimable and it hash-joins a full
+  // scan instead.
   let deleted = client
     .execute_typed(
       "DELETE FROM pigeon_telemetry_history
        WHERE id IN (
          SELECT h.id
-         FROM pigeon_telemetry_history h
-         JOIN pigeons p ON p.id = h.pigeon_id
+         FROM pigeons p
          JOIN flocks f ON f.id = p.flock_id
          LEFT JOIN unnest($3::uuid[], $4::text[]) AS r(org_id, rung)
            ON r.org_id = f.org_id
-         WHERE NOT (h.pigeon_id = ANY($1))
+         CROSS JOIN LATERAL (
+           SELECT id
+           FROM pigeon_telemetry_history
+           WHERE pigeon_id = p.id
+             AND reported_at < now() - COALESCE(r.rung, $5)::interval
+           LIMIT $2
+         ) h
+         WHERE NOT (p.id = ANY($1))
            AND (f.org_id IS NULL OR r.rung IS NOT NULL)
-           AND h.reported_at < now() - COALESCE(r.rung, $5)::interval
          LIMIT $2
        );",
       &[
