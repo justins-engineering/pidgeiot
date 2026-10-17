@@ -1230,6 +1230,8 @@ counted with its sequence at ten digits, 11 bytes, as the device's build asserts
 | `STATUS` | 21 to 30 | yes |
 | Callback body around a 1273-byte uplink, measured (B5: 564 bytes plus the frame's base64) | 2264 | under the 8 KiB route cap |
 | `LOG`, 1255 record bytes at COBS's worst case (7.6) | 1 + 11 + 1 + 1260 = 1273 | yes, by construction |
+| `FOTA_REQ`, seven-digit offset, four-digit length (7.7) | 1 + 16 + 1 + 7 + 1 + 4 + 1 = 31 | yes |
+| `FOTA_CHUNK`, 1280 image bytes at COBS's worst case (7.7) | 1 + 33 + 1286 + 16 = 1336 | yes, by construction |
 
 ### 7.6 `LOG`, added after v1
 
@@ -1253,6 +1255,44 @@ digest rule tells a carrier repeat from a new send), an encoding byte, then whol
 - **Device.** Records are framed whole in the log ring, and up to
   `CONFIG_PIGEON_NIDD_LOG_FRAMES_PER_WAKE` frames follow a `TELEMETRY` that sent, on its
   connection; no timer and no size trigger, which would each be a radio access.
+
+### 7.7 `FOTA_REQ` and `FOTA_CHUNK`, added after v1
+
+A NIDD-only board has no IP route to `GET /device/pigeons/:id/firmware`, so it pulls the image:
+`FOTA_REQ` (`0x05`, `<sha16> <offset> <len>\n`) asks, and dovecote answers in the tail of that
+uplink, on its connection, with `FOTA_CHUNK` (`0x84`, `<sha16> <offset> <total>\n`, COBS of up
+to 1280 image bytes, the tag) or `STATUS FOTA_NONE`. `docs/api.md`'s "NIDD frames" is the
+contract.
+
+- **No transfer state.** The arm reads the shadow's `firmware` target (`read_firmware_target`,
+  shared with the HTTPS route), compares `<sha16>` with its sha256, and plans
+  `NiddDownlink::Chunks`, which holds no bytes: the tail reads the span from R2 with a ranged
+  `get`, given 2 s (`NIDD_FOTA_READ_LIMIT`) since a later chunk would miss the connection, and
+  sends one frame per 1280 bytes, in order, each awaited. A device repairs a lost chunk
+  by asking again, so the bench's 2.2 s p90 callback leg (6.8 s at worst) costs a resend, not a
+  transfer.
+- **Answered every time.** Nothing is stored and nothing awaited before the row write, so no
+  `NiddInFlight` claim; and `finish_nidd_uplink` does not `remember` the key, since a transfer's
+  hundreds of requests would flush every `TELEMETRY` key out of the 64-key window while a carrier
+  repeat can come 129 s late. A resend, a ThingSpace retry and a carrier repeat each draw the same
+  chunk again, which the device drops by offset.
+- **Replies.** Up to `NIDD_FOTA_MAX_CHUNKS` = 4 frames, one per 1280 bytes asked for: the one
+  exception to one reply per uplink. Never a `SHADOW`: a changed target shows as `FOTA_NONE`, and
+  the next ordinary uplink carries the shadow. `FOTA_NONE`'s argument is the request's image, its
+  sha16's first 8 hex characters as a number (`fota_none_arg`), because every copy is answered
+  again: a carrier repeat of a request for the old image, landing after the target moved, must not
+  stop the pull of the new one. An image R2 no longer holds, or holds at another
+  size than the target's `size` (objects are content-addressed, so it never will), draws
+  `FOTA_NONE`; a failed or short read sends nothing, and so does a shadow that cannot be read
+  (`read_failed`), answered 200 rather than 503, since the device asks again anyway. An offset outside the image, or a body that does not parse,
+  is `rejected`, with no reply and no `400`, since there is nothing for ThingSpace's archive to
+  keep.
+- **Fuse and billing.** `FOTA_REQ` is not `is_ingest`, so the gateway never runs the fuse on it
+  and a paused account's device still gets its firmware, as over HTTPS. Billing is a hook at 0
+  (`NIDD_FOTA_BILLED_MESSAGES`), beside `LOG`'s.
+- **Device.** `~/pigeon` implements the one download seam the HTTPS client uses, so the MCUboot
+  slot writer, the streamed SHA-256, resume, the attempt budget and the convergence contract are
+  unchanged; it spends at most `CONFIG_PIGEON_FOTA_WINDOW_SEC` of a wake on a transfer.
 
 ## 8. ThingSpace credentials, cache and session
 
@@ -1817,7 +1857,11 @@ x86_64-unknown-linux-gnu`.
   `has_seen_frame` matching a second delivery under a new request id and not the next send, for a
   `TELEMETRY` and a `LOG`; COBS decode of the golden vectors `~/pigeon`'s encoder test shares, and
   its refusal of a `00` or an overrun; the `LOG` encoding byte; the `LOG` sequence header in every
-  malformed form; `is_ingest` taking `LOG` and its billed count pinned at 0;
+  malformed form; `is_ingest` taking `LOG` and its billed count pinned at 0; COBS encode of the
+  same vectors and 500 round trips within its bound; `FOTA_REQ` decoded as the device writes it
+  and refused in every malformed form; `fota_span` stopping at four chunks and the image's end;
+  the `FOTA_CHUNK` and `STATUS FOTA_NONE` exact bytes, the widest chunk at 1336 bytes with no
+  NUL; `is_ingest` refusing `FOTA_REQ` and its billed count pinned at 0;
   a key remembered as `unclaimed`, read back from the table's JSON, still found by `has_seen` and
   skipped by `has_seen_frame`; `remember` trimming at 64; `NiddInFlight` answering each waiting
   retry, and a second delivery under another request id found by its digest; `notice_due`; a truth
@@ -1901,6 +1945,15 @@ bodies in ThingSpace's shape around the frames of section 7, reads the callback 
     callback again is `duplicate`; the frame under a new request id is `repeat`; the next
     sequence stores a second chunk; a bad header 400; bad COBS `rejected`; unclaimed `unclaimed`;
     paused `paused`; 201 frames leave 200 chunks; and the billed count does not move.
+16. `FOTA_REQ` and `FOTA_CHUNK` (7.7), against an image uploaded to dev R2 and assigned in the
+    shadow: one chunk planned at the offset asked; four at 1280-byte steps for a 5120-byte ask;
+    a short final chunk; a wrong sha16 and no target each `fota_none`; the same callback again
+    and the same bytes under a new request id each answered with a chunk again, never
+    `duplicate` or `repeat`; a paused account still served; an offset past the end and a
+    malformed body `rejected`; an unclaimed line `unclaimed`; 70 requests leave a telemetry
+    re-delivery still a `repeat`; a target whose `size` disagrees with its object, and one
+    catalogued with no object, each stop with `FOTA_NONE` from the tail; and the billed count does
+    not move.
 
 Dev has no Hyperdrive query cache (`[env.dev]` uses a `localConnectionString`), which does not
 matter here: no NIDD path reads Postgres before a write it then relies on.

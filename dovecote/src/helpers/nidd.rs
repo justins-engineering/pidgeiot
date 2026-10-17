@@ -26,11 +26,17 @@ pub const FRAME_SHADOW_REPORT: u8 = 0x02;
 pub const FRAME_LOG: u8 = 0x03;
 /// Device to platform: the claim key as 32 lowercase hex characters, sent once per boot.
 pub const FRAME_HELLO: u8 = 0x04;
+/// Device to platform: `<sha16> <offset> <len>\n`, asking for `len` bytes of the image whose
+/// sha256 opens with `sha16`, from `offset`.
+pub const FRAME_FOTA_REQ: u8 = 0x05;
 /// Platform to device: a header of `target_version` and `current_version`, the raw
 /// `target_config`, then the tag.
 pub const FRAME_SHADOW: u8 = 0x81;
 /// Platform to device: a header of the status code and its argument, then the tag.
 pub const FRAME_STATUS: u8 = 0x82;
+/// Platform to device: `<sha16> <offset> <total>\n`, up to `NIDD_FOTA_CHUNK_BYTES` of the image
+/// from `offset` in COBS, then the tag.
+pub const FRAME_FOTA_CHUNK: u8 = 0x84;
 
 /// `LOG` encoding byte: the records in COBS with no trailing delimiter, so the body holds no NUL.
 pub const LOG_COBS: u8 = b'c';
@@ -44,6 +50,9 @@ pub const STATUS_STORED: u8 = 0x00;
 pub const STATUS_PAUSED: u8 = 0x01;
 /// `STATUS` code: the pigeon is not claimed; the argument is 1 when answering a failed `HELLO`.
 pub const STATUS_UNCLAIMED: u8 = 0x02;
+/// `STATUS` code: no firmware target matches a `FOTA_REQ`, so the device stops that transfer; the
+/// argument names the request's image (`fota_none_arg`), so a late copy cannot stop another one.
+pub const STATUS_FOTA_NONE: u8 = 0x03;
 
 /// The callback's request id, from the gateway to the pigeon's Durable Object.
 pub const HEADER_REQUEST_ID: &str = "X-Nidd-Request-Id";
@@ -60,6 +69,29 @@ pub const HEADER_BILLED: &str = "X-Nidd-Billed";
 /// and PidgeIoT has not priced logs, so the callback route's billing hook stays idle until this
 /// changes.
 pub const NIDD_LOG_BILLED_MESSAGES: u32 = 0;
+
+/// Billable messages one `FOTA_REQ` answered `chunk` counts. None: firmware is not priced. A
+/// paused account still gets its firmware, so a nonzero value here would bill an account the fuse
+/// holds. It would also bill every copy of a request, since none is de-duplicated, and a request
+/// the tail then answers with `FOTA_NONE` or nothing, since `chunk` is decided before R2 is read.
+pub const NIDD_FOTA_BILLED_MESSAGES: u32 = 0;
+
+/// Image bytes in one `FOTA_CHUNK`: a flash write-block multiple whose COBS, header and tag fit
+/// one downlink with 22 bytes to spare.
+pub const NIDD_FOTA_CHUNK_BYTES: u32 = 1280;
+/// Most `FOTA_CHUNK` frames one `FOTA_REQ` draws.
+pub const NIDD_FOTA_MAX_CHUNKS: u32 = 4;
+/// Longest the tail waits on R2 for a request's bytes: the device asks again after 2.5 s, and a
+/// chunk sent after its connection is released goes to paging and is lost.
+pub const NIDD_FOTA_READ_LIMIT: Duration = Duration::from_secs(2);
+/// Hex characters of the image's sha256 that name it in a FOTA frame: the content, not the
+/// `target_version`, which also moves on config-only writes.
+pub const NIDD_FOTA_SHA_CHARS: usize = 16;
+/// Longest `FOTA_CHUNK` header: the sha prefix, two seven-digit integers (images cap at 2 MiB),
+/// the two spaces and the newline.
+const NIDD_FOTA_HEADER_MAX: usize = NIDD_FOTA_SHA_CHARS + 1 + 7 + 1 + 7 + 1;
+/// Most decimal digits of a FOTA frame's offset, length or total.
+const NIDD_FOTA_DIGITS_MAX: usize = 7;
 
 /// Lowercase hex characters that end every platform frame: the first 8 bytes of HMAC-SHA256.
 pub const NIDD_TAG_CHARS: usize = 16;
@@ -348,6 +380,8 @@ pub enum Uplink<'a> {
   /// A `LOG` body, its sequence header removed: the encoding byte and the encoded records, which
   /// `decode_log` turns into the chunk.
   Log(&'a [u8]),
+  /// A `FOTA_REQ` body, which `decode_fota_request` reads.
+  FotaRequest(&'a [u8]),
   /// A type this build does not know.
   Unknown(u8),
   /// No bytes at all.
@@ -364,6 +398,7 @@ pub fn decode_uplink(frame: &[u8]) -> Uplink<'_> {
     Some((&FRAME_SHADOW_REPORT, body)) => Uplink::ShadowReport(body),
     Some((&FRAME_LOG, rest)) => after_sequence(rest).map_or(Uplink::BadHeader, Uplink::Log),
     Some((&FRAME_HELLO, body)) => Uplink::Hello(body),
+    Some((&FRAME_FOTA_REQ, body)) => Uplink::FotaRequest(body),
     Some((&other, _)) => Uplink::Unknown(other),
   }
 }
@@ -385,11 +420,77 @@ fn after_sequence(rest: &[u8]) -> Option<&[u8]> {
 }
 
 /// Whether a frame of this type stores device data, and so is paused with the account. Not the
-/// same as billed: a `LOG` frame pauses but is not billed.
+/// same as billed: a `LOG` frame pauses but is not billed. A `FOTA_REQ` stores nothing, so a
+/// paused account still gets its firmware, as it does over HTTPS.
 pub fn is_ingest(frame_type: u8) -> bool {
   matches!(
     frame_type,
     FRAME_TELEMETRY | FRAME_SHADOW_REPORT | FRAME_LOG
+  )
+}
+
+/// What a `FOTA_REQ` asks for.
+#[derive(Debug, PartialEq)]
+pub struct FotaRequest<'a> {
+  /// The first `NIDD_FOTA_SHA_CHARS` lowercase hex characters of the image's sha256.
+  pub sha16: &'a str,
+  /// The first byte wanted.
+  pub offset: u32,
+  /// Bytes wanted, at least 1.
+  pub len: u32,
+}
+
+/// A `FOTA_REQ` body: the sha prefix in lowercase hex, a space, the offset, a space, the length,
+/// then the one newline that ends it, each integer 1 to 7 decimal digits and the length nonzero.
+pub fn decode_fota_request(body: &[u8]) -> Option<FotaRequest<'_>> {
+  let line = std::str::from_utf8(body.strip_suffix(b"\n")?).ok()?;
+  let mut fields = line.split(' ');
+  let (sha16, offset, len) = (fields.next()?, fields.next()?, fields.next()?);
+  if fields.next().is_some()
+    || sha16.len() != NIDD_FOTA_SHA_CHARS
+    || !sha16
+      .bytes()
+      .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+  {
+    return None;
+  }
+  let request = FotaRequest {
+    sha16,
+    offset: fota_decimal(offset)?,
+    len: fota_decimal(len)?,
+  };
+  (request.len != 0).then_some(request)
+}
+
+/// A FOTA frame's integer: 1 to 7 decimal digits.
+fn fota_decimal(field: &str) -> Option<u32> {
+  if field.is_empty()
+    || field.len() > NIDD_FOTA_DIGITS_MAX
+    || !field.bytes().all(|b| b.is_ascii_digit())
+  {
+    return None;
+  }
+  field.parse().ok()
+}
+
+/// The `FOTA_NONE` argument for the image `sha` names: its first 8 hex characters as a number.
+/// 0 when they are not hex, which neither a decoded request nor a stored target can be.
+pub fn fota_none_arg(sha: &str) -> u32 {
+  sha
+    .get(..8)
+    .and_then(|prefix| u32::from_str_radix(prefix, 16).ok())
+    .unwrap_or(0)
+}
+
+/// Bytes a `FOTA_REQ` is served from `offset` of an image of `total` bytes: what it asked for, at
+/// most `NIDD_FOTA_MAX_CHUNKS` chunks, never past the end. `None` when `offset` is not inside the
+/// image.
+pub fn fota_span(offset: u32, len: u32, total: u32) -> Option<u32> {
+  let left = total.checked_sub(offset).filter(|&left| left != 0)?;
+  Some(
+    len
+      .min(NIDD_FOTA_MAX_CHUNKS * NIDD_FOTA_CHUNK_BYTES)
+      .min(left),
   )
 }
 
@@ -423,6 +524,36 @@ pub fn cobs_decode(input: &[u8]) -> Option<Vec<u8>> {
     }
   }
   Some(out)
+}
+
+/// Consistent Overhead Byte Stuffing, encoded with no trailing `00` delimiter, the inverse of
+/// `cobs_decode` and the rule of `~/pigeon`'s encoder byte for byte. The output holds no `00` and
+/// is at most n + n / 254 + 1 bytes.
+pub fn cobs_encode(input: &[u8]) -> Vec<u8> {
+  let mut out = Vec::with_capacity(input.len() + input.len() / 254 + 1);
+  let mut code_at = 0;
+  let mut code: u8 = 1;
+  out.push(0);
+  for (i, &byte) in input.iter().enumerate() {
+    if byte == 0 {
+      out[code_at] = code;
+      code_at = out.len();
+      out.push(0);
+      code = 1;
+      continue;
+    }
+    out.push(byte);
+    code += 1;
+    // A full block implies no zero, so only more input after it opens a new one.
+    if code == 0xff && i + 1 < input.len() {
+      out[code_at] = code;
+      code_at = out.len();
+      out.push(0);
+      code = 1;
+    }
+  }
+  out[code_at] = code;
+  out
 }
 
 // ThingSpace refuses a downlink holding two adjacent NUL bytes, so every platform frame is
@@ -467,6 +598,19 @@ pub fn shadow_frame(shadow: &PigeonShadow) -> Vec<u8> {
     header_version(shadow.current_version),
   );
   frame.extend_from_slice(config.as_bytes());
+  frame
+}
+
+/// An unsigned `FOTA_CHUNK` frame: the type byte, the sha prefix, a header of the chunk's offset
+/// and the image's size, then the chunk in COBS.
+pub fn fota_chunk_frame(sha16: &str, offset: u32, total: u32, bytes: &[u8]) -> Vec<u8> {
+  let encoded = cobs_encode(bytes);
+  let mut frame = Vec::with_capacity(1 + NIDD_FOTA_HEADER_MAX + encoded.len() + NIDD_TAG_CHARS);
+  frame.push(FRAME_FOTA_CHUNK);
+  frame.extend_from_slice(sha16.as_bytes());
+  frame.push(b' ');
+  push_header(&mut frame, offset, total);
+  frame.extend_from_slice(&encoded);
   frame
 }
 
@@ -1042,16 +1186,94 @@ mod tests {
     assert_eq!(decode_uplink(&[0x02, b'{']), Uplink::ShadowReport(b"{"));
     assert_eq!(decode_uplink(&[0x04, 1, 2]), Uplink::Hello(&[1, 2]));
     assert_eq!(decode_uplink(b"\x039\nc\x01"), Uplink::Log(b"c\x01"));
-    assert_eq!(decode_uplink(&[0x05]), Uplink::Unknown(0x05));
+    assert_eq!(decode_uplink(&[0x05, b'0']), Uplink::FotaRequest(b"0"));
+    assert_eq!(decode_uplink(&[0x06]), Uplink::Unknown(0x06));
     assert_eq!(decode_uplink(&[0x81]), Uplink::Unknown(0x81));
   }
 
   #[test]
   fn log_pauses_with_ingest_and_bills_nothing() {
     assert!(is_ingest(FRAME_TELEMETRY) && is_ingest(FRAME_SHADOW_REPORT) && is_ingest(FRAME_LOG));
-    assert!(!is_ingest(FRAME_HELLO) && !is_ingest(0x05));
+    assert!(!is_ingest(FRAME_HELLO) && !is_ingest(0x06));
     // Unbilled by decision: changing this is a pricing change, not a code fix.
     assert_eq!(NIDD_LOG_BILLED_MESSAGES, 0);
+  }
+
+  #[test]
+  fn a_fota_request_is_not_ingest_so_firmware_flows_while_paused() {
+    assert!(!is_ingest(FRAME_FOTA_REQ));
+    // Unbilled by decision, and a paused account still draws chunks: changing this bills it.
+    assert_eq!(NIDD_FOTA_BILLED_MESSAGES, 0);
+  }
+
+  #[test]
+  fn a_fota_request_decodes_as_the_device_writes_it() {
+    let frame = b"\x050123456789abcdef 1280 1280\n";
+    assert_eq!(frame.len(), 28);
+    let Uplink::FotaRequest(body) = decode_uplink(frame) else {
+      panic!("a FOTA_REQ decoded as another type");
+    };
+    let request = FotaRequest {
+      sha16: "0123456789abcdef",
+      offset: 1280,
+      len: 1280,
+    };
+    assert_eq!(decode_fota_request(body), Some(request));
+    // The widest the device sends, 31 bytes with the type byte.
+    let widest = decode_fota_request(b"ffffffffffffffff 2097151 5120\n").unwrap();
+    assert_eq!((widest.offset, widest.len), (2_097_151, 5120));
+    assert_eq!(
+      decode_fota_request(b"0000000000000000 0 1\n")
+        .unwrap()
+        .offset,
+      0
+    );
+  }
+
+  #[test]
+  fn a_malformed_fota_request_decodes_to_nothing() {
+    for body in [
+      &b""[..],
+      b"\n",
+      b"0123456789abcdef 0 1280",
+      b"0123456789abcdef 0 1280\n\n",
+      b"0123456789abcde 0 1280\n",
+      b"0123456789abcdef0 0 1280\n",
+      b"0123456789ABCDEF 0 1280\n",
+      b"0123456789abcdeg 0 1280\n",
+      b"0123456789abcdef 12345678 1280\n",
+      b"0123456789abcdef 0 12345678\n",
+      b"0123456789abcdef 0 0\n",
+      b"0123456789abcdef  0 1280\n",
+      b"0123456789abcdef 0 1280 \n",
+      b"0123456789abcdef 0\n",
+      b"0123456789abcdef 0 1280 7\n",
+      b"0123456789abcdef +0 1280\n",
+      b"0123456789abcdef 0 1280\r\n",
+      b"0123456789abcdef 0\n1280\n",
+    ] {
+      assert_eq!(decode_fota_request(body), None, "{body:?}");
+    }
+  }
+
+  #[test]
+  fn a_fota_span_stops_at_four_chunks_and_the_end() {
+    assert_eq!(fota_span(0, 1280, 1285), Some(1280));
+    assert_eq!(fota_span(1280, 1280, 1285), Some(5));
+    assert_eq!(fota_span(0, 5120, 300_000), Some(5120));
+    assert_eq!(fota_span(0, 9_999_999, 300_000), Some(5120));
+    assert_eq!(fota_span(1, 1, 2), Some(1));
+    // An offset at or past the end is not inside the image.
+    assert_eq!(fota_span(1285, 1280, 1285), None);
+    assert_eq!(fota_span(9_999_999, 1, 1285), None);
+  }
+
+  #[test]
+  fn fota_none_names_the_image_by_its_first_32_bits() {
+    assert_eq!(fota_none_arg("0123456789abcdef"), 0x0123_4567);
+    assert_eq!(fota_none_arg(&"f".repeat(64)), u32::MAX);
+    assert_eq!(fota_none_arg("0000000"), 0);
+    assert_eq!(fota_none_arg("0123456z89abcdef"), 0);
   }
 
   /// The table docs/api.md and `~/pigeon`'s tests share, so the C encoder and this decoder agree
@@ -1098,6 +1320,45 @@ mod tests {
       assert!(!encoded.contains(&0));
       assert_eq!(cobs_decode(&encoded), Some(plain), "{encoded:02x?}");
     }
+  }
+
+  #[test]
+  fn cobs_encodes_the_golden_vectors() {
+    for (plain, encoded) in cobs_golden_vectors() {
+      assert_eq!(cobs_encode(&plain), encoded, "{plain:02x?}");
+    }
+    assert_eq!(cobs_encode(&[]), vec![0x01]);
+  }
+
+  #[test]
+  fn cobs_round_trips_within_its_bound() {
+    // A fixed xorshift, so a failure names the same input on every run.
+    let mut state: u32 = 0x9e37_79b9;
+    let mut next = || {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      state
+    };
+    let mut inputs = vec![vec![0u8; 1280], vec![0xff; 1280], vec![0u8; 1], Vec::new()];
+    for round in 0..500 {
+      let len = (next() % 1280) as usize + 1;
+      // Half mostly zeros, half mostly nonzero, so both long runs and dense zeros appear.
+      let input = (0..len)
+        .map(|_| match (round % 2, next() % 4) {
+          (0, 0) | (1, 0..=2) => (next() % 255 + 1) as u8,
+          _ => 0,
+        })
+        .collect();
+      inputs.push(input);
+    }
+    for input in &inputs {
+      let encoded = cobs_encode(input);
+      assert!(!encoded.contains(&0), "{} bytes", input.len());
+      assert!(encoded.len() <= input.len() + input.len() / 254 + 1);
+      assert_eq!(cobs_decode(&encoded).as_ref(), Some(input));
+    }
+    assert!(cobs_encode(&vec![0xff; 1280]).len() <= 1286);
   }
 
   #[test]
@@ -1278,9 +1539,43 @@ mod tests {
       ),
       (STATUS_UNCLAIMED, 0, &b"\x822 0\nedba557d1f9f3445"[..]),
       (STATUS_UNCLAIMED, 1, &b"\x822 1\n6e3162e1b9f30649"[..]),
+      (
+        STATUS_FOTA_NONE,
+        fota_none_arg("0123456789abcdef"),
+        &b"\x823 19088743\n9c9b89ac0a3b153f"[..],
+      ),
     ] {
       assert_eq!(signed(&FIXTURE_KEY, status_frame(code, arg)), expected);
     }
+  }
+
+  #[test]
+  fn the_fota_chunk_frame_matches_the_documented_bytes() {
+    // The final chunk of a 1285-byte image, NULs leading, inside and trailing.
+    let frame = fota_chunk_frame(
+      "0123456789abcdef",
+      1280,
+      1285,
+      &[0x00, 0x00, 0x11, 0xff, 0x00],
+    );
+    let mut expected = b"\x840123456789abcdef 1280 1285\n".to_vec();
+    expected.extend_from_slice(&[0x01, 0x01, 0x03, 0x11, 0xff, 0x01]);
+    assert_eq!(frame, expected);
+
+    let whole = signed(&FIXTURE_KEY, frame);
+    assert_eq!(whole.len(), 50);
+    assert_eq!(&whole[34..], b"1f5dafe6d697f0c6");
+  }
+
+  #[test]
+  fn the_widest_fota_chunk_fits_one_downlink() {
+    let chunk = [0xffu8; NIDD_FOTA_CHUNK_BYTES as usize];
+    let frame = fota_chunk_frame("ffffffffffffffff", 2_095_872, 2_097_152, &chunk);
+    assert_eq!(frame.len(), 1 + NIDD_FOTA_HEADER_MAX + 1286);
+    let whole = signed(&[0xff; NIDD_CLAIM_KEY_BYTES], frame);
+    assert_eq!(whole.len(), 1336);
+    assert!(whole.len() <= NIDD_MAX_FRAME_BYTES);
+    assert!(!whole.contains(&0));
   }
 
   #[test]
@@ -1322,7 +1617,19 @@ mod tests {
           }
         }
       }
-      for code in [STATUS_STORED, STATUS_PAUSED, STATUS_UNCLAIMED, u8::MAX] {
+      for chunk in [&[0u8; 1280][..], &[0, 0, 0x11, 0xff, 0], &[0], &[0xff; 254]] {
+        frames.push(signed(
+          key,
+          fota_chunk_frame("0000000000000000", 0, 1285, chunk),
+        ));
+      }
+      for code in [
+        STATUS_STORED,
+        STATUS_PAUSED,
+        STATUS_UNCLAIMED,
+        STATUS_FOTA_NONE,
+        u8::MAX,
+      ] {
         for arg in args {
           frames.push(signed(key, status_frame(code, arg)));
         }

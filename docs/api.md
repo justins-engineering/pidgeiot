@@ -3038,6 +3038,10 @@ curl -s https://api.pidgeiot.com/device/pigeons/<pigeon_id>/firmware \
   -o chunk0.bin
 ```
 
+A `Nidd` pigeon has no IP path to this route, so it pulls the same image, from the same
+`target_config.firmware` and the same R2 object, in `FOTA_REQ` frames; see
+[NIDD frames](#nidd-frames).
+
 ### Device WebSocket
 
 #### `GET /device/pigeons/:pigeon_id/ws`
@@ -3366,8 +3370,8 @@ contract a NIDD device follows; the surface has no HTTP route of its own.
   acts on nothing in it, so provision the line, then create the pigeon.
 - **An IP PDN beside it is optional.** A plan that also carries IP data lets the device hold an IP
   PDN beside `VZWSCEF`, and that is the only place the pigeon's bearer token is used: the HTTPS
-  device routes, of which firmware download is the one that matters. A NIDD-only line has no
-  remote firmware path.
+  device routes. A NIDD-only line needs none of them: firmware arrives in `FOTA_CHUNK` frames
+  (see [NIDD frames](#nidd-frames)).
 - **The IMEI binds the pigeon.** Create takes the modem's 15-digit IMEI, checked against its Luhn
   digit (`capsules::imei_is_valid`), and derives the pigeon's id from it; see
   [NIDD binding and claim](#nidd-binding-and-claim).
@@ -3411,17 +3415,19 @@ A NIDD frame is the bytes the device hands `send()` on its raw socket, and the b
 base64 `message` field decodes to on either leg. Byte 0 is the type; the rest is the body. There
 is no length field (the carrier delivers whole messages) and no version byte (a new shape is a new
 type). Only `TELEMETRY` and `LOG` carry a sequence number; replies name the shadow version they
-confirm, and a callback's resends repeat its `requestId`.
+confirm or the image offset they carry, and a callback's resends repeat its `requestId`.
 
 **No frame holds a NUL byte.** ThingSpace's send API refuses any message holding two adjacent NUL
 bytes (`400 NiddService.INPUT_INVALID.Message.AdjacentNullCharacters`), so a platform frame's
 numbers travel as text: after the type byte comes a header of two unsigned decimal integers, one
-space between them and a newline after (`8 7\n`), at most 22 bytes. A version is 0 to
+space between them and a newline after (`8 7\n`), at most 22 bytes. `FOTA_CHUNK` alone puts the
+image's sha prefix and a space ahead of its two integers, at most 33 bytes. A version is 0 to
 2147483647, and a negative one, which only a misbehaving device can report, is sent as 0; a
 `STATUS` argument is 0 to 4294967295. The JSON a frame carries is serde_json's serialization,
 which escapes every control character. Device frames follow the same rule: `HELLO` carries the
 claim key as hex, a `TELEMETRY` or `LOG` sequence is decimal text, JSON holds no NUL, and a `LOG`
-frame's binary records travel COBS-encoded, which holds none either.
+frame's binary records and a `FOTA_CHUNK`'s image bytes travel COBS-encoded, which holds none
+either.
 
 **A `TELEMETRY` or `LOG` frame opens with a send sequence**: after the type byte, one to ten
 decimal digits naming an unsigned 32-bit number and a newline (`3141592653\n`, at most 11 bytes),
@@ -3444,9 +3450,11 @@ tag.
 | `0x02` | `SHADOW_REPORT` | device to platform | UTF-8 JSON, exactly a [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) body |
 | `0x03` | `LOG` | device to platform | Header `<sequence>\n`, an encoding byte, then whole Zephyr dictionary log records in that encoding; stored as one chunk of [`GET /pigeons/:pigeon_id/logs`](#get-pigeonspigeon_idlogs) |
 | `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
+| `0x05` | `FOTA_REQ` | device to platform | `<sha16> <offset> <len>\n`: the bytes of the assigned image wanted from `offset` |
 | `0x81` | `SHADOW` | platform to device | Header `<target_version> <current_version>\n`, then `target_config` as raw UTF-8 JSON up to the tag, then the tag |
 | `0x82` | `STATUS` | platform to device | Header `<code> <arg>\n`, then the tag |
 | `0x83` | reserved | platform to device | Application data, not offered |
+| `0x84` | `FOTA_CHUNK` | platform to device | Header `<sha16> <offset> <total>\n`, then up to 1280 image bytes from `offset` in COBS, then the tag |
 
 **A `LOG` body is an encoding byte, then the records.** `c` (`0x63`) is COBS: Consistent Overhead
 Byte Stuffing with no trailing `00` delimiter, since the carrier delimits frames. Each code byte
@@ -3465,13 +3473,32 @@ the decoded records, so the dashboard's log viewer reads NIDD chunks as it reads
 | `0` | `STORED` | The `current_version` just stored | Treats that shadow report as confirmed |
 | `1` | `PAUSED` | Seconds to hold billable sends | Holds `TELEMETRY`, `SHADOW_REPORT` and `LOG` that long, capped at 86400 |
 | `2` | `UNCLAIMED` | `1` when it answers a `HELLO` whose key did not match, else `0` | On `1`, stops `TELEMETRY`, `SHADOW_REPORT` and `LOG` until its next boot; on `0`, sends `HELLO` again, at most hourly |
+| `3` | `FOTA_NONE` | The request's image: the first 8 hex characters of its `<sha16>`, as a number | Answers a `FOTA_REQ` that names no assigned image: stops that transfer, and starts again from the next shadow's `firmware` target; one naming another image is ignored, since it answers a late copy of an older request |
 
-Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x05` upward,
-new platform frames `0x84` upward. An unknown type is logged and dropped by dovecote and ignored
+Type bytes `0x00`, `0x7f`, `0x80` and `0xff` are reserved. New device frames take `0x06` upward,
+new platform frames `0x85` upward. An unknown type is logged and dropped by dovecote and ignored
 by the device. A `STATUS UNCLAIMED 1` is signed with the key the failed `HELLO` presented, so a
 device built with a stale key can still verify it, and a forger's `HELLO` draws a notice the real
 device rejects. Frames carry no nonce: a replayed `SHADOW` loses to a newer version, and a
 replayed `STATUS` repeats an effect the platform already chose.
+
+**A `FOTA_REQ` pulls the image one request at a time.** `<sha16>` is the first 16 lowercase hex
+characters of the shadow's `firmware.sha256`, naming the image by content rather than by
+`target_version`, which also moves on config-only writes. `<offset>` and `<len>` are decimal, 1
+to 7 digits, and `<len>` is at least 1. dovecote answers in the tail of that uplink, while its
+connection is up, with `min(len, 5120, total - offset)` bytes from `offset` as `FOTA_CHUNK`
+frames of 1280 bytes each, the last one shorter only where that span ends, each with `<total>`
+the target's `size`. A request whose `<sha16>` is not the assigned image's, or that arrives with
+no image assigned, draws `STATUS FOTA_NONE`, as does one for an image the store no longer holds
+or holds at another size than the target's; one whose offset is not inside the image, or whose
+body does not parse, is dropped (`rejected`) with no reply, and a read of the target or the store
+that fails, or comes back short, sends nothing, so the device asks again. The platform keeps no
+transfer state, so a device that misses a chunk asks for it again, any offset, as often as it needs:
+a repeated `FOTA_REQ`, under any `requestId`, is answered again, and the device keeps the first
+chunk it gets for each offset. The image is verified on the device, by its full SHA-256 and its
+MCUboot signature, not chunk by chunk. A device that never sends a `FOTA_REQ` never draws a
+`FOTA_CHUNK`, and firmware that predates them ignores both a `FOTA_CHUNK` and a `STATUS` code it
+does not know.
 
 The frame constants live in dovecote (`dovecote/src/helpers/nidd.rs`) and in the device library,
 not in `capsules`: the other side is C, the reason the WebSocket frame types stay in dovecote.
@@ -3536,7 +3563,27 @@ The small frames, whole, tagged with the same fixture key:
 | `STATUS PAUSED 3600` | 24 | `82 31 20 33 36 30 30 0a` (`1 3600`, newline), then `1c273dd5d282365a` | `gjEgMzYwMAoxYzI3M2RkNWQyODIzNjVh` |
 | `STATUS UNCLAIMED 0` | 21 | `82 32 20 30 0a` (`2 0`, newline), then `edba557d1f9f3445` | `gjIgMAplZGJhNTU3ZDFmOWYzNDQ1` |
 | `STATUS UNCLAIMED 1` | 21 | `82 32 20 31 0a` (`2 1`, newline), then `6e3162e1b9f30649` | `gjIgMQo2ZTMxNjJlMWI5ZjMwNjQ5` |
+| `STATUS FOTA_NONE` for `0123456789abcdef` | 28 | `82 33 20 31 39 30 38 38 37 34 33 0a` (`3 19088743`, newline), then `9c9b89ac0a3b153f` | `gjMgMTkwODg3NDMKOWM5Yjg5YWMwYTNiMTUzZg==` |
 | `HELLO` | 33 | `04`, then the key's 32 hex characters | 44 characters |
+
+`FOTA_REQ` for 1280 bytes from offset 1280 of the image whose sha256 opens `0123456789abcdef`: 28
+bytes, base64 `BTAxMjM0NTY3ODlhYmNkZWYgMTI4MCAxMjgwCg==`.
+
+```text
+0000  05 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65  .0123456789abcde
+0010  66 20 31 32 38 30 20 31 32 38 30 0a              f 1280 1280.
+```
+
+`FOTA_CHUNK` answering it when the image is 1285 bytes, so the chunk is its last five,
+`00 00 11 ff 00`, which COBS carries as `01 01 03 11 ff 01`: 50 bytes, the last 16 the tag; base64
+`hDAxMjM0NTY3ODlhYmNkZWYgMTI4MCAxMjg1CgEBAxH/ATFmNWRhZmU2ZDY5N2YwYzY=`.
+
+```text
+0000  84 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65  .0123456789abcde
+0010  66 20 31 32 38 30 20 31 32 38 35 0a 01 01 03 11  f 1280 1285.....
+0020  ff 01 31 66 35 64 61 66 65 36 64 36 39 37 66 30  ..1f5dafe6d697f0
+0030  63 36                                            c6
+```
 
 ### NIDD downlink and replies
 
@@ -3554,7 +3601,12 @@ Nothing polls. dovecote sends a frame through ThingSpace only in answer to one o
 | Any other frame from an unclaimed pigeon or an unpinned line | `STATUS UNCLAIMED 0`, at most once an hour |
 | An ingest frame (`TELEMETRY`, `SHADOW_REPORT`, `LOG`) while the account is paused | `STATUS PAUSED 3600`, at most once an hour |
 | Telemetry or a `LOG` from a converged device | None |
+| A `FOTA_REQ` for the assigned image, paused or not | Up to four `FOTA_CHUNK` frames, one per 1280 bytes asked for, and never a `SHADOW` |
+| A `FOTA_REQ` naming no assigned image | `STATUS FOTA_NONE` |
 
+- **One reply per uplink, except a `FOTA_REQ`**, which can ask for up to four chunks and draws
+  one frame for each. It never carries the owed `SHADOW`; a changed target shows as
+  `STATUS FOTA_NONE`, and the device's next ordinary uplink carries the new shadow.
 - **Pushes are bounded.** At most one unsolicited `SHADOW` per 15 minutes per pigeon, so an
   operator saving repeatedly does not flood a device; none at all while the device is converged.
   A device that cannot apply a config draws at most one `SHADOW` per uplink, inside the
@@ -3615,6 +3667,8 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
 | `LOG`, 1255 bytes of records at COBS's worst case | 1273 | yes, by construction |
 | `SHADOW` with `target_config` at its cap | 1358 | yes, by construction |
 | `SHADOW` carrying a firmware target (version, size, sha256), single-digit versions | 179 | yes |
+| `FOTA_REQ` at its longest | 31 | yes |
+| `FOTA_CHUNK`, 1280 image bytes at COBS's worst case, seven-digit offset and size | 1336 | yes, by construction |
 | `STATUS` | 21 to 30 | yes |
 
 - **1358 bytes a frame, both ways, at the platform** (`capsules::NIDD_MAX_FRAME_BYTES`), counted
@@ -3654,6 +3708,14 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   `TELEMETRY` frame that sent, inside the connection that frame opened, so they cost no radio
   access of their own. It never sends logs on a timer, and a frame that fails to send drops the
   records it carried.
+- **Firmware takes one round trip per chunk.** A 384000-byte image is 300
+  `FOTA_REQ`/`FOTA_CHUNK` round trips at one chunk a request. On the bench a round trip, uplink to
+  chunk arrival, took 2.12 seconds at the median and 3.03 at most, and the network released the
+  connection 2.9 to 3.2 seconds after the last downlink, so a device keeps the connection by
+  sending its next `FOTA_REQ` as soon as a chunk lands, and treats a chunk that has not arrived
+  within a few seconds as lost and asks again. ThingSpace's callback leg alone took up to 6.8
+  seconds, so some replies do miss. By default the `pigeon` library spends at most 60 seconds of
+  each wake on a transfer, keeping its progress in flash, so an image arrives over several wakes.
 - **Hold the connection for the reply, then release it.** Any frame from a device that is behind
   can draw a `SHADOW`, which is reliable only while the connection that frame opened is up; on the
   bench each reply reached the device 1.1 to 4.7 seconds after its connection came up. So do not
@@ -3677,8 +3739,8 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
 
 - **What bills.** One billable message per telemetry reading (a batch of M readings is M, as on
   every surface) and per stored shadow report, once per send: a repeated callback, a telemetry
-  frame the carrier delivered twice, an identical report, a `HELLO`, a `LOG` and every downlink
-  are not billed; downlinks are unmetered. A `Nidd` pigeon counts as a
+  frame the carrier delivered twice, an identical report, a `HELLO`, a `LOG`, a `FOTA_REQ` and
+  every downlink are not billed; downlinks are unmetered. A `Nidd` pigeon counts as a
   connected device in any period in which it sent a billable message, like every other pigeon.
 - **The free-tier fuse** runs at the gateway, before the Durable Object, on `TELEMETRY`,
   `SHADOW_REPORT` and `LOG` frames, as it does for the HTTP telemetry route. It fails open,
@@ -3686,6 +3748,9 @@ Uplink frames are measured against 1273 bytes, the device's cap; platform frames
   included, is dropped, the callback still answering `200` because a retry could not change the
   outcome, and the device is sent a signed `STATUS PAUSED 3600` at most once an hour. NIDD has no
   `429` for a device to read; the notice is its equivalent.
+- **Firmware is never paused.** A `FOTA_REQ` stores nothing, so the fuse does not run on it and a
+  paused account's device still gets every chunk it asks for, as it does over
+  [`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware).
 
 ### NIDD SIM changes and deletion
 
@@ -3844,7 +3909,8 @@ sends, for replaying one against a local `wrangler dev`, whose allowlist is loop
   outcome: an IMEI no pigeon is bound to, a pigeon whose device has not claimed it, an account
   over its free-tier allowance, a repeat of a callback already stored, a `TELEMETRY` or `LOG` frame
   already received under another `requestId` and not dropped as unclaimed there (the carrier
-  delivered one send twice), a frame whose body is malformed, over a cap or of an unknown type, a
+  delivered one send twice), a `FOTA_REQ` whatever it drew (it stores nothing, so every copy is
+  answered again), a frame whose body is malformed, over a cap or of an unknown type, a
   delivery report (a `DeliveryFailed` or `Queued` one first marks the push it may have carried
   pending), a configuration result, another account's callback, or an authenticated body of a shape
   dovecote does not know.

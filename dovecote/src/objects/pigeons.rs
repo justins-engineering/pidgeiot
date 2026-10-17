@@ -1,8 +1,10 @@
 use crate::helpers::nidd::{
-  NIDD_CLAIM_KEY_BYTES, NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_PAUSED,
-  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_log, decode_uplink, dedupe_key,
-  hello_key, nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame,
-  shadow_push_due, shadow_reply_due, sign_frame, status_frame,
+  NIDD_CLAIM_KEY_BYTES, NIDD_FOTA_CHUNK_BYTES, NIDD_FOTA_READ_LIMIT, NIDD_FOTA_SHA_CHARS,
+  NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_FOTA_NONE, STATUS_PAUSED,
+  STATUS_STORED, STATUS_UNCLAIMED, Uplink, claim_key_bytes, decode_fota_request, decode_log,
+  decode_uplink, dedupe_key, fota_chunk_frame, fota_none_arg, fota_span, hello_key,
+  nidd_object_name, notice_due, parse_error_line, shadow_config_cap, shadow_frame, shadow_push_due,
+  shadow_reply_due, sign_frame, status_frame, within,
 };
 use crate::helpers::{LegacyTelemetryRow, ResolvedReading, TelemetryBlob, constant_time_eq};
 use crate::objects::ws::{
@@ -13,8 +15,8 @@ use crate::objects::{mint_device_credential, mint_device_psk, verify_device_toke
 use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
-  CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_LOG_CHUNK_BYTES, MQTT_TLS_PORT,
-  MqttConfig, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, NiddConfig, Pigeon, PigeonAcl,
+  CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_FIRMWARE_BYTES, MAX_LOG_CHUNK_BYTES,
+  MQTT_TLS_PORT, MqttConfig, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, NiddConfig, Pigeon, PigeonAcl,
   PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonFlockUpdateRequest,
   PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
   PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest, PigeonUpdateRequest,
@@ -25,7 +27,7 @@ use futures::channel::oneshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use worker::{
-  Date, DurableObject, Env, Request, Response, ResponseBuilder, Result, SqlStorage, State,
+  Date, DurableObject, Env, Range, Request, Response, ResponseBuilder, Result, SqlStorage, State,
   WebSocket, WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
   wasm_bindgen,
 };
@@ -2337,27 +2339,29 @@ struct TargetConfigRow {
   target_config: String,
 }
 
-/// Reads this pigeon's `target_config` and extracts the `firmware` key so
-/// the gateway can resolve which R2 object to stream in one DO round trip
-/// — the firmware bytes themselves never pass through this DO (SQLite is
-/// no place for MB-sized blobs). 404 when no firmware is assigned.
-async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+/// Why `read_firmware_target` found no usable target. Each is logged where it happens.
+enum FirmwareTargetError {
+  /// The shadow row, or the JSON in it, could not be read.
+  Read,
+  /// `target_config.firmware` is present but is not a `FirmwareTarget`.
+  Malformed,
+}
 
-  let target_config = match pigeons
-    .sql
-    .exec("SELECT target_config FROM pigeon_shadow LIMIT 1;", None)
-  {
+/// The `firmware` key of this pigeon's `target_config`, `None` when no firmware is assigned.
+fn read_firmware_target(
+  sql: &SqlStorage,
+) -> std::result::Result<Option<FirmwareTarget>, FirmwareTargetError> {
+  let target_config = match sql.exec("SELECT target_config FROM pigeon_shadow LIMIT 1;", None) {
     Ok(cursor) => match one_row::<TargetConfigRow>(&cursor) {
       Ok(row) => row.target_config,
       Err(e) => {
         console_error!("Shadow target_config READ error: {e}");
-        return Response::error("Internal Server Error", 500);
+        return Err(FirmwareTargetError::Read);
       }
     },
     Err(e) => {
       console_error!("Shadow target_config READ error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return Err(FirmwareTargetError::Read);
     }
   };
 
@@ -2365,18 +2369,35 @@ async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<R
     Ok(v) => v,
     Err(e) => {
       console_error!("target_config JSON parse error: {e}");
-      return Response::error("Internal Server Error", 500);
+      return Err(FirmwareTargetError::Read);
     }
   };
 
   let Some(firmware_value) = parsed.get("firmware") else {
-    return Response::error("Not Found: No firmware assigned to this pigeon", 404);
+    return Ok(None);
   };
 
   match serde_json::from_value::<FirmwareTarget>(firmware_value.clone()) {
-    Ok(target) => Response::from_json(&target),
+    Ok(target) => Ok(Some(target)),
     Err(e) => {
       console_error!("Malformed firmware target in shadow: {e}");
+      Err(FirmwareTargetError::Malformed)
+    }
+  }
+}
+
+/// Reads this pigeon's `target_config` and extracts the `firmware` key so
+/// the gateway can resolve which R2 object to stream in one DO round trip
+/// — the firmware bytes themselves never pass through this DO (SQLite is
+/// no place for MB-sized blobs). 404 when no firmware is assigned.
+async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+
+  match read_firmware_target(&pigeons.sql) {
+    Ok(Some(target)) => Response::from_json(&target),
+    Ok(None) => Response::error("Not Found: No firmware assigned to this pigeon", 404),
+    Err(FirmwareTargetError::Read) => Response::error("Internal Server Error", 500),
+    Err(FirmwareTargetError::Malformed) => {
       Response::error("Bad Request: Malformed firmware target in shadow", 400)
     }
   }
@@ -3198,7 +3219,7 @@ fn write_nidd_row(sql: &SqlStorage, row: &NiddRow) -> Result<()> {
   Ok(())
 }
 
-/// A frame planned for a Nidd device, built and sent after the response.
+/// What a Nidd device is sent after the response: one frame, or for `Chunks` up to four.
 enum NiddDownlink {
   /// The shadow as it stood when the push was recorded, with the time it was recorded at.
   Shadow {
@@ -3211,6 +3232,14 @@ enum NiddDownlink {
     code: u8,
     arg: u32,
     key: Option<[u8; NIDD_CLAIM_KEY_BYTES]>,
+  },
+  /// `length` bytes of the image named by `sha256` from `offset`, read from R2 at send time so
+  /// no image bytes sit in the object's memory, sent as one `FOTA_CHUNK` per 1280.
+  Chunks {
+    sha256: String,
+    total: u32,
+    offset: u32,
+    length: u32,
   },
 }
 
@@ -3316,7 +3345,8 @@ fn plan_nidd_push(pigeons: &Pigeons, identity: NiddIdentity, shadow: &PigeonShad
 /// here if it failed. A telemetry frame the carrier delivered twice arrives under a second
 /// request id, so it is recognised by its digest alone, which its send sequence makes unique to
 /// one send. It waits for an attempt storing the frame as a retry does, and is a repeat once that
-/// attempt decided; a copy dropped as unclaimed makes no repeat, since nothing judged it.
+/// attempt decided; a copy dropped as unclaimed makes no repeat, since nothing judged it. A
+/// `FOTA_REQ` stores nothing and is never remembered, so every copy of one is answered again.
 ///
 /// Answers 200 with the outcome as the body, 400 for a `TELEMETRY` or `LOG` frame whose sequence
 /// header does not parse, 404 when no pigeon is here, and 5xx when the frame was not read or
@@ -3361,6 +3391,8 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   }
 
   let uplink = decode_uplink(&frame);
+  // A transfer asks hundreds of times, which would push every telemetry key out of the window.
+  let remember = !matches!(uplink, Uplink::FotaRequest(_));
   // A claimed row implies a live pigeon, since `delete` wipes both, so the steady state skips
   // this read; an unclaimed one must tell an unclaimed pigeon from none at all.
   let mut identity = None;
@@ -3407,7 +3439,9 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     Uplink::Hello(presented) => {
       let Some(presented) = hello_key(presented) else {
         let contact = nidd_is_contact("rejected", on_claimed_line);
-        return finish_nidd_uplink(pigeons, row, key, "rejected", contact, identity, None, None);
+        return finish_nidd_uplink(
+          pigeons, row, key, remember, "rejected", contact, identity, None, None,
+        );
       };
       let claim_key = identity.as_ref().and_then(|found| found.claim_key);
       if claim_key.is_some_and(|expected| constant_time_eq(&expected, &presented)) {
@@ -3429,6 +3463,68 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       downlink = plan_notice(&mut row, now, STATUS_UNCLAIMED, 0, None);
       "unclaimed"
     }
+    // Ahead of the paused arm, since firmware flows to a paused account. Nothing is stored and
+    // nothing is awaited, so a resend, a retry and a carrier repeat are each answered again, and
+    // the device keeps the first chunk it gets for each offset.
+    Uplink::FotaRequest(body) => match decode_fota_request(body) {
+      None => {
+        console_log!(
+          "NIDD uplink: FOTA_REQ rejected len={} for pigeon {pigeon_id}",
+          frame.len()
+        );
+        "rejected"
+      }
+      Some(request) => {
+        let target = match read_firmware_target(&pigeons.sql) {
+          Ok(target) => target,
+          Err(FirmwareTargetError::Malformed) => None,
+          // A 5xx would log a lost uplink, and the device asks again on its own anyway.
+          Err(FirmwareTargetError::Read) => {
+            let contact = nidd_is_contact("read_failed", on_claimed_line);
+            return finish_nidd_uplink(
+              pigeons,
+              row,
+              key,
+              remember,
+              "read_failed",
+              contact,
+              identity,
+              None,
+              None,
+            );
+          }
+        };
+        let target = target.and_then(|target| {
+          let total = u32::try_from(target.size)
+            .ok()
+            .filter(|&total| total != 0 && total as usize <= MAX_FIRMWARE_BYTES)?;
+          (target.sha256.get(..NIDD_FOTA_SHA_CHARS) == Some(request.sha16))
+            .then_some((target.sha256, total))
+        });
+        match target {
+          None => {
+            downlink = Some(NiddDownlink::Status {
+              code: STATUS_FOTA_NONE,
+              arg: fota_none_arg(request.sha16),
+              key: None,
+            });
+            "fota_none"
+          }
+          Some((sha256, total)) => match fota_span(request.offset, request.len, total) {
+            None => "rejected",
+            Some(length) => {
+              downlink = Some(NiddDownlink::Chunks {
+                sha256,
+                total,
+                offset: request.offset,
+                length,
+              });
+              "chunk"
+            }
+          },
+        }
+      }
+    },
     // One reply per uplink: the notice when due, since it is what quiets the device, else the
     // shadow it is owed, sent while this uplink's connection is up.
     Uplink::Telemetry(_) | Uplink::ShadowReport(_) | Uplink::Log(_) if paused => {
@@ -3592,6 +3688,7 @@ async fn nidd_uplink(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     pigeons,
     row,
     key,
+    remember,
     outcome,
     contact,
     identity,
@@ -3638,17 +3735,18 @@ fn nidd_is_contact(outcome: &str, on_claimed_line: bool) -> bool {
   outcome == "claimed" || (on_claimed_line && outcome != "unclaimed")
 }
 
-/// Records the uplink's key and whatever it changed in one write, answers with the outcome, and
-/// hands billing, the Postgres sync and any downlink to the tail. A failed write answers 500 so
-/// ThingSpace retries, except after a store, which a retry could only repeat: that answers the
-/// outcome and still runs the tail, so a stored report is billed and synced. A `contact` uplink
-/// (`nidd_is_contact`) carries the `SEEN_HEADER` when a stamp is due, which the callback route
-/// copies onto its own answer for `main` to write.
+/// Records the uplink's key when `remember` says to, and whatever it changed, in one write,
+/// answers with the outcome, and hands billing, the Postgres sync and any downlink to the tail. A
+/// failed write answers 500 so ThingSpace retries, except after a store, which a retry could only
+/// repeat: that answers the outcome and still runs the tail, so a stored report is billed and
+/// synced. A `contact` uplink (`nidd_is_contact`) carries the `SEEN_HEADER` when a stamp is due,
+/// which the callback route copies onto its own answer for `main` to write.
 #[allow(clippy::too_many_arguments)]
 fn finish_nidd_uplink(
   pigeons: &Pigeons,
   mut row: NiddRow,
   key: String,
+  remember: bool,
   outcome: &str,
   contact: bool,
   identity: Option<NiddIdentity>,
@@ -3656,7 +3754,9 @@ fn finish_nidd_uplink(
   downlink: Option<NiddDownlink>,
 ) -> Result<Response> {
   // `unclaimed` drops a frame before any rule judged it, so a copy arriving once claimed still is.
-  row.remember(key, outcome != "unclaimed");
+  if remember {
+    row.remember(key, outcome != "unclaimed");
+  }
   if let Err(e) = write_nidd_row(&pigeons.sql, &row) {
     console_error!(
       "NIDD uplink: state WRITE error for pigeon {} after {outcome}: {e}",
@@ -3701,7 +3801,8 @@ fn spawn_nidd_tail(
   });
 }
 
-/// Builds, signs and sends one downlink. A `SHADOW` that could not be sent is marked unpushed,
+/// Builds, signs and sends a planned downlink; `Chunks` goes to `send_nidd_chunks`, which sends
+/// up to four frames or a `FOTA_NONE`. A `SHADOW` that could not be sent is marked unpushed,
 /// unless a newer push was planned meanwhile, so it is due again at once; one ThingSpace refused
 /// is left as sent, since the same bytes would fail the same way. A failed notice is dropped.
 async fn send_nidd_downlink(
@@ -3711,7 +3812,7 @@ async fn send_nidd_downlink(
   identity: &NiddIdentity,
   downlink: NiddDownlink,
 ) {
-  use crate::objects::thingspace::{SendOutcome, send};
+  use crate::objects::thingspace::SendOutcome;
 
   let (kind, frame, key, pushed) = match downlink {
     NiddDownlink::Shadow { shadow, pushed_at } => (
@@ -3726,37 +3827,173 @@ async fn send_nidd_downlink(
       key.or(identity.claim_key),
       None,
     ),
+    NiddDownlink::Chunks {
+      sha256,
+      total,
+      offset,
+      length,
+    } => {
+      send_nidd_chunks(env, pigeon_id, identity, &sha256, total, offset, length).await;
+      return;
+    }
   };
 
-  let outcome = match key {
-    None => SendOutcome::Unavailable("no_claim_key".to_string()),
-    Some(key) => match sign_frame(&key, frame).await {
-      Ok(signed) => send(env, pigeon_id, &identity.imei, &signed).await,
-      Err(e) => {
-        console_error!("nidd_dl: signing failed for pigeon {pigeon_id}: {e}");
-        SendOutcome::Unavailable("sign_failed".to_string())
-      }
-    },
-  };
+  let outcome = sign_and_send(env, pigeon_id, &identity.imei, key, frame).await;
+  log_downlink(kind, "", pigeon_id, &outcome);
+  if matches!(outcome, SendOutcome::Unavailable(_))
+    && let Some((version, pushed_at)) = pushed
+    && let Err(e) = sql.exec(
+      "UPDATE pigeon_nidd SET pushed_version = 0, pushed_at = 0
+       WHERE pushed_version = ? AND pushed_at = ?;",
+      vec![version.into(), pushed_at.into()],
+    )
+  {
+    console_error!("nidd_dl: marking the push unsent failed for pigeon {pigeon_id}: {e}");
+  }
+}
 
-  match &outcome {
+/// Reads the span from R2 and sends it as `FOTA_CHUNK` frames in order, one per 1280 bytes, each
+/// awaited before the next. An image R2 does not hold, or holds at another size than the target's,
+/// draws `FOTA_NONE`, so the device stops: objects are content-addressed and never change size. A
+/// failed or short read sends nothing, since the device asks again for what it did not get.
+async fn send_nidd_chunks(
+  env: &Env,
+  pigeon_id: &str,
+  identity: &NiddIdentity,
+  sha256: &str,
+  total: u32,
+  offset: u32,
+  length: u32,
+) {
+  // `None` draws `FOTA_NONE`.
+  let bytes = match read_firmware_span(env, sha256, offset, length).await {
+    Ok(Some((size, _))) if size != u64::from(total) => {
+      console_error!(
+        "nidd_dl kind=chunk outcome=size_mismatch offset={offset} size={size} total={total} \
+         pigeon={pigeon_id}"
+      );
+      None
+    }
+    Ok(Some((_, bytes))) if bytes.len() == length as usize => Some(bytes),
+    Ok(Some((_, bytes))) => {
+      console_error!(
+        "nidd_dl kind=chunk outcome=short_read offset={offset} got={} want={length} \
+         pigeon={pigeon_id}",
+        bytes.len()
+      );
+      return;
+    }
+    Ok(None) => {
+      console_error!("nidd_dl kind=chunk outcome=no_object offset={offset} pigeon={pigeon_id}");
+      None
+    }
+    Err(e) => {
+      console_error!(
+        "nidd_dl kind=chunk outcome=read_failed offset={offset} pigeon={pigeon_id}: {e}"
+      );
+      return;
+    }
+  };
+  let Some(bytes) = bytes else {
+    let frame = status_frame(STATUS_FOTA_NONE, fota_none_arg(sha256));
+    let outcome = sign_and_send(env, pigeon_id, &identity.imei, identity.claim_key, frame).await;
+    log_downlink("status", "", pigeon_id, &outcome);
+    return;
+  };
+  let Some(sha16) = sha256.get(..NIDD_FOTA_SHA_CHARS) else {
+    return;
+  };
+  let pieces = bytes.chunks(NIDD_FOTA_CHUNK_BYTES as usize);
+  for (at, piece) in (offset..)
+    .step_by(NIDD_FOTA_CHUNK_BYTES as usize)
+    .zip(pieces)
+  {
+    let frame = fota_chunk_frame(sha16, at, total, piece);
+    let outcome = sign_and_send(env, pigeon_id, &identity.imei, identity.claim_key, frame).await;
+    let digits = at.to_string();
+    let mut field = String::with_capacity(8 + digits.len());
+    field.push_str("offset=");
+    field.push_str(&digits);
+    field.push(' ');
+    log_downlink("chunk", &field, pigeon_id, &outcome);
+  }
+}
+
+/// The stored image's whole size and `length` of its bytes from `offset`; `None` when R2 holds no
+/// such object, and fewer bytes than asked when its body is shorter. An error past
+/// `NIDD_FOTA_READ_LIMIT`, since nothing else bounds the tail and a late chunk is lost anyway.
+async fn read_firmware_span(
+  env: &Env,
+  sha256: &str,
+  offset: u32,
+  length: u32,
+) -> Result<Option<(u64, Vec<u8>)>> {
+  let bucket = env.bucket("FIRMWARE_BUCKET")?;
+  let mut key = String::with_capacity(13 + sha256.len());
+  key.push_str("firmware/");
+  key.push_str(sha256);
+  key.push_str(".bin");
+  let range = Range::OffsetWithLength {
+    offset: offset.into(),
+    length: length.into(),
+  };
+  let read = async {
+    let Some(object) = bucket.get(&key).range(range).execute().await? else {
+      return Ok(None);
+    };
+    let size = object.size();
+    match object.body() {
+      Some(body) => body.bytes().await.map(|bytes| Some((size, bytes))),
+      None => Ok(Some((size, Vec::new()))),
+    }
+  };
+  within(NIDD_FOTA_READ_LIMIT, read)
+    .await
+    .unwrap_or_else(|| Err("R2 read timed out".into()))
+}
+
+/// Signs `frame` with `key` and sends it. No key, which a pigeon never claimed has, sends nothing.
+async fn sign_and_send(
+  env: &Env,
+  pigeon_id: &str,
+  imei: &str,
+  key: Option<[u8; NIDD_CLAIM_KEY_BYTES]>,
+  frame: Vec<u8>,
+) -> crate::objects::thingspace::SendOutcome {
+  use crate::objects::thingspace::{SendOutcome, send};
+
+  let Some(key) = key else {
+    return SendOutcome::Unavailable("no_claim_key".to_string());
+  };
+  match sign_frame(&key, frame).await {
+    Ok(signed) => send(env, pigeon_id, imei, &signed).await,
+    Err(e) => {
+      console_error!("nidd_dl: signing failed for pigeon {pigeon_id}: {e}");
+      SendOutcome::Unavailable("sign_failed".to_string())
+    }
+  }
+}
+
+/// The `nidd_dl` line for one send; `at` is empty or a `name=value ` field the frame adds.
+fn log_downlink(
+  kind: &str,
+  at: &str,
+  pigeon_id: &str,
+  outcome: &crate::objects::thingspace::SendOutcome,
+) {
+  use crate::objects::thingspace::SendOutcome;
+
+  match outcome {
     SendOutcome::Sent(request_id) => {
-      console_log!("nidd_dl kind={kind} outcome=sent pigeon={pigeon_id} request={request_id}");
+      console_log!("nidd_dl kind={kind} outcome=sent {at}pigeon={pigeon_id} request={request_id}");
     }
     SendOutcome::Refused(reason) => {
-      console_error!("nidd_dl kind={kind} outcome=refused reason={reason} pigeon={pigeon_id}");
+      console_error!("nidd_dl kind={kind} outcome=refused reason={reason} {at}pigeon={pigeon_id}");
     }
     SendOutcome::Unavailable(reason) => {
-      console_error!("nidd_dl kind={kind} outcome=unavailable reason={reason} pigeon={pigeon_id}");
-      if let Some((version, pushed_at)) = pushed
-        && let Err(e) = sql.exec(
-          "UPDATE pigeon_nidd SET pushed_version = 0, pushed_at = 0
-           WHERE pushed_version = ? AND pushed_at = ?;",
-          vec![version.into(), pushed_at.into()],
-        )
-      {
-        console_error!("nidd_dl: marking the push unsent failed for pigeon {pigeon_id}: {e}");
-      }
+      console_error!(
+        "nidd_dl kind={kind} outcome=unavailable reason={reason} {at}pigeon={pigeon_id}"
+      );
     }
   }
 }
@@ -3771,7 +4008,16 @@ mod tests {
 
   #[test]
   fn nidd_contact_outcomes() {
-    for outcome in ["claimed", "stored", "paused", "repeat", "rejected"] {
+    for outcome in [
+      "claimed",
+      "stored",
+      "paused",
+      "repeat",
+      "rejected",
+      "chunk",
+      "fota_none",
+      "read_failed",
+    ] {
       assert!(nidd_is_contact(outcome, true), "{outcome}");
     }
     assert!(!nidd_is_contact("unclaimed", true));
