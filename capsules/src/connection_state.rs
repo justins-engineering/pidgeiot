@@ -130,19 +130,25 @@ pub fn classify(
     return ConnectionState::Unknown;
   };
   let age_secs = (now - last_seen).whole_seconds().max(0);
-  let (online_secs, stale_secs) = match interval_secs {
-    Some(interval) if interval > 0 => (
-      interval * ONLINE_INTERVAL_MULTIPLE,
-      interval * STALE_INTERVAL_MULTIPLE,
-    ),
-    _ => (DEFAULT_ONLINE_SECS, DEFAULT_STALE_SECS),
-  };
+  let (online_secs, stale_secs) = thresholds(interval_secs);
   if age_secs <= online_secs {
     ConnectionState::Online
   } else if age_secs <= stale_secs {
     ConnectionState::Stale
   } else {
     ConnectionState::Offline
+  }
+}
+
+/// Silence, in seconds after the contact `classify` judges, past which it reads `Stale` and past
+/// which it reads `Offline`.
+pub fn thresholds(interval_secs: Option<i64>) -> (i64, i64) {
+  match interval_secs {
+    Some(interval) if interval > 0 => (
+      interval * ONLINE_INTERVAL_MULTIPLE,
+      interval * STALE_INTERVAL_MULTIPLE,
+    ),
+    _ => (DEFAULT_ONLINE_SECS, DEFAULT_STALE_SECS),
   }
 }
 

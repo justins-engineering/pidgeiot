@@ -1586,6 +1586,9 @@ pub enum AlertCondition {
     comparator: Comparator,
     value: f64,
   },
+  /// The pigeon's connection state is `state`, held for at least `min_duration_secs` when set,
+  /// counted from when its silence crossed that state's threshold
+  /// (`connection_state::thresholds`), not from its last contact.
   DeviceState {
     state: ConnectionStateKind,
     min_duration_secs: Option<i64>,

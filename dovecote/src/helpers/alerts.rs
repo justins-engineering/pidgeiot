@@ -1017,13 +1017,16 @@ fn condition_holds(
       };
       let mut matched = classified == target;
       if matched && let Some(min_secs) = min_duration_secs {
-        // How long the pigeon has been silent doubles as "how long it's been in this state" --
-        // it entered Offline/Stale the moment it fell silent, so the age of its last contact
-        // already is that duration.
-        let age_secs = contact
-          .map(|t| (now - t).whole_seconds())
+        // The state began when the silence crossed its threshold, not when the silence began.
+        let (stale_after, offline_after) = connection_state::thresholds(seen.interval_secs);
+        let entered_after = match state {
+          ConnectionStateKind::Offline => offline_after,
+          ConnectionStateKind::Stale => stale_after,
+        };
+        let held_secs = contact
+          .map(|t| (now - t).whole_seconds() - entered_after)
           .unwrap_or(i64::MAX);
-        matched = age_secs >= *min_secs;
+        matched = held_secs >= *min_secs;
       }
       Some((matched, last_seen))
     }
@@ -1643,10 +1646,10 @@ mod scheduled_condition_tests {
     assert!(!fires(&offline_for(Some(1800)), &stalled));
     assert!(!fires(&offline_for(None), &stalled));
 
-    let silent = seen(Some(45 * 60), Some(40 * 60));
+    let silent = seen(Some(75 * 60), Some(70 * 60));
     let (holds, last_seen) = condition_holds(&offline_for(Some(1800)), &silent, now()).unwrap();
     assert!(holds);
-    assert_eq!(last_seen, Some(now() - Duration::seconds(40 * 60)));
+    assert_eq!(last_seen, Some(now() - Duration::seconds(70 * 60)));
   }
 
   #[test]
@@ -1707,6 +1710,32 @@ mod scheduled_condition_tests {
     assert!(holds);
     // The mail reports the stamp itself, not the credited time.
     assert_eq!(last_seen, Some(now() - Duration::seconds(200)));
+  }
+
+  #[test]
+  fn min_duration_counts_from_the_state_crossing_not_from_the_silence() {
+    // 60 s cadence: Offline past 300 s of credited silence, Stale past 120 s. The stamp is
+    // credited 60 s, so a stamp 361 s old is 301 s of credited silence: 1 s into Offline.
+    let at = |stamp_ago: i64| PigeonLastSeen {
+      interval_secs: Some(60),
+      ..seen(None, Some(stamp_ago))
+    };
+    assert!(!fires(&offline_for(Some(300)), &at(361)));
+    assert!(fires(&offline_for(Some(300)), &at(660)));
+
+    let stale_for = |secs: i64| AlertCondition::DeviceState {
+      state: ConnectionStateKind::Stale,
+      min_duration_secs: Some(secs),
+    };
+    // 150 s of credited silence: 30 s into Stale.
+    assert!(!fires(&stale_for(60), &at(210)));
+    assert!(fires(&stale_for(60), &at(240)));
+
+    // No interval: Offline past 1800 s of credited silence, so 30 minutes in it needs 3600 s.
+    let unset = |stamp_ago: i64| seen(None, Some(stamp_ago));
+    assert!(!fires(&offline_for(Some(1800)), &unset(1861)));
+    assert!(!fires(&offline_for(Some(1800)), &unset(3659)));
+    assert!(fires(&offline_for(Some(1800)), &unset(3660)));
   }
 }
 
