@@ -377,7 +377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
-**Used by:** [encoding_rs 0.8.41](https://github.com/hsivonen/encoding_rs)
+**Used by:** [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
 
 
 </details>
@@ -415,7 +415,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [xxhash-rust 0.8.18](https://github.com/DoumanAsh/xxhash-rust)
+**Used by:** [xxhash-rust 0.8.19](https://github.com/DoumanAsh/xxhash-rust)
 
 
 </details>
@@ -624,38 +624,6 @@ DEALINGS IN THE SOFTWARE.
 
 
 ````text
-Copyright (c) 2010 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-````
-
-**Used by:** [lazy_static 1.5.0](https://github.com/rust-lang-nursery/lazy-static.rs)
-
-
-````text
 Copyright (c) 2012-2013 Mozilla Foundation
 
 Permission is hereby granted, free of charge, to any
@@ -780,7 +748,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.105](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [longest-increasing-subsequence 0.1.0](https://github.com/fitzgen/longest-increasing-subsequence), [wasm-bindgen-futures 0.4.78](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.128](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.128](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.128](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.128](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.105](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
+**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [longest-increasing-subsequence 0.1.0](https://github.com/fitzgen/longest-increasing-subsequence), [wasm-bindgen-futures 0.4.79](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
 
 
 ````text
@@ -872,7 +840,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.26.1](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.28.0](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -926,7 +894,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [headers 0.4.1](https://github.com/hyperium/headers)
+**Used by:** [headers 0.4.2](https://github.com/hyperium/headers)
 
 
 ````text
@@ -953,7 +921,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [unicase 2.9.0](https://github.com/seanmonstar/unicase)
+**Used by:** [unicase 2.10.0](https://github.com/seanmonstar/unicase)
 
 
 ````text
@@ -985,7 +953,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [serde_with 3.23.0](https://github.com/jonasbb/serde_with/)
+**Used by:** [serde_with 3.24.0](https://github.com/jonasbb/serde_with/)
 
 
 ````text
@@ -1573,7 +1541,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.1](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -1939,7 +1907,7 @@ SOFTWARE.
 
 ````
 
-**Used by:** [powerfmt 0.2.0](https://github.com/jhpratt/powerfmt)
+**Used by:** [powerfmt 0.2.1](https://github.com/jhpratt/powerfmt)
 
 
 ````text
@@ -1965,7 +1933,7 @@ SOFTWARE.
 
 ````
 
-**Used by:** [deranged 0.5.8](https://github.com/jhpratt/deranged)
+**Used by:** [deranged 0.5.9](https://github.com/jhpratt/deranged)
 
 
 ````text
@@ -2122,7 +2090,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [zerocopy-derive 0.8.57](https://github.com/google/zerocopy), [zerocopy 0.8.57](https://github.com/google/zerocopy)
+**Used by:** [zerocopy-derive 0.8.63](https://github.com/google/zerocopy), [zerocopy 0.8.63](https://github.com/google/zerocopy)
 
 
 ````text
@@ -2154,7 +2122,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.41](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 
 
 ````text
@@ -2463,7 +2431,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [async-stream-impl 0.3.6](https://github.com/tokio-rs/async-stream), [async-stream 0.3.6](https://github.com/tokio-rs/async-stream), [const-serialize-macro 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize-macro 0.8.0-alpha.1](https://github.com/dioxuslabs/dioxus), [const-serialize 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize 0.8.0-alpha.0](https://github.com/dioxuslabs/dioxus), [content_disposition 0.4.0](https://github.com/y0zong/content-disposition), [dioxus-asset-resolver 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-cli-config 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macros 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-document 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-free-icons 0.10.0](https://github.com/dioxus-community/dioxus-free-icons), [dioxus-fullstack-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-history 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-hooks 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html-internal-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-interpreter-js 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-logger 0.7.10](https://github.com/dioxuslabs/dioxus), [dioxus-router-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-router 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-rsx 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-signals 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-web 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus 0.7.10](https://github.com/DioxusLabs/dioxus/), [fluent-langneg 0.13.1](https://github.com/projectfluent/fluent-langneg-rs), [generational-box 0.7.10](https://github.com/DioxusLabs/dioxus/), [gloo-net 0.6.0](https://github.com/rustwasm/gloo), [gloo-timers 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/timers), [gloo-utils 0.2.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [intl_pluralrules 7.0.2](https://github.com/zbraniecki/pluralrules), [lazy-js-bundle 0.7.10](https://github.com/DioxusLabs/dioxus/), [manganis-core 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-core), [manganis-macro 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-macro), [manganis 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis), [sledgehammer_bindgen 0.6.0](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_bindgen_macro 0.6.5](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_utils 0.3.1](https://github.com/demonthos/sledgehammer_utils/), [subsecond-types 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [subsecond 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [type-map 0.5.1](https://github.com/kardeiz/type-map), [warnings-macro 0.2.0](https://github.com/dioxuslabs/warnings), [warnings 0.2.1](https://github.com/dioxuslabs/warnings)
+**Used by:** [async-stream-impl 0.3.6](https://github.com/tokio-rs/async-stream), [async-stream 0.3.6](https://github.com/tokio-rs/async-stream), [const-serialize-macro 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize-macro 0.8.0-alpha.3](https://github.com/dioxuslabs/dioxus), [const-serialize 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize 0.8.0-alpha.0](https://github.com/dioxuslabs/dioxus), [content_disposition 0.4.0](https://github.com/y0zong/content-disposition), [dioxus-asset-resolver 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-cli-config 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macros 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-document 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-free-icons 0.10.0](https://github.com/dioxus-community/dioxus-free-icons), [dioxus-fullstack-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-history 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-hooks 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html-internal-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-interpreter-js 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-logger 0.7.10](https://github.com/dioxuslabs/dioxus), [dioxus-router-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-router 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-rsx 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-signals 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-web 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus 0.7.10](https://github.com/DioxusLabs/dioxus/), [fluent-langneg 0.13.1](https://github.com/projectfluent/fluent-langneg-rs), [generational-box 0.7.10](https://github.com/DioxusLabs/dioxus/), [gloo-net 0.6.0](https://github.com/rustwasm/gloo), [gloo-timers 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/timers), [gloo-utils 0.2.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [intl_pluralrules 7.0.2](https://github.com/zbraniecki/pluralrules), [lazy-js-bundle 0.7.10](https://github.com/DioxusLabs/dioxus/), [manganis-core 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-core), [manganis-macro 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-macro), [manganis 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis), [sledgehammer_bindgen 0.6.0](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_bindgen_macro 0.6.5](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_utils 0.3.1](https://github.com/demonthos/sledgehammer_utils/), [subsecond-types 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [subsecond 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [type-map 0.5.1](https://github.com/kardeiz/type-map), [warnings-macro 0.2.0](https://github.com/dioxuslabs/warnings), [warnings 0.2.1](https://github.com/dioxuslabs/warnings)
 
 
 ````text
@@ -2491,7 +2459,7 @@ SOFTWARE.
 
 ````
 
-**Used by:** [tokio 1.53.1](https://github.com/tokio-rs/tokio)
+**Used by:** [tokio 1.53.3](https://github.com/tokio-rs/tokio)
 
 
 ````text
@@ -2631,7 +2599,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [inventory 0.3.24](https://github.com/dtolnay/inventory), [itoa 1.0.18](https://github.com/dtolnay/itoa), [macro-string 0.1.4](https://github.com/dtolnay/macro-string), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [send_wrapper 0.6.0](https://github.com/thk1/send_wrapper), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.6](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.20](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.20](https://github.com/dtolnay/thiserror), [unic-langid-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid 0.9.6](https://github.com/zbraniecki/unic-locale), [unicode-ident 1.0.26](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.4.2](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
+**Used by:** [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [inventory 0.3.25](https://github.com/dtolnay/inventory), [itoa 1.0.18](https://github.com/dtolnay/itoa), [lazy_static 1.5.1](https://github.com/rust-lang-nursery/lazy-static.rs), [macro-string 0.1.4](https://github.com/dtolnay/macro-string), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [send_wrapper 0.6.0](https://github.com/thk1/send_wrapper), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.154](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.9](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.21](https://github.com/dtolnay/thiserror), [unic-langid-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid 0.9.6](https://github.com/zbraniecki/unic-locale), [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.4.2](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
 
 
 ````text
@@ -2985,7 +2953,7 @@ authorization of the copyright holder.
 
 ````
 
-**Used by:** [unicode-ident 1.0.26](https://github.com/dtolnay/unicode-ident)
+**Used by:** [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 
 
 ````text
@@ -3038,7 +3006,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ````
 
-**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.3](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
 
 
 </details>
