@@ -93,6 +93,11 @@ scripts/purge-identities.py --env both --candidates-from identities.json      # 
 scripts/purge-identities.py --env both --candidates-from identities.json --apply
 ```
 
+A run that registers a staging identity or makes a fixture (org, flock, pigeon, alert, invite)
+removes it before it ends: the objects through the dashboard routes while it holds the session,
+then the identity by `--env staging --identities <file>` with the addresses it recorded. Bulk
+purges exist for what slipped through, not as the plan.
+
 Dry run is what happens without `--apply`, which asks for the plan's ready
 count typed back on a terminal. `--env both` is the only sequence that can
 finish an account with rows in each database: rows in an environment the run
