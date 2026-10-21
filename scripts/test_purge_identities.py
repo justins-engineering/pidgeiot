@@ -398,3 +398,22 @@ class ConnectionStrings(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class ReviewedSplit(unittest.TestCase):
+  def test_a_reviewed_split_parses_in_any_order(self):
+    self.assertEqual(purge.parse_split("candidate=52, keep=4,external=7,held=1"),
+                     {"external": 7, "keep": 4, "held": 1, "candidate": 52})
+
+  def test_a_split_missing_a_class_or_naming_a_stranger_is_refused(self):
+    for bad in ("external=7,keep=4,held=1", "external=7,keep=4,held=1,candidate=52,other=1",
+                "external=seven,keep=4,held=1,candidate=52", "external 7"):
+      with self.assertRaises(purge.argparse.ArgumentTypeError):
+        purge.parse_split(bad)
+
+  def test_the_flag_rides_argparse(self):
+    args = purge.parse_args(["--env", "both", "--candidates-from", "x.json",
+                             "--expect", "external=7,keep=4,held=1,candidate=52"])
+    self.assertEqual(args.expect["candidate"], 52)
+    self.assertIsNone(purge.parse_args(["--env", "both", "--candidates-from", "x.json"]).expect)
+

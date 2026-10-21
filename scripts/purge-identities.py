@@ -75,6 +75,20 @@ INTERNAL_PATTERNS = (
 # is stale, which is the one thing that could put a real account in a plan.
 EXPECTED_CLASSES = {"external": 6, "keep": 4, "held": 1, "candidate": 42}
 
+
+def parse_split(text):
+  """--expect value: the four class counts of a dump the operator has read, as k=v pairs."""
+  counts = {}
+  for part in text.split(","):
+    key, sep, value = part.strip().partition("=")
+    if not sep or key not in EXPECTED_CLASSES or not value.isdigit():
+      raise argparse.ArgumentTypeError(
+        "expected external=N,keep=N,held=N,candidate=N, got " + repr(text))
+    counts[key] = int(value)
+  if set(counts) != set(EXPECTED_CLASSES):
+    raise argparse.ArgumentTypeError("--expect must name all four classes once")
+  return counts
+
 UUID_RE = re.compile(r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
 
 # Stands in for an address the run does not have, so an email-keyed
@@ -859,6 +873,10 @@ def parse_args(argv):
   source.add_argument("--identities", metavar="FILE",
                       help="explicit ids or emails, one per line, '#' comments")
   p.add_argument("--keep", metavar="FILE", help="extra addresses or ids never to delete")
+  p.add_argument("--expect", metavar="SPLIT", type=parse_split,
+                 help="the class split of a fresh dump you have read, e.g. "
+                      "external=7,keep=4,held=1,candidate=52; without it the built-in "
+                      "split applies")
   p.add_argument("--dry-run", action="store_true")
   p.add_argument("--apply", action="store_true")
   p.add_argument("--include-held", action="store_true")
@@ -893,9 +911,10 @@ def resolve_targets(args, kratos, keeps, held):
       counts[klass] += 1
       if klass == "candidate" or (klass == "held" and args.include_held):
         chosen.append(identity)
-    if counts != EXPECTED_CLASSES:
-      die(f"inventory no longer splits {EXPECTED_CLASSES} -- got {counts}; "
-          "re-read identities.json before trusting this plan")
+    expected = args.expect or EXPECTED_CLASSES
+    if counts != expected:
+      die(f"inventory no longer splits {expected} -- got {counts}; "
+          "re-read identities.json, then pass the split you reviewed as --expect")
     return check_ids(chosen), counts, [i["id"] for i in identities]
 
   wanted = []

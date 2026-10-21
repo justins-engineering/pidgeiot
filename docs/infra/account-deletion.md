@@ -88,6 +88,8 @@ Proving it afterwards would be reporting a problem one step too late to fix.
 
 ```sh
 scripts/purge-identities.py --env both --candidates-from identities.json      # read this
+# A fresh dump splits differently from the built-in gate; after reading the split, pass it:
+#   --expect external=7,keep=4,held=1,candidate=52
 scripts/purge-identities.py --env both --candidates-from identities.json --apply
 ```
 
