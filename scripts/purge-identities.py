@@ -43,6 +43,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -260,12 +261,15 @@ def http(method, url, body=None, headers=None, follow=True):
 class Kratos:
   """The admin and public APIs, locally or through one multiplexed ssh hop."""
 
-  def __init__(self, realm, repo_root, run_dir):
+  def __init__(self, realm, repo_root):
     self.public, self.admin, ssh_var = REALMS[realm]
     self.ssh = read_secret(ssh_var, repo_root) if ssh_var else ""
     if ssh_var and not self.ssh:
       die(f"{ssh_var} is not set; the production Kratos admin API is loopback only")
-    self._control = os.path.join(run_dir, "ssh-control")
+    # A Unix socket path is capped at 107 bytes and ssh appends a random suffix,
+    # so the multiplexer cannot live under a deep run directory.
+    self._control = os.path.join(
+      tempfile.mkdtemp(prefix="purge-ssh-", dir=os.environ.get("XDG_RUNTIME_DIR")), "s")
 
   def call(self, method, url, body=None, follow=True):
     if not self.ssh:
@@ -985,7 +989,7 @@ def main(argv=None):
         if line:
           keeps.add(line)
 
-  kratos = Kratos(realm, repo_root, run_dir)
+  kratos = Kratos(realm, repo_root)
   candidates, counts, known_ids = resolve_targets(args, kratos, keeps, HELD_EMAILS)
 
   databases = {}
