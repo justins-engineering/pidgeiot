@@ -417,3 +417,16 @@ class ReviewedSplit(unittest.TestCase):
     self.assertEqual(args.expect["candidate"], 52)
     self.assertIsNone(purge.parse_args(["--env", "both", "--candidates-from", "x.json"]).expect)
 
+  def test_a_resumed_run_holds_to_its_own_plan(self):
+    with tempfile.TemporaryDirectory() as d:
+      plan = {"counts": {"external": 7, "keep": 4, "held": 1, "candidate": 52}}
+      with open(os.path.join(d, "plan.json"), "w", encoding="utf-8") as fh:
+        json.dump(plan, fh)
+      args = purge.parse_args(["--env", "both", "--candidates-from", "x.json", "--resume", d])
+      self.assertIsNone(args.expect)
+      purge.adopt_plan_split(args, d)
+      self.assertEqual(args.expect, plan["counts"])
+      bare = purge.parse_args(["--env", "both", "--candidates-from", "x.json"])
+      purge.adopt_plan_split(bare, d)
+      self.assertIsNone(bare.expect)
+

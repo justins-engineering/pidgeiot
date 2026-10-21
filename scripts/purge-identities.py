@@ -904,6 +904,16 @@ def check_ids(rows):
   return rows
 
 
+def adopt_plan_split(args, run_dir):
+  """A resumed run without --expect is held to the split it was reviewed at."""
+  if not args.resume or args.expect:
+    return
+  plan_path = os.path.join(run_dir, "plan.json")
+  if os.path.exists(plan_path):
+    with open(plan_path, encoding="utf-8") as fh:
+      args.expect = json.load(fh).get("counts")
+
+
 def resolve_targets(args, kratos, keeps, held):
   """Returns (candidates, counts). Either the classified dump or an explicit list."""
   if args.candidates_from:
@@ -990,6 +1000,7 @@ def main(argv=None):
           keeps.add(line)
 
   kratos = Kratos(realm, repo_root)
+  adopt_plan_split(args, run_dir)
   candidates, counts, known_ids = resolve_targets(args, kratos, keeps, HELD_EMAILS)
 
   databases = {}
