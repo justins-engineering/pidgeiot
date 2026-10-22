@@ -7,18 +7,36 @@ use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
 use super::alerts::send_text_email;
+use super::missing_schema_objects;
 use super::ops_probe::ops_alert_email;
 
-/// Ensured-once-per-isolate flag: `POST /contact` is unauthenticated and
-/// abuse-facing, so it must not pay (or let an attacker multiply) a DDL
-/// round trip per request.
+/// Set once this isolate has found `contact_submissions` and its indexes.
 static TABLE_READY: AtomicBool = AtomicBool::new(false);
 
-/// Idempotently ensures `contact_submissions` exists -- same convention as
-/// `ensure_error_tables`: the migration file under `infra/migrations/` is
-/// the deploy-time apply, this is the belt-and-suspenders that lets the
-/// route work against a database nobody remembered to migrate.
+/// Ensures `contact_submissions` and its indexes once per isolate, logging anything missing
+/// first: `infra/migrations/2026-08-24-contact-submissions.sql` should already have created them.
 pub async fn ensure_contact_table(client: &Client) -> Result<()> {
+  if TABLE_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "contact_submissions",
+      "idx_contact_submissions_received",
+      "idx_contact_submissions_unnotified",
+    ],
+    &[],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLE_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_contact_table: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS contact_submissions (
@@ -38,16 +56,9 @@ pub async fn ensure_contact_table(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Contact table bootstrap error: {e}");
+      console_error!("ensure_contact_table failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
-}
-
-async fn ensure_contact_table_once(client: &Client) -> Result<()> {
-  if TABLE_READY.load(Ordering::Relaxed) {
-    return Ok(());
-  }
-  ensure_contact_table(client).await?;
+    })?;
   TABLE_READY.store(true, Ordering::Relaxed);
   Ok(())
 }
@@ -63,7 +74,7 @@ pub async fn store_contact_submission(
   req: &ContactRequest,
   user_id: Option<Uuid>,
 ) -> Result<Uuid> {
-  ensure_contact_table_once(client).await?;
+  ensure_contact_table(client).await?;
 
   let name = req.name.trim();
   let email = req.email.trim();

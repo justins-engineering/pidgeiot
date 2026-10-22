@@ -10,9 +10,9 @@
 -- the only identifier needed to reply.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
--- `ensure_contact_table` (helpers/contact.rs) runs the same statements
--- lazily, so applying this at deploy time only spares the first
+-- database. dovecote's runtime
+-- `ensure_contact_table` (helpers/contact.rs) runs the same statements,
+-- so applying this at deploy time only spares the first
 -- submission a DDL round trip.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-24-contact-submissions.sql

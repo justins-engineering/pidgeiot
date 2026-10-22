@@ -13,8 +13,8 @@
 -- stores its history normally never uses the column at all.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime `ensure_alert_tables`
--- and `ensure_pigeons_last_forwarded_column` run the same statement lazily.
+-- database. dovecote's runtime `ensure_alert_tables`
+-- and `ensure_pigeons_last_forwarded_column` run the same statement.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-09-02-forwarded-last-seen.sql
 --

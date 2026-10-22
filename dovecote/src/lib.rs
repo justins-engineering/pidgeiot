@@ -5291,9 +5291,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .with_cors(&cors);
         }
 
-        // Both lazy-DDL bootstraps: the overview reads the billing columns
-        // AND the usage table, and this is a low-rate dashboard route where
-        // the belt-and-suspenders round trip is cheap.
+        // Both ensures: the overview reads the billing columns AND the
+        // usage table.
         if ensure_billing_tables(&client).await.is_err()
           || ensure_billing_usage_tables(&client).await.is_err()
         {
@@ -5809,7 +5808,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         }
 
         // The allowance-floor write below wants the usage table; the
-        // state read bootstraps its own columns.
+        // state read ensures its own columns.
         if ensure_billing_usage_tables(&client).await.is_err() {
           return Response::error("Internal Server Error", 500)
             .unwrap()

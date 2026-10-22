@@ -26,27 +26,43 @@ use tokio_postgres::types::Type;
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
-/// Ensured-once-per-isolate flag, same convention as
-/// `ensure_contact_table_once`: the hook fires on every registration and
-/// every settings save, and none of those should pay a DDL round trip.
+use super::missing_schema_objects;
+
+/// Set once this isolate has found `consent_events`, its columns and its index.
 static TABLE_READY: AtomicBool = AtomicBool::new(false);
 
-/// Idempotently ensures `consent_events` exists and carries every column
-/// and value the code writes. The deploy-time applies are
-/// `infra/migrations/2026-08-27-consent-events.sql` and
-/// `infra/migrations/2026-09-14-terms-assent.sql`, which hold the same
-/// statements and the reasoning behind each column; this is the
-/// belt-and-suspenders that lets the routes work against a database nobody
-/// remembered to migrate.
+/// Ensures `consent_events`, its columns and its index once per isolate, logging anything
+/// missing first: `infra/migrations/2026-08-27-consent-events.sql` and
+/// `infra/migrations/2026-09-14-terms-assent.sql` should already have created them, and hold the
+/// reasoning behind each column.
 ///
-/// The `source` widening has to be conditional. `CREATE TABLE IF NOT
-/// EXISTS` is inert against a table that already exists, so without it the
-/// first `gate` insert fails against every deployed database; a blind
-/// DROP/ADD instead would take the table's exclusive lock on every isolate
-/// boot. The loop finds nothing after the first run, and the drop is
-/// `IF EXISTS` because two isolates can read the same constraint name
-/// before either takes the lock.
+/// The `source` widening has to be conditional: `CREATE TABLE IF NOT EXISTS` is inert against a
+/// table that already exists, and a blind DROP/ADD would take the table's exclusive lock each
+/// time the batch runs. The drop is `IF EXISTS` because two isolates can read the same constraint
+/// name before either takes the lock. The catalog read cannot see a CHECK constraint, so the
+/// widening runs only beside a missing table, column or index.
 pub async fn ensure_consent_tables(client: &Client) -> Result<()> {
+  if TABLE_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &["consent_events", "idx_consent_events_identity"],
+    &[
+      ("consent_events", "ip"),
+      ("consent_events", "user_agent"),
+      ("consent_events", "org_id"),
+    ],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLE_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_consent_tables: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS consent_events (
@@ -85,16 +101,9 @@ pub async fn ensure_consent_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Consent events table bootstrap error: {e}");
+      console_error!("ensure_consent_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
-}
-
-async fn ensure_consent_tables_once(client: &Client) -> Result<()> {
-  if TABLE_READY.load(Ordering::Relaxed) {
-    return Ok(());
-  }
-  ensure_consent_tables(client).await?;
+    })?;
   TABLE_READY.store(true, Ordering::Relaxed);
   Ok(())
 }
@@ -141,7 +150,7 @@ pub async fn record_consent_event(
   ip: Option<&str>,
   user_agent: Option<&str>,
 ) -> Result<Option<i64>> {
-  ensure_consent_tables_once(client).await?;
+  ensure_consent_tables(client).await?;
 
   let kind = if granted {
     ConsentKind::Granted
@@ -220,7 +229,7 @@ pub async fn record_terms_assent(
   source: ConsentSource,
   org_id: Option<Uuid>,
 ) -> Result<Option<i64>> {
-  ensure_consent_tables_once(client).await?;
+  ensure_consent_tables(client).await?;
 
   let kind = ConsentKind::Granted.as_str();
   let source = source.as_str();
@@ -276,7 +285,7 @@ pub async fn load_terms_assent(
   client: &Client,
   identity_id: &Uuid,
 ) -> Result<Option<(String, OffsetDateTime)>> {
-  ensure_consent_tables_once(client).await?;
+  ensure_consent_tables(client).await?;
 
   let purpose = TERMS_OF_SERVICE_PURPOSE;
   let kind = ConsentKind::Granted.as_str();

@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- reads; this one is what dovecote's DeviceState alert sweep reads).
   -- Stamped at most once a minute by helpers/pigeons.rs::stamp_last_seen.
   last_seen_at TIMESTAMPTZ,
+  -- Last report forwarded to this pigeon's telemetry_endpoint instead of
+  -- stored; see infra/migrations/2026-09-02-forwarded-last-seen.sql.
+  last_forwarded_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -99,6 +102,7 @@ ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons
@@ -343,6 +347,9 @@ CREATE TABLE IF NOT EXISTS billing_usage_periods (
   billable_messages BIGINT NOT NULL DEFAULT 0,
   warned_at TIMESTAMPTZ,
   paused_at TIMESTAMPTZ,
+  -- Highest allowance of any tier held this period; see
+  -- infra/migrations/2026-08-18-plan-change-allowance-floor.sql.
+  allowance_floor_messages BIGINT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_kind, owner_id, period_start)
 );
@@ -553,6 +560,15 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
   value JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, scope_key)
+);
+
+-- Last known health per external service, so the ops probe mails only on a
+-- change (dovecote's helpers/ops_probe.rs).
+CREATE TABLE IF NOT EXISTS ops_health_state (
+  service TEXT PRIMARY KEY,
+  healthy BOOLEAN NOT NULL,
+  since TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Indexes

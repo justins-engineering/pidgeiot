@@ -14,8 +14,8 @@
 -- helpers/alerts.rs::resolve_pigeon_last_seen for the DeviceState sweep.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime `ensure_alert_tables`
--- runs the same statement lazily before the sweep reads the column. Run it
+-- database. dovecote's runtime `ensure_alert_tables`
+-- runs the same statement before the sweep reads the column. Run it
 -- before deploying: until the column exists every stamp fails and is logged.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-10-16-last-seen.sql

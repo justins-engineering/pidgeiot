@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::{
   BillingPlan, OrganizationBilling, OrganizationBillingOverview, OrganizationBusinessDetails,
   SubscriptionStatus,
@@ -11,12 +13,49 @@ use worker::{Error, Result, console_error};
 use crate::helpers::business_details::{
   DETAILS_COLUMNS, ensure_business_details_columns, row_to_details,
 };
+use crate::helpers::missing_schema_objects;
 
-/// Runtime schema bootstrap, same lazy-DDL convention as
-/// `ensure_org_tables` (`helpers/orgs.rs`): `infra/init-db.sql` and the
-/// dated migration remain the documented schema, and this keeps a Worker
-/// deployed ahead of an applied migration from failing every webhook.
+/// Set once this isolate has found the billing columns, table and indexes complete.
+static TABLES_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures the billing columns on `organizations`, `stripe_webhook_events` and their indexes once
+/// per isolate, so a Worker deployed ahead of its migration still serves webhooks; anything
+/// missing is logged first.
 pub async fn ensure_billing_tables(client: &Client) -> Result<()> {
+  if TABLES_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "stripe_webhook_events",
+      "idx_organizations_stripe_customer",
+      "idx_organizations_stripe_subscription",
+      "idx_stripe_webhook_events_unprocessed",
+    ],
+    &[
+      ("organizations", "stripe_customer_id"),
+      ("organizations", "stripe_subscription_id"),
+      ("organizations", "plan"),
+      ("organizations", "subscription_status"),
+      ("organizations", "current_period_start"),
+      ("organizations", "current_period_end"),
+      ("organizations", "cancel_at_period_end"),
+      ("organizations", "billing_event_at"),
+      ("organizations", "comp_plan"),
+      ("organizations", "comp_note"),
+      ("organizations", "comp_granted_at"),
+    ],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLES_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_billing_tables: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
@@ -49,9 +88,11 @@ pub async fn ensure_billing_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Billing tables bootstrap error: {e}");
+      console_error!("ensure_billing_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLES_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// What the idempotency claim found. Stripe retries a webhook for up to
@@ -180,7 +221,7 @@ pub struct OrgBillingState {
   pub business_details: OrganizationBusinessDetails,
 }
 
-/// `None` if the org doesn't exist. Bootstraps the billing and
+/// `None` if the org doesn't exist. Ensures the billing and
 /// business-detail columns it reads, so a caller needs no ensure of its
 /// own before this.
 pub async fn load_org_billing_state(

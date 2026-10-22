@@ -1,14 +1,35 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::FirmwareImage;
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
-/// Idempotently ensures the PG firmware catalog table + index exist --
-/// no environment has a separate migration runner against its Hyperdrive
-/// Postgres, so each read/write path calls this first
-/// rather than relying on a one-time manual migration. Cheap no-op after
-/// the first call (`IF NOT EXISTS`).
+use crate::helpers::missing_schema_objects;
+
+/// Set once this isolate has found the firmware catalog complete.
+static TABLE_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures the `flock_firmware` catalog table, its index and its `board` column once per isolate,
+/// logging anything missing first: a migration should already have created them.
 pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
+  if TABLE_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &["flock_firmware", "idx_flock_firmware_flock_id"],
+    &[("flock_firmware", "board")],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLE_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_flock_firmware_table: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS flock_firmware (
@@ -24,7 +45,7 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("flock_firmware table bootstrap error: {e}");
+      console_error!("ensure_flock_firmware_table failed: {e}");
       Error::RustError("Internal Server Error".into())
     })?;
 
@@ -38,9 +59,11 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
     .batch_execute("ALTER TABLE flock_firmware ADD COLUMN IF NOT EXISTS board TEXT;")
     .await
     .map_err(|e| {
-      console_error!("flock_firmware.board column bootstrap error: {e}");
+      console_error!("ensure_flock_firmware_table board column failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLE_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Proof that the org-aware flock authorization check

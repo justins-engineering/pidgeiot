@@ -20,9 +20,9 @@
 -- identifies the person whose consent this is. See the columns below.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
--- `ensure_consent_tables` (helpers/consent.rs) runs the same statements
--- lazily, so applying this at deploy time only spares the first
+-- database. dovecote's runtime
+-- `ensure_consent_tables` (helpers/consent.rs) runs the same statements,
+-- so applying this at deploy time only spares the first
 -- registration a DDL round trip.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-27-consent-events.sql

@@ -5,7 +5,7 @@
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Apply to EXISTING prod + staging databases (dovecote's own
 -- runtime `ensure_billing_usage_tables` in helpers/usage.rs runs the same
--- statements lazily from the cron path, so this is belt-and-suspenders,
+-- statements from the cron path,
 -- but applying it explicitly at deploy time keeps the hot ingest paths --
 -- which deliberately never run DDL -- from undercounting until the first
 -- cron invocation).

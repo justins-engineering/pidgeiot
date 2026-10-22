@@ -2,6 +2,9 @@ mod hyperdrive;
 pub use hyperdrive::get_db_client;
 pub use hyperdrive::get_hyperdrive_conn;
 
+mod schema;
+pub use schema::missing_schema_objects;
+
 mod auth;
 pub use auth::authenticate_browser;
 

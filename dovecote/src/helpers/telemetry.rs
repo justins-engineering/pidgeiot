@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::{TELEMETRY_HISTORY_MAX_POINTS, TelemetryHistoryBucket, TelemetryHistoryPoint};
 use time::{Duration, OffsetDateTime};
 use tokio_postgres::{Client, Row, types::Type};
@@ -8,21 +10,41 @@ use crate::helpers::PigeonAccess;
 use crate::helpers::ResolvedReading;
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
+use crate::helpers::missing_schema_objects;
 
-/// Idempotently ensures the PG telemetry-history table + indexes exist —
-/// mirrors the DO's own `CREATE TABLE IF NOT EXISTS` bootstrap pattern in
-/// `objects/pigeons.rs::DurableObject::new`. No environment has a separate
-/// migration runner against its Hyperdrive Postgres, so
-/// each write/read path calls this first rather than relying on a one-time
-/// manual migration. After the first call it reads only the catalog and takes no table lock: a
-/// bare `CREATE INDEX IF NOT EXISTS` takes a SHARE lock before checking, which deadlocks a
-/// concurrent index build and cancels a running autovacuum, hence the `to_regclass` guard.
+/// Set once this isolate has found the history table and its index.
+static HISTORY_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `pigeon_telemetry_history` and its `(pigeon_id, reported_at)` index once per isolate,
+/// logging anything missing first: a migration should already have created them. The index keeps
+/// its `to_regclass` guard because a bare `CREATE INDEX IF NOT EXISTS` takes a SHARE lock before
+/// checking, which deadlocks a concurrent index build and cancels a running autovacuum.
 ///
 /// The covering per-key index is operator-applied
 /// (`infra/migrations/2026-10-17-history-key-index.sql`), never built here: on a populated
 /// table that build would run inside a request while blocking inserts, and no query needs it
 /// for correctness.
 pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
+  if HISTORY_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "pigeon_telemetry_history",
+      "idx_pigeon_telemetry_history_pigeon_reported",
+    ],
+    &[],
+  )
+  .await?;
+  if missing.is_empty() {
+    HISTORY_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_telemetry_history_table: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS pigeon_telemetry_history (
@@ -42,9 +64,11 @@ pub async fn ensure_telemetry_history_table(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Telemetry history table bootstrap error: {e}");
+      console_error!("ensure_telemetry_history_table failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  HISTORY_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Best-effort PG history write for one batch of device telemetry
@@ -483,33 +507,62 @@ pub async fn query_telemetry_history_buckets_for_flock(
   Ok(rows_to_buckets(&rows))
 }
 
-/// Idempotently ensures the `pigeons.telemetry_endpoint` column exists on
-/// the Postgres mirror table -- same rationale as
-/// `ensure_telemetry_history_table` (no separate migration runner against
-/// any environment's database). Postgres, unlike SQLite,
-/// supports `ADD COLUMN IF NOT EXISTS` directly, so no duplicate-column
-/// error handling is needed here (contrast the DO's SQLite fallback in
-/// `objects/pigeons.rs`).
+/// Set once this isolate has found `pigeons.telemetry_endpoint`.
+static ENDPOINT_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `pigeons.telemetry_endpoint` on the Postgres mirror once per isolate, logging it if
+/// missing: a migration should already have created it.
 pub async fn ensure_pigeons_telemetry_endpoint_column(client: &Client) -> Result<()> {
+  if ENDPOINT_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &[], &[("pigeons", "telemetry_endpoint")]).await?;
+  if missing.is_empty() {
+    ENDPOINT_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_pigeons_telemetry_endpoint_column: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS telemetry_endpoint JSONB;")
     .await
     .map_err(|e| {
-      console_error!("pigeons.telemetry_endpoint column bootstrap error: {e}");
+      console_error!("ensure_pigeons_telemetry_endpoint_column failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  ENDPOINT_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
-/// Idempotently ensures the `pigeons.last_forwarded_at` column exists --
-/// same rationale as `ensure_pigeons_telemetry_endpoint_column` above.
+/// Set once this isolate has found `pigeons.last_forwarded_at`.
+static LAST_FORWARDED_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `pigeons.last_forwarded_at` once per isolate, logging it if missing: a migration
+/// should already have created it.
 pub async fn ensure_pigeons_last_forwarded_column(client: &Client) -> Result<()> {
+  if LAST_FORWARDED_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &[], &[("pigeons", "last_forwarded_at")]).await?;
+  if missing.is_empty() {
+    LAST_FORWARDED_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_pigeons_last_forwarded_column: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;")
     .await
     .map_err(|e| {
-      console_error!("pigeons.last_forwarded_at column bootstrap error: {e}");
+      console_error!("ensure_pigeons_last_forwarded_column failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  LAST_FORWARDED_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Records that a pigeon was heard from on a report that was forwarded to

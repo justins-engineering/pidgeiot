@@ -1,5 +1,9 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::timezone::{clock_for, org_timezone};
-use crate::helpers::{FlockAccess, PigeonAccess, ResolvedReading, get_db_client, root_url};
+use crate::helpers::{
+  FlockAccess, PigeonAccess, ResolvedReading, get_db_client, missing_schema_objects, root_url,
+};
 use capsules::connection_state::{self, ConnectionState};
 use capsules::{
   AlertChannel, AlertCondition, AlertDefinition, AlertDefinitionRow, AlertDefinitionUpdateRequest,
@@ -40,18 +44,48 @@ const DEFAULT_FROM_ADDRESS: &str = "alerts@noreply.pidgeiot.com";
 /// declare it cannot send at all.
 const EMAIL_BINDING: &str = "EMAIL";
 
-/// Idempotently ensures the `alert_definitions`/`alert_state` tables (+
-/// indexes) exist -- mirrors `ensure_telemetry_history_table`/
-/// `ensure_flock_firmware_table`'s rationale: no environment has a
-/// separate migration runner against its Hyperdrive Postgres.
-/// Deliberately does NOT (re-)create the `updated_at` trigger `init-db.sql`
-/// sets up for a fresh database -- `CREATE TRIGGER` has no `IF NOT EXISTS`
-/// guard on the Postgres version this project targets, so every other
-/// runtime `ensure_*` helper in this codebase already avoids creating
-/// triggers for exactly this reason. `update_alert_definition` below sets
-/// `updated_at = now()` explicitly in its own `UPDATE`, so behavior is
-/// correct whether or not the trigger exists on a given database.
+/// Set once this isolate has found the alert tables, indexes and columns complete.
+static TABLES_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures, once per isolate, the `alert_definitions`/`alert_state` tables, their indexes and the
+/// columns the alert queries read, logging anything missing first: a migration should already
+/// have created them.
+///
+/// Deliberately does NOT (re-)create the `updated_at` trigger `init-db.sql` sets up for a fresh
+/// database -- `CREATE TRIGGER` has no `IF NOT EXISTS` guard on the Postgres version this project
+/// targets, so every other `ensure_*` in this codebase avoids creating triggers for exactly this
+/// reason. `update_alert_definition` below sets `updated_at = now()` explicitly in its own
+/// `UPDATE`, so behavior is correct whether or not the trigger exists on a given database.
 pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
+  if TABLES_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "alert_definitions",
+      "idx_alert_definitions_pigeon",
+      "idx_alert_definitions_flock",
+      "idx_alert_definitions_user_id",
+      "alert_state",
+    ],
+    &[
+      ("alert_definitions", "notes"),
+      ("flocks", "owner_email"),
+      ("pigeons", "last_forwarded_at"),
+      ("pigeons", "suspended_at"),
+      ("pigeons", "last_seen_at"),
+    ],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLES_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_alert_tables: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS alert_definitions (
@@ -90,9 +124,11 @@ pub async fn ensure_alert_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Alert tables bootstrap error: {e}");
+      console_error!("ensure_alert_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLES_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 fn row_to_alert_definition_row(row: &Row) -> AlertDefinitionRow {

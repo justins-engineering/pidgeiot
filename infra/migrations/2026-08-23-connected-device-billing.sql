@@ -11,8 +11,8 @@
 -- undercounts rather than over-bills, which is the safe direction.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
--- `ensure_billing_usage_tables` runs the same statement lazily.
+-- database. dovecote's runtime
+-- `ensure_billing_usage_tables` runs the same statement.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-23-connected-device-billing.sql
 --

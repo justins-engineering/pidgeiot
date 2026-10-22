@@ -291,7 +291,7 @@ vanilla Postgres**:
   constraint disappears on vanilla Postgres** — plain `CREATE INDEX` inside
   a transaction is fine there, so future migrations get *simpler* after the
   move, not trickier. What *is* true and worth noting for the future:
-  every runtime schema-bootstrap helper (`ensure_alert_tables`,
+  every ensure helper (`ensure_alert_tables`,
   `ensure_telemetry_history_table`, etc.) uses `client.batch_execute` with
   multiple statements, which Postgres's simple-query protocol runs as an
   implicit transaction block — and `CREATE INDEX CONCURRENTLY` cannot run

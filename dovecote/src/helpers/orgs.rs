@@ -12,6 +12,8 @@
 //! [`authorize_flock`], the single gateway-side authz helper (its DO-side
 //! counterpart is `objects/pigeons.rs::authorize_dashboard`).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::timezone::{clock_for, org_timezone};
 use capsules::{
   Flock, InviteEmail, OrgRole, OrgRoleEntry, Organization, OrganizationInvite, OrganizationMember,
@@ -23,6 +25,7 @@ use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
 use crate::helpers::firmware::FlockAccess;
+use crate::helpers::missing_schema_objects;
 use crate::helpers::sha256_hex;
 
 /// Invite lifetime -- short by design (token-alone acceptance, see
@@ -88,13 +91,34 @@ impl Principal {
   }
 }
 
-/// Idempotently ensures the org tables + `flocks.org_id` exist -- mirrors
-/// `ensure_alert_tables`/`ensure_flock_firmware_table`'s rationale (no
-/// separate migration runner against any environment's database).
-/// The identical statements live in
-/// `infra/migrations/2026-08-08-organizations.sql` for explicit
-/// deploy-time application; this is the runtime belt-and-suspenders.
+/// Set once this isolate has found the org tables, columns and indexes complete.
+static TABLES_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures the org tables, `organizations.timezone`, `flocks.org_id` and their indexes once per
+/// isolate, logging anything missing first: `infra/migrations/2026-08-08-organizations.sql` and
+/// `2026-08-26-org-timezone.sql` should already have created them.
 pub async fn ensure_org_tables(client: &Client) -> Result<()> {
+  if TABLES_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "organizations",
+      "organization_members",
+      "organization_invites",
+      "idx_flocks_org_id",
+      "idx_organization_members_user_id",
+      "idx_organization_invites_org_id",
+    ],
+    &[("organizations", "timezone"), ("flocks", "org_id")],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLES_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!("ensure_org_tables: creating missing {}", missing.join(", "));
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS organizations (
@@ -132,9 +156,11 @@ pub async fn ensure_org_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Org tables bootstrap error: {e}");
+      console_error!("ensure_org_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLES_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// The `organizations` columns every read of an org selects. One name so

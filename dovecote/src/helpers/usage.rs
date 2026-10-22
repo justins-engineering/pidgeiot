@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::{BillingPlan, SubscriptionStatus};
 use time::OffsetDateTime;
 use tokio_postgres::Client;
@@ -7,20 +9,44 @@ use worker::{Env, Error, Result, console_error, console_log};
 
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
+use crate::helpers::missing_schema_objects;
 use crate::helpers::pigeons::PigeonAccess;
 
-/// Runtime schema bootstrap, same lazy-DDL convention as
-/// `ensure_billing_tables` (`helpers/billing.rs`) -- but deliberately
-/// called only from the cron path, never from the ingest or queue-consumer
-/// paths: those run per device report, where a DDL round trip per message
-/// would be pure overhead. Until the migration (or the first cron
-/// invocation) has created the tables, the hot paths fail open / undercount
-/// and log, which is the customer-favorable direction.
+/// Set once this isolate has found the usage tables and columns complete.
+static TABLES_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures the usage tables and their columns once per isolate, logging anything missing first: a
+/// migration should already have created them. Called from the cron and the low-rate billing
+/// routes, never from the per-report ingest and queue paths; until it has run, those fail open,
+/// undercount and log, which is the customer-favorable direction.
 ///
-/// `pigeons.last_billable_activity` is bootstrapped here despite living on
-/// a non-billing table: it exists only to feed the extra-devices meter, and
-/// this is the DDL path the meter itself runs behind.
+/// `pigeons.last_billable_activity` is ensured here despite living on a non-billing table: it
+/// exists only to feed the extra-devices meter, and this is the DDL the meter itself runs behind.
 pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
+  if TABLES_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "billing_usage_periods",
+      "billing_meter_reports",
+      "billing_reporter_state",
+    ],
+    &[
+      ("billing_usage_periods", "allowance_floor_messages"),
+      ("pigeons", "last_billable_activity"),
+    ],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLES_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_billing_usage_tables: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS billing_usage_periods (
@@ -56,9 +82,11 @@ pub async fn ensure_billing_usage_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Billing usage tables bootstrap error: {e}");
+      console_error!("ensure_billing_usage_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLES_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Where the tier an account is served at came from. The distinction the
@@ -293,7 +321,7 @@ struct BillableMessageTally {
 /// path that runs per device report. Against a database that predates the
 /// column the whole statement errors, so the tally undercounts and logs
 /// until the cron's `ensure_billing_usage_tables` adds it -- the same
-/// fail-open-and-undercount direction that bootstrap already documents.
+/// fail-open-and-undercount direction its rustdoc documents.
 async fn record_billable_messages(
   client: &Client,
   pigeon_id: &str,

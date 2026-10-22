@@ -7,6 +7,8 @@
 //! and in `docs/api.md`. In one line: the org is the billing entity, and
 //! tax identity belongs to whoever the invoice is made out to.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::{
   MAX_BUSINESS_NAME_CHARS, OrganizationBusinessDetails, OrganizationBusinessDetailsRequest,
   TaxIdDecision, TaxIdStatus, TaxIdType, decide_status, parse_eu_vat, prepare_tax_id,
@@ -18,6 +20,7 @@ use uuid::Uuid;
 use worker::{Env, Error, Result, console_error, console_log};
 
 use crate::helpers::get_db_client;
+use crate::helpers::missing_schema_objects;
 use crate::helpers::vies::check_vat;
 
 /// How long a pending lookup rests before the sweep asks VIES again.
@@ -36,11 +39,37 @@ const RECHECK_INTERVAL: &str = "1 hour";
 /// can plausibly reach.
 const RECHECK_BATCH_LIMIT: i64 = 20;
 
-/// Runtime schema bootstrap, same lazy-DDL convention as
-/// `ensure_org_tables`/`ensure_billing_tables`: the dated migration is the
-/// documented schema, and this keeps a Worker deployed ahead of an applied
-/// migration from failing every org read.
+/// Set once this isolate has found every business-details column and the pending index.
+static COLUMNS_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures the business-details columns on `organizations` and their pending-lookup index once per
+/// isolate, so a Worker deployed ahead of its migration still serves org reads; anything missing is
+/// logged first.
 pub async fn ensure_business_details_columns(client: &Client) -> Result<()> {
+  if COLUMNS_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &["idx_organizations_tax_id_pending"],
+    &[
+      ("organizations", "business_name"),
+      ("organizations", "tax_id"),
+      ("organizations", "tax_id_type"),
+      ("organizations", "tax_id_status"),
+      ("organizations", "tax_id_validated_at"),
+      ("organizations", "tax_id_checked_at"),
+    ],
+  )
+  .await?;
+  if missing.is_empty() {
+    COLUMNS_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_business_details_columns: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS business_name TEXT;
@@ -54,9 +83,11 @@ pub async fn ensure_business_details_columns(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Business details bootstrap error: {e}");
+      console_error!("ensure_business_details_columns failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  COLUMNS_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Both enum columns parse permissively, matching the convention on
@@ -301,7 +332,7 @@ pub async fn sweep_pending_tax_ids(env: &Env) -> Result<()> {
   let client = get_db_client(env).await?;
   // The sweep's predicate reads columns a database behind the migration
   // would not have, and an error here fails the whole sweep rather than
-  // failing open -- so bootstrap first, exactly as the retention sweep
+  // failing open -- so ensure first, exactly as the retention sweep
   // does with the billing columns.
   ensure_business_details_columns(&client).await?;
 

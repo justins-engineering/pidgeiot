@@ -44,7 +44,7 @@ directly, still meets the gate on first dashboard entry. Nothing is lost.
 `consent_events`, under a new `purpose`. That is what the column was put there for
 (`infra/migrations/2026-08-27-consent-events.sql:51-57`: "adding one stays a code change"),
 `purpose` carries no CHECK, and the existing `(identity_id, purpose, seq DESC)` index already serves
-a second purpose with no schema change. A separate table would duplicate nine columns, a lazy
+a second purpose with no schema change. A separate table would duplicate nine columns, an
 ensure, a migration and an erasure statement to buy a name.
 
 ```
@@ -105,8 +105,8 @@ END $$;
 
 The same two statements go into the new migration, into `infra/init-db.sql`, and into
 `ensure_consent_tables` (`dovecote/src/helpers/consent.rs:31-56`), whose own comment requires it to
-stay statement-equivalent with the migration. Belt (migration at deploy) and suspenders (the lazy
-ensure heals a database the migration was not run against).
+stay statement-equivalent with the migration. The migration applies at deploy; the ensure heals a
+database the migration was not run against only when that database also lacks `org_id`.
 
 ### 2.3 The writer
 
@@ -476,7 +476,7 @@ one session. We may not lock an account out of its own fleet.
 | An account reaches the dashboard with no row because the read failed | Product works, no row exists, we do not rely on the cap for that session | Exactly the trade the memo's "before relying on" language permits |
 | Checkout's assent write fails | 500 before any Stripe object exists: no subscription, no charge | The opposite call on purpose. Proceeding would create a paying customer with no record. |
 | Checkout with no current-version row | 409 naming the version, before any Stripe call | We do not take money against terms we cannot show were accepted |
-| `source` CHECK not widened on production | The first accept 500s; the lazy `ensure_consent_tables` widens it on that same request path and the retry succeeds | The only failure that could strand every user, which is why it has a migration, a lazy ensure and a staging rehearsal |
+| `source` CHECK not widened on production | The first accept 500s; `ensure_consent_tables` widens it on that same request path only when `org_id` is missing too, so otherwise every retry fails until the migration runs | The only failure that could strand every user, which is why it has a migration, an ensure and a staging rehearsal |
 | `inert` unsupported in some browser | The registration form is usable without the tick; the gate catches the account | This is the point of gate-first |
 | `KRATOS_HOOK_SECRET` unset in an environment | Irrelevant to this stream | Nothing here goes through a Kratos hook. It still matters for the marketing rows (section 9.3). |
 | dovecote deployed before fancier on a bump | The gate would ask for a version whose text is not published | Prevented by the deploy order, section 5.3 |
@@ -887,9 +887,9 @@ the main checkout, dovecote on 8787, the built artifact served by `wrangler dev`
   `load_terms_assent` is the only thing between this design and a gate that reappears for a minute
   after every accept, and `[env.dev]` cannot reproduce it. The staging probe must be inside the
   stale window, not after it.
-- **The `source` CHECK on production.** Covered by a migration and by the lazy ensure, but it is
-  still the one change that can strand every signed-in user, and it is invisible to every local test
-  against a fresh database.
+- **The `source` CHECK on production.** Covered by a migration, and by the ensure only beside a
+  missing `org_id`, but it is still the one change that can strand every signed-in user, and it is
+  invisible to every local test against a fresh database.
 - **The gate is a single point of blocking for the whole dashboard.** It fails open on an unreadable
   status, which is the right call, but a bug that makes `is_current()` return `false` for everyone
   would wall off every account at once. The rollback in runbook step 8 is the answer, and the
