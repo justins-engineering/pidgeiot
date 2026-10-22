@@ -1,23 +1,40 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::Flock;
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
-/// Idempotently ensures `flocks.owner_email` exists -- no environment has
-/// a separate migration runner against its Hyperdrive Postgres. The
-/// column is already created by `init-db.sql` and by
-/// `helpers/alerts.rs::ensure_alert_tables`, so on a database that already
-/// ran either this is a cheap no-op -- it's here purely so
-/// `create_user_flock`/`backfill_owner_email` don't assume a migration ran
-/// elsewhere first.
+use crate::helpers::missing_schema_objects;
+
+/// Set once this isolate has found `flocks.owner_email`.
+static OWNER_EMAIL_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `flocks.owner_email` once per isolate, logging it if missing: a migration should
+/// already have created it. `ensure_alert_tables` adds the same column, but these writers do not
+/// assume it ran.
 async fn ensure_flocks_owner_email_column(client: &Client) -> Result<()> {
+  if OWNER_EMAIL_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &[], &[("flocks", "owner_email")]).await?;
+  if missing.is_empty() {
+    OWNER_EMAIL_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_flocks_owner_email_column: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute("ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;")
     .await
     .map_err(|e| {
-      console_error!("flocks.owner_email column bootstrap error: {e}");
+      console_error!("ensure_flocks_owner_email_column failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  OWNER_EMAIL_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// Every flock the caller can see: personal flocks they own (`org_id IS
@@ -28,8 +45,7 @@ async fn ensure_flocks_owner_email_column(client: &Client) -> Result<()> {
 /// `helpers/orgs.rs::authorize_flock`).
 pub async fn get_user_flocks(client: &Client, user_id_str: &str) -> Result<Vec<Flock>> {
   // Org tables/column must exist before this query references
-  // flocks.org_id -- same per-request idempotent-bootstrap convention as
-  // ensure_flocks_owner_email_column below.
+  // flocks.org_id.
   crate::helpers::ensure_org_tables(client).await?;
 
   let parsed_uuid = Uuid::parse_str(user_id_str)
