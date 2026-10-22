@@ -21,6 +21,7 @@ use worker::{Env, Error, Result, console_error, console_log};
 use super::alerts::send_text_email;
 use super::environment::root_url;
 use super::hyperdrive::get_db_client;
+use super::missing_schema_objects;
 use super::ops_probe::ops_alert_email;
 
 /// Global budget for new-signature ops emails. Unique crafted messages
@@ -35,15 +36,37 @@ const NEW_SIGNATURE_EMAILS_PER_HOUR: i64 = 5;
 /// table the 200-per-signature cap already keeps small.
 const ERROR_RETENTION_BATCH_LIMIT: i64 = 5_000;
 
-/// Ensured-once-per-isolate flag: this route is unauthenticated and
-/// abuse-facing, so it must not pay (or let an attacker multiply) a DDL
-/// round trip per request. The cron sweep still ensures unconditionally.
+/// Set once this isolate has found the error tables and indexes complete.
 static TABLES_READY: AtomicBool = AtomicBool::new(false);
 
-/// Idempotently ensures the `error_groups`/`error_events` tables + indexes
-/// exist -- mirrors `ensure_alert_tables`' rationale (no separate migration
-/// runner), and like every runtime `ensure_*` here it creates no triggers.
+/// Ensures the `error_groups`/`error_events` tables and indexes once per isolate, logging
+/// anything missing first: a migration should already have created them. Creates no triggers,
+/// like every `ensure_*`.
 pub async fn ensure_error_tables(client: &Client) -> Result<()> {
+  if TABLES_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(
+    client,
+    &[
+      "error_groups",
+      "error_events",
+      "idx_error_events_signature",
+      "idx_error_events_received",
+      "idx_error_events_user",
+      "idx_error_groups_last_seen",
+    ],
+    &[],
+  )
+  .await?;
+  if missing.is_empty() {
+    TABLES_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_error_tables: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS error_groups (
@@ -82,16 +105,9 @@ pub async fn ensure_error_tables(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Error-report tables bootstrap error: {e}");
+      console_error!("ensure_error_tables failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
-}
-
-async fn ensure_error_tables_once(client: &Client) -> Result<()> {
-  if TABLES_READY.load(Ordering::Relaxed) {
-    return Ok(());
-  }
-  ensure_error_tables(client).await?;
+    })?;
   TABLES_READY.store(true, Ordering::Relaxed);
   Ok(())
 }
@@ -140,7 +156,7 @@ pub async fn ingest_error_report(
   user_id: Option<Uuid>,
   note: Option<&str>,
 ) -> Result<()> {
-  ensure_error_tables_once(client).await?;
+  ensure_error_tables(client).await?;
 
   // Server-side re-derivation, never client trust: normalized message and
   // route are recomputed here even though the client normalizes too --
@@ -460,7 +476,7 @@ pub async fn sweep_error_retention(env: &Env) -> Result<()> {
 /// `DELETE /errors` route; the manual account-deletion runbook runs the
 /// same statement.
 pub async fn erase_user_error_reports(client: &Client, user_id: &Uuid) -> Result<u64> {
-  ensure_error_tables_once(client).await?;
+  ensure_error_tables(client).await?;
   client
     .execute_typed(
       "DELETE FROM error_events WHERE user_id = $1;",
