@@ -347,6 +347,9 @@ CREATE TABLE IF NOT EXISTS billing_usage_periods (
   billable_messages BIGINT NOT NULL DEFAULT 0,
   warned_at TIMESTAMPTZ,
   paused_at TIMESTAMPTZ,
+  -- Highest allowance of any tier held this period; see
+  -- infra/migrations/2026-08-18-plan-change-allowance-floor.sql.
+  allowance_floor_messages BIGINT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_kind, owner_id, period_start)
 );
