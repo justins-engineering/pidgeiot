@@ -16,6 +16,13 @@ invocation_logs = true
 # events/month, far above our volume, so full sampling is effectively free.
 head_sampling_rate = 1
 
+[observability.issues]
+enabled = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+
 # GREPTIMEDB_ENDPOINT (all three [vars]/[env.*.vars] blocks below) -- the
 # platform's optional GreptimeDB telemetry store, read via
 # helpers/greptime.rs::greptime_origin. A bare origin (scheme+host+port),
