@@ -159,7 +159,10 @@
     state.sent++;
 
     var report = buildReport(kind, message, location, stack);
-    state.last_report = JSON.stringify(report);
+    var body = JSON.stringify(report);
+    // An open crash panel shows one report's ID and its note resends that
+    // report, so a later report must not replace it.
+    if (!revealed) state.last_report = body;
     var api = apiHost();
     if (!api) {
       console.error("pidgeiot error-shim (no API host injected):", report);
@@ -174,7 +177,7 @@
         keepalive: true,
         credentials: "omit",
         headers: { "Content-Type": "text/plain;charset=UTF-8" },
-        body: state.last_report,
+        body: body,
       });
     } catch (e) {
       /* reporting must never throw */
@@ -338,12 +341,14 @@
       return;
     }
     var r = ev.reason;
-    send(
-      "unhandled_rejection",
-      r && (r.message || String(r)),
-      null,
-      r && r.stack
-    );
+    function report() {
+      send("unhandled_rejection", r && (r.message || String(r)), null, r && r.stack);
+    }
+    // Before boot this is usually the wasm download cut short by the visitor
+    // stopping or leaving the page, and it fires before pagehide. Leaving
+    // destroys this timer, so only a page still open 20 s later reports it.
+    if (state.boot) report();
+    else setTimeout(report, 20000);
   });
 
   // Boot watchdog for the white-screen class where no Rust ever runs to
