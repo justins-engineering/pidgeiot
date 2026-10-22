@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::connection_state::LAST_SEEN_STAMP_SECS;
 use capsules::{
   CoapConfig, Connector, HttpsConfig, MqttConfig, NiddConfig, Pigeon, PigeonAcl, PigeonDetail,
@@ -8,6 +10,7 @@ use tokio_postgres::{Client, types::Type};
 use worker::{Env, Headers, Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
+use crate::helpers::missing_schema_objects;
 
 /// A connector with every secret removed: the token, a PSK secret, and a Nidd pigeon's claim key,
 /// which signs every downlink for the device's life. What the read routes answer with. The PSK
@@ -397,34 +400,63 @@ pub async fn verify_device_via_do(
   stub.fetch_with_request(do_req).await
 }
 
-/// Idempotently ensures the `pigeons.board` column exists on the Postgres
-/// mirror table -- same no-separate-migration-runner rationale as
-/// `ensure_pigeons_telemetry_endpoint_column` (`helpers/telemetry.rs`).
-/// Unlike that column, `board` is written unconditionally on every
-/// `insert_pigeon_pg_db`/`update_pigeon_pg_db` call (not just a dedicated
-/// opt-in route), so both must call this first or the write 500s with
-/// "column does not exist" against an already-deployed database.
+/// Set once this isolate has found `pigeons.board`.
+static BOARD_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `pigeons.board` on the Postgres mirror once per isolate, logging it if missing: a
+/// migration should already have created it. Every `insert_pigeon_pg_db`/`update_pigeon_pg_db`
+/// call writes `board`, so both call this first or the write fails with "column does not exist".
 pub async fn ensure_pigeons_board_column(client: &Client) -> worker::Result<()> {
+  if BOARD_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &[], &[("pigeons", "board")]).await?;
+  if missing.is_empty() {
+    BOARD_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_pigeons_board_column: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;")
     .await
     .map_err(|e| {
-      console_error!("pigeons.board column bootstrap error: {e}");
+      console_error!("ensure_pigeons_board_column failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  BOARD_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
-/// Idempotently ensures the `pigeons.suspended_at` column exists on the
-/// Postgres mirror table -- same no-migration-runner rationale as
-/// `ensure_pigeons_board_column` above.
+/// Set once this isolate has found `pigeons.suspended_at`.
+static SUSPENDED_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `pigeons.suspended_at` on the Postgres mirror once per isolate, logging it if missing:
+/// a migration should already have created it.
 pub async fn ensure_pigeons_suspended_column(client: &Client) -> worker::Result<()> {
+  if SUSPENDED_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &[], &[("pigeons", "suspended_at")]).await?;
+  if missing.is_empty() {
+    SUSPENDED_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_pigeons_suspended_column: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute("ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;")
     .await
     .map_err(|e| {
-      console_error!("pigeons.suspended_at column bootstrap error: {e}");
+      console_error!("ensure_pigeons_suspended_column failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  SUSPENDED_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 /// The connector as the Postgres mirror stores it. A Nidd pigeon's is stored without secrets:
