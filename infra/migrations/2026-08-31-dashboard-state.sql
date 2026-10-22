@@ -4,9 +4,9 @@
 -- browser set to clear site data on close destroyed them.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
+-- database. dovecote's runtime
 -- `ensure_dashboard_state_table` (helpers/dashboard_state.rs) runs the same
--- statement lazily, so applying this at deploy time only spares the first
+-- statement, so applying this at deploy time only spares the first
 -- request a DDL round trip.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-31-dashboard-state.sql

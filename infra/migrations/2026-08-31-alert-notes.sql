@@ -12,8 +12,8 @@
 -- address (or null) written before it was one.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime `ensure_alert_tables`
--- (helpers/alerts.rs) runs the same statement lazily, so applying this at
+-- database. dovecote's runtime `ensure_alert_tables`
+-- (helpers/alerts.rs) runs the same statement, so applying this at
 -- deploy time only spares the first request a DDL round trip.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-31-alert-notes.sql

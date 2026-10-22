@@ -2,8 +2,8 @@
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Apply to EXISTING prod + staging databases (dovecote's own
--- runtime `ensure_org_tables` in helpers/orgs.rs runs the same statements
--- lazily, so this is belt-and-suspenders, but applying it explicitly at
+-- runtime `ensure_org_tables` in helpers/orgs.rs runs the same statements,
+-- but applying it explicitly at
 -- deploy time avoids the first org request paying the DDL cost and keeps
 -- init-db.sql the single documented schema).
 --

@@ -39,13 +39,13 @@
 -- values are written only from a Rust enum's own as_str(), never from free
 -- text, and a CHECK would force every future variant to land in the
 -- database strictly before the Worker that writes it -- the deploy ordering
--- the lazy-DDL pattern exists to avoid. capsules parses these permissively
+-- the ensure exists to avoid. capsules parses these permissively
 -- (an unreadable status reads as 'pending', which is retried, rather than
 -- as 'validated', which would be a claim we cannot support).
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
--- `ensure_business_details_columns` runs the same statements lazily.
+-- database. dovecote's runtime
+-- `ensure_business_details_columns` runs the same statements.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-24-org-business-details.sql
 --

@@ -10,8 +10,8 @@
 -- for a fleet until an operator suspends something.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime `ensure_alert_tables`
--- and `ensure_pigeons_suspended_column` run the same statement lazily.
+-- database. dovecote's runtime `ensure_alert_tables`
+-- and `ensure_pigeons_suspended_column` run the same statement.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-09-02-pigeon-suspension.sql
 --

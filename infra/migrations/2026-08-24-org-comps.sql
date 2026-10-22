@@ -23,8 +23,8 @@
 -- helpers/usage.rs::served_plan for how the columns are read.
 --
 -- Idempotent -- safe to run repeatedly against an already-migrated
--- database. Belt-and-suspenders: dovecote's runtime
--- `ensure_billing_tables` runs the same statements lazily.
+-- database. dovecote's runtime
+-- `ensure_billing_tables` runs the same statements.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-24-org-comps.sql
 --

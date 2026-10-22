@@ -6,7 +6,7 @@
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Apply to EXISTING prod + staging databases (dovecote's own
 -- runtime `ensure_error_tables` in helpers/errors.rs runs the same
--- statements lazily, so this is belt-and-suspenders, but applying it
+-- statements, but applying it
 -- explicitly at deploy time spares the first ingest the DDL round trip).
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-08-19-error-reporting.sql

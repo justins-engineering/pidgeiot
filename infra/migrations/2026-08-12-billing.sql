@@ -3,7 +3,7 @@
 -- Idempotent -- safe to run repeatedly against an already-migrated
 -- database. Apply to EXISTING prod + staging databases (dovecote's own
 -- runtime `ensure_billing_tables` in helpers/billing.rs runs the same
--- statements lazily, so this is belt-and-suspenders, but applying it
+-- statements, but applying it
 -- explicitly at deploy time avoids the first webhook paying the DDL cost
 -- and keeps init-db.sql the single documented schema).
 --

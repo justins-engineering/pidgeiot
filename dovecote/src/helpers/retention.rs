@@ -119,7 +119,7 @@ pub async fn sweep_telemetry_history_retention(env: &Env) -> Result<()> {
   ensure_telemetry_history_table(&client).await?;
   // The rung snapshot reads the org billing columns and would otherwise
   // fail (not fail-open -- the whole sweep errors) in a database the
-  // billing migration hasn't reached; bootstrapping both here makes deploy
+  // billing migration hasn't reached; ensuring both here makes deploy
   // order irrelevant, and heals the tally/fuse paths' fail-open
   // undercounting in the same stroke, within one cron interval of any
   // deploy.

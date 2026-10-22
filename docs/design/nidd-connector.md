@@ -1610,8 +1610,8 @@ consumed after the recreate would land in the new pigeon's history.
 gains the one table the failure-driven design specified, created by
 `infra/migrations/2026-09-NN-nidd-devices.sql` in the house style of
 `infra/migrations/2026-09-02-pigeon-suspension.sql` (`SET ROLE dovecote;` ... `RESET ROLE;`,
-`dovecote_staging` on staging, idempotent), by `infra/init-db.sql` for fresh databases, and lazily
-by an `ensure_nidd_tables(client)` beside `ensure_pigeons_board_column`
+`dovecote_staging` on staging, idempotent), by `infra/init-db.sql` for fresh databases, and by
+an `ensure_nidd_tables(client)` beside `ensure_pigeons_board_column`
 (`dovecote/src/helpers/pigeons.rs:319`), called from the create path:
 
 ```sql

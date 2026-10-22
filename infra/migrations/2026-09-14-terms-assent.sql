@@ -22,8 +22,9 @@
 --
 -- Must stay statement-equivalent with dovecote's runtime
 -- `ensure_consent_tables` (helpers/consent.rs) and with the same block in
--- infra/init-db.sql. Belt (this file at deploy) and suspenders (the lazy
--- ensure heals a database this was not run against).
+-- infra/init-db.sql. This file applies at deploy; the ensure heals a database
+-- this was not run against only if it also lacks a consent_events table,
+-- column or index.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-09-14-terms-assent.sql
 --
