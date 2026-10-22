@@ -555,6 +555,15 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
   PRIMARY KEY (user_id, scope_key)
 );
 
+-- Last known health per external service, so the ops probe mails only on a
+-- change (dovecote's helpers/ops_probe.rs).
+CREATE TABLE IF NOT EXISTS ops_health_state (
+  service TEXT PRIMARY KEY,
+  healthy BOOLEAN NOT NULL,
+  since TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_flocks_org_id ON flocks(org_id) WHERE org_id IS NOT NULL;

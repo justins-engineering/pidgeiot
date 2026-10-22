@@ -1,9 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use time::OffsetDateTime;
 use tokio_postgres::{Client, types::Type};
 use worker::{Delay, Env, Fetch, Method, Request, Result, console_error, console_log};
 
 use super::alerts::send_text_email;
 use super::hyperdrive::get_db_client;
+use super::missing_schema_objects;
 
 /// Which row in `ops_health_state` this probe owns. A constant rather than a
 /// parameter because Kratos is currently the only off-edge service worth
@@ -99,7 +102,24 @@ pub async fn probe_kratos_health(env: &Env) {
   }
 }
 
+/// Set once this isolate has found `ops_health_state`.
+static TABLE_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `ops_health_state` once per isolate, logging it if missing. Only `infra/init-db.sql`
+/// creates it otherwise, with no migration, so a database built before that logs it once.
 async fn ensure_ops_health_table(client: &Client) -> Result<()> {
+  if TABLE_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &["ops_health_state"], &[]).await?;
+  if missing.is_empty() {
+    TABLE_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_ops_health_table: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS ops_health_state (
@@ -111,9 +131,11 @@ async fn ensure_ops_health_table(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("ops_health_state bootstrap error: {e}");
+      console_error!("ensure_ops_health_table failed: {e}");
       worker::Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLE_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 async fn record_and_notify(
