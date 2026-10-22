@@ -1,7 +1,11 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use capsules::{DashboardStateEntry, DashboardStateEntryRow, MAX_DASHBOARD_STATE_KEYS};
 use tokio_postgres::{Client, Row, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
+
+use crate::helpers::missing_schema_objects;
 
 /// Column list shared by every `dashboard_state` read/RETURNING statement
 /// -- `value` is cast to `::text` for the same reason the alert columns
@@ -9,12 +13,25 @@ use worker::{Error, Result, console_error};
 /// `with-serde_json-1` feature.
 const DASHBOARD_STATE_COLUMNS: &str = "scope_key, value::text AS value, updated_at";
 
-/// Idempotently ensures the `dashboard_state` table exists -- the same
-/// lazy-DDL convention as `ensure_alert_tables`, since no environment has
-/// a migration runner against its Hyperdrive Postgres. The primary key is
-/// also the only index the table needs: both
-/// reads are a point lookup or a per-user prefix scan of it.
+/// Set once this isolate has found `dashboard_state`.
+static TABLE_READY: AtomicBool = AtomicBool::new(false);
+
+/// Ensures `dashboard_state` once per isolate, logging it if missing: a migration should already
+/// have created it. The primary key is the only index the table needs: both reads are a point
+/// lookup or a per-user prefix scan of it.
 pub async fn ensure_dashboard_state_table(client: &Client) -> Result<()> {
+  if TABLE_READY.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  let missing = missing_schema_objects(client, &["dashboard_state"], &[]).await?;
+  if missing.is_empty() {
+    TABLE_READY.store(true, Ordering::Relaxed);
+    return Ok(());
+  }
+  console_error!(
+    "ensure_dashboard_state_table: creating missing {}",
+    missing.join(", ")
+  );
   client
     .batch_execute(
       "CREATE TABLE IF NOT EXISTS dashboard_state (
@@ -27,9 +44,11 @@ pub async fn ensure_dashboard_state_table(client: &Client) -> Result<()> {
     )
     .await
     .map_err(|e| {
-      console_error!("Dashboard state table bootstrap error: {e}");
+      console_error!("ensure_dashboard_state_table failed: {e}");
       Error::RustError("Internal Server Error".into())
-    })
+    })?;
+  TABLE_READY.store(true, Ordering::Relaxed);
+  Ok(())
 }
 
 fn row_to_entry(row: &Row) -> DashboardStateEntry {
