@@ -2459,7 +2459,7 @@ SOFTWARE.
 
 ````
 
-**Used by:** [tokio 1.53.3](https://github.com/tokio-rs/tokio)
+**Used by:** [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 
 ````text
@@ -2652,7 +2652,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [pulldown-cmark-escape 0.11.0](https://github.com/raphlinus/pulldown-cmark), [pulldown-cmark 0.13.4](https://github.com/raphlinus/pulldown-cmark)
+**Used by:** [pulldown-cmark-escape 0.11.0](https://github.com/raphlinus/pulldown-cmark), [pulldown-cmark 0.13.5](https://github.com/raphlinus/pulldown-cmark)
 
 
 ````text
@@ -3006,7 +3006,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ````
 
-**Used by:** [icu_collections 2.3.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties 2.3.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x), [icu_provider 2.3.1](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.4](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x), [yoke 0.8.3](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x), [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+**Used by:** [icu_collections 2.4.0](https://github.com/unicode-org/icu4x), [icu_locale_core 2.4.0](https://github.com/unicode-org/icu4x), [icu_normalizer 2.4.0](https://github.com/unicode-org/icu4x), [icu_normalizer_data 2.4.0](https://github.com/unicode-org/icu4x), [icu_properties 2.4.0](https://github.com/unicode-org/icu4x), [icu_properties_data 2.4.0](https://github.com/unicode-org/icu4x), [icu_provider 2.4.0](https://github.com/unicode-org/icu4x), [litemap 0.8.3](https://github.com/unicode-org/icu4x), [potential_utf 0.1.6](https://github.com/unicode-org/icu4x), [tinystr 0.8.5](https://github.com/unicode-org/icu4x), [writeable 0.6.4](https://github.com/unicode-org/icu4x), [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x), [yoke 0.8.4](https://github.com/unicode-org/icu4x), [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x), [zerofrom 0.1.8](https://github.com/unicode-org/icu4x), [zerotrie 0.2.5](https://github.com/unicode-org/icu4x), [zerovec-derive 0.11.7](https://github.com/unicode-org/icu4x), [zerovec 0.11.9](https://github.com/unicode-org/icu4x)
 
 
 </details>
