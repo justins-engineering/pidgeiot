@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- reads; this one is what dovecote's DeviceState alert sweep reads).
   -- Stamped at most once a minute by helpers/pigeons.rs::stamp_last_seen.
   last_seen_at TIMESTAMPTZ,
+  -- Last report forwarded to this pigeon's telemetry_endpoint instead of
+  -- stored; see infra/migrations/2026-09-02-forwarded-last-seen.sql.
+  last_forwarded_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -99,6 +102,7 @@ ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS board TEXT;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_billable_activity TIMESTAMPTZ;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
 ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE pigeons ADD COLUMN IF NOT EXISTS last_forwarded_at TIMESTAMPTZ;
 
 CREATE TRIGGER trigger_pigeons_immutable
   BEFORE UPDATE ON pigeons
