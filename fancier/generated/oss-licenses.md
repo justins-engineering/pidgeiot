@@ -840,7 +840,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.28.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.29.0](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -1413,7 +1413,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [enumset 1.1.14](https://github.com/Lymia/enumset), [enumset_derive 0.15.0](https://github.com/Lymia/enumset)
+**Used by:** [enumset 1.1.15](https://github.com/Lymia/enumset), [enumset_derive 0.15.1](https://github.com/Lymia/enumset)
 
 
 ````text
@@ -1541,7 +1541,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -3037,7 +3037,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-**Used by:** [const_format 0.2.36](https://github.com/rodrimati1992/const_format_crates/), [const_format_proc_macros 0.2.34](https://github.com/rodrimati1992/const_format_crates/)
+**Used by:** [const_format 0.2.37](https://github.com/rodrimati1992/const_format_crates/), [const_format_proc_macros 0.2.37](https://github.com/rodrimati1992/const_format_crates/)
 
 
 ````text
