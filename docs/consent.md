@@ -35,7 +35,7 @@ shared crate so the words on the form and the record behind them cannot move ind
 The notice version every row is stamped with is `capsules::PRIVACY_NOTICE_VERSION`, at the
 crate root rather than in this module because the privacy page renders the same constant as
 its "Last updated" line: at the moment a row is written, the page and the row name the same
-notice, except across the minutes of a version deploy — see "Bumping either version".
+notice, except across the minutes of a version deploy — see "Bumping a document's version".
 
 ### What a row holds, and what it deliberately does not
 
@@ -376,31 +376,40 @@ run, so a warm isolate never takes the table's exclusive lock.
 
 ### Retention differs from a marketing row
 
-A marketing row is deleted with the identity, and so is a Terms assent row. Article 17(3)(e)
-would allow keeping the assent past deletion for the Massachusetts contract limitation period,
-where the evidence matters most, but the published retention table now carries a row saying it
-goes with the account and the DPA's Annex II G.5 states the same as a fact. **That retention is
-closed, not pending**: reopening it means moving both published documents. The row carries no
-address and no user agent in either case.
+A marketing row is deleted with the identity. A Terms assent row is not: the published
+retention table keeps it afterward, as needed to establish or defend our contractual rights or
+comply with legal obligations, which is the Article 17(3)(e) ground. The evidence is worth
+least at the moment it would be destroyed, because that is when the counterparty has left. The
+DPA agrees: Section 2.2 makes the Privacy Policy the governing document for provider-controlled
+records, Section 8.2 excepts retention the policy expressly provides for, and Annex II G.3
+names the acceptance record among the retained provider-controlled records rather than among
+the items account deletion removes. The row carries no address and no user agent either way.
 
-### Bumping either version
+### Bumping a document's version
 
-Both constants name a published document and stamp the rows written against it, so both are
+Each of the four published documents dates itself from its own constant, and all four are
 bumped the same way: fancier first, then dovecote, with the documents under `docs/legal/`
-updated in the same commit as the constant.
+updated in the same commit as the constant. Only one of the four re-gates anyone.
 
-`capsules::TERMS_VERSION` is the "Last updated" line the Terms, DPA and sub-processor pages
-render and the version every assent row is stamped with. Bumping it asks every account to
-accept again on its next sign-in, so a wording fix that needs no fresh assent must not move it.
+`capsules::TERMS_VERSION` is the Terms page's "Last updated" line and the version every assent
+row is stamped with. Bumping it asks every account to accept again on its next sign-in, so a
+wording fix that needs no fresh assent must not move it.
 
 `capsules::PRIVACY_NOTICE_VERSION` is the Privacy Policy's own line and the version stamped on
 every marketing consent row. Bumping it asks nothing of anyone: consent already given stays in
 force, there is no re-consent prompt, and the rows that name the superseded notice resolve
 back to their text through `docs/legal/archive/`, which is what that directory is for.
 
-1. Update the documents under `docs/legal/` and set the constant to the deploy date. A
-   superseded privacy notice is archived as `docs/legal/archive/privacy-<version>.md` in the
-   same commit, or the rows naming it stop resolving to anything.
+`capsules::DPA_VERSION` and `capsules::SUBPROCESSORS_VERSION` date the DPA and the sub-processor
+list. Neither is stamped on any row and neither re-gates anyone, which is why they exist: the
+list changes under the DPA's own Section 6 far more often than the Terms change, and dating that
+change off `TERMS_VERSION` would ask every account to accept the Terms again.
+
+1. Update the documents under `docs/legal/` and set that document's constant to the deploy
+   date. Superseded text is archived in the same commit — as
+   `docs/legal/archive/privacy-<version>.md`, `dpa-<version>.md` or
+   `subprocessors-<version>.md`, named for the version the page carried — or a row naming it
+   stops resolving to anything.
 2. Apply the migrations to staging, deploy **fancier first, then dovecote**, and sign in: the
    gate appears, accepting clears it, and a reload inside 30 seconds does not bring it back.
    That window is the check that matters — the read is uncacheable by design, and a reload
@@ -411,9 +420,9 @@ The order is not cosmetic. dovecote first means it answers the new version while
 still render the old one, the gate fires, and every row written in that window says an account
 accepted text it was never shown. The other order writes no assent rows at all.
 
-There is no order that satisfies both constants at once, and it is worth knowing which way it
-breaks. In the fancier-first window `/privacy/` shows the new notice while dovecote still
-stamps the old version on any marketing row the registration hook writes. That is the harmless
+No order satisfies every constant at once, and it is worth knowing which way it breaks. In
+the fancier-first window `/privacy/` shows the new notice while dovecote still stamps the old
+version on any marketing row the registration hook writes. That is the harmless
 direction — the row names text that was on the page minutes earlier and is archived — and the
 window is a deploy apart, not a staged rollout. The assent rows are the ones a court reads, so
 they get the order that protects them.
@@ -444,12 +453,16 @@ SELECT purpose, kind, source, notice_version, at
 
 Account-deletion erasure — delete the rows rather than anonymise them (a consent event is
 *about* the identity and nothing else, so a row with the id removed means nothing), and only
-alongside deleting the identity itself. Both purposes go, until the published retention table
-carries a row for the assent record:
+alongside deleting the identity itself. Scope it to the marketing purpose: the assent rows are
+retained by the published table and deleting them is the one thing this statement must not do.
 
 ```sql
-DELETE FROM consent_events WHERE identity_id = '<id>';
+DELETE FROM consent_events
+  WHERE identity_id = '<id>' AND purpose = 'marketing_emails';
 ```
+
+The retained assent rows name an identity that no longer exists, so the DSAR log keeps the
+identity-to-email mapping for a deleted account or they evidence nothing.
 
 Both statements are repeated in the migration headers, which is where the erasure runbook
 already looks.

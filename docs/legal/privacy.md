@@ -95,7 +95,7 @@ We keep data for as long as it serves the purpose it was collected for, and no l
 | Web and API request logs | 7 days, then deleted automatically by our edge provider. |
 | Logs on our own server (identity service, device transport) | Kept in the server's system journal and deleted after 30 days. |
 | Your product-update choice | The record of when you gave or withdrew consent is kept while your account exists, so we can show we had it, and deleted with your account. |
-| Your acceptance of our terms | The record of which version you accepted, and when, is kept while your account exists, so we can show you accepted it, and deleted with your account. |
+| Your acceptance of our terms | The record of which version you accepted, and when, is kept while your account exists, and afterward only as needed to establish or defend our contractual rights or comply with legal obligations. |
 | Backups of our databases | Our database host captures a base backup of each cluster daily and keeps it current by streaming the write-ahead log every 60 seconds or 16 MB, whichever comes first, retaining 10 days of them. Deleted data disappears from a backup when that backup expires. |
 
 ## Why we are allowed to process your data
@@ -103,6 +103,7 @@ We keep data for as long as it serves the purpose it was collected for, and no l
 If you are in the EEA, the UK or Switzerland, the law requires us to tell you the legal basis for each kind of processing:
 
 - **To create and administer your account**, authenticate you, give you access to the service, whether you use it in your own name or on behalf of your organization, and provide the features you request: our legitimate interest in providing and administering the service (GDPR Article 6(1)(f)). Where you use the service on behalf of an organization and we process device or other personal data on that organization's behalf, we do so as a processor under the Data Processing Agreement and your organization is responsible for the applicable legal basis.
+- **To keep a record that you accepted our terms**, including after your account is deleted: our legitimate interest in establishing or defending our contractual rights (Article 6(1)(f)), and, where the law requires us to keep the record, a legal obligation (Article 6(1)(c)).
 - **To create and run a paid subscription**, calculate and process subscription and usage charges, and administer billing: where you are the customer contracting with us, performance of our contract with you (GDPR Article 6(1)(b)); where you act on behalf of a separate organization that is the customer, our legitimate interest in administering that organization's subscription and billing (Article 6(1)(f)).
 - **To keep tax and accounting records**, including validating an EU VAT number you give us against the European Commission's VIES register: a legal obligation (Article 6(1)(c)).
 - **To keep the platform secure and working** (request logs, rate limiting, de-identified error diagnostics, notifying ourselves of failures): our legitimate interest in running a secure service (Article 6(1)(f)). We have designed these to carry as little personal data as possible; error reports carry no identity unless you choose to attach one.

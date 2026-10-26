@@ -8,11 +8,15 @@ the same way `docs/api.md` backs `/api-reference/`, so the file in this director
 | --- | --- | --- |
 | `terms.md` | `/terms/` | `24f-terms-privacy/terms-of-service-final-2026-09-15.md` |
 | `privacy.md` | `/privacy/` | `24f-terms-privacy/privacy-policy-final-2026-09-15.md` |
-| `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-20.md` |
+| `dpa.md` | `/dpa/` | `24f-terms-privacy/data-processing-agreement-final-2026-09-22.md` |
 | `subprocessors.md` | `/subprocessors/` | `24-eu-paperwork/subprocessors.md`, then maintained here |
 
 `archive/` holds superseded published text, named for the version it was published as, so a consent
 row stamped with an older version can still be resolved back to the words that were on screen.
+It covers the Terms, the DPA and the sub-processor list as much as the Policy: one Terms assent row
+stamps `TERMS_VERSION` for all three, so a change to the DPA or the list, which moves its own
+constant and not that one, still leaves superseded text to archive, as `archive/dpa-<version>.md`
+or `archive/subprocessors-<version>.md`.
 
 The `/privacy/#privacy-*` anchors the hand-written page shipped before 2026-09-14 do not survive:
 heading ids now come from the heading text, the way `/api-reference/` has always produced them.
@@ -29,13 +33,14 @@ own Section 6.
 
 Each document carries the literal token `{{LAST_UPDATED}}` on its "Last updated" line, substituted
 twice over: by `fancier`'s `helpers::legal_doc::render` for the HTML page, and by
-`fancier/scripts/build-release.sh` for the markdown variant. Terms, DPA and sub-processor list
-render `capsules::TERMS_VERSION`; the Privacy Policy renders `capsules::PRIVACY_NOTICE_VERSION`.
-Both constants are ISO dates and a test holds them to that shape.
+`fancier/scripts/build-release.sh` for the markdown variant. Each page renders its own constant
+from `capsules/src/lib.rs`: `/terms/` renders `TERMS_VERSION`, `/privacy/`
+`PRIVACY_NOTICE_VERSION`, `/dpa/` `DPA_VERSION`, `/subprocessors/` `SUBPROCESSORS_VERSION`. All
+four are ISO dates and a test holds them to that shape.
 
 `TERMS_VERSION` is also what every Terms assent row is stamped with, so bumping it asks every
 account to accept again on its next sign-in. A wording fix that needs no fresh assent must not move
-it.
+it, and a change to the DPA or the sub-processor list moves that document's own constant instead.
 
 ## Deploy order on a version bump: fancier first, then dovecote
 
@@ -45,28 +50,31 @@ gate fires, and every row written in that window says an account accepted text i
 The other order is harmless: the pages show the new text for a few minutes while `dovecote` still
 considers the old one current, so no gate fires and no row is written.
 
-## Decisions counsel owns before the first deploy
+## Decisions counsel owns
 
 These are not agent actions and not engineering calls. Each is a place where what we deploy and
 what we publish have to be made to agree.
 
-- **The assent record is now in the Privacy Policy's retention table, and that closes the
-  Article 17(3)(e) question against us.** Every Terms assent row is version, account, time and
-  source, with no address and no user agent, and the policy says it is deleted with the account.
-  The DPA's Annex II G.3 states the same as a fact and keys any exception to what the policy
-  permits, so keeping a row past deletion for the contract limitation period would now make a
-  published clause false. Moving that line is a decision about the DPA as well as the policy.
+- **The assent record outlives the account, on the Article 17(3)(e) ground.** Every Terms assent
+  row is version, account, time and source, with no address and no user agent, and the Privacy
+  Policy's retention table keeps it while the account exists and afterward only as needed to
+  establish or defend our contractual rights or comply with legal obligations. Section 2.2 makes
+  the Privacy Policy the governing document for provider-controlled records and Section 8.2 excepts
+  retention the policy expressly provides for, and Annex II G.3 now says so on its own face: it
+  names the acceptance record among the retained provider-controlled records rather than among the
+  items account deletion removes. A retained row is an identity id and a date once the identity is
+  gone, so the DSAR log has to keep the identity-to-email mapping or the row evidences nothing.
 
 ## Shipping a change to these documents
 
 Nothing here is an agent action. The full reasoning is in
 `docs/design/terms-assent-and-legal-pages.md` section 11; this is the list.
 
-1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set
-   `TERMS_VERSION` (and `PRIVACY_NOTICE_VERSION` if the policy moved) to the deploy date. The
-   open sub-processor question is answered: the fallback email vendor was removed from the
-   Service, so the only vendor on the list that carries our mail is the edge provider. The
-   Resend row stays, and says on its face that no data reaches it.
+1. Copy the new text in from the business folder, keeping the `{{LAST_UPDATED}}` line, and set each
+   changed document's own constant to the deploy date. The open sub-processor question is answered:
+   the fallback email vendor was removed from the Service, so the only vendor on the list that
+   carries our mail is the edge provider. The Resend row stays, and says on its face that no data
+   reaches it.
 2. Apply `infra/migrations/2026-08-27-consent-events.sql` and then
    `infra/migrations/2026-09-14-terms-assent.sql` to the staging database, in that order, then
    deploy fancier and dovecote to staging **in that order** too. The first file creates the table

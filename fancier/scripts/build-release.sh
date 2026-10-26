@@ -199,9 +199,9 @@ cp ../docs/api.md "$PUBLIC_DIR/api-reference/index.md"
 
 # The four published legal documents, same real-prose treatment: each is
 # the file its page renders, with the date token substituted here the way
-# helpers/legal_doc.rs substitutes it there. The versions are read off the
-# constants both crates compile, so the markdown variant and the HTML can
-# never date the same document differently.
+# helpers/legal_doc.rs substitutes it there. Each date is read off the
+# constant that document's page renders, so the markdown variant and the
+# HTML can never date the same document differently.
 read_const() {
   local value
   value="$(sed -n "s/^pub const $1: &str = \"\(.*\)\";\$/\1/p" ../capsules/src/lib.rs)"
@@ -210,6 +210,8 @@ read_const() {
 }
 TERMS_DATE="$(read_const TERMS_VERSION)"
 PRIVACY_DATE="$(read_const PRIVACY_NOTICE_VERSION)"
+DPA_DATE="$(read_const DPA_VERSION)"
+SUBPROCESSORS_DATE="$(read_const SUBPROCESSORS_VERSION)"
 
 copy_legal() {  # $1 = route, $2 = source file name, $3 = published date
   mkdir -p "$PUBLIC_DIR/$1"
@@ -217,8 +219,8 @@ copy_legal() {  # $1 = route, $2 = source file name, $3 = published date
 }
 copy_legal terms terms.md "$TERMS_DATE"
 copy_legal privacy privacy.md "$PRIVACY_DATE"
-copy_legal dpa dpa.md "$TERMS_DATE"
-copy_legal subprocessors subprocessors.md "$TERMS_DATE"
+copy_legal dpa dpa.md "$DPA_DATE"
+copy_legal subprocessors subprocessors.md "$SUBPROCESSORS_DATE"
 # nullglob so an empty manifest copies nothing instead of a literal "*.md".
 shopt -s nullglob
 for story in ./assets/stories/*.md; do

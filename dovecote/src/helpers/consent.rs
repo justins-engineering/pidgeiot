@@ -216,10 +216,10 @@ pub async fn record_consent_event(
 /// which is exactly the shape of assent to a new version.
 ///
 /// No address and no user agent. The published notice describes both only
-/// as transient web logs, and this row is meant to outlive the account, so
-/// storing them here would keep a category of personal data the notice
-/// does not disclose. The memo asks for version, account and time, and all
-/// three are still here.
+/// as transient web logs, and this row outlives the account, so storing
+/// them here would keep a category of personal data the notice does not
+/// disclose. The memo asks for version, account and time, and all three
+/// are still here.
 ///
 /// Returns the `seq` of the row written, or `None` when one was already on
 /// file.
