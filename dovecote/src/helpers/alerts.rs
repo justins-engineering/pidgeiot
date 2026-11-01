@@ -681,8 +681,8 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// why `DeviceState`/`MissingReport` are no-ops in this hook (evaluated
 /// instead by `evaluate_scheduled_alerts` below, the Cron-Trigger-driven
 /// sweep). `previous` is each reported key's prior value + timestamp,
-/// captured by the caller (`objects/pigeons.rs::read_previous_telemetry`)
-/// before its own UPSERT overwrote it -- the only input `RateOfChange`
+/// captured by `merge_batch` before the merge overwrote it -- the only
+/// input `RateOfChange`
 /// needs that `Threshold` doesn't; see `PreviousTelemetryValue`'s doc
 /// comment for why that capture has to happen at the call site, not here.
 /// The batched form, and the one that holds the evaluation loop -- a

@@ -1367,8 +1367,9 @@ Suspending also resets the pigeon's `alert_state` rows to `ok` with **no email**
 an operator's decision, not a recovery, so a firing alert stops silently and no "resolved" mail
 ever follows for that episode. Resuming only clears the flag, so the next evaluation starts a
 fresh episode: a pigeon still silent past a `MissingReport` window fires on the first sweep
-after resume (within five minutes), and a still-true `Threshold`/`RateOfChange`/`DeviceState`
-condition fires again after its 60-second debounce, each with a new "firing" mail.
+after resume (within five minutes), a still-true `Threshold`/`DeviceState` condition fires again
+after its 60-second debounce, and a `RateOfChange` fires on its next step, each with a new
+"firing" mail.
 
 What suspension does **not** do: the device keeps reporting (telemetry, shadow report-back,
 log uploads and the WebSocket channel are all accepted as before), it is billed as connected if
@@ -2171,7 +2172,10 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 `capsules::AlertCondition` (the `condition` field below) is one of:
 
 - `{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}}` — a telemetry key crosses a bound
-  (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`).
+  (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`) and holds it through a 60-second debounce:
+  the reading that crosses opens the episode, and the first reading still across it at least 60
+  seconds later fires, so on a 300-second cadence the mail follows the second report. A key a
+  device sends once, such as a boot's `reset_cause`, never fires on its own reading.
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
   this long, counted from when its silence crossed into the state, not from its last contact. It is
@@ -2194,7 +2198,17 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   elapsing, not two. Evaluation is a sample rather than a scan of history, so a silence that both
   crosses the window and ends between two sweeps is not reported at all.
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
-  moved by more than `max_delta` since its previous report, within an optional time window.
+  moved by more than `max_delta` since its previous report, within an optional time window. A step
+  cannot stay true, so this fires on the report that steps, with no debounce. It resolves on the
+  first report that does not step at least 60 seconds after the fire, so a key whose noise crosses
+  `max_delta` fires at most once a minute; set `max_delta` above the key's noise.
+
+Both telemetry conditions are decided per reading, in order, against the readings that carry the
+key as a number. A report that leaves the key out, or sends it as text, decides nothing: it neither
+fires, resolves nor ends a `Threshold`'s debounce, so an episode stays open across any number of
+such reports until the key's next value decides it. A batched report is judged reading by reading
+and sends the same mails as its readings sent one at a time, though a mail can quote a later
+reading of the same run.
 
 `capsules::AlertChannel` is `{"Email":{"to":[]}}` (deliver to the owning flock's stored
 `owner_email`) or `{"Email":{"to":["you@example.com","oncall@example.com"]}}` — up to
@@ -2299,7 +2313,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts/state \
 
 (`Vec<capsules::AlertState>`. `status` is `"Ok"` or `"Firing"` — note this is the derived-Serialize
 casing, distinct from the lowercase `"ok"`/`"firing"` `alert_state.status` is stored as in
-Postgres; `first_true_at`/`last_notified_at` are `null` while `"Ok"` and never having fired.)
+Postgres. `first_true_at` is when the current true episode began: set while `"Firing"`, and while
+`"Ok"` with an episode waiting out its debounce, otherwise `null`. `last_notified_at` is the last
+mail sent, `null` until the first.)
 
 #### `POST /flocks/:flock_id/alerts`
 

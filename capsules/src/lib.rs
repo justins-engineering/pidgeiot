@@ -1593,7 +1593,9 @@ pub enum ConnectionStateKind {
 
 /// A boolean predicate over one pigeon's (or one flock's) observable state
 /// (design doc §1.1). `Threshold` and `RateOfChange` are both fully
-/// evaluated by `check_telemetry_alerts` at every telemetry ingest;
+/// evaluated by `check_telemetry_alerts_batch` at every telemetry ingest,
+/// against each reading that carries the key as a number: a reading
+/// without it decides nothing, so a true episode stays open across it;
 /// `DeviceState` and `MissingReport` are both absence-of-signal conditions
 /// by definition (design doc §2.4) -- "went offline/stale" or "nothing
 /// arrived in N seconds" can't be usefully decided at the moment a report
@@ -1604,6 +1606,9 @@ pub enum ConnectionStateKind {
 /// own doc comment for how it derives a pigeon's last-seen signal.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertCondition {
+  /// `key`'s numeric value compares true against `value`, and still does on a reading at least
+  /// 60 seconds after the one that opened the episode, which is the one that fires. A key sent
+  /// once (a boot's `reset_cause`) therefore never fires on its own reading.
   Threshold {
     key: String,
     comparator: Comparator,
@@ -1629,30 +1634,19 @@ pub enum AlertCondition {
   /// `max_silence_secs` is already the duration a fixed debounce would
   /// otherwise re-impose on top.
   MissingReport { max_silence_secs: i64 },
-  /// Fires when `key`'s numeric value has moved by more than `max_delta`
-  /// (`|new - old| > max_delta`) since the previous report of that same
-  /// key (design doc §1.1/§2.2). Edge-triggered, like `Threshold` -- a
-  /// spike is only observable at the moment a new report lands next to the
-  /// one before it, unlike `DeviceState`/`MissingReport`'s
-  /// absence-of-signal checks. `window_secs`, if set, bounds how far apart
-  /// the two samples may be: a gap larger than the window means the two
-  /// reports aren't close enough in time to call the difference a "rate"
-  /// of anything (e.g. a pigeon that was offline for a day and resumed at
-  /// a very different reading is not a spike), so that comparison is
-  /// skipped entirely rather than fired. `None` means no such bound --
-  /// compare against the previous report regardless of how long ago it was.
+  /// `key`'s numeric value has moved by more than `max_delta` (`|new - old| > max_delta`) since
+  /// the previous report of that same key (design doc §1.1/§2.2). A step cannot stay true, so
+  /// this fires on the step itself, and resolves on the first report that does not step at least
+  /// 60 seconds after the fire, which keeps a noisy key to one fire a minute.
   ///
-  /// The "previous value" this needs doesn't live in any table --
-  /// `pigeon_telemetry` (the DO's own store) is latest-value-per-key, and
-  /// the incoming report's own UPSERT overwrites the only copy before an
-  /// evaluator could otherwise read it. `dovecote::objects::pigeons` solves
-  /// this by reading each key's current row immediately before its UPSERT
-  /// runs (`read_previous_telemetry`), carrying the result alongside the
-  /// new values (`TelemetryWriteResult::previous_values`) to wherever
-  /// `check_telemetry_alerts` ends up running -- no second table, no extra
-  /// history-store round trip. A key with no previous row (this pigeon's
-  /// first-ever report of it) simply has no entry to compare against, so
-  /// this condition can never fire on a first reading.
+  /// `window_secs`, if set, bounds how far apart the two samples may be: across a longer gap
+  /// (a pigeon offline for a day resuming at a very different reading) the comparison is skipped
+  /// rather than fired. `None` compares against the previous report however old it is.
+  ///
+  /// The previous value is the latest-value store's entry from just before the reading
+  /// overwrote it (dovecote's `merge_batch`), so inside a batch each reading is compared with
+  /// the one before it. A key with no previous entry, this pigeon's first report of it, decides
+  /// nothing.
   RateOfChange {
     key: String,
     max_delta: f64,
@@ -1965,9 +1959,12 @@ pub struct AlertDefinitionUpdateRequest {
 /// (five pigeons going offline is five clear notifications, not one
 /// ambiguous one). `status` mirrors ThingsBoard's raise/clear alarm
 /// lifecycle: `Ok -> Firing` only once the condition has been continuously
-/// true for the definition's own debounce window, sending exactly one
-/// "fired" email on that transition; `Firing -> Ok` sends exactly one
-/// "cleared" email on the reverse transition. No `*Row` variant needed --
+/// true for the definition's own debounce window (none for `MissingReport`,
+/// whose window is the debounce, or for `RateOfChange`, which fires on the
+/// step), sending exactly one "fired" email on that transition;
+/// `Firing -> Ok` sends exactly one "cleared" email on the reverse
+/// transition, which a `RateOfChange` takes no sooner than 60 seconds after
+/// it fired. No `*Row` variant needed --
 /// same as `Flock`/`FirmwareImage`, Postgres hands back native
 /// `OffsetDateTime`s directly.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
