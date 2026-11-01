@@ -700,19 +700,21 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 ///
 /// What it does NOT do is call the transition machinery once per reading.
 /// The definitions are fetched once for the whole batch, and a transition
-/// is applied only where the condition's truth CHANGES, plus once at the
-/// end of the batch. That is enough to reproduce the sequential outcome:
-/// the first evaluation of a true run opens the debounce window and the
-/// last one closes it, which is exactly the pair of calls a stream of
-/// separate reports would have used to fire. It costs one round trip for
-/// a batch that holds steady rather than sixty-four, which is the whole
-/// reason the batch is worth sending.
+/// is applied only at the first and last reading of each run of equal
+/// truth. That is enough to reproduce the sequential outcome: the first
+/// evaluation of a true run opens the debounce window and the last one
+/// closes it, which is exactly the pair of calls a stream of separate
+/// reports would have used to fire. It costs two round trips for a batch
+/// that holds steady rather than sixty-four, which is the whole reason the
+/// batch is worth sending.
 ///
-/// The one visible difference from sequential arrival: a firing alert
-/// records the batch's last matching reading as `last_notified_at` rather
-/// than the earliest reading that satisfied the debounce. Nothing reads
-/// that column to decide whether to notify (there is no re-notify), so it
-/// costs an approximate timestamp and saves the round trips.
+/// The one visible difference from sequential arrival: a transition lands
+/// on the last reading of its run rather than the earliest reading that
+/// satisfied the debounce or the resolve hold, so the mail quotes and
+/// `last_notified_at` records that reading. Only `RateOfChange`'s resolve
+/// hold reads that column, and its fire lands on the first reading of a run
+/// and so is exact; there is no re-notify. It costs an approximate
+/// timestamp and saves the round trips.
 ///
 /// A suspended pigeon (`pigeons.suspended_at` set) matches no definition
 /// here, which covers every ingress path in one place since all three call
@@ -789,27 +791,28 @@ fn batch_transitions(
 }
 
 /// Which of a batch's decided readings actually need a trip through the
-/// transition machinery: every reading where the condition's truth changes
-/// from the one before it, plus the batch's last decided reading.
+/// transition machinery: the first and the last reading of every run of
+/// equal truth, whether the next run or the batch's end closes it.
 ///
 /// Those two are what the state machine needs and all it needs. Opening a
-/// true run records when it began; closing it is what compares that
-/// against the debounce window and fires. Everything between the two would
-/// re-read and rewrite the same row to reach the same conclusion, which
-/// for a device buffering sixty-four readings is sixty-two round trips
-/// spent to change nothing. Whatever rides along with each verdict (the
-/// observation the notification will quote) is carried through untouched.
+/// run records when it began; closing it is what compares that against
+/// the debounce window or the resolve hold. Everything between the two
+/// would re-read and rewrite the same row to reach the same conclusion,
+/// which for a device buffering sixty-four readings is sixty-two round
+/// trips spent to change nothing. Whatever rides along with each verdict
+/// (the observation the notification will quote) is carried through
+/// untouched.
 fn transitions_to_apply<T: Clone>(evaluated: &[(i64, bool, T)]) -> Vec<(i64, bool, T)> {
-  let mut applied: Option<bool> = None;
   let mut out = Vec::new();
 
-  for (index, (at_secs, is_true, seen)) in evaluated.iter().enumerate() {
-    let is_last = index + 1 == evaluated.len();
-    if applied == Some(*is_true) && !is_last {
-      continue;
+  for (index, reading) in evaluated.iter().enumerate() {
+    let opens = index == 0 || evaluated[index - 1].1 != reading.1;
+    let closes = evaluated
+      .get(index + 1)
+      .is_none_or(|next| next.1 != reading.1);
+    if opens || closes {
+      out.push(reading.clone());
     }
-    applied = Some(*is_true);
-    out.push((*at_secs, *is_true, seen.clone()));
   }
 
   out
@@ -1985,6 +1988,7 @@ mod tests {
       vec![
         (100, false, "a"),
         (110, true, "b"),
+        (120, true, "c"),
         (130, false, "d"),
         (140, false, "e")
       ]
@@ -2178,6 +2182,20 @@ mod tests {
     for (at_secs, value) in [(0, "35"), (70, "36"), (100, "21")] {
       replay.report(at_secs, &[("temp", value)]);
     }
+    assert_eq!(replay.fired, vec![70]);
+    assert_eq!(replay.resolved, vec![100]);
+  }
+
+  // The same readings in one request must fire and resolve exactly as they do one by one: the
+  // reading at 70 neither changes the truth nor ends the batch, yet it is the one that fires.
+  #[test]
+  fn batch_true_run_closed_inside_the_batch_fires_and_resolves() {
+    let mut replay = Replay::new(temp_over_30());
+    replay.batch(&[
+      (0, &[("temp", "35")]),
+      (70, &[("temp", "36")]),
+      (100, &[("temp", "21")]),
+    ]);
     assert_eq!(replay.fired, vec![70]);
     assert_eq!(replay.resolved, vec![100]);
   }
