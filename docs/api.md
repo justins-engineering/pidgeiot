@@ -1389,8 +1389,8 @@ a pigeon shown as live that no alert watches, cannot come out of this route.
 
 Propagation: the ingest-time definition lookup is a Hyperdrive-cached read, so a report
 arriving within about a minute of a toggle can still be evaluated the old way; after a suspend
-that means a `Threshold`/`RateOfChange`/`DeviceState` condition still true can restart its
-episode against the reset state and send one more "firing" mail before the hold takes effect.
+that means a still-true `Threshold`/`DeviceState` condition, or a `RateOfChange` step, can send
+one more "firing" mail against the reset state before the hold takes effect.
 The sweep, which decides `MissingReport`, reads through the same minute-long cache but runs
 every five minutes, so its next run sees the hold. The dashboard's connection badge shows
 `Suspended` in place of the online/stale/offline classification.
@@ -2200,8 +2200,9 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window. A step
   cannot stay true, so this fires on the report that steps, with no debounce. It resolves on the
-  first report that does not step at least 60 seconds after the fire, so a key whose noise crosses
-  `max_delta` fires at most once a minute; set `max_delta` above the key's noise.
+  first report that does not step at least 60 seconds after the fire. A key whose noise keeps
+  crossing `max_delta` therefore sends a "firing" and a "resolved" mail about once a minute for as
+  long as it stays noisy; set `max_delta` above the key's noise.
 
 Both telemetry conditions are decided per reading, in order, against the readings that carry the
 key as a number. A report that leaves the key out, or sends it as text, decides nothing: it neither

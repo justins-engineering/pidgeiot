@@ -682,11 +682,9 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// instead by `evaluate_scheduled_alerts` below, the Cron-Trigger-driven
 /// sweep). `previous` is each reported key's prior value + timestamp,
 /// captured by `merge_batch` before the merge overwrote it -- the only
-/// input `RateOfChange`
-/// needs that `Threshold` doesn't; see `PreviousTelemetryValue`'s doc
-/// comment for why that capture has to happen at the call site, not here.
-/// The batched form, and the one that holds the evaluation loop -- a
-/// single report is a batch of one.
+/// input `RateOfChange` needs that `Threshold` doesn't. The batched form,
+/// and the one that holds the evaluation loop -- a single report is a
+/// batch of one.
 ///
 /// An alert has to see what a batch actually contains. A device buffering
 /// ten minutes of readings and sending them together must trip the same
@@ -882,7 +880,7 @@ fn evaluate_ingest_condition(
 }
 
 /// Cron-Trigger-driven scheduled evaluator -- the counterpart to
-/// `check_telemetry_alerts` above for the two condition types that can't
+/// `check_telemetry_alerts_batch` above for the two condition types that can't
 /// be decided at ingest time: an ingest event arriving is itself proof
 /// the pigeon is online, so "went offline/stale" (`DeviceState`) and
 /// "nothing has arrived in N seconds" (`MissingReport`) both have to be
@@ -924,7 +922,7 @@ pub async fn evaluate_scheduled_alerts(env: &Env) -> Result<()> {
   // AlertCondition's externally-tagged serde encoding exactly (a
   // `DeviceState` value serializes to `{"DeviceState": {...}}`) -- same
   // idea as the `ad.pigeon_id = $1 OR ...` scoping check
-  // check_telemetry_alerts already does, just expressed against the JSON
+  // check_telemetry_alerts_batch already does, just expressed against the JSON
   // shape instead of a plain column.
   let rows = client
     .query_typed(
@@ -1242,7 +1240,7 @@ enum Transition {
   Resolve,
 }
 
-/// The transition table on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
+/// The lifecycle on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
 /// current true episode began at `first_true_at` and whose last mail went out at
 /// `last_notified_at` (the fire, while `Firing`). Staying `Firing` while still true is a no-op:
 /// there is no periodic re-notify.
@@ -1963,7 +1961,7 @@ mod tests {
   }
 
   #[test]
-  fn a_steady_batch_costs_one_transition_at_its_end() {
+  fn a_steady_batch_costs_its_open_and_its_close() {
     // Sixty-four true readings would be sixty-four round trips evaluated
     // naively; the run only needs its open and its close, and here those
     // are the same two calls that open the debounce window and fire it.
@@ -2238,6 +2236,141 @@ mod tests {
     replay.batch(&batch);
     assert_eq!(replay.fired, vec![40]);
     assert_eq!(replay.resolved, vec![100]);
+  }
+
+  // A firing RateOfChange resolves on the close of the flat run past its hold, and that close
+  // has to be applied inside the batch for the next step in the same batch to fire.
+  #[test]
+  fn a_rate_resolve_inside_a_batch_lets_the_next_step_fire() {
+    let mut replay = Replay::new(rate("temp", 10.0, None));
+    replay.report(0, &[("temp", "20")]);
+    let mut readings: Vec<(i64, [(&str, &str); 1])> = vec![(10, [("temp", "35")])];
+    readings.extend(
+      (20..=100)
+        .step_by(10)
+        .map(|at_secs| (at_secs, [("temp", "35")])),
+    );
+    readings.push((110, [("temp", "50")]));
+    let batch: Vec<(i64, &[(&str, &str)])> = readings
+      .iter()
+      .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice()))
+      .collect();
+    replay.batch(&batch);
+    assert_eq!(replay.fired, vec![10, 110]);
+    assert_eq!(replay.resolved, vec![100]);
+  }
+
+  // The hold expires partway through a flat run, and a step follows it in the same request.
+  #[test]
+  fn a_rate_hold_expiring_mid_batch_mails_as_sequential_arrival_does() {
+    let readings = [(10, "35"), (30, "35"), (80, "35"), (90, "50")];
+    let mut sequential = Replay::new(rate("temp", 10.0, None));
+    sequential.report(0, &[("temp", "20")]);
+    for (at_secs, value) in readings {
+      sequential.report(at_secs, &[("temp", value)]);
+    }
+    let mut batched = Replay::new(rate("temp", 10.0, None));
+    batched.report(0, &[("temp", "20")]);
+    let pairs: Vec<(i64, [(&str, &str); 1])> = readings
+      .iter()
+      .map(|(at_secs, value)| (*at_secs, [("temp", *value)]))
+      .collect();
+    let batch: Vec<(i64, &[(&str, &str)])> = pairs
+      .iter()
+      .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice()))
+      .collect();
+    batched.batch(&batch);
+    for replay in [&sequential, &batched] {
+      assert_eq!(replay.fired, vec![10, 90]);
+      assert_eq!(replay.resolved, vec![80]);
+    }
+  }
+
+  #[test]
+  fn a_threshold_blip_on_a_fast_reporter_stays_quiet() {
+    let mut replay = Replay::new(temp_over_30());
+    for at_secs in 0..120 {
+      let value = if (50..60).contains(&at_secs) {
+        "31"
+      } else {
+        "25"
+      };
+      replay.report(at_secs, &[("temp", value)]);
+    }
+    assert!(replay.fired.is_empty());
+    assert!(replay.resolved.is_empty());
+  }
+
+  #[test]
+  fn a_threshold_flapping_at_a_300_s_cadence_stays_quiet() {
+    let mut replay = Replay::new(temp_over_30());
+    for i in 0..20 {
+      let value = if i % 2 == 0 { "31" } else { "29" };
+      replay.report(i * 300, &[("temp", value)]);
+    }
+    assert!(replay.fired.is_empty());
+    assert!(replay.resolved.is_empty());
+  }
+
+  #[test]
+  fn a_steady_batch_fires_once_on_its_last_reading() {
+    let mut replay = Replay::new(temp_over_30());
+    let readings: Vec<(i64, [(&str, &str); 1])> =
+      (0..64).map(|i| (i * 10, [("temp", "35")])).collect();
+    let batch: Vec<(i64, &[(&str, &str)])> = readings
+      .iter()
+      .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice()))
+      .collect();
+    replay.batch(&batch);
+    assert_eq!(replay.fired, vec![630]);
+  }
+
+  fn watchdog_reset() -> AlertCondition {
+    AlertCondition::Threshold {
+      key: "reset_cause".to_string(),
+      comparator: Comparator::Eq,
+      value: 16.0,
+    }
+  }
+
+  // A key sent once per boot opens an episode that no later reading of the key can fire, one
+  // report at a time or batched.
+  #[test]
+  fn a_one_shot_key_never_fires_on_its_own_reading() {
+    let first: &[(&str, &str)] = &[("reset_cause", "16"), ("uptime_s", "10")];
+    let later = [(40, "40"), (70, "70"), (100, "100")];
+
+    let mut sequential = Replay::new(watchdog_reset());
+    sequential.report(10, first);
+    for (at_secs, uptime) in later {
+      sequential.report(at_secs, &[("uptime_s", uptime)]);
+    }
+
+    let mut batched = Replay::new(watchdog_reset());
+    let tail: Vec<(i64, [(&str, &str); 1])> = later
+      .iter()
+      .map(|(at_secs, uptime)| (*at_secs, [("uptime_s", *uptime)]))
+      .collect();
+    let mut batch: Vec<(i64, &[(&str, &str)])> = vec![(10, first)];
+    batch.extend(
+      tail
+        .iter()
+        .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice())),
+    );
+    batched.batch(&batch);
+
+    for replay in [&sequential, &batched] {
+      assert!(replay.fired.is_empty());
+      assert_eq!(replay.first_true_at, Some(at(10)));
+    }
+  }
+
+  #[test]
+  fn a_one_shot_key_on_the_last_reading_of_a_batch_only_opens_its_episode() {
+    let mut replay = Replay::new(watchdog_reset());
+    replay.batch(&[(10, &[("uptime_s", "10")]), (40, &[("reset_cause", "16")])]);
+    assert!(replay.fired.is_empty());
+    assert_eq!(replay.first_true_at, Some(at(40)));
   }
 
   // A key at a 10 s cadence stepping past max_delta on every other reading: firing on the step

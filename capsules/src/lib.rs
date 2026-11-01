@@ -1547,7 +1547,7 @@ pub struct FirmwareUploadQuery {
 // Model follows docs/design/alerts-triggers.md §1, with one deliberate
 // simplification (see `AlertCondition::MissingReport`'s own doc comment).
 // `Threshold` and `RateOfChange` are both evaluated by dovecote's
-// ingest-hook evaluator (`check_telemetry_alerts`,
+// ingest-hook evaluator (`check_telemetry_alerts_batch`,
 // `dovecote/src/helpers/alerts.rs`); `DeviceState`/`MissingReport` are both
 // evaluated by its Cron-Trigger-driven scheduled sweep instead
 // (`evaluate_scheduled_alerts`, same file) -- see the design doc §2.2/§2.4
@@ -1637,7 +1637,8 @@ pub enum AlertCondition {
   /// `key`'s numeric value has moved by more than `max_delta` (`|new - old| > max_delta`) since
   /// the previous report of that same key (design doc §1.1/§2.2). A step cannot stay true, so
   /// this fires on the step itself, and resolves on the first report that does not step at least
-  /// 60 seconds after the fire, which keeps a noisy key to one fire a minute.
+  /// 60 seconds after the fire. A key whose noise keeps crossing `max_delta` therefore sends a
+  /// fire and a resolve about once a minute for as long as it stays noisy.
   ///
   /// `window_secs`, if set, bounds how far apart the two samples may be: across a longer gap
   /// (a pigeon offline for a day resuming at a very different reading) the comparison is skipped
@@ -1964,9 +1965,8 @@ pub struct AlertDefinitionUpdateRequest {
 /// step), sending exactly one "fired" email on that transition;
 /// `Firing -> Ok` sends exactly one "cleared" email on the reverse
 /// transition, which a `RateOfChange` takes no sooner than 60 seconds after
-/// it fired. No `*Row` variant needed --
-/// same as `Flock`/`FirmwareImage`, Postgres hands back native
-/// `OffsetDateTime`s directly.
+/// it fired. No `*Row` variant needed -- same as `Flock`/`FirmwareImage`,
+/// Postgres hands back native `OffsetDateTime`s directly.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum AlertStatus {
   Ok,
