@@ -753,19 +753,7 @@ pub async fn check_telemetry_alerts_batch(
   for row in &rows {
     let def = AlertDefinition::from(row_to_alert_definition_row(row));
 
-    // Only the readings this definition can actually be decided against:
-    // a reading missing the key, or carrying a non-numeric value for it,
-    // says nothing about the condition either way and must not be read as
-    // a recovery.
-    let evaluated: Vec<(i64, bool, AlertObservation)> = readings
-      .iter()
-      .filter_map(|reading| {
-        evaluate_ingest_condition(&def.condition, reading)
-          .map(|(is_true, observation)| (reading.at_secs, is_true, observation))
-      })
-      .collect();
-
-    for (at_secs, is_true, observation) in transitions_to_apply(&evaluated) {
+    for (at_secs, is_true, observation) in batch_transitions(&def.condition, readings) {
       let at = OffsetDateTime::from_unix_timestamp(at_secs).unwrap_or(OffsetDateTime::now_utc());
       if let Err(e) =
         apply_alert_transition(&client, env, &def, pigeon_id, is_true, &observation, at).await
@@ -779,6 +767,25 @@ pub async fn check_telemetry_alerts_batch(
   }
 
   Ok(())
+}
+
+/// The decided readings of a batch that one definition's state machine has to see, in order.
+///
+/// Only the readings the definition can actually be decided against count: a reading missing the
+/// key, or carrying a non-numeric value for it, says nothing about the condition either way and
+/// must not be read as a recovery.
+fn batch_transitions(
+  condition: &AlertCondition,
+  readings: &[ResolvedReading],
+) -> Vec<(i64, bool, AlertObservation)> {
+  let evaluated: Vec<(i64, bool, AlertObservation)> = readings
+    .iter()
+    .filter_map(|reading| {
+      evaluate_ingest_condition(condition, reading)
+        .map(|(is_true, observation)| (reading.at_secs, is_true, observation))
+    })
+    .collect();
+  transitions_to_apply(&evaluated)
 }
 
 /// Which of a batch's decided readings actually need a trip through the
@@ -1197,14 +1204,46 @@ fn should_fire_now(
   (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
 }
 
+/// What one decided observation does to an `alert_state` row.
+#[derive(Debug, PartialEq)]
+enum Transition {
+  /// Nothing to write.
+  Stay,
+  /// A true episode begins: record its start and wait out the debounce.
+  Open,
+  /// `Ok -> Firing` for the episode that began at `since`, with a "fired" mail.
+  Fire { since: OffsetDateTime },
+  /// A true episode ended before it fired: forget its start.
+  Reset,
+  /// `Firing -> Ok`, with a "resolved" mail.
+  Resolve,
+}
+
+/// The transition table on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
+/// current true episode began at `first_true_at`. Staying `Firing` while still true is a no-op:
+/// there is no periodic re-notify.
+fn next_transition(
+  condition: &AlertCondition,
+  status: AlertStatus,
+  first_true_at: Option<OffsetDateTime>,
+  is_true: bool,
+  now: OffsetDateTime,
+) -> Transition {
+  match (status, is_true) {
+    (AlertStatus::Ok, true) if should_fire_now(condition, first_true_at, now) => Transition::Fire {
+      since: first_true_at.unwrap_or(now),
+    },
+    (AlertStatus::Ok, true) if first_true_at.is_none() => Transition::Open,
+    (AlertStatus::Ok, false) if first_true_at.is_some() => Transition::Reset,
+    (AlertStatus::Firing, false) => Transition::Resolve,
+    _ => Transition::Stay,
+  }
+}
+
 /// One alert definition's `Ok`/`Firing` state machine for one pigeon.
-/// Upserts a fresh `alert_state` row on first sight, then applies the
-/// transition table described on `capsules::AlertState`'s doc comment.
-/// Sends at most one email per transition (fired or cleared); staying
-/// `Firing` while still true is intentionally a no-op -- periodic
-/// re-notify is a deferred, off-by-default extension, not implemented
-/// here. How long a true condition waits before firing is
-/// `should_fire_now`'s call, not a fixed window.
+/// Upserts a fresh `alert_state` row on first sight, then writes what
+/// `next_transition` decides. Sends at most one email per transition
+/// (fired or cleared).
 async fn apply_alert_transition(
   client: &Client,
   env: &Env,
@@ -1236,27 +1275,21 @@ async fn apply_alert_transition(
   let status: AlertStatus = status_str.parse().unwrap_or_default();
   let first_true_at: Option<OffsetDateTime> = row.get("first_true_at");
 
-  match (status, is_true) {
-    (AlertStatus::Ok, true) => {
-      let since = first_true_at.unwrap_or(now);
-      if !should_fire_now(&def.condition, first_true_at, now) {
-        if first_true_at.is_none() {
-          // Start of a new "true" episode -- record when it began, don't
-          // fire until it has stayed true across the debounce window.
-          client
-            .execute_typed(
-              "UPDATE alert_state SET first_true_at = $3 WHERE alert_definition_id = $1 AND pigeon_id = $2;",
-              &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT), (&now, Type::TIMESTAMPTZ)],
-            )
-            .await
-            .map_err(|e| {
-              console_error!("Alert state first_true_at write failed: {e}");
-              Error::RustError("Internal Server Error".into())
-            })?;
-        }
-        return Ok(());
-      }
-
+  match next_transition(&def.condition, status, first_true_at, is_true, now) {
+    Transition::Stay => {}
+    Transition::Open => {
+      client
+        .execute_typed(
+          "UPDATE alert_state SET first_true_at = $3 WHERE alert_definition_id = $1 AND pigeon_id = $2;",
+          &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT), (&now, Type::TIMESTAMPTZ)],
+        )
+        .await
+        .map_err(|e| {
+          console_error!("Alert state first_true_at write failed: {e}");
+          Error::RustError("Internal Server Error".into())
+        })?;
+    }
+    Transition::Fire { since } => {
       // `first_true_at` is written here too, for the episode that fires on
       // the same observation that starts it and never stamped one.
       client
@@ -1277,23 +1310,19 @@ async fn apply_alert_transition(
         })?;
       send_alert_email(env, client, def, pigeon_id, true, observation, now).await;
     }
-    (AlertStatus::Ok, false) => {
-      if first_true_at.is_some() {
-        // Blip that never crossed the debounce window -- reset so the next
-        // true reading starts a fresh episode.
-        client
-          .execute_typed(
-            "UPDATE alert_state SET first_true_at = NULL WHERE alert_definition_id = $1 AND pigeon_id = $2;",
-            &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT)],
-          )
-          .await
-          .map_err(|e| {
-            console_error!("Alert state reset failed: {e}");
-            Error::RustError("Internal Server Error".into())
-          })?;
-      }
+    Transition::Reset => {
+      client
+        .execute_typed(
+          "UPDATE alert_state SET first_true_at = NULL WHERE alert_definition_id = $1 AND pigeon_id = $2;",
+          &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT)],
+        )
+        .await
+        .map_err(|e| {
+          console_error!("Alert state reset failed: {e}");
+          Error::RustError("Internal Server Error".into())
+        })?;
     }
-    (AlertStatus::Firing, false) => {
+    Transition::Resolve => {
       client
         .execute_typed(
           "UPDATE alert_state SET status = 'ok', first_true_at = NULL, last_notified_at = $3
@@ -1310,10 +1339,6 @@ async fn apply_alert_transition(
           Error::RustError("Internal Server Error".into())
         })?;
       send_alert_email(env, client, def, pigeon_id, false, observation, now).await;
-    }
-    (AlertStatus::Firing, true) => {
-      // Already firing -- no periodic re-notify implemented (would be an
-      // optional cooldown-gated re-send, off by default).
     }
   }
 
@@ -1778,13 +1803,15 @@ mod scheduled_condition_tests {
 #[cfg(test)]
 mod tests {
   use super::{
-    EMAIL_BINDING, ResolvedReading, evaluate_ingest_condition, no_email_binding, redact_email,
-    should_fire_now, transitions_to_apply,
+    EMAIL_BINDING, PigeonLastSeen, ResolvedReading, Transition, batch_transitions, condition_holds,
+    evaluate_ingest_condition, next_transition, no_email_binding, redact_email, should_fire_now,
+    transitions_to_apply,
   };
+  use crate::helpers::{TelemetryBlob, merge_batch};
   use crate::objects::pigeons::PreviousTelemetryValue;
-  use capsules::{AlertCondition, AlertObservation, Comparator, ConnectionStateKind};
+  use capsules::{AlertCondition, AlertObservation, AlertStatus, Comparator, ConnectionStateKind};
   use std::collections::HashMap;
-  use time::OffsetDateTime;
+  use time::{Duration, OffsetDateTime};
 
   fn decide(condition: &AlertCondition, reading: &ResolvedReading) -> Option<bool> {
     evaluate_ingest_condition(condition, reading).map(|(is_true, _)| is_true)
@@ -2028,6 +2055,121 @@ mod tests {
     assert!(!should_fire_now(&rate, None, at(1_000)));
     assert!(should_fire_now(&threshold, Some(at(1_000)), at(1_060)));
     assert!(should_fire_now(&rate, Some(at(1_000)), at(1_060)));
+  }
+
+  /// One definition's `alert_state` row for one pigeon, plus that pigeon's latest-value store,
+  /// driven through the same merge, evaluation, batching and transition functions a report
+  /// takes. Records the reading time of every mail.
+  struct Replay {
+    condition: AlertCondition,
+    blob: TelemetryBlob,
+    status: AlertStatus,
+    first_true_at: Option<OffsetDateTime>,
+    fired: Vec<i64>,
+    resolved: Vec<i64>,
+  }
+
+  impl Replay {
+    fn new(condition: AlertCondition) -> Self {
+      Self {
+        condition,
+        blob: TelemetryBlob::new(),
+        status: AlertStatus::Ok,
+        first_true_at: None,
+        fired: Vec::new(),
+        resolved: Vec::new(),
+      }
+    }
+
+    /// One request carrying several `(at_secs, [(key, value)])` readings.
+    fn batch(&mut self, readings: &[(i64, &[(&str, &str)])]) {
+      let mut resolved: Vec<ResolvedReading> = readings
+        .iter()
+        .map(|(at_secs, pairs)| {
+          let metrics = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+          ResolvedReading::new(*at_secs, metrics)
+        })
+        .collect();
+      merge_batch(&mut self.blob, &mut resolved);
+      for (at_secs, is_true, _) in batch_transitions(&self.condition, &resolved) {
+        self.observe(is_true, at(at_secs));
+      }
+    }
+
+    /// One flat report, the form every shipped device sends.
+    fn report(&mut self, at_secs: i64, pairs: &[(&str, &str)]) {
+      self.batch(&[(at_secs, pairs)]);
+    }
+
+    /// Writes what `apply_alert_transition` would write for this observation.
+    fn observe(&mut self, is_true: bool, now: OffsetDateTime) {
+      let transition = next_transition(
+        &self.condition,
+        self.status,
+        self.first_true_at,
+        is_true,
+        now,
+      );
+      match transition {
+        Transition::Stay => {}
+        Transition::Open => self.first_true_at = Some(now),
+        Transition::Fire { since } => {
+          self.status = AlertStatus::Firing;
+          self.first_true_at = Some(since);
+          self.fired.push(now.unix_timestamp());
+        }
+        Transition::Reset => self.first_true_at = None,
+        Transition::Resolve => {
+          self.status = AlertStatus::Ok;
+          self.first_true_at = None;
+          self.resolved.push(now.unix_timestamp());
+        }
+      }
+    }
+  }
+
+  fn temp_over_30() -> AlertCondition {
+    threshold_over("temp", 30.0)
+  }
+
+  #[test]
+  fn sequential_true_run_then_recovery_fires_and_resolves() {
+    let mut replay = Replay::new(temp_over_30());
+    for (at_secs, value) in [(0, "35"), (70, "36"), (100, "21")] {
+      replay.report(at_secs, &[("temp", value)]);
+    }
+    assert_eq!(replay.fired, vec![70]);
+    assert_eq!(replay.resolved, vec![100]);
+  }
+
+  // The DeviceState minimum counts from the state crossing, and the debounce still follows it:
+  // on a 60 s interval Offline with a 300 s minimum holds 660 s after the last contact, so the
+  // sweep that first sees it opens the episode and the next one fires.
+  #[test]
+  fn device_state_minimum_still_holds_through_the_state_machine() {
+    let offline = AlertCondition::DeviceState {
+      state: ConnectionStateKind::Offline,
+      min_duration_secs: Some(300),
+    };
+    let contact = at(0);
+    let mut replay = Replay::new(offline.clone());
+    for tick in [222, 522, 822, 1_122] {
+      let seen = PigeonLastSeen {
+        last_report: None,
+        last_seen_at: Some(contact),
+        interval_secs: Some(60),
+        suspended: false,
+      };
+      let (holds, _) = condition_holds(&offline, &seen, at(tick)).unwrap();
+      replay.observe(holds, at(tick));
+      if tick == 822 {
+        assert_eq!(replay.first_true_at, Some(contact + Duration::seconds(822)));
+      }
+    }
+    assert_eq!(replay.fired, vec![1_122]);
   }
 
   /// Replays the sweep's sampling: at each tick the pigeon's last signal is
