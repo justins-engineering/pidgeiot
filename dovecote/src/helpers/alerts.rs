@@ -26,12 +26,12 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
   condition::text AS condition, severity, channel::text AS channel, notes, enabled, \
   created_at, updated_at";
 
-/// Fixed debounce window before a continuously-true condition transitions
-/// `Ok -> Firing`. Scaling this per-pigeon off `telemetry_interval` the
-/// way `connection_state::classify` (`capsules::connection_state`) already
-/// does would be reasonable; a single fixed window is a deliberate
-/// simplification, not an oversight. Does not apply to `MissingReport`,
-/// which carries its own window -- see `should_fire_now`.
+/// Fixed debounce window before a continuously-true `Threshold` or `DeviceState` condition
+/// transitions `Ok -> Firing`, and the hold a firing `RateOfChange` keeps before a report that
+/// does not step can resolve it. Scaling this per-pigeon off `telemetry_interval` the way
+/// `connection_state::classify` (`capsules::connection_state`) already does would be reasonable;
+/// a single fixed window is a deliberate simplification, not an oversight. `MissingReport`
+/// carries its own window and `RateOfChange` fires on the step -- see `should_fire_now`.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` fallback for platform mail -- the platform's one verified
@@ -1188,20 +1188,40 @@ pub async fn reset_pigeon_alert_state(client: &Client, pigeon_id: &str) -> Resul
 /// debounce and it fires on the first observation crossing it. Waiting out
 /// `ALERT_DEBOUNCE_SECS` on top would add a whole sweep period to every
 /// window an operator configures, since the sweep samples far more coarsely
-/// than the debounce it is checked against. The other conditions describe a
-/// point sample with no duration of its own and keep the fixed window.
+/// than the debounce it is checked against. `RateOfChange` is a step between
+/// two reports, which the next report can only confirm by stepping again,
+/// so it fires on the step. `Threshold` and `DeviceState` describe a point
+/// sample with no duration of its own and keep the fixed window.
 fn should_fire_now(
   condition: &AlertCondition,
   first_true_at: Option<OffsetDateTime>,
   now: OffsetDateTime,
 ) -> bool {
   let debounce = match condition {
-    AlertCondition::MissingReport { .. } => 0,
-    AlertCondition::DeviceState { .. }
-    | AlertCondition::Threshold { .. }
-    | AlertCondition::RateOfChange { .. } => ALERT_DEBOUNCE_SECS,
+    AlertCondition::MissingReport { .. } | AlertCondition::RateOfChange { .. } => 0,
+    AlertCondition::DeviceState { .. } | AlertCondition::Threshold { .. } => ALERT_DEBOUNCE_SECS,
   };
   (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
+}
+
+/// Whether a firing condition that is no longer true should resolve now, given when it fired.
+///
+/// A `RateOfChange` that fires on the step holds for `ALERT_DEBOUNCE_SECS` first: a noisy key
+/// near its `max_delta` would otherwise mail a fire and a resolve for every alternation. The other
+/// conditions earned their fire by holding, so their first false observation resolves them.
+fn should_resolve_now(
+  condition: &AlertCondition,
+  fired_at: Option<OffsetDateTime>,
+  now: OffsetDateTime,
+) -> bool {
+  match condition {
+    AlertCondition::RateOfChange { .. } => {
+      fired_at.is_none_or(|fired| (now - fired).whole_seconds() >= ALERT_DEBOUNCE_SECS)
+    }
+    AlertCondition::Threshold { .. }
+    | AlertCondition::DeviceState { .. }
+    | AlertCondition::MissingReport { .. } => true,
+  }
 }
 
 /// What one decided observation does to an `alert_state` row.
@@ -1220,12 +1240,14 @@ enum Transition {
 }
 
 /// The transition table on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
-/// current true episode began at `first_true_at`. Staying `Firing` while still true is a no-op:
+/// current true episode began at `first_true_at` and whose last mail went out at
+/// `last_notified_at` (the fire, while `Firing`). Staying `Firing` while still true is a no-op:
 /// there is no periodic re-notify.
 fn next_transition(
   condition: &AlertCondition,
   status: AlertStatus,
   first_true_at: Option<OffsetDateTime>,
+  last_notified_at: Option<OffsetDateTime>,
   is_true: bool,
   now: OffsetDateTime,
 ) -> Transition {
@@ -1235,7 +1257,9 @@ fn next_transition(
     },
     (AlertStatus::Ok, true) if first_true_at.is_none() => Transition::Open,
     (AlertStatus::Ok, false) if first_true_at.is_some() => Transition::Reset,
-    (AlertStatus::Firing, false) => Transition::Resolve,
+    (AlertStatus::Firing, false) if should_resolve_now(condition, last_notified_at, now) => {
+      Transition::Resolve
+    }
     _ => Transition::Stay,
   }
 }
@@ -1274,8 +1298,16 @@ async fn apply_alert_transition(
   let status_str: String = row.get("status");
   let status: AlertStatus = status_str.parse().unwrap_or_default();
   let first_true_at: Option<OffsetDateTime> = row.get("first_true_at");
+  let last_notified_at: Option<OffsetDateTime> = row.get("last_notified_at");
 
-  match next_transition(&def.condition, status, first_true_at, is_true, now) {
+  match next_transition(
+    &def.condition,
+    status,
+    first_true_at,
+    last_notified_at,
+    is_true,
+    now,
+  ) {
     Transition::Stay => {}
     Transition::Open => {
       client
@@ -2040,7 +2072,7 @@ mod tests {
   }
 
   #[test]
-  fn threshold_and_rate_of_change_keep_the_fixed_debounce() {
+  fn threshold_keeps_the_fixed_debounce_and_a_step_fires_at_once() {
     let threshold = AlertCondition::Threshold {
       key: "temp".to_string(),
       comparator: Comparator::Gt,
@@ -2052,7 +2084,7 @@ mod tests {
       window_secs: None,
     };
     assert!(!should_fire_now(&threshold, None, at(1_000)));
-    assert!(!should_fire_now(&rate, None, at(1_000)));
+    assert!(should_fire_now(&rate, None, at(1_000)));
     assert!(should_fire_now(&threshold, Some(at(1_000)), at(1_060)));
     assert!(should_fire_now(&rate, Some(at(1_000)), at(1_060)));
   }
@@ -2065,6 +2097,7 @@ mod tests {
     blob: TelemetryBlob,
     status: AlertStatus,
     first_true_at: Option<OffsetDateTime>,
+    last_notified_at: Option<OffsetDateTime>,
     fired: Vec<i64>,
     resolved: Vec<i64>,
   }
@@ -2076,6 +2109,7 @@ mod tests {
         blob: TelemetryBlob::new(),
         status: AlertStatus::Ok,
         first_true_at: None,
+        last_notified_at: None,
         fired: Vec::new(),
         resolved: Vec::new(),
       }
@@ -2110,6 +2144,7 @@ mod tests {
         &self.condition,
         self.status,
         self.first_true_at,
+        self.last_notified_at,
         is_true,
         now,
       );
@@ -2119,12 +2154,14 @@ mod tests {
         Transition::Fire { since } => {
           self.status = AlertStatus::Firing;
           self.first_true_at = Some(since);
+          self.last_notified_at = Some(now);
           self.fired.push(now.unix_timestamp());
         }
         Transition::Reset => self.first_true_at = None,
         Transition::Resolve => {
           self.status = AlertStatus::Ok;
           self.first_true_at = None;
+          self.last_notified_at = Some(now);
           self.resolved.push(now.unix_timestamp());
         }
       }
@@ -2143,6 +2180,60 @@ mod tests {
     }
     assert_eq!(replay.fired, vec![70]);
     assert_eq!(replay.resolved, vec![100]);
+  }
+
+  fn rate(key: &str, max_delta: f64, window_secs: Option<i64>) -> AlertCondition {
+    AlertCondition::RateOfChange {
+      key: key.to_string(),
+      max_delta,
+      window_secs,
+    }
+  }
+
+  // A reboot as a 300 s reporter shows it: uptime climbs, drops once, and climbs again.
+  #[test]
+  fn promise_rate_of_change_fires_on_one_step() {
+    let mut replay = Replay::new(rate("uptime_s", 1_000.0, Some(900)));
+    for uptime in (10..7_200).step_by(300) {
+      replay.report(uptime, &[("uptime_s", &uptime.to_string())]);
+    }
+    replay.report(7_210, &[("uptime_s", "10")]);
+    replay.report(7_510, &[("uptime_s", "310")]);
+    assert_eq!(replay.fired, vec![7_210]);
+    assert_eq!(replay.resolved, vec![7_510]);
+  }
+
+  #[test]
+  fn a_step_inside_a_batch_fires_on_that_reading() {
+    let mut replay = Replay::new(rate("temp", 10.0, Some(60)));
+    replay.report(0, &[("temp", "20")]);
+    let values = ["20", "21", "21", "36", "36", "35", "35", "35", "35", "35"];
+    let readings: Vec<(i64, [(&str, &str); 1])> = values
+      .iter()
+      .enumerate()
+      .map(|(i, value)| (10 + i as i64 * 10, [("temp", *value)]))
+      .collect();
+    let batch: Vec<(i64, &[(&str, &str)])> = readings
+      .iter()
+      .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice()))
+      .collect();
+    replay.batch(&batch);
+    assert_eq!(replay.fired, vec![40]);
+    assert_eq!(replay.resolved, vec![100]);
+  }
+
+  // A key at a 10 s cadence stepping past max_delta on every other reading: firing on the step
+  // must not turn into a mail per alternation.
+  #[test]
+  fn a_noisy_key_fires_at_most_once_per_hold_window() {
+    let mut replay = Replay::new(rate("temp", 10.0, None));
+    let pattern = ["30", "45", "45", "30"];
+    for i in 0..30 {
+      replay.report(i * 10, &[("temp", pattern[i as usize % 4])]);
+    }
+    assert_eq!(replay.fired, vec![10, 90, 170, 250]);
+    assert_eq!(replay.resolved, vec![80, 160, 240]);
+    assert!(replay.fired.windows(2).all(|pair| pair[1] - pair[0] >= 60));
   }
 
   // The DeviceState minimum counts from the state crossing, and the debounce still follows it:
