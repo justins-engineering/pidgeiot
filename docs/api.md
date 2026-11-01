@@ -2200,9 +2200,9 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 - `{"RateOfChange":{"key":"temp","max_delta":5.0,"window_secs":300}}` — a key's numeric value has
   moved by more than `max_delta` since its previous report, within an optional time window. A step
   cannot stay true, so this fires on the report that steps, with no debounce. It resolves on the
-  first report that does not step at least 60 seconds after the fire. A key whose noise keeps
-  crossing `max_delta` therefore sends a "firing" and a "resolved" mail about once a minute for as
-  long as it stays noisy; set `max_delta` above the key's noise.
+  first report that does not step, at least 60 seconds after the last step. A noisy spell is
+  therefore one "firing" and one "resolved" mail however long it lasts, unless a report that does
+  not step lands a minute or more after a step, which ends the spell.
 
 Both telemetry conditions are decided per reading, in order, against the readings that carry the
 key as a number. A report that leaves the key out, or sends it as text, decides nothing: it neither
@@ -2315,7 +2315,8 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts/state \
 (`Vec<capsules::AlertState>`. `status` is `"Ok"` or `"Firing"` — note this is the derived-Serialize
 casing, distinct from the lowercase `"ok"`/`"firing"` `alert_state.status` is stored as in
 Postgres. `first_true_at` is when the current true episode began: set while `"Firing"`, and while
-`"Ok"` with an episode waiting out its debounce, otherwise `null`. `last_notified_at` is the last
+`"Ok"` with an episode waiting out its debounce, otherwise `null`. For a firing `RateOfChange` it
+is the latest step, which its resolve hold counts from. `last_notified_at` is the last
 mail sent, `null` until the first.)
 
 #### `POST /flocks/:flock_id/alerts`

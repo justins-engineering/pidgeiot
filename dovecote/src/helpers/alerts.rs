@@ -27,11 +27,12 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
   created_at, updated_at";
 
 /// Fixed debounce window before a continuously-true `Threshold` or `DeviceState` condition
-/// transitions `Ok -> Firing`, and the hold a firing `RateOfChange` keeps before a report that
-/// does not step can resolve it. Scaling this per-pigeon off `telemetry_interval` the way
-/// `connection_state::classify` (`capsules::connection_state`) already does would be reasonable;
-/// a single fixed window is a deliberate simplification, not an oversight. `MissingReport`
-/// carries its own window and `RateOfChange` fires on the step -- see `should_fire_now`.
+/// transitions `Ok -> Firing`, and the hold a firing `RateOfChange` keeps after its last step
+/// before a report that does not step can resolve it. Scaling this per-pigeon off
+/// `telemetry_interval` the way `connection_state::classify` (`capsules::connection_state`)
+/// already does would be reasonable; a single fixed window is a deliberate simplification, not an
+/// oversight. `MissingReport` carries its own window and `RateOfChange` fires on the step -- see
+/// `should_fire_now`.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` fallback for platform mail -- the platform's one verified
@@ -709,10 +710,10 @@ pub async fn delete_alert_definition(client: &Client, access: &AlertAccess) -> R
 /// The one visible difference from sequential arrival: a transition lands
 /// on the last reading of its run rather than the earliest reading that
 /// satisfied the debounce or the resolve hold, so the mail quotes and
-/// `last_notified_at` records that reading. Only `RateOfChange`'s resolve
-/// hold reads that column, and its fire lands on the first reading of a run
-/// and so is exact; there is no re-notify. It costs an approximate
-/// timestamp and saves the round trips.
+/// `last_notified_at` records that reading. `RateOfChange`'s resolve hold
+/// counts from its last step, which is the close of a true run and so is
+/// exact, as is its fire on a run's first reading; there is no re-notify.
+/// It costs an approximate timestamp and saves the round trips.
 ///
 /// A suspended pigeon (`pigeons.suspended_at` set) matches no definition
 /// here, which covers every ingress path in one place since all three call
@@ -1205,19 +1206,21 @@ fn should_fire_now(
   (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
 }
 
-/// Whether a firing condition that is no longer true should resolve now, given when it fired.
+/// Whether a firing condition that is no longer true should resolve now, given its last step.
 ///
-/// A `RateOfChange` that fires on the step holds for `ALERT_DEBOUNCE_SECS` first: a noisy key
-/// near its `max_delta` would otherwise mail a fire and a resolve for every alternation. The other
-/// conditions earned their fire by holding, so their first false observation resolves them.
+/// A `RateOfChange` that fires on the step holds for `ALERT_DEBOUNCE_SECS` after its last step:
+/// a noisy key near its `max_delta` would otherwise mail a fire and a resolve for every
+/// alternation, and counting from the fire instead would still mail a pair every minute for as
+/// long as the noise lasts. The other conditions earned their fire by holding, so their first
+/// false observation resolves them.
 fn should_resolve_now(
   condition: &AlertCondition,
-  fired_at: Option<OffsetDateTime>,
+  last_step: Option<OffsetDateTime>,
   now: OffsetDateTime,
 ) -> bool {
   match condition {
     AlertCondition::RateOfChange { .. } => {
-      fired_at.is_none_or(|fired| (now - fired).whole_seconds() >= ALERT_DEBOUNCE_SECS)
+      last_step.is_none_or(|step| (now - step).whole_seconds() >= ALERT_DEBOUNCE_SECS)
     }
     AlertCondition::Threshold { .. }
     | AlertCondition::DeviceState { .. }
@@ -1234,6 +1237,8 @@ enum Transition {
   Open,
   /// `Ok -> Firing` for the episode that began at `since`, with a "fired" mail.
   Fire { since: OffsetDateTime },
+  /// A firing `RateOfChange` stepped again: move its resolve hold to start at this step.
+  Restep,
   /// A true episode ended before it fired: forget its start.
   Reset,
   /// `Firing -> Ok`, with a "resolved" mail.
@@ -1241,14 +1246,14 @@ enum Transition {
 }
 
 /// The lifecycle on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
-/// current true episode began at `first_true_at` and whose last mail went out at
-/// `last_notified_at` (the fire, while `Firing`). Staying `Firing` while still true is a no-op:
-/// there is no periodic re-notify.
+/// current true episode began at `first_true_at`, or, for a firing `RateOfChange`, whose latest
+/// step was then. There is no periodic re-notify, so staying `Firing` while still true writes
+/// nothing, except that a `RateOfChange` writes each newer step to restart its resolve hold: one
+/// `alert_state` write per step while it fires, the price of one fire per noisy spell.
 fn next_transition(
   condition: &AlertCondition,
   status: AlertStatus,
   first_true_at: Option<OffsetDateTime>,
-  last_notified_at: Option<OffsetDateTime>,
   is_true: bool,
   now: OffsetDateTime,
 ) -> Transition {
@@ -1258,7 +1263,13 @@ fn next_transition(
     },
     (AlertStatus::Ok, true) if first_true_at.is_none() => Transition::Open,
     (AlertStatus::Ok, false) if first_true_at.is_some() => Transition::Reset,
-    (AlertStatus::Firing, false) if should_resolve_now(condition, last_notified_at, now) => {
+    (AlertStatus::Firing, true)
+      if matches!(condition, AlertCondition::RateOfChange { .. })
+        && first_true_at.is_none_or(|last_step| now > last_step) =>
+    {
+      Transition::Restep
+    }
+    (AlertStatus::Firing, false) if should_resolve_now(condition, first_true_at, now) => {
       Transition::Resolve
     }
     _ => Transition::Stay,
@@ -1284,7 +1295,7 @@ async fn apply_alert_transition(
        VALUES ($1, $2, 'ok')
        ON CONFLICT (alert_definition_id, pigeon_id) DO UPDATE
          SET alert_definition_id = EXCLUDED.alert_definition_id
-       RETURNING status, first_true_at, last_notified_at;",
+       RETURNING status, first_true_at;",
       &[(&def.id, Type::UUID), (&pigeon_id, Type::TEXT)],
     )
     .await
@@ -1299,18 +1310,10 @@ async fn apply_alert_transition(
   let status_str: String = row.get("status");
   let status: AlertStatus = status_str.parse().unwrap_or_default();
   let first_true_at: Option<OffsetDateTime> = row.get("first_true_at");
-  let last_notified_at: Option<OffsetDateTime> = row.get("last_notified_at");
 
-  match next_transition(
-    &def.condition,
-    status,
-    first_true_at,
-    last_notified_at,
-    is_true,
-    now,
-  ) {
+  match next_transition(&def.condition, status, first_true_at, is_true, now) {
     Transition::Stay => {}
-    Transition::Open => {
+    Transition::Open | Transition::Restep => {
       client
         .execute_typed(
           "UPDATE alert_state SET first_true_at = $3 WHERE alert_definition_id = $1 AND pigeon_id = $2;",
@@ -2099,7 +2102,6 @@ mod tests {
     blob: TelemetryBlob,
     status: AlertStatus,
     first_true_at: Option<OffsetDateTime>,
-    last_notified_at: Option<OffsetDateTime>,
     fired: Vec<i64>,
     resolved: Vec<i64>,
   }
@@ -2111,7 +2113,6 @@ mod tests {
         blob: TelemetryBlob::new(),
         status: AlertStatus::Ok,
         first_true_at: None,
-        last_notified_at: None,
         fired: Vec::new(),
         resolved: Vec::new(),
       }
@@ -2146,24 +2147,21 @@ mod tests {
         &self.condition,
         self.status,
         self.first_true_at,
-        self.last_notified_at,
         is_true,
         now,
       );
       match transition {
         Transition::Stay => {}
-        Transition::Open => self.first_true_at = Some(now),
+        Transition::Open | Transition::Restep => self.first_true_at = Some(now),
         Transition::Fire { since } => {
           self.status = AlertStatus::Firing;
           self.first_true_at = Some(since);
-          self.last_notified_at = Some(now);
           self.fired.push(now.unix_timestamp());
         }
         Transition::Reset => self.first_true_at = None,
         Transition::Resolve => {
           self.status = AlertStatus::Ok;
           self.first_true_at = None;
-          self.last_notified_at = Some(now);
           self.resolved.push(now.unix_timestamp());
         }
       }
@@ -2373,18 +2371,118 @@ mod tests {
     assert_eq!(replay.first_true_at, Some(at(40)));
   }
 
-  // A key at a 10 s cadence stepping past max_delta on every other reading: firing on the step
-  // must not turn into a mail per alternation.
-  #[test]
-  fn a_noisy_key_fires_at_most_once_per_hold_window() {
-    let mut replay = Replay::new(rate("temp", 10.0, None));
-    let pattern = ["30", "45", "45", "30"];
-    for i in 0..30 {
-      replay.report(i * 10, &[("temp", pattern[i as usize % 4])]);
+  /// Replays the same readings one request each and as batches of at most 64, asserting both
+  /// send the same mails, and answers the sequential mails as `(fired, resolved)`. A batched
+  /// resolve may land on a later reading of the same flat run, never past it.
+  fn sequential_and_batched(condition: &AlertCondition, readings: &[(i64, &str)]) -> Mails {
+    let mut sequential = Replay::new(condition.clone());
+    for (at_secs, value) in readings {
+      sequential.report(*at_secs, &[("temp", value)]);
     }
-    assert_eq!(replay.fired, vec![10, 90, 170, 250]);
-    assert_eq!(replay.resolved, vec![80, 160, 240]);
-    assert!(replay.fired.windows(2).all(|pair| pair[1] - pair[0] >= 60));
+    let mut batched = Replay::new(condition.clone());
+    let pairs: Vec<(i64, [(&str, &str); 1])> = readings
+      .iter()
+      .map(|(at_secs, value)| (*at_secs, [("temp", *value)]))
+      .collect();
+    for chunk in pairs.chunks(64) {
+      let batch: Vec<(i64, &[(&str, &str)])> = chunk
+        .iter()
+        .map(|(at_secs, pairs)| (*at_secs, pairs.as_slice()))
+        .collect();
+      batched.batch(&batch);
+    }
+    assert_eq!(sequential.fired, batched.fired);
+    assert_eq!(sequential.resolved.len(), batched.resolved.len());
+    for (index, (early, late)) in sequential
+      .resolved
+      .iter()
+      .zip(&batched.resolved)
+      .enumerate()
+    {
+      let next_fire = sequential.fired.get(index + 1).copied().unwrap_or(i64::MAX);
+      assert!(early <= late && *late < next_fire);
+    }
+    (sequential.fired, sequential.resolved)
+  }
+
+  type Mails = (Vec<i64>, Vec<i64>);
+
+  // The report's probe: a 10 s reporter stepping past max_delta on every other reading for ten
+  // minutes, then holding still. One spell, so one fire and one resolve.
+  #[test]
+  fn a_noisy_key_mails_one_fire_and_one_resolve_per_spell() {
+    let pattern = ["30", "45", "45", "30"];
+    let mut readings: Vec<(i64, &str)> =
+      (0..60).map(|i| (i * 10, pattern[i as usize % 4])).collect();
+    // The last reading above steps at 590; it holds still afterwards.
+    let last = readings.last().unwrap().1;
+    readings.extend((60..80).map(|i| (i * 10, last)));
+    let (fired, resolved) = sequential_and_batched(&rate("temp", 10.0, None), &readings);
+    assert_eq!(fired, vec![10]);
+    assert_eq!(resolved, vec![650]);
+  }
+
+  #[test]
+  fn an_isolated_step_resolves_on_the_first_flat_report_a_minute_after_it() {
+    let mut readings: Vec<(i64, &str)> = vec![(0, "20"), (10, "35")];
+    readings.extend((2..10).map(|i| (i * 10, "35")));
+    let (fired, resolved) = sequential_and_batched(&rate("temp", 10.0, None), &readings);
+    assert_eq!(fired, vec![10]);
+    assert_eq!(resolved, vec![70]);
+  }
+
+  // Steps 90 s apart, either as a 90 s reporter whose every report steps or as a 45 s reporter
+  // stepping on every other report: no report that holds still comes a minute after a step, so
+  // the spell stays one episode.
+  #[test]
+  fn steps_slower_than_the_hold_still_make_one_spell() {
+    let condition = rate("temp", 10.0, None);
+
+    let mut every_report: Vec<(i64, &str)> = (0..10)
+      .map(|i| (i * 90, if i % 2 == 0 { "30" } else { "45" }))
+      .collect();
+    every_report.extend([(900, "30"), (990, "30")]);
+    let (fired, resolved) = sequential_and_batched(&condition, &every_report);
+    assert_eq!(fired, vec![90]);
+    assert_eq!(resolved, vec![990]);
+
+    let pattern = ["30", "45", "45", "30"];
+    let mut every_other: Vec<(i64, &str)> =
+      (0..20).map(|i| (i * 45, pattern[i as usize % 4])).collect();
+    let last = every_other.last().unwrap().1;
+    every_other.extend([(900, last), (945, last)]);
+    let (fired, resolved) = sequential_and_batched(&condition, &every_other);
+    assert_eq!(fired, vec![45]);
+    assert_eq!(resolved, vec![945]);
+  }
+
+  // The trade: a report that holds still a minute after a step is a recovery, so a fast
+  // reporter whose steps are 90 s apart mails a pair per step. Merging those would need a longer
+  // hold, which would delay every resolve.
+  #[test]
+  fn a_flat_report_a_minute_after_a_step_ends_the_spell() {
+    let mut readings: Vec<(i64, &str)> = Vec::new();
+    for i in 0..27 {
+      let at_secs = i * 10;
+      let value = if (9..18).contains(&i) { "45" } else { "30" };
+      readings.push((at_secs, value));
+    }
+    let (fired, resolved) = sequential_and_batched(&rate("temp", 10.0, None), &readings);
+    assert_eq!(fired, vec![90, 180]);
+    assert_eq!(resolved, vec![150, 240]);
+  }
+
+  // A backdated step must not pull the hold's anchor back behind a later one.
+  #[test]
+  fn an_older_step_leaves_the_hold_anchored_on_the_newer_one() {
+    let mut replay = Replay::new(rate("temp", 10.0, None));
+    replay.observe(true, at(100));
+    replay.observe(true, at(50));
+    assert_eq!(replay.first_true_at, Some(at(100)));
+    replay.observe(false, at(150));
+    assert!(replay.resolved.is_empty());
+    replay.observe(false, at(160));
+    assert_eq!(replay.resolved, vec![160]);
   }
 
   // The DeviceState minimum counts from the state crossing, and the debounce still follows it:

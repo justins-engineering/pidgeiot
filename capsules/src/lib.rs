@@ -1636,9 +1636,9 @@ pub enum AlertCondition {
   MissingReport { max_silence_secs: i64 },
   /// `key`'s numeric value has moved by more than `max_delta` (`|new - old| > max_delta`) since
   /// the previous report of that same key (design doc §1.1/§2.2). A step cannot stay true, so
-  /// this fires on the step itself, and resolves on the first report that does not step at least
-  /// 60 seconds after the fire. A key whose noise keeps crossing `max_delta` therefore sends a
-  /// fire and a resolve about once a minute for as long as it stays noisy.
+  /// this fires on the step itself, and resolves on the first report that does not step, at
+  /// least 60 seconds after the last step. A noisy spell is therefore one fire and one resolve
+  /// however long it lasts, unless a report that does not step lands a minute after a step.
   ///
   /// `window_secs`, if set, bounds how far apart the two samples may be: across a longer gap
   /// (a pigeon offline for a day resuming at a very different reading) the comparison is skipped
@@ -1965,7 +1965,7 @@ pub struct AlertDefinitionUpdateRequest {
 /// step), sending exactly one "fired" email on that transition;
 /// `Firing -> Ok` sends exactly one "cleared" email on the reverse
 /// transition, which a `RateOfChange` takes no sooner than 60 seconds after
-/// it fired. No `*Row` variant needed -- same as `Flock`/`FirmwareImage`,
+/// its last step. No `*Row` variant needed -- same as `Flock`/`FirmwareImage`,
 /// Postgres hands back native `OffsetDateTime`s directly.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum AlertStatus {
