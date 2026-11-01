@@ -1258,8 +1258,12 @@ fn next_transition(
   now: OffsetDateTime,
 ) -> Transition {
   match (status, is_true) {
+    // A `RateOfChange` anchors on its step, never on an episode an earlier condition left open.
     (AlertStatus::Ok, true) if should_fire_now(condition, first_true_at, now) => Transition::Fire {
-      since: first_true_at.unwrap_or(now),
+      since: match condition {
+        AlertCondition::RateOfChange { .. } => now,
+        _ => first_true_at.unwrap_or(now),
+      },
     },
     (AlertStatus::Ok, true) if first_true_at.is_none() => Transition::Open,
     (AlertStatus::Ok, false) if first_true_at.is_some() => Transition::Reset,
@@ -2482,6 +2486,48 @@ mod tests {
     replay.observe(false, at(150));
     assert!(replay.resolved.is_empty());
     replay.observe(false, at(160));
+    assert_eq!(replay.resolved, vec![160]);
+  }
+
+  // Reports that leave the key out decide nothing, so they cannot restart the hold either.
+  #[test]
+  fn reports_without_the_key_leave_the_hold_where_the_step_put_it() {
+    let mut sequential = Replay::new(rate("temp", 10.0, None));
+    sequential.report(0, &[("temp", "20")]);
+    sequential.report(10, &[("temp", "35")]);
+    for at_secs in (20..=60).step_by(10) {
+      sequential.report(at_secs, &[("rssi", "-70")]);
+    }
+    sequential.report(75, &[("temp", "35")]);
+
+    let mut batched = Replay::new(rate("temp", 10.0, None));
+    batched.report(0, &[("temp", "20")]);
+    let temp: &[(&str, &str)] = &[("temp", "35")];
+    let rssi: &[(&str, &str)] = &[("rssi", "-70")];
+    let mut batch = vec![(10, temp)];
+    batch.extend((20..=60).step_by(10).map(|at_secs| (at_secs, rssi)));
+    batch.push((75, temp));
+    batched.batch(&batch);
+
+    for replay in [&sequential, &batched] {
+      assert_eq!(replay.fired, vec![10]);
+      assert_eq!(replay.resolved, vec![75]);
+    }
+  }
+
+  // An open episode left on the row, by a Threshold edited into a RateOfChange or a row written
+  // before steps fired at once, must not stand in for the step's own time as the hold's anchor.
+  #[test]
+  fn a_stale_open_episode_does_not_shorten_the_hold() {
+    let mut replay = Replay::new(rate("temp", 10.0, None));
+    replay.first_true_at = Some(at(0));
+    replay.report(90, &[("temp", "20")]);
+    replay.report(100, &[("temp", "35")]);
+    assert_eq!(replay.fired, vec![100]);
+    assert_eq!(replay.first_true_at, Some(at(100)));
+    replay.report(130, &[("temp", "35")]);
+    assert!(replay.resolved.is_empty());
+    replay.report(160, &[("temp", "35")]);
     assert_eq!(replay.resolved, vec![160]);
   }
 
