@@ -2180,7 +2180,11 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
   `86400` (`capsules::MAX_ALERT_HOLD_SECS`); left out, it is 60, so on a 300-second cadence the
   mail follows the second report. `0` fires on the crossing reading itself, which a key a device
   sends once needs: without it a boot's `reset_cause` never fires on its own reading. A
-  definition stored without `hold_secs` reads back without it.
+  definition stored without `hold_secs` reads back without it. A firing `Threshold` resolves on
+  the first reading that no longer crosses, except that one with a `hold_secs` under 60 resolves
+  on the first such reading at least 60 seconds after its last crossing reading. Without that, a
+  10-second reporter alternating across the bound under a `hold_secs` of `0` would mail a
+  "firing" and a "resolved" every 20 seconds; with it, a noisy spell is one of each.
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
   this long, counted from when its silence crossed into the state, not from its last contact. It is
@@ -2214,9 +2218,10 @@ key as a number. A report that leaves the key out, or sends it as text, decides 
 fires, resolves nor ends a `Threshold`'s hold, so an episode stays open across any number of
 such reports until the key's next value decides it. A `Threshold` fired with `hold_secs` `0` on a
 one-shot key therefore stays firing until a later reading carries the key with a value that no
-longer crosses, such as the next boot's `reset_cause`. A batched report is judged reading by reading
-and sends the same mails as its readings sent one at a time, though a mail can quote a later
-reading of the same run.
+longer crosses at least 60 seconds after the last one that did, such as the next boot's
+`reset_cause`; a boot loop quicker than that is one episode. A batched report is judged reading
+by reading and sends the same mails as its readings sent one at a time, though a mail can quote a
+later reading of the same run.
 
 `capsules::AlertChannel` is `{"Email":{"to":[]}}` (deliver to the owning flock's stored
 `owner_email`) or `{"Email":{"to":["you@example.com","oncall@example.com"]}}` — up to
@@ -2323,8 +2328,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/alerts/state \
 (`Vec<capsules::AlertState>`. `status` is `"Ok"` or `"Firing"` — note this is the derived-Serialize
 casing, distinct from the lowercase `"ok"`/`"firing"` `alert_state.status` is stored as in
 Postgres. `first_true_at` is when the current true episode began: set while `"Firing"`, and while
-`"Ok"` with an episode waiting out its debounce, otherwise `null`. For a firing `RateOfChange` it
-is the latest step, which its resolve hold counts from. `last_notified_at` is the last
+`"Ok"` with an episode waiting out its debounce, otherwise `null`. For a firing `RateOfChange`, or
+a firing `Threshold` with a `hold_secs` under 60, it is the latest true reading, which its resolve
+hold counts from. `last_notified_at` is the last
 mail sent, `null` until the first.)
 
 #### `POST /flocks/:flock_id/alerts`

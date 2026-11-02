@@ -1609,7 +1609,9 @@ pub enum AlertCondition {
   /// `key`'s numeric value compares true against `value`, and still does on a reading at least
   /// `hold_secs` after the one that opened the episode, which is the one that fires. The hold is
   /// counted between readings of `key`, so a key sent once (a boot's `reset_cause`) fires on its
-  /// own reading only with a hold of 0.
+  /// own reading only with a hold of 0. A hold under 60 seconds also holds the resolve: a firing
+  /// alert resolves on the first reading back across the bound at least 60 seconds after its
+  /// last crossing reading, so a noisy key mails one fire and one resolve per noisy spell.
   Threshold {
     key: String,
     comparator: Comparator,

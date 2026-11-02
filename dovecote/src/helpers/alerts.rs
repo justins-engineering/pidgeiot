@@ -27,9 +27,9 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
   created_at, updated_at";
 
 /// Fixed debounce window before a continuously-true `DeviceState` condition, or a `Threshold`
-/// without its own `hold_secs`, transitions `Ok -> Firing`, and the hold a firing `RateOfChange`
-/// keeps after its last step before a report that does not step can resolve it. Scaling this
-/// per-pigeon off `telemetry_interval` the way `connection_state::classify`
+/// without its own `hold_secs`, transitions `Ok -> Firing`, and the hold a firing condition that
+/// `holds_resolve` keeps after its last true reading before a false one can resolve it. Scaling
+/// this per-pigeon off `telemetry_interval` the way `connection_state::classify`
 /// (`capsules::connection_state`) already does would be reasonable; a single fixed window is a
 /// deliberate simplification, not an oversight. `MissingReport` carries its own window and
 /// `RateOfChange` fires on the step -- see `should_fire_now`.
@@ -1210,26 +1210,34 @@ fn should_fire_now(
   (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
 }
 
-/// Whether a firing condition that is no longer true should resolve now, given its last step.
+/// Whether a firing condition holds its resolve for `ALERT_DEBOUNCE_SECS` after its last true
+/// reading rather than resolving on its first false one.
 ///
-/// A `RateOfChange` that fires on the step holds for `ALERT_DEBOUNCE_SECS` after its last step:
-/// a noisy key near its `max_delta` would otherwise mail a fire and a resolve for every
-/// alternation, and counting from the fire instead would still mail a pair every minute for as
-/// long as the noise lasts. The other conditions earned their fire by holding, so their first
-/// false observation resolves them.
+/// A `RateOfChange` fires on the step and a `Threshold` with a `hold_secs` under the default on
+/// any run that spans it, so a noisy key would otherwise mail a fire and a resolve for every
+/// alternation (every 20 s for a 10 s reporter under a hold of 0), and counting from the fire
+/// instead would still mail a pair every minute for as long as the noise lasts. The other
+/// conditions earned their fire by holding at least the default, so their first false
+/// observation resolves them.
+fn holds_resolve(condition: &AlertCondition) -> bool {
+  match condition {
+    AlertCondition::RateOfChange { .. } => true,
+    AlertCondition::Threshold { hold_secs, .. } => {
+      hold_secs.is_some_and(|secs| secs < ALERT_DEBOUNCE_SECS)
+    }
+    AlertCondition::DeviceState { .. } | AlertCondition::MissingReport { .. } => false,
+  }
+}
+
+/// Whether a firing condition that is no longer true should resolve now, given its last true
+/// reading (see `holds_resolve`).
 fn should_resolve_now(
   condition: &AlertCondition,
-  last_step: Option<OffsetDateTime>,
+  last_true: Option<OffsetDateTime>,
   now: OffsetDateTime,
 ) -> bool {
-  match condition {
-    AlertCondition::RateOfChange { .. } => {
-      last_step.is_none_or(|step| (now - step).whole_seconds() >= ALERT_DEBOUNCE_SECS)
-    }
-    AlertCondition::Threshold { .. }
-    | AlertCondition::DeviceState { .. }
-    | AlertCondition::MissingReport { .. } => true,
-  }
+  !holds_resolve(condition)
+    || last_true.is_none_or(|at| (now - at).whole_seconds() >= ALERT_DEBOUNCE_SECS)
 }
 
 /// What one decided observation does to an `alert_state` row.
@@ -1239,9 +1247,10 @@ enum Transition {
   Stay,
   /// A true episode begins: record its start and wait out the debounce.
   Open,
-  /// `Ok -> Firing` for the episode that began at `since`, with a "fired" mail.
+  /// `Ok -> Firing` with a "fired" mail, storing `since` as the episode's start, or as the
+  /// last true reading for a condition that `holds_resolve`.
   Fire { since: OffsetDateTime },
-  /// A firing `RateOfChange` stepped again: move its resolve hold to start at this step.
+  /// A firing condition that `holds_resolve` read true again: restart its resolve hold here.
   Restep,
   /// A true episode ended before it fired: forget its start.
   Reset,
@@ -1250,10 +1259,11 @@ enum Transition {
 }
 
 /// The lifecycle on `capsules::AlertStatus`'s doc comment, for a row in `status` whose
-/// current true episode began at `first_true_at`, or, for a firing `RateOfChange`, whose latest
-/// step was then. There is no periodic re-notify, so staying `Firing` while still true writes
-/// nothing, except that a `RateOfChange` writes each newer step to restart its resolve hold: one
-/// `alert_state` write per step while it fires, the price of one fire per noisy spell.
+/// current true episode began at `first_true_at`, or, for a firing condition that
+/// `holds_resolve`, whose latest true reading was then. There is no periodic re-notify, so
+/// staying `Firing` while still true writes nothing, except that a condition that holds its
+/// resolve writes each newer true reading to restart the hold: one `alert_state` write per such
+/// reading while it fires, the price of one fire per noisy spell.
 fn next_transition(
   condition: &AlertCondition,
   status: AlertStatus,
@@ -1262,18 +1272,19 @@ fn next_transition(
   now: OffsetDateTime,
 ) -> Transition {
   match (status, is_true) {
-    // A `RateOfChange` anchors on its step, never on an episode an earlier condition left open.
+    // A resolve hold counts from the reading that fired, never from the episode's opening or
+    // from one an earlier condition left open.
     (AlertStatus::Ok, true) if should_fire_now(condition, first_true_at, now) => Transition::Fire {
-      since: match condition {
-        AlertCondition::RateOfChange { .. } => now,
-        _ => first_true_at.unwrap_or(now),
+      since: if holds_resolve(condition) {
+        now
+      } else {
+        first_true_at.unwrap_or(now)
       },
     },
     (AlertStatus::Ok, true) if first_true_at.is_none() => Transition::Open,
     (AlertStatus::Ok, false) if first_true_at.is_some() => Transition::Reset,
     (AlertStatus::Firing, true)
-      if matches!(condition, AlertCondition::RateOfChange { .. })
-        && first_true_at.is_none_or(|last_step| now > last_step) =>
+      if holds_resolve(condition) && first_true_at.is_none_or(|last_true| now > last_true) =>
     {
       Transition::Restep
     }
@@ -2459,6 +2470,74 @@ mod tests {
     assert_eq!(sequential.fired, vec![120]);
     assert_eq!(batched.fired, vec![120]);
     assert_eq!(default_hold.fired, vec![60]);
+  }
+
+  fn temp_held(hold_secs: i64) -> AlertCondition {
+    AlertCondition::Threshold {
+      key: "temp".to_string(),
+      comparator: Comparator::Gt,
+      value: 30.0,
+      hold_secs: Some(hold_secs),
+    }
+  }
+
+  // A 10 s reporter crossing the bound on every other reading for ten minutes, then settling
+  // below it. Without a resolve hold a zero hold mails a fire and a resolve every 20 s.
+  #[test]
+  fn a_noisy_key_under_a_zero_hold_mails_one_fire_and_one_resolve_per_spell() {
+    let mut readings: Vec<(i64, &str)> = (0..60)
+      .map(|i| (i * 10, if i % 2 == 0 { "35" } else { "25" }))
+      .collect();
+    readings.extend((60..80).map(|i| (i * 10, "25")));
+    let (fired, resolved) = sequential_and_batched(&temp_held(0), &readings);
+    assert_eq!(fired, vec![0]);
+    assert_eq!(resolved, vec![640]);
+  }
+
+  // A short hold fires on any run that spans it, so it shares the zero hold's resolve hold, and
+  // that hold counts from the reading that fired, not from the one that opened the episode.
+  #[test]
+  fn a_short_hold_resolves_a_minute_after_its_last_crossing_reading() {
+    let pattern = ["35", "35", "35", "35", "25"];
+    let mut noisy: Vec<(i64, &str)> = (0..60).map(|i| (i * 10, pattern[i as usize % 5])).collect();
+    noisy.extend((60..80).map(|i| (i * 10, "25")));
+    let (fired, resolved) = sequential_and_batched(&temp_held(30), &noisy);
+    assert_eq!(fired, vec![30]);
+    assert_eq!(resolved, vec![640]);
+
+    let once: Vec<(i64, &str)> = (0..10)
+      .map(|i| (i * 10, if i < 4 { "35" } else { "25" }))
+      .collect();
+    let (fired, resolved) = sequential_and_batched(&temp_held(30), &once);
+    assert_eq!(fired, vec![30]);
+    assert_eq!(resolved, vec![90]);
+  }
+
+  // A hold of the default or longer earned its fire by holding and resolves on its first reading
+  // back under the bound, as the default does.
+  #[test]
+  fn a_hold_of_a_minute_or_more_resolves_on_the_first_reading_back() {
+    let readings: Vec<(i64, &str)> = vec![(0, "35"), (60, "35"), (70, "25")];
+    let (fired, resolved) = sequential_and_batched(&temp_held(60), &readings);
+    assert_eq!((fired, resolved), (vec![60], vec![70]));
+  }
+
+  // A watchdog boot loop: the next boot reports another cause 30 s later, which is inside the
+  // resolve hold, so the alert stays firing until a boot a minute or more after the last
+  // watchdog reset.
+  #[test]
+  fn a_zero_hold_one_shot_key_stays_firing_through_a_quick_reboot() {
+    let watchdog: &[(&str, &str)] = &[("reset_cause", "16")];
+    let other: &[(&str, &str)] = &[("reset_cause", "2")];
+    let mut replay = Replay::new(watchdog_reset_held(Some(0)));
+    replay.report(10, watchdog);
+    replay.report(40, other);
+    replay.report(55, watchdog);
+    replay.report(100, other);
+    assert_eq!(replay.fired, vec![10]);
+    assert!(replay.resolved.is_empty());
+    replay.report(115, other);
+    assert_eq!(replay.resolved, vec![115]);
   }
 
   /// Replays the same readings one request each and as batches of at most 64, asserting both
