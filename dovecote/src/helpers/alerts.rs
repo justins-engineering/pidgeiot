@@ -26,13 +26,13 @@ const ALERT_DEFINITION_COLUMNS: &str = "id, user_id, flock_id, pigeon_id, name, 
   condition::text AS condition, severity, channel::text AS channel, notes, enabled, \
   created_at, updated_at";
 
-/// Fixed debounce window before a continuously-true `Threshold` or `DeviceState` condition
-/// transitions `Ok -> Firing`, and the hold a firing `RateOfChange` keeps after its last step
-/// before a report that does not step can resolve it. Scaling this per-pigeon off
-/// `telemetry_interval` the way `connection_state::classify` (`capsules::connection_state`)
-/// already does would be reasonable; a single fixed window is a deliberate simplification, not an
-/// oversight. `MissingReport` carries its own window and `RateOfChange` fires on the step -- see
-/// `should_fire_now`.
+/// Fixed debounce window before a continuously-true `DeviceState` condition, or a `Threshold`
+/// without its own `hold_secs`, transitions `Ok -> Firing`, and the hold a firing `RateOfChange`
+/// keeps after its last step before a report that does not step can resolve it. Scaling this
+/// per-pigeon off `telemetry_interval` the way `connection_state::classify`
+/// (`capsules::connection_state`) already does would be reasonable; a single fixed window is a
+/// deliberate simplification, not an oversight. `MissingReport` carries its own window and
+/// `RateOfChange` fires on the step -- see `should_fire_now`.
 const ALERT_DEBOUNCE_SECS: i64 = 60;
 
 /// `From:` fallback for platform mail -- the platform's one verified
@@ -833,6 +833,7 @@ fn evaluate_ingest_condition(
       key,
       comparator,
       value,
+      ..
     } => {
       let observed = reading.metrics.get(key)?.parse::<f64>().ok()?;
       Some((
@@ -1193,7 +1194,9 @@ pub async fn reset_pigeon_alert_state(client: &Client, pigeon_id: &str) -> Resul
 /// than the debounce it is checked against. `RateOfChange` is a step between
 /// two reports, which the next report can only confirm by stepping again,
 /// so it fires on the step. `Threshold` and `DeviceState` describe a point
-/// sample with no duration of its own and keep the fixed window.
+/// sample with no duration of its own and keep the fixed window, unless a
+/// `Threshold` names its own `hold_secs`: a key reported once per boot has
+/// no later reading to confirm it, so only a hold of 0 can fire it.
 fn should_fire_now(
   condition: &AlertCondition,
   first_true_at: Option<OffsetDateTime>,
@@ -1201,7 +1204,8 @@ fn should_fire_now(
 ) -> bool {
   let debounce = match condition {
     AlertCondition::MissingReport { .. } | AlertCondition::RateOfChange { .. } => 0,
-    AlertCondition::DeviceState { .. } | AlertCondition::Threshold { .. } => ALERT_DEBOUNCE_SECS,
+    AlertCondition::Threshold { hold_secs, .. } => hold_secs.unwrap_or(ALERT_DEBOUNCE_SECS),
+    AlertCondition::DeviceState { .. } => ALERT_DEBOUNCE_SECS,
   };
   (now - first_true_at.unwrap_or(now)).whole_seconds() >= debounce
 }
@@ -1887,6 +1891,7 @@ mod tests {
       key: key.to_string(),
       comparator: Comparator::Gt,
       value,
+      hold_secs: None,
     }
   }
 
@@ -2081,11 +2086,26 @@ mod tests {
   }
 
   #[test]
+  fn a_threshold_hold_replaces_the_fixed_debounce() {
+    let held = |hold_secs| AlertCondition::Threshold {
+      key: "temp".to_string(),
+      comparator: Comparator::Gt,
+      value: 30.0,
+      hold_secs: Some(hold_secs),
+    };
+    assert!(should_fire_now(&held(0), None, at(1_000)));
+    assert!(!should_fire_now(&held(120), None, at(1_000)));
+    assert!(!should_fire_now(&held(120), Some(at(1_000)), at(1_119)));
+    assert!(should_fire_now(&held(120), Some(at(1_000)), at(1_120)));
+  }
+
+  #[test]
   fn threshold_keeps_the_fixed_debounce_and_a_step_fires_at_once() {
     let threshold = AlertCondition::Threshold {
       key: "temp".to_string(),
       comparator: Comparator::Gt,
       value: 30.0,
+      hold_secs: None,
     };
     let rate = AlertCondition::RateOfChange {
       key: "temp".to_string(),
@@ -2328,10 +2348,15 @@ mod tests {
   }
 
   fn watchdog_reset() -> AlertCondition {
+    watchdog_reset_held(None)
+  }
+
+  fn watchdog_reset_held(hold_secs: Option<i64>) -> AlertCondition {
     AlertCondition::Threshold {
       key: "reset_cause".to_string(),
       comparator: Comparator::Eq,
       value: 16.0,
+      hold_secs,
     }
   }
 
@@ -2373,6 +2398,67 @@ mod tests {
     replay.batch(&[(10, &[("uptime_s", "10")]), (40, &[("reset_cause", "16")])]);
     assert!(replay.fired.is_empty());
     assert_eq!(replay.first_true_at, Some(at(40)));
+  }
+
+  // A zero hold fires on the boot report itself. Later reports leave the key out and decide
+  // nothing, so the alert stays firing until a boot reports another cause.
+  #[test]
+  fn a_one_shot_key_with_a_zero_hold_fires_on_its_own_reading() {
+    let boot: &[(&str, &str)] = &[("reset_cause", "16"), ("uptime_s", "10")];
+    let next_boot: &[(&str, &str)] = &[("reset_cause", "2"), ("uptime_s", "10")];
+    let readings: [(i64, &[(&str, &str)]); 4] = [
+      (10, boot),
+      (40, &[("uptime_s", "40")]),
+      (70, &[("uptime_s", "70")]),
+      (100, &[("uptime_s", "100")]),
+    ];
+
+    let mut sequential = Replay::new(watchdog_reset_held(Some(0)));
+    for (at_secs, pairs) in readings {
+      sequential.report(at_secs, pairs);
+    }
+    let mut batched = Replay::new(watchdog_reset_held(Some(0)));
+    batched.batch(&readings);
+    for replay in [&sequential, &batched] {
+      assert_eq!(replay.fired, vec![10]);
+      assert!(replay.resolved.is_empty());
+      assert_eq!(replay.status, AlertStatus::Firing);
+    }
+
+    for replay in [&mut sequential, &mut batched] {
+      replay.report(400, next_boot);
+      assert_eq!(replay.fired, vec![10]);
+      assert_eq!(replay.resolved, vec![400]);
+    }
+  }
+
+  #[test]
+  fn a_hold_is_counted_between_readings_of_the_key() {
+    let readings: [(i64, &[(&str, &str)]); 3] = [
+      (0, &[("temp", "35")]),
+      (60, &[("temp", "35")]),
+      (120, &[("temp", "35")]),
+    ];
+    let held = AlertCondition::Threshold {
+      key: "temp".to_string(),
+      comparator: Comparator::Gt,
+      value: 30.0,
+      hold_secs: Some(120),
+    };
+
+    let mut sequential = Replay::new(held.clone());
+    sequential.report(0, readings[0].1);
+    sequential.report(60, readings[1].1);
+    assert!(sequential.fired.is_empty());
+    sequential.report(120, readings[2].1);
+    let mut batched = Replay::new(held);
+    batched.batch(&readings);
+    let mut default_hold = Replay::new(temp_over_30());
+    default_hold.batch(&readings[..2]);
+
+    assert_eq!(sequential.fired, vec![120]);
+    assert_eq!(batched.fired, vec![120]);
+    assert_eq!(default_hold.fired, vec![60]);
   }
 
   /// Replays the same readings one request each and as batches of at most 64, asserting both

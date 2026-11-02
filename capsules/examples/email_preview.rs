@@ -64,6 +64,7 @@ fn main() {
       key: "temp_c".to_string(),
       comparator: Comparator::Gt,
       value: 30.0,
+      hold_secs: None,
     },
     AlertSeverity::Critical,
   );

@@ -1367,8 +1367,9 @@ Suspending also resets the pigeon's `alert_state` rows to `ok` with **no email**
 an operator's decision, not a recovery, so a firing alert stops silently and no "resolved" mail
 ever follows for that episode. Resuming only clears the flag, so the next evaluation starts a
 fresh episode: a pigeon still silent past a `MissingReport` window fires on the first sweep
-after resume (within five minutes), a still-true `Threshold`/`DeviceState` condition fires again
-after its 60-second debounce, and a `RateOfChange` fires on its next step, each with a new
+after resume (within five minutes), a still-true `DeviceState` condition fires again after its
+60-second debounce, a still-true `Threshold` after its hold (60 seconds unless it sets
+`hold_secs`), and a `RateOfChange` fires on its next step, each with a new
 "firing" mail.
 
 What suspension does **not** do: the device keeps reporting (telemetry, shadow report-back,
@@ -2171,11 +2172,15 @@ flock, not once for the flock as a whole. A pigeon whose alerts are
 for the exact Rust variant** — not the `{"type": "...", ...}` shape other fields on this page use.
 `capsules::AlertCondition` (the `condition` field below) is one of:
 
-- `{"Threshold":{"key":"temp","comparator":"Gt","value":30.0}}` — a telemetry key crosses a bound
-  (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`) and holds it through a 60-second debounce:
-  the reading that crosses opens the episode, and the first reading still across it at least 60
-  seconds later fires, so on a 300-second cadence the mail follows the second report. A key a
-  device sends once, such as a boot's `reset_cause`, never fires on its own reading.
+- `{"Threshold":{"key":"temp","comparator":"Gt","value":30.0,"hold_secs":120}}` — a telemetry key
+  crosses a bound (`comparator` is one of `Gt`/`Gte`/`Lt`/`Lte`/`Eq`) and holds it for
+  `hold_secs`: the reading that crosses opens the episode, and the first reading still across it
+  at least `hold_secs` later fires. The hold is counted between readings of the key, so the
+  example on a 60-second cadence fires on the third report. `hold_secs` is optional, from `0` to
+  `86400` (`capsules::MAX_ALERT_HOLD_SECS`); left out, it is 60, so on a 300-second cadence the
+  mail follows the second report. `0` fires on the crossing reading itself, which a key a device
+  sends once needs: without it a boot's `reset_cause` never fires on its own reading. A
+  definition stored without `hold_secs` reads back without it.
 - `{"DeviceState":{"state":"Offline","min_duration_secs":300}}` — the pigeon's own connection-state
   classification (`capsules::ConnectionStateKind`, `"Offline"` or `"Stale"`) has held for at least
   this long, counted from when its silence crossed into the state, not from its last contact. It is
@@ -2206,8 +2211,10 @@ for the exact Rust variant** — not the `{"type": "...", ...}` shape other fiel
 
 Both telemetry conditions are decided per reading, in order, against the readings that carry the
 key as a number. A report that leaves the key out, or sends it as text, decides nothing: it neither
-fires, resolves nor ends a `Threshold`'s debounce, so an episode stays open across any number of
-such reports until the key's next value decides it. A batched report is judged reading by reading
+fires, resolves nor ends a `Threshold`'s hold, so an episode stays open across any number of
+such reports until the key's next value decides it. A `Threshold` fired with `hold_secs` `0` on a
+one-shot key therefore stays firing until a later reading carries the key with a value that no
+longer crosses, such as the next boot's `reset_cause`. A batched report is judged reading by reading
 and sends the same mails as its readings sent one at a time, though a mail can quote a later
 reading of the same run.
 
@@ -2238,7 +2245,8 @@ Times in the notification follow the owning organization's zone, described under
 **Auth:** member
 
 Body: `capsules::AlertDefinitionCreateRequest` (`{ name, condition, severity?, channel, notes? }`;
-`severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`).
+`severity` is `"Warning"` or `"Critical"`, defaulting to `"Warning"`). A `Threshold` whose
+`hold_secs` is below `0` or above `86400` is refused with `400`.
 
 **Alert-count entitlement.** `403` past the owning account's tier's alert count (see
 [Per-tier limits](#per-tier-limits)). The limit spans every alert the account owns — pigeon-
@@ -2323,11 +2331,11 @@ mail sent, `null` until the first.)
 
 **Auth:** flock: manage
 
-Same body/response shape as the pigeon-scoped `POST` above, with `scope: {"Flock":"<flock_id>"}`
-in the response. Stricter than pigeon-scoped creation: only a flock **manager** (personal owner,
-or an `owner`/`admin` org role on an org-owned flock) may create a flock-scoped alert, whereas any
-ACL'd pigeon member may create a pigeon-scoped one. Subject to the same account-wide
-alert-count entitlement as the pigeon-scoped route (see
+Same body/response shape as the pigeon-scoped `POST` above, including its `hold_secs` range check,
+with `scope: {"Flock":"<flock_id>"}` in the response. Stricter than pigeon-scoped creation: only a
+flock **manager** (personal owner, or an `owner`/`admin` org role on an org-owned flock) may create
+a flock-scoped alert, whereas any ACL'd pigeon member may create a pigeon-scoped one. Subject to the
+same account-wide alert-count entitlement as the pigeon-scoped route (see
 [Per-tier limits](#per-tier-limits)).
 
 ```sh
@@ -2370,7 +2378,9 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/alerts/state \
 
 Partial update — an omitted field keeps its current value. Body:
 `capsules::AlertDefinitionUpdateRequest` (`{ name?, condition?, severity?, channel?, notes?,
-enabled? }`). An omitted `notes` keeps the stored notes; an empty string clears them.
+enabled? }`). An omitted `notes` keeps the stored notes; an empty string clears them. A
+`condition` replaces the stored one whole, so a `Threshold` sent without `hold_secs` goes back to
+the 60-second default, and one outside `0` to `86400` is refused with `400`.
 Gated by a direct `alert_definitions.user_id` check (whoever created the alert), regardless of
 whether it's pigeon- or flock-scoped — **not** the pigeon's ACL or the flock's ownership. The
 `enabled`-only body is also how the dashboard's list-view toggle flips an alert on/off without a

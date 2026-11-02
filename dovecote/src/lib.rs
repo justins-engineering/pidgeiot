@@ -327,6 +327,14 @@ fn check_alert_notes(notes: Option<&str>) -> std::result::Result<(), &'static st
   }
 }
 
+fn check_alert_hold(condition: &capsules::AlertCondition) -> std::result::Result<(), &'static str> {
+  if condition.hold_in_range() {
+    Ok(())
+  } else {
+    Err("Bad Request: 'hold_secs' must be between 0 and 86400")
+  }
+}
+
 /// Validates the Kratos cookie and returns just the user id. Thin wrapper
 /// over `require_auth_session` for the many call sites that only need the
 /// id.
@@ -3579,6 +3587,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         if let Err(msg) = normalize_alert_channel(&mut payload.channel, &allowed)
           .and_then(|()| check_alert_notes(payload.notes.as_deref()))
+          .and_then(|()| check_alert_hold(&payload.condition))
         {
           return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
@@ -3736,6 +3745,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         if let Err(msg) = normalize_alert_channel(&mut payload.channel, &allowed)
           .and_then(|()| check_alert_notes(payload.notes.as_deref()))
+          .and_then(|()| check_alert_hold(&payload.condition))
         {
           return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
@@ -3910,6 +3920,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         }
 
         if let Err(msg) = check_alert_notes(payload.notes.as_deref()) {
+          return Response::error(msg, 400).unwrap().with_cors(&cors);
+        }
+
+        if let Some(condition) = &payload.condition
+          && let Err(msg) = check_alert_hold(condition)
+        {
           return Response::error(msg, 400).unwrap().with_cors(&cors);
         }
 
@@ -6215,6 +6231,33 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         .unwrap()
         .with_cors(&fallback_cors)
     }
+  }
+}
+
+#[cfg(test)]
+mod alert_hold_tests {
+  use super::check_alert_hold;
+  use capsules::{AlertCondition, Comparator, MAX_ALERT_HOLD_SECS};
+
+  fn held(hold_secs: Option<i64>) -> AlertCondition {
+    AlertCondition::Threshold {
+      key: "reset_cause".to_string(),
+      comparator: Comparator::Eq,
+      value: 16.0,
+      hold_secs,
+    }
+  }
+
+  #[test]
+  fn a_hold_outside_zero_to_a_day_is_a_bad_request_naming_the_bound() {
+    assert_eq!(check_alert_hold(&held(None)), Ok(()));
+    assert_eq!(check_alert_hold(&held(Some(0))), Ok(()));
+    let Err(message) = check_alert_hold(&held(Some(-1))) else {
+      panic!("a negative hold was accepted");
+    };
+    assert!(message.starts_with("Bad Request"));
+    assert!(message.ends_with(&MAX_ALERT_HOLD_SECS.to_string()));
+    assert!(check_alert_hold(&held(Some(MAX_ALERT_HOLD_SECS + 1))).is_err());
   }
 }
 

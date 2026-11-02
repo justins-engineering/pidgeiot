@@ -164,6 +164,7 @@ fn thresholds_from_alerts(
         key,
         comparator,
         value,
+        ..
       } => {
         let firing = states
           .iter()
@@ -1137,6 +1138,7 @@ mod tests {
         key: key.to_string(),
         comparator: Comparator::Lt,
         value,
+        hold_secs: None,
       },
       severity: AlertSeverity::Warning,
       channel: AlertChannel::default(),

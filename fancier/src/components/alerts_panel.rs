@@ -129,6 +129,7 @@ fn condition_summary(condition: &AlertCondition) -> String {
       key,
       comparator,
       value,
+      ..
     } => format!("{key} {} {value}", comparator_label(*comparator)),
     AlertCondition::DeviceState {
       state,
@@ -597,6 +598,7 @@ fn AlertFormModal(
                               key: key.read().trim().to_string(),
                               comparator: comparator(),
                               value,
+                              hold_secs: None,
                           }
                       }
                       ConditionKind::DeviceState => {
@@ -1246,6 +1248,7 @@ mod tests {
       key: "battery_mv".to_string(),
       comparator: Comparator::Lt,
       value: 3300.0,
+      hold_secs: None,
     };
     assert_eq!(condition_summary(&cond), "battery_mv < 3300");
   }

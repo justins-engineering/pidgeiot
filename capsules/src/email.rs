@@ -426,6 +426,7 @@ fn condition_facts(condition: &AlertCondition) -> Vec<Fact> {
       key,
       comparator,
       value,
+      ..
     } => vec![
       Fact::new("Metric", inline(key)),
       Fact::new(
@@ -1047,6 +1048,7 @@ mod tests {
       key: key.to_string(),
       comparator: Comparator::Gt,
       value,
+      hold_secs: None,
     }
   }
 

@@ -1607,12 +1607,17 @@ pub enum ConnectionStateKind {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum AlertCondition {
   /// `key`'s numeric value compares true against `value`, and still does on a reading at least
-  /// 60 seconds after the one that opened the episode, which is the one that fires. A key sent
-  /// once (a boot's `reset_cause`) therefore never fires on its own reading.
+  /// `hold_secs` after the one that opened the episode, which is the one that fires. The hold is
+  /// counted between readings of `key`, so a key sent once (a boot's `reset_cause`) fires on its
+  /// own reading only with a hold of 0.
   Threshold {
     key: String,
     comparator: Comparator,
     value: f64,
+    /// Seconds the bound must stay crossed before firing, from 0 to `MAX_ALERT_HOLD_SECS`;
+    /// absent means 60. `0` fires on the crossing reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hold_secs: Option<i64>,
   },
   /// The pigeon's connection state is `state`, held for at least `min_duration_secs` when set,
   /// counted from when its silence crossed that state's threshold
@@ -1661,6 +1666,25 @@ impl Default for AlertCondition {
       key: String::new(),
       comparator: Comparator::default(),
       value: 0.0,
+      hold_secs: None,
+    }
+  }
+}
+
+/// Longest `Threshold` hold an alert may ask for, so a typo cannot keep an episode from ever
+/// firing.
+pub const MAX_ALERT_HOLD_SECS: i64 = 86_400;
+
+impl AlertCondition {
+  /// Whether a `Threshold`'s `hold_secs`, when set, lies in `0..=MAX_ALERT_HOLD_SECS`. Every
+  /// other condition has no hold and passes.
+  pub fn hold_in_range(&self) -> bool {
+    match self {
+      AlertCondition::Threshold {
+        hold_secs: Some(secs),
+        ..
+      } => (0..=MAX_ALERT_HOLD_SECS).contains(secs),
+      _ => true,
     }
   }
 }
@@ -2052,6 +2076,7 @@ impl DemoAlert {
         key,
         comparator,
         value,
+        ..
       } => (Some(key.clone()), Some(*comparator), Some(*value)),
       _ => (None, None, None),
     };
@@ -2151,6 +2176,44 @@ mod alert_channel_tests {
 }
 
 #[cfg(test)]
+mod alert_hold_tests {
+  use super::*;
+
+  fn threshold(hold_secs: Option<i64>) -> AlertCondition {
+    AlertCondition::Threshold {
+      key: "reset_cause".into(),
+      comparator: Comparator::Eq,
+      value: 16.0,
+      hold_secs,
+    }
+  }
+
+  #[test]
+  fn a_stored_threshold_without_a_hold_loads_as_the_default() {
+    let stored = r#"{"Threshold":{"key":"reset_cause","comparator":"Eq","value":16.0}}"#;
+    let condition: AlertCondition = serde_json::from_str(stored).expect("condition parses");
+    assert_eq!(condition, threshold(None));
+  }
+
+  #[test]
+  fn an_absent_hold_stays_absent_on_the_wire() {
+    let json = serde_json::to_string(&threshold(None)).expect("condition serializes");
+    assert!(!json.contains("hold_secs"));
+    let json = serde_json::to_string(&threshold(Some(0))).expect("condition serializes");
+    assert!(json.contains(r#""hold_secs":0"#));
+  }
+
+  #[test]
+  fn a_hold_is_refused_outside_zero_to_a_day() {
+    assert!(threshold(None).hold_in_range());
+    assert!(threshold(Some(0)).hold_in_range());
+    assert!(threshold(Some(MAX_ALERT_HOLD_SECS)).hold_in_range());
+    assert!(!threshold(Some(-1)).hold_in_range());
+    assert!(!threshold(Some(MAX_ALERT_HOLD_SECS + 1)).hold_in_range());
+  }
+}
+
+#[cfg(test)]
 mod demo_alert_tests {
   use super::*;
 
@@ -2159,6 +2222,7 @@ mod demo_alert_tests {
       key: "temp_c".into(),
       comparator: Comparator::Gt,
       value: 30.0,
+      hold_secs: None,
     }
   }
 
