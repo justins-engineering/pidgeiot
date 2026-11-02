@@ -129,8 +129,16 @@ fn condition_summary(condition: &AlertCondition) -> String {
       key,
       comparator,
       value,
-      ..
-    } => format!("{key} {} {value}", comparator_label(*comparator)),
+      hold_secs,
+    } => match hold_secs {
+      Some(0) => format!("{key} {} {value}, no hold", comparator_label(*comparator)),
+      Some(secs) => format!(
+        "{key} {} {value} held {}",
+        comparator_label(*comparator),
+        duration_label(*secs)
+      ),
+      None => format!("{key} {} {value}", comparator_label(*comparator)),
+    },
     AlertCondition::DeviceState {
       state,
       min_duration_secs,
@@ -464,6 +472,13 @@ fn AlertFormModal(
     Some(AlertCondition::Threshold { value, .. }) => value.to_string(),
     _ => String::new(),
   });
+  let mut hold_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
+    Some(AlertCondition::Threshold {
+      hold_secs: Some(secs),
+      ..
+    }) => secs.to_string(),
+    _ => String::new(),
+  });
 
   let mut max_delta_input = use_signal(|| match editing.as_ref().map(|a| &a.condition) {
     Some(AlertCondition::RateOfChange { max_delta, .. }) => max_delta.to_string(),
@@ -515,6 +530,12 @@ fn AlertFormModal(
   };
 
   let threshold_value_valid = value_input.read().trim().parse::<f64>().is_ok();
+  let hold_valid = hold_input.read().trim().is_empty()
+    || hold_input
+      .read()
+      .trim()
+      .parse::<i64>()
+      .is_ok_and(|secs| (0..=capsules::MAX_ALERT_HOLD_SECS).contains(&secs));
   let max_silence_valid = max_silence_input
     .read()
     .trim()
@@ -547,7 +568,9 @@ fn AlertFormModal(
     && recipients_valid
     && notes_valid
     && match condition_kind() {
-      ConditionKind::Threshold => !key.read().trim().is_empty() && threshold_value_valid,
+      ConditionKind::Threshold => {
+        !key.read().trim().is_empty() && threshold_value_valid && hold_valid
+      }
       ConditionKind::DeviceState => true,
       ConditionKind::MissingReport => max_silence_valid,
       ConditionKind::RateOfChange => {
@@ -598,7 +621,7 @@ fn AlertFormModal(
                               key: key.read().trim().to_string(),
                               comparator: comparator(),
                               value,
-                              hold_secs: None,
+                              hold_secs: hold_input.read().trim().parse::<i64>().ok(),
                           }
                       }
                       ConditionKind::DeviceState => {
@@ -824,6 +847,29 @@ fn AlertFormModal(
               }
               if !threshold_value_valid && !value_input.read().is_empty() {
                 p { class: "text-error text-xs -mt-2", "Value must be a number." }
+              }
+              div {
+                label { class: "fieldset-legend text-xs font-semibold mb-1",
+                  "Hold (seconds, optional)"
+                }
+                input {
+                  class: "input input-bordered input-sm w-full text-sm",
+                  r#type: "number",
+                  min: "0",
+                  max: "86400",
+                  placeholder: "60",
+                  disabled: is_saving(),
+                  value: "{hold_input}",
+                  oninput: move |e| hold_input.set(e.value()),
+                }
+              }
+              p { class: "text-xs text-base-content/60 -mt-2",
+                "How long the bound must stay crossed, between reports of this key, before the"
+                " alert fires. Blank waits 60 seconds; 0 fires on the first report over the bound,"
+                " which a key reported once per boot needs."
+              }
+              if !hold_valid {
+                p { class: "text-error text-xs -mt-2", "Enter whole seconds from 0 to 86400, or leave blank." }
               }
             } else if condition_kind() == ConditionKind::DeviceState {
               div { class: "grid grid-cols-2 gap-2",
@@ -1251,6 +1297,18 @@ mod tests {
       hold_secs: None,
     };
     assert_eq!(condition_summary(&cond), "battery_mv < 3300");
+  }
+
+  #[test]
+  fn threshold_condition_summary_names_its_hold() {
+    let held = |hold_secs| AlertCondition::Threshold {
+      key: "reset_cause".to_string(),
+      comparator: Comparator::Eq,
+      value: 16.0,
+      hold_secs: Some(hold_secs),
+    };
+    assert_eq!(condition_summary(&held(0)), "reset_cause = 16, no hold");
+    assert_eq!(condition_summary(&held(120)), "reset_cause = 16 held 2m");
   }
 
   #[test]
