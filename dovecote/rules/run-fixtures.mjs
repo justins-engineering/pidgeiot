@@ -202,5 +202,48 @@ function mails(runs, events) {
   check("R6 cuts a stage into well-formed text", outOf(r.results[0]).alerts[0].body.isWellFormed());
 }
 
+// Contract fixtures every rule must pass: whatever the batch or the stored state holds, each
+// answers ok, inside the alert and value counts, with an alert key once per scope.
+{
+  const inCaps = (out) => {
+    const keys = (out.alerts ?? []).map((a) => a.scope + "/" + a.key);
+    const values = out.values ?? [];
+    return keys.length <= 8 && values.length <= 16 && new Set(keys).size === keys.length;
+  };
+  const sign = { reset_cause: "16", uptime_s: "5", swiftly_last_success_age_s: "700" };
+  const degraded = { ...ev("a", T0, sign), degraded: true };
+  const many = ev("a", T0, {});
+  many.readings = Array.from({ length: 64 }, (_, n) => ({
+    at: T0 - 3780 + n * 60,
+    metrics: { uptime_s: String(600 + n * 60), swiftly_last_success_age_s: String(30 + n * 60) },
+    previous: { uptime_s: { value: String(540 + n * 60), at: T0 - 3840 + n * 60 } },
+  }));
+  const junk = Object.fromEntries(Object.keys(sign).concat("reset_stage").map((k) => [k, "n/a"]));
+  const older = {
+    pigeon: { stage: 5, stageAt: "x", lastBoot: {}, boots: { n: 3 } },
+    flock: { b: "down", c: [1], d: { at: "x" } },
+  };
+  const cases = [
+    ["empty metrics", ev("a", T0, {}), fresh],
+    ["a batch without its keys", ev("a", T0, { rssi_dbm: "-70" }), fresh],
+    ["non-numeric strings", ev("a", T0, junk, { uptime_s: { value: "n/a", at: T0 - 60 } }), fresh],
+    ["a degraded batch", degraded, fresh],
+    ["64 readings", many, fresh],
+    ["state of another shape", ev("a", T0, sign), older],
+  ];
+  for (const [name, common, state] of cases) {
+    const live = await call({ mode: "live", wall_ms: 250, common,
+      rules: ["r6", "r7", "r10"].map((id) => ({ id, version: 1, state })) });
+    check("every rule takes " + name,
+      live.results.every((r) => r.status === "ok" && inCaps(outOf(r))));
+  }
+  const r10 = await call({ mode: "live", wall_ms: 250, common: ev("a", T0, sign),
+    rules: [{ id: "r10", version: 1, state: older }] });
+  const out = outOf(r10.results[0]);
+  check("R10 drops flock entries of another shape and counts only signs",
+    out.alerts[0].body.startsWith("1 of 1 ") &&
+    ["b", "c", "d"].every((k) => out.state.flock[k] === null));
+}
+
 console.log(failures === 0 ? "all fixtures pass" : failures + " fixture(s) failed");
 process.exitCode = failures === 0 ? 0 : 1;

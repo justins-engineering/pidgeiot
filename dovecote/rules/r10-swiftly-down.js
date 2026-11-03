@@ -7,6 +7,10 @@ const STALE_SECS = 600; // the sign blanks its departures at this age
 const FRESH_SECS = 1800; // a sign not heard from for this long has no vote
 const REWRITE_SECS = 600; // refresh our own entry this often, so it never looks silent
 
+// An older version of this rule may have stored another shape; such an entry has no vote.
+const isSign = (s) =>
+  s !== null && typeof s === "object" && typeof s.down === "boolean" && Number.isFinite(s.at);
+
 export default function swiftlyDown(event) {
   // The newest reading that carries the key, wherever it sits in the batch.
   let last = null;
@@ -20,12 +24,14 @@ export default function swiftlyDown(event) {
   const before = event.state.flock[id];
   const me = { down: age >= STALE_SECS, at: last.at };
   const patch = {};
-  if (!before || before.down !== me.down || me.at - before.at >= REWRITE_SECS) patch[id] = me;
+  if (!isSign(before) || before.down !== me.down || me.at - before.at >= REWRITE_SECS) {
+    patch[id] = me;
+  }
 
   let voters = 0;
   let down = 0;
   for (const [key, sign] of Object.entries({ ...event.state.flock, [id]: me })) {
-    if (event.received_at - sign.at > FRESH_SECS) {
+    if (!isSign(sign) || event.received_at - sign.at > FRESH_SECS) {
       patch[key] = null;
       continue;
     }
