@@ -391,12 +391,17 @@ pub async fn get_flock_pigeon_ids(client: &Client, access: &FlockAccess) -> Resu
 /// table (unlike pigeons' `pigeon_acl`) -- authorization happens in
 /// `authorize_flock` (`helpers/orgs.rs`), whose passing case is the only
 /// source of the `FlockAccess` proof this function requires.
+///
+/// `exclude` names pigeons whose rows are never read, left out in the SQL
+/// rather than filtered after: a rule's dry run passes the field pigeons
+/// (`rules::excluded_pigeons`), the route passes none.
 pub async fn query_telemetry_history_for_flock(
   client: &Client,
   access: &FlockAccess,
   keys: Option<&[String]>,
   since: Option<OffsetDateTime>,
   until: Option<OffsetDateTime>,
+  exclude: &[String],
 ) -> Result<TelemetryHistoryPage> {
   ensure_telemetry_history_table(client).await?;
 
@@ -417,6 +422,7 @@ pub async fn query_telemetry_history_for_flock(
            AND ($2::TEXT[] IS NULL OR h.key = ANY($2))
            AND ($3::TIMESTAMPTZ IS NULL OR h.reported_at >= $3)
            AND ($4::TIMESTAMPTZ IS NULL OR h.reported_at <= $4)
+           AND p.id <> ALL($6)
          ORDER BY h.reported_at DESC
          LIMIT $5
        ) newest
@@ -427,6 +433,7 @@ pub async fn query_telemetry_history_for_flock(
         (&since, Type::TIMESTAMPTZ),
         (&until, Type::TIMESTAMPTZ),
         (&limit, Type::INT8),
+        (&exclude, Type::TEXT_ARRAY),
       ],
     )
     .await

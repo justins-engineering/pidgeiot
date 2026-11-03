@@ -680,6 +680,18 @@ pub(crate) mod pg {
       .get(0)
   }
 
+  /// A pigeon in `flock` under `id`.
+  pub async fn new_pigeon(client: &Client, flock: Uuid, id: &str) {
+    client
+      .execute(
+        "INSERT INTO pigeons (id, flock_id, connector, created_at, updated_at)
+         VALUES ($1, $2, '{}', now(), now())",
+        &[&id, &flock],
+      )
+      .await
+      .expect("pigeon inserted");
+  }
+
   fn obj(value: serde_json::Value) -> Map<String, Value> {
     match value {
       Value::Object(map) => map,
@@ -1225,6 +1237,55 @@ pub(crate) mod pg {
         new_rule(&client, growth).await;
       }
       assert!(!refused(growth).await);
+      drop(client);
+      db.drop().await;
+    });
+  }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_the_history_read_returns_no_row_under_a_field_pigeon() {
+    use crate::helpers::firmware::FlockAccess;
+    use crate::helpers::query_telemetry_history_for_flock;
+    use crate::helpers::rules::{FIELD_PIGEONS, excluded_pigeons};
+    run(async {
+      let db = Scratch::new("history").await;
+      let client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let other = "0".repeat(64);
+      for id in FIELD_PIGEONS.iter().copied().chain([other.as_str()]) {
+        new_pigeon(&client, flock, id).await;
+        client
+          .execute(
+            "INSERT INTO pigeon_telemetry_history (pigeon_id, key, value, value_num, reported_at)
+             VALUES ($1, 'rsrp_dbm', '-97', -97, now() - interval '1 hour')",
+            &[&id],
+          )
+          .await
+          .expect("history row");
+      }
+      let access = FlockAccess::assert_checked(&flock.to_string());
+      let read = |exclude: Vec<String>| {
+        let (client, access) = (&client, &access);
+        async move {
+          let page = query_telemetry_history_for_flock(client, access, None, None, None, &exclude)
+            .await
+            .expect("history read");
+          let mut ids: Vec<String> = page.points.into_iter().map(|p| p.pigeon_id).collect();
+          ids.sort();
+          ids
+        }
+      };
+      // Without the argument every pigeon's row is there to be read.
+      let mut all: Vec<String> = FIELD_PIGEONS.iter().map(|id| id.to_string()).collect();
+      all.push(other.clone());
+      all.sort();
+      assert_eq!(read(Vec::new()).await, all);
+      assert_eq!(read(excluded_pigeons(None)).await, vec![other.clone()]);
+      assert_eq!(read(excluded_pigeons(Some(""))).await, vec![other.clone()]);
+      assert_eq!(
+        read(excluded_pigeons(Some(&other))).await,
+        Vec::<String>::new()
+      );
       drop(client);
       db.drop().await;
     });

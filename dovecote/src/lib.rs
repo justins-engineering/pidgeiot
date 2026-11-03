@@ -2946,6 +2946,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             keys.as_deref(),
             query.since,
             query.until,
+            &[],
           )
           .await
           else {
