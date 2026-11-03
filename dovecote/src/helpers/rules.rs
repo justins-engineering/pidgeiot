@@ -2532,6 +2532,43 @@ mod tests {
   }
 
   #[test]
+  fn a_graced_cpu_kill_reads_as_a_lost_race() {
+    // The platform's grace lets a kill land past the 2 s race, so it carries no CPU text and
+    // pauses on the hour like any dispatch failure; a kill inside the race pauses at run 20.
+    let one = sent(&[("r6", 1)]);
+    let graced = classify(&one, DispatchOutcome::Failed { cpu_limit: false });
+    assert_eq!(graced, Classified::Flock(RunStatus::DispatchFailed));
+    let prompt = classify(&one, DispatchOutcome::Failed { cpu_limit: true });
+    assert_eq!(prompt, Classified::Flock(RunStatus::CpuLimit));
+
+    let (mut graced, mut prompt) = (FailStreak::default(), FailStreak::default());
+    for i in 0..AUTO_PAUSE_RUNS - 1 {
+      let now = T0 + i64::from(i) * 3;
+      let StreakWrite::Set(next) = next_streak(prompt, RunStatus::CpuLimit, now) else {
+        panic!("cpu_limit paused before run {AUTO_PAUSE_RUNS}");
+      };
+      prompt = next;
+      let StreakWrite::Set(next) = next_streak(graced, RunStatus::DispatchFailed, now) else {
+        panic!("dispatch_failed paused early");
+      };
+      graced = next;
+    }
+    let now = T0 + 60;
+    assert!(matches!(
+      next_streak(prompt, RunStatus::CpuLimit, now),
+      StreakWrite::Pause { ref reason, .. } if reason == "auto:cpu_limit"
+    ));
+    assert!(matches!(
+      next_streak(graced, RunStatus::DispatchFailed, now),
+      StreakWrite::Set(_)
+    ));
+    assert!(matches!(
+      next_streak(graced, RunStatus::DispatchFailed, T0 + DISPATCH_FAILED_PAUSE_SECS),
+      StreakWrite::Pause { ref reason, .. } if reason == "auto:dispatch_failed"
+    ));
+  }
+
+  #[test]
   fn a_dispatch_failed_streak_under_an_hour_pauses_nothing() {
     let mut streak = FailStreak::default();
     for i in 0..40 {
