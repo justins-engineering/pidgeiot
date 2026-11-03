@@ -39,7 +39,10 @@ export interface RuleEvent {
 
 /** A mail decision. The rule picks the words; the rule's settings pick the recipients. */
 export interface RuleAlert {
-  /** 1 to 64 bytes of [a-z0-9._:-]. Names the condition, per pigeon or per flock. */
+  /**
+   * 1 to 64 bytes of [a-z0-9._:-]. Names the condition, per pigeon or per flock, so one result
+   * gives a key at most once in each scope.
+   */
   key: string;
   /**
    * "fire": mail once when the condition starts holding. "clear": mail once when it stops,
@@ -50,19 +53,19 @@ export interface RuleAlert {
   severity: "info" | "warning" | "critical";
   /** "flock": one state for the whole flock, so the fleet gets one mail. */
   scope: "pigeon" | "flock";
-  /** 1 to 120 bytes, plain text, no control characters. */
+  /** 1 to 120 bytes, plain text, no control character: Unicode Cc, U+0000-001F and U+007F-009F. */
   subject: string;
-  /** Up to 1,024 bytes, plain text; newline is the only control character allowed. */
+  /** Up to 1,024 bytes, plain text; newline is the only control character (Unicode Cc) allowed. */
   body?: string;
 }
 
 /** A derived value, kept beside the device's telemetry and never mixed into it. */
 export interface RuleValue {
-  /** 1 to 128 bytes. */
+  /** 1 to 128 bytes, no U+0000. */
   key: string;
-  /** Up to 1,024 bytes. Graphs read it when it parses as a number. */
+  /** Up to 1,024 bytes, no U+0000. Graphs read it when it parses as a number. */
   value: string;
-  /** Unix seconds, clamped into the batch's first..last reading. Default: the last. */
+  /** Integer Unix seconds, clamped into the batch's first..last reading. Default: the last. */
   at?: number;
 }
 
@@ -78,6 +81,7 @@ export interface RuleResult {
   /**
    * A patch per document: each top-level key is set, `null` deletes it, an absent key is
    * kept. The stored pigeon document stays under 4 KiB and the flock document under 32 KiB.
+   * No key or string at any depth holds U+0000, which Postgres cannot store.
    */
   state?: { pigeon?: Record<string, Json | null>; flock?: Record<string, Json | null> };
 }
