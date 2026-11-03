@@ -1,6 +1,12 @@
 //! The Postgres side of user-authored rules: the tables, and the statements whose concurrency the
 //! apply depends on. The pure plan in [`super::rules`] decides on a snapshot; each statement here
 //! re-checks on the row it finds, so racing batches and deploys agree with the plan or do nothing.
+//!
+//! Lock order, which is what keeps that true: a transaction that writes a rule's state, flags or
+//! mail takes the rule's `rules` row first ([`lock_rule`]), so two batches of one rule queue there
+//! instead of locking flag rows crosswise; the only rows two rules share are `rule_usage`'s,
+//! always taken account first, then platform. A deploy that resets state locks the `rules` row
+//! before it deletes from `rule_state`.
 #![cfg_attr(
   not(all(test, not(target_arch = "wasm32"))),
   expect(
@@ -19,27 +25,34 @@ use crate::helpers::rules::{
 use capsules::{RuleAlertKind, RuleAlertScope};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
+use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, Transaction, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
+use crate::helpers::firmware::FlockAccess;
+use crate::helpers::rules::excluded_pigeons;
+use crate::helpers::{TelemetryHistoryPage, query_telemetry_history_for_flock};
+
 /// Every table and index [`RULE_TABLES_DDL`] creates, as `missing_schema_objects` names them.
-const RULE_RELATIONS: [&str; 10] = [
+const RULE_RELATIONS: [&str; 12] = [
   "rules",
   "idx_rules_flock_id",
   "rule_versions",
   "rule_state",
   "rule_alert_state",
   "rule_values",
+  "idx_rule_values_pigeon_id",
   "rule_runs",
   "idx_rule_runs_rule_ran",
+  "idx_rule_runs_pigeon_id",
   "rule_bundles",
   "rule_usage",
 ];
 
 /// The rule tables, verbatim in `infra/migrations/2026-11-03-rules.sql` and `infra/init-db.sql`
-/// (a test holds all three together). Idempotent, and creates no trigger: `CREATE TRIGGER` has
-/// no `IF NOT EXISTS` here, so every write sets `updated_at` itself.
+/// (a test holds all three together). Idempotent, and creates no trigger: writes that change a
+/// rule's definition set `updated_at` themselves, and the mail counters are not such a write.
 pub const RULE_TABLES_DDL: &str = r#"CREATE TABLE IF NOT EXISTS rules (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   flock_id UUID NOT NULL REFERENCES flocks(id) ON DELETE CASCADE,
@@ -97,7 +110,8 @@ CREATE TABLE IF NOT EXISTS rule_state (
   PRIMARY KEY (rule_id, scope)
 );
 -- decided_at is the last reading of the batch that changed the flag, so an older batch never
--- undoes a newer one.
+-- undoes a newer one. last_sent_at is when a mail was claimed or suppressed, so a capped notify
+-- also waits its week.
 CREATE TABLE IF NOT EXISTS rule_alert_state (
   rule_id UUID NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
   scope TEXT NOT NULL,
@@ -117,6 +131,8 @@ CREATE TABLE IF NOT EXISTS rule_values (
   at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (rule_id, pigeon_id, key, at)
 );
+-- Serves the cascade from a pigeon delete, which would otherwise scan the table.
+CREATE INDEX IF NOT EXISTS idx_rule_values_pigeon_id ON rule_values(pigeon_id);
 -- Keyed on the batch so a redelivered batch keeps the first delivery's row.
 CREATE TABLE IF NOT EXISTS rule_runs (
   rule_id UUID NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
@@ -136,6 +152,7 @@ CREATE TABLE IF NOT EXISTS rule_runs (
   PRIMARY KEY (rule_id, pigeon_id, batch_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rule_runs_rule_ran ON rule_runs(rule_id, ran_at);
+CREATE INDEX IF NOT EXISTS idx_rule_runs_pigeon_id ON rule_runs(pigeon_id);
 -- What is true of a flock's script rather than of one rule, and its deploy lease.
 CREATE TABLE IF NOT EXISTS rule_bundles (
   flock_id UUID PRIMARY KEY REFERENCES flocks(id) ON DELETE CASCADE,
@@ -203,7 +220,7 @@ const MERGE_STATE_SQL: &str = "WITH p AS (
       ARRAY(SELECT k FROM jsonb_each($3::jsonb) AS e(k, v) WHERE v = 'null'::jsonb) AS gone
   )
   INSERT INTO rule_state AS s (rule_id, scope, doc)
-  SELECT $1, $2, p.patch - p.gone FROM p
+  SELECT $1, $2, p.patch - p.gone FROM p WHERE p.patch - p.gone <> '{}'::jsonb
   ON CONFLICT (rule_id, scope) DO UPDATE
   SET doc = (s.doc || (SELECT patch FROM p)) - (SELECT gone FROM p), updated_at = now()
   WHERE s.doc <> (s.doc || (SELECT patch FROM p)) - (SELECT gone FROM p)
@@ -263,7 +280,7 @@ const CLAIM_SQL: &str = "WITH t AS (
     RETURNING 1
   ), a AS (
     INSERT INTO rule_usage AS u (scope, day, mail_sent)
-    SELECT $2, t.day, 1 FROM t WHERE EXISTS (SELECT 1 FROM r)
+    SELECT $2::text, t.day, 1 FROM t WHERE EXISTS (SELECT 1 FROM r)
     ON CONFLICT (scope, day) DO UPDATE SET mail_sent = u.mail_sent + 1
     WHERE u.mail_sent < $6
     RETURNING 1
@@ -276,8 +293,33 @@ const CLAIM_SQL: &str = "WITH t AS (
   )
   SELECT EXISTS (SELECT 1 FROM p)";
 
-/// Merges `patch` into the rule's document for `scope` ([`scope_key`]). True when it wrote.
-pub async fn merge_state(
+/// Locks `rule_id`'s `rules` row for the rest of `tx`: the first statement of every transaction
+/// that applies a rule's result (see the module's lock order). False when the rule is gone, and
+/// then the transaction writes nothing.
+pub async fn lock_rule(
+  tx: &Transaction<'_>,
+  rule_id: Uuid,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let rows = tx
+    .query_typed(
+      "SELECT 1 FROM rules WHERE id = $1 FOR UPDATE",
+      &[(&rule_id, Type::UUID)],
+    )
+    .await?;
+  Ok(!rows.is_empty())
+}
+
+/// True for a deadlock or serialization failure: one rule's apply losing a race, which the caller
+/// counts as that rule's `dispatch_failed` rather than as Postgres being down.
+pub fn is_contention(error: &tokio_postgres::Error) -> bool {
+  error.code().is_some_and(|code| {
+    *code == SqlState::T_R_DEADLOCK_DETECTED || *code == SqlState::T_R_SERIALIZATION_FAILURE
+  })
+}
+
+/// Merges `patch` into the rule's document for `scope` ([`scope_key`]). True when it wrote; a
+/// patch of only `null`s on a missing document writes nothing.
+pub async fn merge_state_row(
   tx: &Transaction<'_>,
   rule_id: Uuid,
   scope: &str,
@@ -333,11 +375,11 @@ pub async fn apply_alert(
 }
 
 /// Claims one mail for `rule_id` at `now` under the rule, account and platform caps. `account`
-/// is the flock owner's organization or user id, as text. False is a suppressed mail.
+/// is the flock owner's organization id, else its user id. False is a suppressed mail.
 pub async fn claim_mail(
   tx: &Transaction<'_>,
   rule_id: Uuid,
-  account: &str,
+  account: Uuid,
   now: i64,
 ) -> std::result::Result<bool, tokio_postgres::Error> {
   let row = tx
@@ -345,7 +387,7 @@ pub async fn claim_mail(
       CLAIM_SQL,
       &[
         (&rule_id, Type::UUID),
-        (&account, Type::TEXT),
+        (&account, Type::UUID),
         (&now, Type::INT8),
         (&RULE_MAIL_PER_HOUR, Type::INT4),
         (&RULE_MAIL_PER_DAY, Type::INT4),
@@ -378,7 +420,8 @@ const RELEASE_LEASE_SQL: &str = "UPDATE rule_bundles SET deploy_until = 'epoch'
 /// Takes `flock_id`'s deploy lease for [`DEPLOY_LEASE_SECS`]. `None` means a deploy is in
 /// progress (the route's 409); `Some` carries the lease to hand back to
 /// [`release_deploy_lease`]. A lease rather than an advisory lock, whose session behind
-/// Hyperdrive is not something to rely on.
+/// Hyperdrive is not something to rely on. A first deploy creates the bundle row before its
+/// upload, so `uploaded_at IS NULL` is what means the flock has no bundle.
 pub async fn take_deploy_lease(
   client: &Client,
   flock_id: Uuid,
@@ -435,7 +478,7 @@ pub struct AssistantUsage {
 const ASSISTANT_TURN_SQL: &str = "INSERT INTO rule_usage AS u (scope, day, assistant_turns,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro_usd)
   SELECT s, (to_timestamp($2) AT TIME ZONE 'UTC')::date, 1, $3, $4, $5, $6, $7
-  FROM unnest(ARRAY[$1, 'platform']) AS s
+  FROM unnest(ARRAY[$1::text, 'platform']) AS s
   ON CONFLICT (scope, day) DO UPDATE SET
     assistant_turns = u.assistant_turns + 1,
     input_tokens = u.input_tokens + EXCLUDED.input_tokens,
@@ -444,12 +487,12 @@ const ASSISTANT_TURN_SQL: &str = "INSERT INTO rule_usage AS u (scope, day, assis
     cache_write_tokens = u.cache_write_tokens + EXCLUDED.cache_write_tokens,
     cost_micro_usd = u.cost_micro_usd + EXCLUDED.cost_micro_usd";
 
-/// Records one assistant call at `now` against `account` (the flock owner's organization or
-/// user id, as text) and the platform. Every call counts, refused and explain-back ones included,
+/// Records one assistant call at `now` against `account` (the flock owner's organization id,
+/// else its user id) and the platform. Every call counts, refused and explain-back ones included,
 /// and nothing is ever taken back, so deleting a rule refunds no allowance.
 pub async fn record_assistant_turn(
   client: &Client,
-  account: &str,
+  account: Uuid,
   now: i64,
   usage: &AssistantUsage,
 ) -> std::result::Result<(), tokio_postgres::Error> {
@@ -457,7 +500,7 @@ pub async fn record_assistant_turn(
     .query_typed(
       ASSISTANT_TURN_SQL,
       &[
-        (&account, Type::TEXT),
+        (&account, Type::UUID),
         (&now, Type::INT8),
         (&usage.input_tokens, Type::INT8),
         (&usage.output_tokens, Type::INT8),
@@ -468,6 +511,19 @@ pub async fn record_assistant_turn(
     )
     .await?;
   Ok(())
+}
+
+/// The flock's history since `since` for a rule's dry run, never reading a row under a pigeon
+/// [`excluded_pigeons`] names for `excluded_var` (`RULES_EXCLUDED_PIGEONS`). The only way rule
+/// code reads history, so no caller can forget the exclusion.
+pub async fn replay_history(
+  client: &Client,
+  access: &FlockAccess,
+  since: OffsetDateTime,
+  excluded_var: Option<&str>,
+) -> Result<TelemetryHistoryPage> {
+  let exclude = excluded_pigeons(excluded_var);
+  query_telemetry_history_for_flock(client, access, None, Some(since), None, &exclude).await
 }
 
 #[cfg(test)]
@@ -486,11 +542,11 @@ mod tests {
   #[test]
   fn every_ensured_relation_is_created_by_the_ddl() {
     for name in RULE_RELATIONS {
-      let mut table = String::with_capacity(27 + name.len());
+      let mut table = String::with_capacity(29 + name.len());
       table.push_str("CREATE TABLE IF NOT EXISTS ");
       table.push_str(name);
       table.push_str(" (");
-      let mut index = String::with_capacity(27 + name.len());
+      let mut index = String::with_capacity(31 + name.len());
       index.push_str("CREATE INDEX IF NOT EXISTS ");
       index.push_str(name);
       index.push_str(" ON ");
@@ -724,7 +780,7 @@ pub(crate) mod pg {
   }
 
   /// Claims `n` mails for one rule at `now`, each in its own transaction, and counts the grants.
-  async fn claims(client: &mut Client, rule: Uuid, account: &str, now: i64, n: usize) -> usize {
+  async fn claims(client: &mut Client, rule: Uuid, account: Uuid, now: i64, n: usize) -> usize {
     let mut granted = 0;
     for _ in 0..n {
       let tx = client.transaction().await.expect("tx");
@@ -773,6 +829,11 @@ pub(crate) mod pg {
         .batch_execute(MIGRATION)
         .await
         .expect("migration reapplies");
+      // The migration ends in RESET ROLE; ensure runs as the Worker's role.
+      client
+        .batch_execute("SET ROLE dovecote;")
+        .await
+        .expect("role");
       client
         .batch_execute(RULE_TABLES_DDL)
         .await
@@ -804,11 +865,13 @@ pub(crate) mod pg {
         let b_pid = pid(&b).await;
         let ta = a.transaction().await.expect("tx");
         let mine = obj(serde_json::json!({ "a": round }));
-        assert!(merge_state(&ta, rule, "", &mine).await.expect("merge"));
+        assert!(merge_state_row(&ta, rule, "", &mine).await.expect("merge"));
         let second = tokio::spawn(async move {
           let tb = b.transaction().await.expect("tx");
           let theirs = obj(serde_json::json!({ "b": round }));
-          let changed = merge_state(&tb, rule, "", &theirs).await.expect("merge");
+          let changed = merge_state_row(&tb, rule, "", &theirs)
+            .await
+            .expect("merge");
           tb.commit().await.expect("commit");
           changed
         });
@@ -824,11 +887,20 @@ pub(crate) mod pg {
       let mut client = db.client().await;
       let tx = client.transaction().await.expect("tx");
       let same = obj(serde_json::json!({ "b": 1 }));
-      assert!(!merge_state(&tx, rule, "", &same).await.expect("merge"));
+      assert!(!merge_state_row(&tx, rule, "", &same).await.expect("merge"));
       let absent = obj(serde_json::json!({ "zz": null }));
-      assert!(!merge_state(&tx, rule, "", &absent).await.expect("merge"));
+      assert!(
+        !merge_state_row(&tx, rule, "", &absent)
+          .await
+          .expect("merge")
+      );
+      assert!(
+        !merge_state_row(&tx, rule, "p9", &absent)
+          .await
+          .expect("merge")
+      );
       let gone = obj(serde_json::json!({ "a": null, "n": { "x": null } }));
-      assert!(merge_state(&tx, rule, "", &gone).await.expect("merge"));
+      assert!(merge_state_row(&tx, rule, "", &gone).await.expect("merge"));
       tx.commit().await.expect("commit");
       assert_eq!(
         doc(&setup, rule, "").await,
@@ -847,7 +919,7 @@ pub(crate) mod pg {
       let setup = db.client().await;
       let flock = new_flock(&setup, None).await;
       let rule = new_rule(&setup, flock).await;
-      let account = Uuid::nil().to_string();
+      let account = Uuid::from_u128(1);
       let now = DAY + 60;
       for scope in [
         scope_key(RuleAlertScope::Flock, "p1"),
@@ -861,14 +933,13 @@ pub(crate) mod pg {
           .await
           .expect("transition");
         assert!(fired);
-        assert!(claim_mail(&ta, rule, &account, now).await.expect("claim"));
-        let account_b = account.clone();
+        assert!(claim_mail(&ta, rule, account, now).await.expect("claim"));
         let second = tokio::spawn(async move {
           let tb = b.transaction().await.expect("tx");
           let fired = apply_alert(&tb, rule, scope, "down", RuleAlertKind::Fire, now, now)
             .await
             .expect("transition");
-          let mailed = fired && claim_mail(&tb, rule, &account_b, now).await.expect("claim");
+          let mailed = fired && claim_mail(&tb, rule, account, now).await.expect("claim");
           tb.commit().await.expect("commit");
           (fired, mailed)
         });
@@ -876,7 +947,7 @@ pub(crate) mod pg {
         ta.commit().await.expect("commit");
         assert_eq!(second.await.expect("second caller"), (false, false));
       }
-      assert_eq!(mail_sent(&setup, &account, now).await, 2);
+      assert_eq!(mail_sent(&setup, &account.to_string(), now).await, 2);
       assert_eq!(mail_sent(&setup, "platform", now).await, 2);
       let in_hour: i32 = setup
         .query_one("SELECT mail_in_hour FROM rules WHERE id = $1", &[&rule])
@@ -885,6 +956,73 @@ pub(crate) mod pg {
         .get(0);
       assert_eq!(in_hour, 2);
       drop(setup);
+      db.drop().await;
+    });
+  }
+
+  /// A caller that lost a race: anything but contention fails the test.
+  fn lost_race(error: &tokio_postgres::Error) -> bool {
+    assert!(
+      is_contention(error),
+      "an apply failed for a reason other than contention"
+    );
+    false
+  }
+
+  /// Two batches of one rule touching flock keys `a` and `b` in opposite orders, the second
+  /// caller blocked on the first's lock before the first takes its second key.
+  async fn opposite_orders(db: &Scratch, locked: bool) -> [bool; 2] {
+    let setup = db.client().await;
+    let rule = new_rule(&setup, new_flock(&setup, None).await).await;
+    let account = Uuid::from_u128(2);
+    let now = DAY + 60;
+    let mut a = db.client().await;
+    let mut b = db.client().await;
+    let b_pid = pid(&b).await;
+    let ta = a.transaction().await.expect("tx");
+    let fire = |tx, key| apply_alert(tx, rule, "", key, RuleAlertKind::Fire, now, now);
+    if locked {
+      assert!(lock_rule(&ta, rule).await.expect("lock"));
+    }
+    fire(&ta, "a").await.expect("transition");
+    let second = tokio::spawn(async move {
+      let tb = b.transaction().await.expect("tx");
+      let run = async {
+        if locked && !lock_rule(&tb, rule).await? {
+          return Ok(false);
+        }
+        let fire = |key| apply_alert(&tb, rule, "", key, RuleAlertKind::Fire, now, now);
+        if fire("b").await? | fire("a").await? {
+          claim_mail(&tb, rule, account, now).await?;
+        }
+        Ok::<_, tokio_postgres::Error>(true)
+      }
+      .await;
+      match run {
+        Ok(_) => tb.commit().await.is_ok(),
+        Err(e) => lost_race(&e),
+      }
+    });
+    wait_until_blocked(b_pid).await;
+    let first = match fire(&ta, "b").await {
+      Ok(_) => claim_mail(&ta, rule, account, now).await.is_ok() && ta.commit().await.is_ok(),
+      Err(e) => lost_race(&e),
+    };
+    let second = second.await.expect("second caller");
+    drop(setup);
+    [first, second]
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_batches_of_one_rule_never_deadlock_behind_the_rule_lock() {
+    run(async {
+      let db = Scratch::new("lockorder").await;
+      // Without the rule lock one of the two is aborted as a deadlock, which is what the
+      // locked run below could have shown.
+      let unlocked = opposite_orders(&db, false).await;
+      assert_eq!(unlocked.iter().filter(|ok| **ok).count(), 1);
+      assert_eq!(opposite_orders(&db, true).await, [true, true]);
       db.drop().await;
     });
   }
@@ -956,7 +1094,7 @@ pub(crate) mod pg {
       let per_hour = RULE_MAIL_PER_HOUR as usize;
 
       // The rule's hour, then its day, then a new day.
-      let account = "acct-a";
+      let account = Uuid::from_u128(3);
       let rule = new_rule(&client, flock).await;
       assert_eq!(
         claims(&mut client, rule, account, hour(0), per_hour + 1).await,
@@ -970,7 +1108,7 @@ pub(crate) mod pg {
       assert_eq!(claims(&mut client, rule, account, hour(24), 1).await, 1);
 
       // The account's day across rules; a refused claim leaves the platform count alone.
-      let account = "acct-b";
+      let account = Uuid::from_u128(4);
       let day2 = |n: i64| hour(48 + n);
       let mut granted = 0;
       while granted < ACCOUNT_RULE_MAIL_PER_DAY as usize {
@@ -983,7 +1121,7 @@ pub(crate) mod pg {
       let rule = new_rule(&client, flock).await;
       assert_eq!(claims(&mut client, rule, account, day2(6), 1).await, 0);
       assert_eq!(
-        mail_sent(&client, account, day2(0)).await,
+        mail_sent(&client, &account.to_string(), day2(0)).await,
         ACCOUNT_RULE_MAIL_PER_DAY
       );
       assert_eq!(
@@ -1010,13 +1148,13 @@ pub(crate) mod pg {
       let b_pid = pid(&b).await;
       let ta = a.transaction().await.expect("tx");
       assert!(
-        claim_mail(&ta, rule_a, "acct-c", day3)
+        claim_mail(&ta, rule_a, Uuid::from_u128(5), day3)
           .await
           .expect("claim")
       );
       let second = tokio::spawn(async move {
         let tb = b.transaction().await.expect("tx");
-        let claimed = claim_mail(&tb, rule_b, "acct-d", day3)
+        let claimed = claim_mail(&tb, rule_b, Uuid::from_u128(6), day3)
           .await
           .expect("claim");
         tb.commit().await.expect("commit");
@@ -1132,20 +1270,22 @@ pub(crate) mod pg {
         cost_micro_usd: 130_000,
       };
       let now = DAY + 30;
+      let (acct_a, acct_b) = (Uuid::from_u128(7), Uuid::from_u128(8));
       let (one, two) = futures::join!(
-        record_assistant_turn(&a, "acct-a", now, &turn),
-        record_assistant_turn(&b, "acct-a", now, &turn),
+        record_assistant_turn(&a, acct_a, now, &turn),
+        record_assistant_turn(&b, acct_a, now, &turn),
       );
       one.expect("turn recorded");
       two.expect("turn recorded");
-      record_assistant_turn(&a, "acct-b", now, &turn)
+      record_assistant_turn(&a, acct_b, now, &turn)
         .await
         .expect("turn recorded");
-      record_assistant_turn(&a, "acct-a", now + 86_400, &turn)
+      record_assistant_turn(&a, acct_a, now + 86_400, &turn)
         .await
         .expect("turn recorded");
-      let totals = |scope: &'static str, at: i64| {
-        let a = &a;
+      let (acct_a, acct_b) = (acct_a.to_string(), acct_b.to_string());
+      let totals = |scope: &str, at: i64| {
+        let (a, scope) = (&a, scope.to_string());
         async move {
           let row = a
             .query_one(
@@ -1162,10 +1302,10 @@ pub(crate) mod pg {
         }
       };
       let times = |n: i64| [3_000 * n, 1_200 * n, 9_000 * n, 4_000 * n, 130_000 * n];
-      assert_eq!(totals("acct-a", now).await, (2, times(2)));
-      assert_eq!(totals("acct-b", now).await, (1, times(1)));
+      assert_eq!(totals(&acct_a, now).await, (2, times(2)));
+      assert_eq!(totals(&acct_b, now).await, (1, times(1)));
       assert_eq!(totals("platform", now).await, (3, times(3)));
-      assert_eq!(totals("acct-a", now + 86_400).await, (1, times(1)));
+      assert_eq!(totals(&acct_a, now + 86_400).await, (1, times(1)));
       assert_eq!(totals("platform", now + 86_400).await, (1, times(1)));
       drop((a, b));
       db.drop().await;
@@ -1286,6 +1426,23 @@ pub(crate) mod pg {
         read(excluded_pigeons(Some(&other))).await,
         Vec::<String>::new()
       );
+      // The rule-side read builds the list itself.
+      let since = OffsetDateTime::now_utc() - time::Duration::days(7);
+      let replay = |var: Option<&'static str>| {
+        let (client, access) = (&client, &access);
+        async move {
+          let page = replay_history(client, access, since, var)
+            .await
+            .expect("replay read");
+          page
+            .points
+            .into_iter()
+            .map(|p| p.pigeon_id)
+            .collect::<Vec<_>>()
+        }
+      };
+      assert_eq!(replay(None).await, vec![other.clone()]);
+      assert_eq!(replay(Some("")).await, vec![other.clone()]);
       drop(client);
       db.drop().await;
     });

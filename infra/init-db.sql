@@ -632,7 +632,8 @@ CREATE TABLE IF NOT EXISTS rule_state (
   PRIMARY KEY (rule_id, scope)
 );
 -- decided_at is the last reading of the batch that changed the flag, so an older batch never
--- undoes a newer one.
+-- undoes a newer one. last_sent_at is when a mail was claimed or suppressed, so a capped notify
+-- also waits its week.
 CREATE TABLE IF NOT EXISTS rule_alert_state (
   rule_id UUID NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
   scope TEXT NOT NULL,
@@ -652,6 +653,8 @@ CREATE TABLE IF NOT EXISTS rule_values (
   at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (rule_id, pigeon_id, key, at)
 );
+-- Serves the cascade from a pigeon delete, which would otherwise scan the table.
+CREATE INDEX IF NOT EXISTS idx_rule_values_pigeon_id ON rule_values(pigeon_id);
 -- Keyed on the batch so a redelivered batch keeps the first delivery's row.
 CREATE TABLE IF NOT EXISTS rule_runs (
   rule_id UUID NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
@@ -671,6 +674,7 @@ CREATE TABLE IF NOT EXISTS rule_runs (
   PRIMARY KEY (rule_id, pigeon_id, batch_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rule_runs_rule_ran ON rule_runs(rule_id, ran_at);
+CREATE INDEX IF NOT EXISTS idx_rule_runs_pigeon_id ON rule_runs(pigeon_id);
 -- What is true of a flock's script rather than of one rule, and its deploy lease.
 CREATE TABLE IF NOT EXISTS rule_bundles (
   flock_id UUID PRIMARY KEY REFERENCES flocks(id) ON DELETE CASCADE,
