@@ -91,7 +91,7 @@ pub fn GettingStartedPage() -> Element {
           GsStep {
             number: "3",
             title: "Register a pigeon",
-            body: "Open the flock and click \"Register Pigeon.\" Give it a name (e.g. \"Simulated Pigeon\"), leave Serial and Board blank, and leave Protocol on its default, HTTPS (REST API) -- then click \"Register Device.\"",
+            body: "Open the flock and click \"Register Pigeon.\" Give it a name (e.g. \"Simulated Pigeon\"), leave Serial and Board blank, and leave Protocol on its default, HTTPS (REST API) -- then click \"Register Device.\" The simulator below runs the wifi_init sample, an HTTPS build, so this pigeon's connector has to be HTTPS. A CoAP or MQTT pigeon needs the matching sample instead: coap_dtls_init, coap_tcp_init or mqtt_init.",
           }
           GsStep {
             number: "4",
@@ -161,6 +161,9 @@ pub fn GettingStartedPage() -> Element {
           "Paste in the endpoint and token from steps 4-5 above:"
         }
         GsCode { code: "cat > samples/wifi_init/prj.local.conf <<'EOF'\nCONFIG_PIGEON_ENDPOINT=\"https://api.pidgeiot.com/device/pigeons/<pigeon-id>\"\nCONFIG_PIGEON_TOKEN=\"<device-bearer-token>\"\nEOF" }
+        p { class: "text-sm text-base-content/60 mb-2",
+          "The endpoint must start with https:// for this sample; a CoAP or MQTT endpoint here will not connect."
+        }
         p { class: "text-sm text-base-content/60 mb-6",
           "This file is git-ignored -- these are real device secrets, never commit them."
         }
