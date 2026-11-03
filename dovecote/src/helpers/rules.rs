@@ -3013,13 +3013,14 @@ mod tests {
     tables
   }
 
+  /// The value of `key` in one table, raw (quotes kept).
   fn toml_value<'a>(table: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
     table.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
   }
 
-  // A namespace binding without `outbound` gives rules the open internet, and production gets
-  // its namespace only at stage 3. The upload path finds the namespace through the same
-  // environment's vars, so they must name the bound one.
+  // A namespace binding without `outbound` gives rules the open internet, and production has no
+  // outbound Worker yet, so only staging may bind one. The upload path finds the namespace
+  // through the same environment's vars, so they must name the bound one.
   #[test]
   fn rules_binding_always_carries_the_outbound_worker() {
     let config = include_str!("../../wrangler.toml");
@@ -3057,22 +3058,29 @@ mod tests {
         Some(expected.as_str()),
         "{header}"
       );
-      let namespace = toml_value(table, "namespace").unwrap();
+      let namespace = toml_value(table, "namespace").expect("namespace missing");
+      assert_eq!(namespace, "\"dovecote-rules-staging\"", "{header}");
       let vars_header = if env.is_empty() {
         "[vars]".to_string()
       } else {
         concat2(&concat2("[", env), ".vars]")
       };
-      let (_, vars) = tables.iter().find(|(h, _)| *h == vars_header).unwrap();
+      let (_, vars) = tables
+        .iter()
+        .find(|(h, _)| *h == vars_header)
+        .expect("the binding's environment has no vars table");
       assert_eq!(
         toml_value(vars, "RULES_NAMESPACE"),
         Some(namespace),
         "{header}"
       );
       let account = toml_value(vars, "RULES_ACCOUNT_ID")
-        .unwrap()
+        .expect("RULES_ACCOUNT_ID missing")
         .trim_matches('"');
-      assert!(account.len() == 32 && account.bytes().all(|b| b.is_ascii_hexdigit()));
+      assert!(
+        account.len() == 32 && account.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{header}"
+      );
       bound.push(env);
     }
     assert_eq!(bound, ["env.staging"]);

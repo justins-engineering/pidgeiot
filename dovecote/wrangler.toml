@@ -133,9 +133,9 @@ head_sampling_rate = 1
 # reads it from dovecote/.dev.vars, naming a local test organization.
 #
 # RULES_ACCOUNT_ID and RULES_NAMESPACE ([env.staging.vars] only) -- the
-# account and the dispatch namespace rule scripts are uploaded to, the
-# namespace the same one the RULES binding names (a test in
-# helpers/rules.rs holds them together). The binding always carries its
+# account and dispatch namespace that rule scripts are uploaded to.
+# RULES_NAMESPACE must equal the namespace the RULES binding names (a test
+# in helpers/rules.rs checks it). The binding always carries its
 # outbound Worker (dovecote/rules-outbound): without one rules reach the
 # open internet. Production has neither until its outbound Worker exists.
 #
