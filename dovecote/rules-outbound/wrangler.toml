@@ -1,0 +1,16 @@
+# The outbound Worker of the staging rules namespace, dovecote-rules-staging. Deploy from this
+# directory with `wrangler deploy` before any dispatch binding names it: a binding without it gives
+# rules the open internet. Production's, dovecote-rules-outbound, has no config until it is needed.
+name = "dovecote-rules-outbound-staging"
+main = "index.js"
+# RULES_COMPATIBILITY_DATE in src/helpers/rules.rs, the date rules are uploaded with.
+compatibility_date = "2026-10-26"
+send_metrics = false
+workers_dev = false
+preview_urls = false
+
+# Every refusal is kept: the log line is the only record of which flock's rules tried.
+[observability.logs]
+enabled = true
+invocation_logs = true
+head_sampling_rate = 1
