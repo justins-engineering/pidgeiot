@@ -9,7 +9,8 @@ const STAGE_FRESH_SECS = 600;
 const RESEND_SECS = 10; // the same report resent is dated a few seconds apart
 const STAGE_CHARS = 200; // keeps the body under its 1,024-byte cap
 
-// Device text in a mail: control characters (Unicode Cc) are refused there, and length is capped.
+// Device text in a mail or in state: a control character (Unicode Cc) is refused in a subject or
+// body, U+0000 anywhere in state, and length is capped.
 const clean = (s, max) => String(s).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, max);
 
 export default function watchdogReset(event) {
@@ -19,17 +20,21 @@ export default function watchdogReset(event) {
   let lastBoot = saved.lastBoot ?? null;
   for (const r of event.readings) {
     if (r.metrics.reset_stage !== undefined) {
-      stage = r.metrics.reset_stage;
+      stage = clean(r.metrics.reset_stage, STAGE_CHARS);
       stageAt = r.at;
     }
   }
   const alerts = [];
   for (const r of event.readings) {
     if (!bits(r.metrics.reset_cause, WATCHDOG)) continue;
-    const boot = r.at - (num(r.metrics.uptime_s) ?? 0); // uptime dates the boot itself
+    // Uptime dates the boot itself; one past the reading's own time dates nothing.
+    const up = num(r.metrics.uptime_s);
+    const boot = r.at - (up !== null && up >= 0 && up <= r.at ? up : 0);
     if (lastBoot !== null && Math.abs(boot - lastBoot) <= RESEND_SECS) continue;
     lastBoot = boot;
-    const key = "watchdog-" + Math.round(boot / 60); // the boot's minute: a repeat mails once
+    // The boot's minute: a repeat mails once. A resend racing the original on the same empty
+    // state, its boot across a minute's rounding edge, mails twice; accepted as a duplicate.
+    const key = "watchdog-" + Math.round(boot / 60);
     // A key may appear once per result: a second boot in the same minute rides the first mail.
     if (alerts.some((a) => a.key === key)) continue;
     const fresh = stage !== null && Math.abs(r.at - stageAt) <= STAGE_FRESH_SECS;

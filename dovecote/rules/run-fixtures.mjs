@@ -2,6 +2,7 @@
 // or any runtime with fetch's Request and Response. The mail model below mirrors the platform's
 // fire/clear/notify rule only so the fixtures can state what would have been mailed.
 import harness from "./main.js";
+import { changed, held } from "./pidgeiot.js";
 
 const call = async (body) =>
   (await harness.fetch(new Request("https://rules/run", { method: "POST",
@@ -200,6 +201,31 @@ function mails(runs, events) {
   const r = await call({ mode: "live", wall_ms: 250, common,
     rules: [{ id: "r6", version: 1, state: fresh }] });
   check("R6 cuts a stage into well-formed text", outOf(r.results[0]).alerts[0].body.isWellFormed());
+}
+
+// R6 against device text dovecote would refuse in state: a NUL in the stage, which ingest
+// accepts, and an uptime too large to date a boot.
+{
+  const nul = ev("a", T0, { reset_cause: "16", reset_stage: "fetch\u0000tls", uptime_s: "5" });
+  const r = await call({ mode: "live", wall_ms: 250, common: nul,
+    rules: [{ id: "r6", version: 1, state: fresh }] });
+  const out = outOf(r.results[0]);
+  check("R6 stores a stage holding U+0000 without it",
+    r.results[0].status === "ok" && out.alerts.length === 1 &&
+    !out.state.pigeon.stage.includes("\u0000"));
+  const huge = ev("a", T0, { reset_cause: "16", uptime_s: "1e23" });
+  const h = await call({ mode: "live", wall_ms: 250, common: huge,
+    rules: [{ id: "r6", version: 1, state: fresh }] });
+  check("R6 keys a boot with an absurd uptime inside the key charset",
+    /^[a-z0-9._:-]{1,64}$/.test(outOf(h.results[0]).alerts[0].key));
+}
+
+// The helpers read only what the reading holds, and survive a stored value of another shape.
+{
+  const reading = { metrics: { k: "1" }, previous: {} };
+  check("changed ignores inherited names", !changed(reading, "constructor"));
+  const t = held("x", true, T0, 60);
+  check("held restarts from a stored since of another shape", t.since === T0 && !t.held);
 }
 
 // Contract fixtures every rule must pass: whatever the batch or the stored state holds, each

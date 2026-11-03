@@ -1,7 +1,8 @@
 // More than three boots in 24 h. A boot is a reset_cause arrival, or uptime_s going
 // backwards for a boot whose reset_cause report was lost. A boot is dated by its uptime where
 // the reading has one, so the same boot seen twice (a redelivery, a device resend, its keys in
-// separate reports) counts once, while boots a minute apart still count apart.
+// separate reports) counts once, while boots a minute apart still count apart. `boots` is one
+// state key, so two batches of one pigeon running at once can lose one side's boot.
 import { num, within } from "./pidgeiot.js";
 
 const DAY = 86400;

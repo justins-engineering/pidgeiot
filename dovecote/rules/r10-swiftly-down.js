@@ -1,6 +1,7 @@
 // Fires once for the flock when at least half the reporting signs have stale departures.
 // The failure counter stays 0 through a feed 5xx, so the age of the last success is the
 // signal. Each sign writes only its own entry, so two signs reporting at once lose nothing.
+// An entry is about 100 bytes, so about 330 signs fill the 32 KiB flock document.
 import { num } from "./pidgeiot.js";
 
 const STALE_SECS = 600; // the sign blanks its departures at this age

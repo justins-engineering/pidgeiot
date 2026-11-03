@@ -1,5 +1,5 @@
-// Rule contract 1: what a rule receives and what it may return. dovecote enforces every cap
-// named here; anything it cannot validate is refused, never guessed at.
+// Rule contract 1: what a rule receives and what it may return. The platform enforces every
+// cap named here; anything it cannot validate is refused, never guessed at.
 
 /** Any value that survives JSON. State documents hold only these. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -8,7 +8,7 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 export interface Reading {
   /** Unix seconds, clamped by the server into [received_at - 24 h, received_at]. */
   at: number;
-  /** Key to value, as the device sent it. Values are always strings. */
+  /** Key to value, as the device sent it: always strings, of any character, U+0000 included. */
   metrics: Record<string, string>;
   /** Per key, the stored entry this reading displaced. `{}` when `degraded`. */
   previous: Record<string, { value: string; at: number }>;
@@ -24,7 +24,7 @@ export interface RuleEvent {
    * sends a new batch: a new id, and reading times a few seconds later.
    */
   batch_id: string;
-  /** When dovecote built the event, unix seconds; in a dry run, the batch's last reading. */
+  /** When the platform built the event, unix seconds; in a dry run, the batch's last reading. */
   received_at: number;
   /** True when the platform lost this batch's `previous` values; `previous` is then `{}`. */
   degraded: boolean;
@@ -72,7 +72,9 @@ export interface RuleValue {
 /**
  * What a rule may return. Every field is optional; returning nothing does nothing. The whole
  * result must serialize to JSON of at most 48 KiB. Every byte cap counts UTF-8 bytes. Half of a
- * surrogate pair, as `slice` can leave, arrives as U+FFFD.
+ * surrogate pair, as `slice` can leave, arrives as U+FFFD. Any field not declared here, at any
+ * level, refuses the whole result; `shadow`, `fetch`, `http` and `webhook` are refused as not
+ * available yet.
  */
 export interface RuleResult {
   /** Up to 8. */
@@ -82,10 +84,15 @@ export interface RuleResult {
   /**
    * A patch per document: each top-level key is set, `null` deletes it, an absent key is
    * kept. The stored pigeon document stays under 4 KiB and the flock document under 32 KiB.
-   * No key or string at any depth holds U+0000, which Postgres cannot store.
+   * Every enabled rule's flock document plus its document for this pigeon share 128 KiB; a
+   * patch past that is refused as "flock state budget". No key or string at any depth holds
+   * U+0000, which Postgres cannot store.
    */
   state?: { pigeon?: Record<string, Json | null>; flock?: Record<string, Json | null> };
 }
 
-/** The default export of a rule module. */
+/**
+ * The default export of a rule module. `console.log` lines are kept with the run, at most 20 of
+ * 256 bytes as JSON escapes them; nothing else a rule prints is kept.
+ */
 export type Rule = (event: RuleEvent) => RuleResult | void | Promise<RuleResult | void>;

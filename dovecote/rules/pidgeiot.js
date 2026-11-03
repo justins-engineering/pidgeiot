@@ -24,17 +24,17 @@ export function within(times, now, secs) {
 
 /**
  * Tracks how long `cond` has held. Pass back the returned `since` next time (store it in
- * state); `held` turns true once `cond` has been true for `secs` without a break.
+ * state); `held` turns true once `cond` has been true for `secs` without a break. A stored
+ * `since` that is not a number restarts the hold.
  */
 export function held(since, cond, at, secs) {
   if (!cond) return { since: null, held: false };
-  const start = since ?? at;
+  const start = Number.isFinite(since) ? since : at;
   return { since: start, held: at - start >= secs };
 }
 
 /** True when this reading carries `key` with a value different from the one it displaced. */
 export function changed(reading, key) {
-  const now = reading.metrics[key];
-  const before = reading.previous[key];
-  return now !== undefined && before !== undefined && now !== before.value;
+  if (!Object.hasOwn(reading.metrics, key) || !Object.hasOwn(reading.previous, key)) return false;
+  return reading.metrics[key] !== reading.previous[key].value;
 }

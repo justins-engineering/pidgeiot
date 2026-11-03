@@ -13,10 +13,13 @@ const PIGEON_STATE_BYTES = 4096;
 const FLOCK_STATE_BYTES = 32768;
 const TIMEOUT = Symbol("timeout");
 const encoder = new P.TextEncoder();
-const decoder = new P.TextDecoder();
 
+// A log line or a thrown value can hold a lone surrogate too, and one in the whole response
+// would fail every rule of the dispatch.
 const reply = (body) =>
-  new P.Response(P.stringify(body), { headers: { "content-type": "application/json" } });
+  new P.Response(wellFormed(P.stringify(body)), {
+    headers: { "content-type": "application/json" },
+  });
 
 export default {
   async fetch(request) {
@@ -43,10 +46,17 @@ const bytes = (s) => encoder.encode(s).length;
 const wellFormed = (json) =>
   json.replace(/(?<!\\)((?:\\\\)*)\\ud[89a-f][0-9a-f]{2}/g, "$1\\ufffd");
 
-// A trailing partial character decodes to one U+FFFD (3 bytes), hence the 3 held back.
+// Counts the bytes a line takes escaped in the response, where a quote doubles and a control
+// character grows six-fold, so the caps bound what dovecote reads.
 function cut(s, max) {
-  const b = encoder.encode(s);
-  return b.length <= max ? s : decoder.decode(b.subarray(0, max - 3));
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    used += bytes(P.stringify(ch)) - 2;
+    if (used > max) break;
+    out += ch;
+  }
+  return out;
 }
 
 function why(e) {
@@ -103,7 +113,7 @@ async function live(input) {
   const results = [];
   let late = false;
   for (const want of input.rules) {
-    const rule = RULES[want.id];
+    const rule = Object.hasOwn(RULES, want.id) ? RULES[want.id] : undefined;
     if (!rule || rule.version !== want.version) {
       results.push({ id: want.id, status: "version_mismatch" });
       continue;
@@ -125,23 +135,50 @@ async function live(input) {
   return { contract: CONTRACT, results };
 }
 
-// The two state caps are mirrored here only so a replay threads state as live would. A
-// null-prototype document takes a key named __proto__ as a key, as dovecote's merge does.
+const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+// What dovecote refuses whole before any field cap, mirrored only so a replay threads no state
+// from a result live would apply nothing of. dovecote's validator stays the authority.
+function refusal(out) {
+  if (Object.keys(out).some((k) => k !== "alerts" && k !== "values" && k !== "state")) {
+    return "result has a field other than alerts, values and state";
+  }
+  if (out.alerts !== undefined && !(Array.isArray(out.alerts) && out.alerts.length <= 8)) {
+    return "alerts is not a list of at most 8";
+  }
+  if (out.values !== undefined && !(Array.isArray(out.values) && out.values.length <= 16)) {
+    return "values is not a list of at most 16";
+  }
+  const s = out.state;
+  if (s === undefined) return null;
+  if (!isObject(s) || Object.keys(s).some((k) => k !== "pigeon" && k !== "flock")) {
+    return "state is not an object of pigeon and flock";
+  }
+  if ((s.pigeon !== undefined && !isObject(s.pigeon)) || (s.flock !== undefined &&
+    !isObject(s.flock))) {
+    return "a state patch is not an object";
+  }
+  return null;
+}
+
+// The two state caps are mirrored so a replay threads state as live would. A null-prototype
+// document takes a key named __proto__ as a key, as dovecote's merge does. Concurrent writers
+// can leave a stored document over its cap, so only growth past the cap is refused.
 function merge(doc, patch, cap) {
   if (patch === undefined) return { doc };
-  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return { bad: true };
   const next = Object.assign(Object.create(null), doc);
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete next[k];
     else next[k] = v;
   }
-  return bytes(P.stringify(next)) > cap ? { bad: true } : { doc: next };
+  const size = bytes(P.stringify(next));
+  return size > cap && size > bytes(P.stringify(doc)) ? { bad: true } : { doc: next };
 }
 
 async function replay(input) {
   const rules = [];
   for (const want of input.rules) {
-    const rule = RULES[want.id];
+    const rule = Object.hasOwn(RULES, want.id) ? RULES[want.id] : undefined;
     if (!rule || rule.version !== want.version) {
       rules.push({ id: want.id, status: "version_mismatch" });
       continue;
@@ -163,21 +200,27 @@ async function replay(input) {
       const r = await runOne(rule.run, event, expired);
       stop();
       if (r.status === "timeout") stopped = { at: i, status: "timeout" };
-      const out = r.status === "ok" ? P.parse(r.out_json) : {};
       if (r.status === "ok") {
-        const p = merge(pigeons[pid] ?? {}, out.state?.pigeon, PIGEON_STATE_BYTES);
-        const f = merge(flock, out.state?.flock, FLOCK_STATE_BYTES);
-        if (p.bad || f.bad) {
+        const out = P.parse(r.out_json);
+        let error = refusal(out);
+        if (error === null) {
+          const p = merge(pigeons[pid] ?? {}, out.state?.pigeon, PIGEON_STATE_BYTES);
+          const f = merge(flock, out.state?.flock, FLOCK_STATE_BYTES);
+          if (p.bad || f.bad) {
+            error = "state over its cap";
+          } else {
+            pigeons[pid] = p.doc;
+            flock = f.doc;
+          }
+        }
+        if (error !== null) {
           r.status = "bad_output";
-          r.error = "state over its cap";
-        } else {
-          pigeons[pid] = p.doc;
-          flock = f.doc;
+          r.error = error;
+          delete r.out_json;
         }
       }
-      const quiet =
-        r.status === "ok" && !out.alerts?.length && !out.values?.length && !r.logs.length;
-      if (!quiet) runs.push({ i, ...r });
+      // dovecote validates every run that returned anything, so only an empty one is left out.
+      if (r.status !== "ok" || r.out_json !== "{}" || r.logs.length > 0) runs.push({ i, ...r });
     }
     rules.push({ id: want.id, status: "ok", runs, stopped, final: { pigeons, flock } });
   }
