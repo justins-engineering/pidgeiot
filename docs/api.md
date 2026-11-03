@@ -2562,8 +2562,10 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3 \
 **Auth:** flock: manage
 
 Dry-runs the version over the flock's recent telemetry beside the deployed version, applying
-nothing, and records the result on the version. `403` when the platform has blocked the rule;
-`404` when the rule has no such version; `503` where there is no rules namespace.
+nothing, and records the result on the version. Answers `200` with the `capsules::RuleVersion`,
+its `tested_contract`, `tested_at` and `test_summary` set. `403` when the platform has blocked the
+rule; `404` when the rule has no such version; `503` where there is no rules namespace and `501`
+where the namespace exists but uploads are not built yet.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/test \
@@ -2579,7 +2581,10 @@ Deploys the version and enables the rule. The body is optional: `capsules::RuleD
 Refused before anything is uploaded: `403` when the platform has blocked the rule, `409` when
 this version has no dry run of its exact bytes under the current contract, `409` when enabling
 it would put a 21st rule to work in the flock. `404` when the rule has no such version; `503`
-where there is no rules namespace.
+where there is no rules namespace and `501` where the namespace exists but uploads are not built
+yet. Answers `200` with the `capsules::Rule` as the deploy left it: `deployed_version` names this
+version once the upload finished, and a `pending_version` still naming it means the deploy did
+not finish and can be retried.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/deploy \

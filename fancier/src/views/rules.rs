@@ -3,16 +3,17 @@
 //! dashboard's origin holds the session cookie, so nothing on these pages evaluates it.
 
 use crate::components::{ConfirmModal, DangerAction, DangerZone, JsonViewer};
+use crate::helpers::can_manage_flock;
 use crate::helpers::rule_view::{
-  Badge, failure_groups, hourly_bars, origin_label, parse_recipients, rule_badges, save_origin,
-  test_badge,
+  Badge, bar_hours, deploy_outcome, failure_groups, hourly_bars, hours_ago, origin_label,
+  parse_recipients, rule_badges, save_origin, test_badge, unfinished_deploy, version_label,
 };
 use crate::helpers::telemetry_export::display_utc;
 use crate::{LocalSession, Route, api};
 use capsules::{
-  MAX_RULE_SOURCE_BYTES, Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail, RuleRun,
-  RuleUpdateRequest, RuleValue, RuleVersion, RuleVersionCreateRequest, check_rule_source,
-  normalize_rule_name,
+  MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES, Rule, RuleCreateRequest,
+  RuleDeployRequest, RuleDetail, RuleOrigin, RuleRun, RuleSourceRejection, RuleUpdateRequest,
+  RuleValue, RuleVersion, RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -24,47 +25,11 @@ use uuid::Uuid;
 const SOURCE_ID: &str = "flock-rule-source";
 
 /// What a new rule's editor starts from: a working rule that shows the shape of the contract.
-const STARTER_SOURCE: &str = r#"// Runs over each telemetry batch from each pigeon in this flock.
-// Return alerts, derived values and a state patch; return {} to do nothing.
-import { num } from "./pidgeiot.js";
+/// `dovecote/rules/run-fixtures.mjs` runs the same file through the harness.
+const STARTER_SOURCE: &str = include_str!("../../../dovecote/rules/starter.js");
 
-const LIMIT = 40; // degrees C
-
-export default function (event) {
-  let hottest = null;
-  for (const reading of event.readings) {
-    const t = num(reading.metrics.temp_c);
-    if (t !== null && (hottest === null || t > hottest)) hottest = t;
-  }
-  if (hottest === null) return {};
-  const hot = hottest > LIMIT;
-  // Restated every batch: the platform mails only when the firing flag changes.
-  return {
-    alerts: [{
-      key: "too-hot",
-      kind: hot ? "fire" : "clear",
-      severity: hot ? "warning" : "info",
-      scope: "pigeon",
-      subject: hot ? "Running hot" : "Back to normal",
-      body: "Highest reading in this batch: " + hottest + " C.",
-    }],
-  };
-}
-"#;
-
-/// Whether the caller can change this flock's rules: its own personal flock, or an org flock
-/// where it is an owner or admin. dovecote makes the same check and has the last word.
-fn can_manage(session: &LocalSession, flock_id: Uuid) -> bool {
-  match session.flocks.read().get(&flock_id).map(|f| f.org_id) {
-    Some(None) => true,
-    Some(Some(org)) => session
-      .orgs
-      .read()
-      .get(&org)
-      .is_some_and(|m| m.role.is_manager()),
-    None => false,
-  }
-}
+/// The upload button's file input, cleared after each pick so the same file can be picked again.
+const UPLOAD_ID: &str = "flock-rule-upload";
 
 /// The badges of a rule, in one row that wraps.
 #[component]
@@ -78,6 +43,7 @@ fn RuleBadges(badges: Vec<Badge>) -> Element {
   }
 }
 
+/// `/flocks/:flock_id/rules`: the flock's rules with their status, and New rule.
 #[component]
 pub fn FlockRules(flock_id: Uuid) -> Element {
   let session = use_context::<LocalSession>();
@@ -90,7 +56,7 @@ pub fn FlockRules(flock_id: Uuid) -> Element {
     rules.set(Some(api::rules::list(flock_id).await));
   });
 
-  let manage = can_manage(&session, flock_id);
+  let manage = can_manage_flock(&session, flock_id);
   let flock_name = session
     .flocks
     .read()
@@ -300,7 +266,7 @@ fn CreateRuleModal(
             id: "create-rule-name",
             class: "input input-bordered w-full",
             r#type: "text",
-            maxlength: 120,
+            maxlength: "{MAX_RULE_NAME_BYTES}",
             value: "{name}",
             oninput: move |evt| name.set(evt.value()),
           }
@@ -370,6 +336,21 @@ fn indent_at_caret() -> Option<String> {
   None
 }
 
+/// Empties the upload input, which otherwise fires no change for the same file picked twice.
+#[cfg(feature = "web")]
+fn clear_upload() {
+  use wasm_bindgen::JsValue;
+  if let Some(el) = web_sys::window()
+    .and_then(|w| w.document())
+    .and_then(|d| d.get_element_by_id(UPLOAD_ID))
+  {
+    let _ = js_sys::Reflect::set(&el, &JsValue::from_str("value"), &JsValue::from_str(""));
+  }
+}
+
+#[cfg(not(feature = "web"))]
+fn clear_upload() {}
+
 /// A run's status badge: red for a failure, plain for `ok` and `skipped`.
 fn run_badge_class(status: &str) -> &'static str {
   if crate::helpers::rule_view::is_failure(status) {
@@ -379,25 +360,26 @@ fn run_badge_class(status: &str) -> &'static str {
   }
 }
 
+/// The heading of a test's summary, naming the version it tested.
+fn test_summary_title(version: i32) -> String {
+  let label = version_label(version);
+  let mut title = String::with_capacity(14 + label.len());
+  title.push_str("Test summary, ");
+  title.push_str(&label);
+  title
+}
+
 /// Saves `source` as `rule.js`.
 fn download_source(source: &str) {
   crate::helpers::download_bytes(source.as_bytes(), "rule.js", "text/javascript");
 }
 
-/// A version number as the pages show it.
-fn version_label(version: i32) -> String {
-  let number = version.to_string();
-  let mut label = String::with_capacity(1 + number.len());
-  label.push('v');
-  label.push_str(&number);
-  label
-}
-
+/// `/flocks/:flock_id/rules/:rule_id`: one rule's code, tests, deploys, versions, runs and values.
 #[component]
 pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   let session = use_context::<LocalSession>();
   let nav = use_navigator();
-  let manage = can_manage(&session, flock_id);
+  let manage = can_manage_flock(&session, flock_id);
 
   let mut detail = use_signal(|| None::<Result<RuleDetail, String>>);
   // The editor's text, and the stored version it started from.
@@ -412,7 +394,10 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   let mut tested = use_signal(|| None::<RuleVersion>);
   // Up to two versions open side by side.
   let mut open_versions = use_signal(Vec::<RuleVersion>::new);
+  let versions_note = use_signal(|| None::<String>);
   let mut runs = use_signal(|| None::<Result<Vec<RuleRun>, String>>);
+  let mut watch_note = use_signal(|| None::<Result<String, String>>);
+  let mut watching = use_signal(|| false);
   let mut values = use_signal(|| None::<Result<Vec<RuleValue>, String>>);
   let mut show_delete = use_signal(|| false);
 
@@ -481,14 +466,15 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
     }
   };
 
-  // Saves `text` as the next version and makes it the editor's base.
-  let save = move |text: String| async move {
+  // Saves `text` as the next version and makes it the editor's base. A refused text goes into
+  // the editor, so the error sits under the code it names.
+  let save = move |text: String, origin: RuleOrigin, based_on: Option<i32>| async move {
     save_note.set(None);
     busy.set(true);
     let req = RuleVersionCreateRequest {
       source: text,
-      origin: save_origin(base.read().as_ref()),
-      based_on: base.read().as_ref().map(|b| b.version),
+      origin,
+      based_on,
     };
     let answer = api::rules::save_version(flock_id, rule_id, &req).await;
     busy.set(false);
@@ -505,10 +491,14 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         note.push_str(&version_label(saved.version));
         save_note.set(Some(Ok(note)));
         target.set(Some(saved.version));
+        tested.set(None);
         source.set(saved.source.clone().unwrap_or_default());
         base.set(Some(saved));
       }
-      Err(err) => save_note.set(Some(Err(err))),
+      Err(err) => {
+        source.set(req.source);
+        save_note.set(Some(Err(err)));
+      }
     }
   };
 
@@ -522,20 +512,20 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
     busy.set(false);
     match answer {
       Ok(updated) => {
+        let outcome = deploy_outcome(&updated, version);
         set_rule(updated);
-        let mut note = String::with_capacity(48);
-        note.push_str("Deployed ");
-        note.push_str(&version_label(version));
-        note.push_str(". Rules start within about a minute.");
-        action_note.set(Some(Ok(note)));
+        action_note.set(Some(outcome));
       }
       Err(err) => action_note.set(Some(Err(err))),
     }
   };
 
-  let bars = match runs() {
-    Some(Ok(list)) => hourly_bars(&list, now, 24),
-    _ => Vec::new(),
+  let (bars, runs_full) = match runs() {
+    Some(Ok(list)) => (
+      hourly_bars(&list, now, bar_hours(&list, now, 24)),
+      list.len() >= MAX_RULE_RUNS_PER_PAGE as usize,
+    ),
+    _ => (Vec::new(), false),
   };
   let tallest = bars
     .iter()
@@ -563,7 +553,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         RuleBadges { badges: rule_badges(&rule, now) }
         if let Some(pending) = rule.pending_version {
           div { role: "alert", class: "alert alert-warning alert-soft text-sm flex flex-wrap",
-            span { "The deploy of {version_label(pending)} did not finish. The rule runs as before." }
+            span { "{unfinished_deploy(&rule, pending)}" }
             if manage {
               button {
                 class: "btn btn-sm",
@@ -613,17 +603,22 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
           if let Some(problem) = source_problem {
             p { class: "text-error text-xs", "{problem.message()}" }
           }
-          if manage {
-            div { class: "flex flex-wrap items-center gap-2",
+          div { class: "flex flex-wrap items-center gap-2",
+            if manage {
               button {
                 class: "btn btn-primary btn-sm",
                 disabled: busy() || source_problem.is_some() || unchanged,
-                onclick: move |_| save(source()),
+                onclick: move |_| {
+                    let origin = save_origin(base.read().as_ref());
+                    let based_on = base.read().as_ref().map(|b| b.version);
+                    save(source(), origin, based_on)
+                },
                 "Save as new version"
               }
               label { class: "btn btn-outline btn-sm",
                 "Upload .js"
                 input {
+                  id: UPLOAD_ID,
                   r#type: "file",
                   accept: ".js,.mjs,text/javascript",
                   class: "hidden",
@@ -632,22 +627,33 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                           return;
                       };
                       if file.size() > MAX_RULE_SOURCE_BYTES as u64 {
-                          save_note
-                              .set(Some(Err("The file is over the 64 KiB a rule may be.".to_string())));
+                          clear_upload();
+                          let refused = RuleSourceRejection::TooLarge.message().to_string();
+                          save_note.set(Some(Err(refused)));
                           return;
                       }
-                      match file.read_string().await {
-                          Ok(text) => save(text).await,
-                          Err(_) => save_note.set(Some(Err("The file could not be read.".to_string()))),
+                      let read = file.read_string().await;
+                      clear_upload();
+                      let Ok(text) = read else {
+                          let failed = "The file could not be read.".to_string();
+                          save_note.set(Some(Err(failed)));
+                          return;
+                      };
+                      if check_rule_source(&text).is_err() {
+                          source.set(text);
+                          let held = "The file was not saved. It is in the editor to fix.";
+                          save_note.set(Some(Err(held.to_string())));
+                          return;
                       }
+                      save(text, RuleOrigin::Hand, None).await
                   },
                 }
               }
-              button {
-                class: "btn btn-ghost btn-sm",
-                onclick: move |_| download_source(&source()),
-                "Download"
-              }
+            }
+            button {
+              class: "btn btn-ghost btn-sm",
+              onclick: move |_| download_source(&source()),
+              "Download"
             }
           }
           match save_note() {
@@ -666,11 +672,11 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
           class: "flex flex-col gap-3 min-w-0 bg-base-200/40 border border-base-content/10 rounded-box p-4",
           div { class: "flex flex-wrap items-center gap-2",
             h2 { class: "text-lg font-bold", "Assistant" }
-            span { class: "badge badge-ghost badge-sm", "Coming in stage 2" }
+            span { class: "badge badge-ghost badge-sm", "Not available yet" }
           }
           p { class: "text-sm text-base-content/70",
-            "In stage 2 of the rules rollout, you will describe a rule in words and the assistant "
-            "will draft its code, explain it back to you and test it before you deploy. Until "
+            "The assistant is not available yet. When it is, you will describe a rule in words and "
+            "it will draft the code, explain it back to you and test it before you deploy. Until "
             "then, write the code by hand or start from the example."
           }
           textarea {
@@ -713,7 +719,10 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             select {
               class: "select select-bordered select-sm",
               "aria-label": "Version to test or deploy",
-              onchange: move |evt| target.set(evt.value().parse().ok()),
+              onchange: move |evt| {
+                  target.set(evt.value().parse().ok());
+                  tested.set(None);
+              },
               for v in versions.iter() {
                 option {
                   value: "{v.version}",
@@ -777,8 +786,10 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             },
             None => rsx! {},
         }
-        if let Some(summary) = tested().and_then(|v| v.test_summary) {
-          JsonViewer { json: summary, title: "Test summary".to_string() }
+        if let Some(found) = tested() {
+          if let Some(summary) = found.test_summary {
+            JsonViewer { json: summary, title: test_summary_title(found.version) }
+          }
         }
       }
 
@@ -794,24 +805,39 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                   th { "Version" }
                   th { "Origin" }
                   th { "Test" }
-                  th { "Contract" }
-                  th { "Saved" }
-                  th { class: "text-right", "Actions" }
+                  th { class: "hidden sm:table-cell", "Contract" }
+                  th { class: "hidden sm:table-cell", "Saved" }
+                  th { class: "hidden sm:table-cell text-right", "Actions" }
                 }
               }
               tbody {
                 for v in versions.iter().cloned() {
                   tr { key: "{v.version}",
-                    td { class: "whitespace-nowrap",
-                      span { class: "font-mono", "{version_label(v.version)}" }
-                      if rule.deployed_version == Some(v.version) {
-                        span { class: "badge badge-success badge-sm ms-2", "Live" }
+                    td {
+                      div { class: "whitespace-nowrap",
+                        span { class: "font-mono", "{version_label(v.version)}" }
+                        if rule.deployed_version == Some(v.version) {
+                          span { class: "badge badge-success badge-sm ms-2", "Live" }
+                        }
+                        if rule.pending_version == Some(v.version) {
+                          span { class: "badge badge-warning badge-sm ms-2", "Deploying" }
+                        }
                       }
-                      if rule.pending_version == Some(v.version) {
-                        span { class: "badge badge-warning badge-sm ms-2", "Deploying" }
+                      // The actions sit under the version on a phone, in their own column wider.
+                      div { class: "sm:hidden flex flex-wrap gap-1 mt-1",
+                        VersionActions {
+                          flock_id,
+                          rule_id,
+                          version: v.version,
+                          deployable: manage && rule.deployed_version != Some(v.version),
+                          busy: busy(),
+                          open_versions,
+                          note: versions_note,
+                          on_deploy: move |version| deploy(version),
+                        }
                       }
                     }
-                    td { class: "min-w-56",
+                    td { class: "sm:min-w-56",
                       "{origin_label(v.origin)}"
                       if let Some(prompt) = v.prompt.as_deref() {
                         p { class: "text-xs text-base-content/60 break-words max-w-xs",
@@ -827,50 +853,29 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                           }
                       }
                     }
-                    td { "{v.contract}" }
-                    td { class: "text-xs whitespace-nowrap", "{display_utc(v.created_at)}" }
-                    td { class: "text-right whitespace-nowrap",
-                      {
-                          let version = v.version;
-                          rsx! {
-                            button {
-                              class: "btn btn-ghost btn-xs",
-                              onclick: move |_| async move {
-                                  if let Ok(found) = api::rules::version(flock_id, rule_id, version).await {
-                                      let mut open = open_versions.write();
-                                      open.retain(|o| o.version != version);
-                                      if open.len() == 2 {
-                                          open.remove(0);
-                                      }
-                                      open.push(found);
-                                  }
-                              },
-                              "View"
-                            }
-                            button {
-                              class: "btn btn-ghost btn-xs",
-                              onclick: move |_| async move {
-                                  if let Ok(found) = api::rules::version(flock_id, rule_id, version).await {
-                                      download_source(found.source.as_deref().unwrap_or_default());
-                                  }
-                              },
-                              "Download"
-                            }
-                            if manage && rule.deployed_version != Some(version) {
-                              button {
-                                class: "btn btn-ghost btn-xs text-primary",
-                                disabled: busy(),
-                                onclick: move |_| deploy(version),
-                                "Deploy this version"
-                              }
-                            }
-                          }
+                    td { class: "hidden sm:table-cell", "{v.contract}" }
+                    td { class: "hidden sm:table-cell text-xs whitespace-nowrap",
+                      "{display_utc(v.created_at)}"
+                    }
+                    td { class: "hidden sm:table-cell text-right whitespace-nowrap",
+                      VersionActions {
+                        flock_id,
+                        rule_id,
+                        version: v.version,
+                        deployable: manage && rule.deployed_version != Some(v.version),
+                        busy: busy(),
+                        open_versions,
+                        note: versions_note,
+                        on_deploy: move |version| deploy(version),
                       }
                     }
                   }
                 }
               }
             }
+          }
+          if let Some(err) = versions_note() {
+            p { class: "text-error text-sm break-words", "{err}" }
           }
           if !open_versions.read().is_empty() {
             div { class: "grid gap-4 md:grid-cols-2",
@@ -926,15 +931,29 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
           if manage {
             button {
               class: "btn btn-outline btn-sm",
+              disabled: watching(),
               onclick: move |_| async move {
-                  match api::rules::watch(flock_id, rule_id).await {
-                      Ok(updated) => set_rule(updated),
-                      Err(err) => action_note.set(Some(Err(err))),
+                  watch_note.set(None);
+                  watching.set(true);
+                  let answer = api::rules::watch(flock_id, rule_id).await;
+                  watching.set(false);
+                  match answer {
+                      Ok(updated) => {
+                          set_rule(updated);
+                          let done = "Recording every run for the next hour.";
+                          watch_note.set(Some(Ok(done.to_string())));
+                      }
+                      Err(err) => watch_note.set(Some(Err(err))),
                   }
               },
               "Record every run for 1 hour"
             }
           }
+        }
+        match watch_note() {
+            Some(Ok(note)) => rsx! { p { class: "text-success text-sm", "{note}" } },
+            Some(Err(err)) => rsx! { p { class: "text-error text-sm break-words", "{err}" } },
+            None => rsx! {},
         }
         p { class: "text-sm text-base-content/70 max-w-3xl",
           "Failed runs are always recorded. Quiet successful runs are counted only while the rule "
@@ -950,7 +969,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
               div {
                 class: "flex items-end gap-px h-24 border-b border-base-content/20",
                 role: "img",
-                "aria-label": "Recorded runs per hour over the last 24 hours",
+                "aria-label": "Recorded runs per hour",
                 for bar in bars.iter() {
                   div {
                     key: "{bar.start}",
@@ -972,8 +991,14 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                 }
               }
               div { class: "flex justify-between text-xs text-base-content/60",
-                span { "24 hours ago" }
+                span { "{hours_ago(bars.len())}" }
                 span { "now" }
+              }
+              if runs_full {
+                p { class: "text-xs text-base-content/60",
+                  "Only the newest {MAX_RULE_RUNS_PER_PAGE} recorded runs are shown, so the bars "
+                  "start at the oldest of them."
+                }
               }
               {
                   let groups = failure_groups(&list);
@@ -1047,13 +1072,13 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                       th { "Pigeon" }
                       th { "Key" }
                       th { "Value" }
-                      th { "At" }
+                      th { class: "hidden sm:table-cell", "At" }
                     }
                   }
                   tbody {
                     for value in list {
                       tr {
-                        td { class: "font-mono text-xs whitespace-nowrap",
+                        td { class: "font-mono text-xs break-all",
                           {
                               session
                                   .pigeons
@@ -1063,9 +1088,16 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                                   .unwrap_or_else(|| value.pigeon_id.clone())
                           }
                         }
-                        td { class: "font-mono text-xs whitespace-nowrap", "{value.key}" }
-                        td { class: "font-mono text-xs break-all", "{value.value}" }
-                        td { class: "text-xs whitespace-nowrap", "{display_utc(value.at)}" }
+                        td { class: "font-mono text-xs break-all", "{value.key}" }
+                        td { class: "font-mono text-xs break-all",
+                          "{value.value}"
+                          span { class: "sm:hidden block font-sans text-base-content/60 break-normal",
+                            "{display_utc(value.at)}"
+                          }
+                        }
+                        td { class: "hidden sm:table-cell text-xs whitespace-nowrap",
+                          "{display_utc(value.at)}"
+                        }
                       }
                     }
                   }
@@ -1102,6 +1134,61 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   }
 }
 
+/// A version's View, Download and Deploy this version. A failed read lands in `note`.
+#[component]
+fn VersionActions(
+  flock_id: Uuid,
+  rule_id: Uuid,
+  version: i32,
+  deployable: bool,
+  busy: bool,
+  open_versions: Signal<Vec<RuleVersion>>,
+  note: Signal<Option<String>>,
+  on_deploy: EventHandler<i32>,
+) -> Element {
+  let mut open_versions = open_versions;
+  let mut note = note;
+  rsx! {
+    button {
+      class: "btn btn-ghost btn-xs",
+      onclick: move |_| async move {
+          note.set(None);
+          match api::rules::version(flock_id, rule_id, version).await {
+              Ok(found) => {
+                  let mut open = open_versions.write();
+                  open.retain(|o| o.version != version);
+                  if open.len() == 2 {
+                      open.remove(0);
+                  }
+                  open.push(found);
+              }
+              Err(err) => note.set(Some(err)),
+          }
+      },
+      "View"
+    }
+    button {
+      class: "btn btn-ghost btn-xs",
+      onclick: move |_| async move {
+          note.set(None);
+          match api::rules::version(flock_id, rule_id, version).await {
+              Ok(found) => download_source(found.source.as_deref().unwrap_or_default()),
+              Err(err) => note.set(Some(err)),
+          }
+      },
+      "Download"
+    }
+    if deployable {
+      button {
+        class: "btn btn-ghost btn-xs text-primary",
+        disabled: busy,
+        onclick: move |_| on_deploy.call(version),
+        "Deploy this version"
+      }
+    }
+  }
+}
+
 /// Name, recipients and the on/off switch. Each save answers with the rule, which replaces the
 /// page's copy.
 #[component]
@@ -1115,8 +1202,14 @@ fn RuleSettings(flock_id: Uuid, rule: Rule, on_saved: EventHandler<Rule>) -> Ele
 
   let send = move |req: RuleUpdateRequest, done: &'static str| async move {
     note.set(None);
+    // dovecote lowercases and de-duplicates recipients, so a settings save shows what it stored.
+    let refresh = req.name.is_some();
     match api::rules::update(flock_id, rule_id, &req).await {
       Ok(updated) => {
+        if refresh {
+          name.set(updated.name.clone());
+          recipients.set(updated.recipients.join(", "));
+        }
         on_saved.call(updated);
         note.set(Some(Ok(done)));
       }
@@ -1157,7 +1250,7 @@ fn RuleSettings(flock_id: Uuid, rule: Rule, on_saved: EventHandler<Rule>) -> Ele
           input {
             id: "rule-settings-name",
             class: "input input-bordered w-full",
-            maxlength: 120,
+            maxlength: "{MAX_RULE_NAME_BYTES}",
             value: "{name}",
             oninput: move |evt| name.set(evt.value()),
           }
@@ -1235,5 +1328,15 @@ fn DeleteRuleModal(
         span { class: "block text-error mt-2 break-words", "{err}" }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn the_starter_passes_the_editors_own_screen() {
+    assert_eq!(check_rule_source(STARTER_SOURCE), Ok(()));
   }
 }

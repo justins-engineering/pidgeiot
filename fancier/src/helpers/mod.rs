@@ -92,3 +92,18 @@ pub mod pricing_data;
 pub mod tco_data;
 
 pub mod rule_view;
+
+/// Whether the caller can manage a flock: its own personal flock, or an org flock where it is an
+/// owner or admin. dovecote makes the same check and has the last word.
+pub fn can_manage_flock(session: &crate::LocalSession, flock_id: uuid::Uuid) -> bool {
+  use dioxus::prelude::ReadableExt;
+  match session.flocks.read().get(&flock_id).map(|f| f.org_id) {
+    Some(None) => true,
+    Some(Some(org)) => session
+      .orgs
+      .read()
+      .get(&org)
+      .is_some_and(|m| m.role.is_manager()),
+    None => false,
+  }
+}

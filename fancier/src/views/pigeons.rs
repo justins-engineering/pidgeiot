@@ -72,19 +72,9 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
     .as_ref()
     .map(|f| f.name.clone())
     .unwrap_or_else(|| "Flock".to_string());
-  // Same rule dovecote applies to the delete: a personal flock in this cache
-  // is the caller's own, an org-owned one needs owner/admin in that org.
-  let can_manage = match flock.as_ref() {
-    Some(f) => match f.org_id {
-      None => true,
-      Some(org) => binding
-        .orgs
-        .read()
-        .get(&org)
-        .is_some_and(|m| m.role.is_manager()),
-    },
-    None => false,
-  };
+  let can_manage = crate::helpers::can_manage_flock(&binding, flock_id);
+  // Rules are open only to organizations; a personal flock's rule routes always refuse.
+  let org_flock = flock.as_ref().is_some_and(|f| f.org_id.is_some());
 
   let mut search = use_signal(String::new);
   // Scoped to this flock's own pigeon_ids, not the full LocalSession.pigeons
@@ -339,20 +329,22 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           FlockAlerts { flock_id }
         }
 
-        section {
-          id: "flock-rules",
-          class: "mt-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-base-100 border border-base-content/10 rounded-box p-6",
-          div {
-            h2 { class: "text-lg font-bold", "Rules" }
-            p { class: "text-sm text-base-content/70 max-w-2xl",
-              "Code you write that runs over each telemetry batch from this flock, for alerts "
-              "and derived values the built-in alerts cannot express."
+        if org_flock {
+          section {
+            id: "flock-rules",
+            class: "mt-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-base-100 border border-base-content/10 rounded-box p-6",
+            div {
+              h2 { class: "text-lg font-bold", "Rules" }
+              p { class: "text-sm text-base-content/70 max-w-2xl",
+                "Code you write that runs over each telemetry batch from this flock, for alerts "
+                "and derived values the built-in alerts cannot express."
+              }
             }
-          }
-          Link {
-            to: Route::FlockRules { flock_id },
-            class: "btn btn-outline btn-sm shrink-0",
-            "Open rules"
+            Link {
+              to: Route::FlockRules { flock_id },
+              class: "btn btn-outline btn-sm shrink-0",
+              "Open rules"
+            }
           }
         }
 

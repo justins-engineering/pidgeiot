@@ -4,7 +4,7 @@
 //! state from the answers, a mutation's included (Hyperdrive may serve a re-read from before it).
 
 use crate::api::fetch_json_any_status;
-use crate::api::orgs::error_text;
+use crate::api::orgs::{error_text, parse, to_body};
 use capsules::{
   Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail, RuleRun, RuleUpdateRequest, RuleValue,
   RuleVersion, RuleVersionCreateRequest,
@@ -12,7 +12,6 @@ use capsules::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
-use wasm_bindgen_futures::JsFuture;
 
 /// `/flocks/<flock_id>/rules`, then `/<rule_id>` and `tail` when given.
 fn rule_path(flock_id: Uuid, rule_id: Option<Uuid>, tail: &str) -> String {
@@ -47,10 +46,10 @@ async fn call<T: DeserializeOwned>(
 ) -> Result<T, String> {
   let body = match body {
     Some(body) => {
-      let Ok(json) = serde_json::to_string(body) else {
+      let Some(json) = to_body(body) else {
         return Err("Failed to encode request".to_string());
       };
-      Some(serde_wasm_bindgen::to_value(&json).map_err(|_| "Failed to encode request")?)
+      Some(json)
     }
     None => None,
   };
@@ -60,13 +59,10 @@ async fn call<T: DeserializeOwned>(
   if !response.ok() {
     return Err(error_text(&response).await);
   }
-  let Some(json) = response.json().ok() else {
+  let Some(parsed) = parse::<T>(response).await else {
     return Err("Failed to parse response".to_string());
   };
-  let Ok(json) = JsFuture::from(json).await else {
-    return Err("Failed to parse response".to_string());
-  };
-  serde_wasm_bindgen::from_value(json).map_err(|_| "Failed to parse response".to_string())
+  Ok(parsed)
 }
 
 /// `GET /flocks/:flock_id/rules`, newest first.
@@ -125,13 +121,14 @@ pub async fn version(flock_id: Uuid, rule_id: Uuid, version: i32) -> Result<Rule
   call("GET", &path, None::<&()>).await
 }
 
-/// `POST .../versions/:version/test`: the version with its new test record.
+/// `POST .../versions/:version/test`: the version with its new test record and summary.
 pub async fn test(flock_id: Uuid, rule_id: Uuid, version: i32) -> Result<RuleVersion, String> {
   let path = rule_path(flock_id, Some(rule_id), &version_tail(version, "/test"));
   call("POST", &path, None::<&()>).await
 }
 
-/// `POST .../versions/:version/deploy`: the rule as the deploy left it.
+/// `POST .../versions/:version/deploy`: the rule as the deploy left it, which still names the
+/// version in `pending_version` when the upload did not finish.
 pub async fn deploy(
   flock_id: Uuid,
   rule_id: Uuid,

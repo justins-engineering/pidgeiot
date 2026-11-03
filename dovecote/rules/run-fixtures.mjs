@@ -228,6 +228,21 @@ function mails(runs, events) {
   check("held restarts from a stored since of another shape", t.since === T0 && !t.held);
 }
 
+// The starter every new rule's editor opens on: mails once when a batch runs hot, once when it
+// cools, and does nothing for a batch without the key.
+{
+  const run = async (metrics) => outOf((await call({ mode: "live", wall_ms: 250,
+    common: ev("a", T0, metrics), rules: [{ id: "starter", version: 1, state: fresh }] }))
+    .results[0]);
+  const hot = await run({ temp_c: "41.5" });
+  check("the starter fires above its limit",
+    hot.alerts.length === 1 && hot.alerts[0].kind === "fire" && hot.alerts[0].key === "too-hot");
+  check("the starter clears below it", (await run({ temp_c: "20" })).alerts[0].kind === "clear");
+  const quiet = await call({ mode: "live", wall_ms: 250, common: ev("a", T0, { rssi_dbm: "-70" }),
+    rules: [{ id: "starter", version: 1, state: fresh }] });
+  check("the starter does nothing without its key", quiet.results[0].out_json === "{}");
+}
+
 // Contract fixtures every rule must pass: whatever the batch or the stored state holds, each
 // answers ok, inside the alert and value counts, with an alert key once per scope.
 {
@@ -259,7 +274,7 @@ function mails(runs, events) {
   ];
   for (const [name, common, state] of cases) {
     const live = await call({ mode: "live", wall_ms: 250, common,
-      rules: ["r6", "r7", "r10"].map((id) => ({ id, version: 1, state })) });
+      rules: ["r6", "r7", "r10", "starter"].map((id) => ({ id, version: 1, state })) });
     check("every rule takes " + name,
       live.results.every((r) => r.status === "ok" && inCaps(outOf(r))));
   }
