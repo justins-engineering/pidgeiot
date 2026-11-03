@@ -176,5 +176,22 @@ function mails(runs, events) {
     mails(seeded.rules[0].runs, one).some((m) => m.kind === "fire" && m.i === 0));
 }
 
+// R6 against what dovecote refuses: a C1 control in device text, and two watchdog boots in one
+// batch, 20 s apart, whose times round to one minute's key.
+{
+  const c1 = ev("a", T0, { reset_cause: "16", reset_stage: "fetch\u0085tls", uptime_s: "5" });
+  const one = await call({ mode: "live", wall_ms: 250, common: c1,
+    rules: [{ id: "r6", version: 1, state: fresh }] });
+  check("R6 strips C1 controls from device text",
+    !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(outOf(one.results[0]).alerts[0].body));
+  const two = ev("a", T0 + 5, { reset_cause: "16", uptime_s: "5" });
+  two.readings.push({ at: T0 + 25, metrics: { reset_cause: "16", uptime_s: "5" }, previous: {} });
+  const r = await call({ mode: "live", wall_ms: 250, common: two,
+    rules: [{ id: "r6", version: 1, state: fresh }] });
+  const keys = outOf(r.results[0]).alerts.map((a) => a.key);
+  check("R6 gives a minute's key once in one result",
+    keys.length === 1 && outOf(r.results[0]).state.pigeon.lastBoot === T0 + 20);
+}
+
 console.log(failures === 0 ? "all fixtures pass" : failures + " fixture(s) failed");
 process.exitCode = failures === 0 ? 0 : 1;

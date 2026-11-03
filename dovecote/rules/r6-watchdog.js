@@ -9,8 +9,8 @@ const STAGE_FRESH_SECS = 600;
 const RESEND_SECS = 10; // the same report resent is dated a few seconds apart
 const STAGE_CHARS = 200; // keeps the body under its 1,024-byte cap
 
-// Device text in a mail: control characters are refused there, and length is capped.
-const clean = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, max);
+// Device text in a mail: control characters (Unicode Cc) are refused there, and length is capped.
+const clean = (s, max) => String(s).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, max);
 
 export default function watchdogReset(event) {
   const saved = event.state.pigeon;
@@ -29,9 +29,12 @@ export default function watchdogReset(event) {
     const boot = r.at - (num(r.metrics.uptime_s) ?? 0); // uptime dates the boot itself
     if (lastBoot !== null && Math.abs(boot - lastBoot) <= RESEND_SECS) continue;
     lastBoot = boot;
+    const key = "watchdog-" + Math.round(boot / 60); // the boot's minute: a repeat mails once
+    // A key may appear once per result: a second boot in the same minute rides the first mail.
+    if (alerts.some((a) => a.key === key)) continue;
     const fresh = stage !== null && Math.abs(r.at - stageAt) <= STAGE_FRESH_SECS;
     alerts.push({
-      key: "watchdog-" + Math.round(boot / 60), // one key per boot, so a repeat mails once
+      key,
       kind: "notify",
       severity: "critical",
       scope: "pigeon",
