@@ -37,10 +37,13 @@ pub const FIELD_PIGEONS: [&str; 3] = [
 /// One budget of wall time for a whole live dispatch, all rules together, kept by the harness.
 pub const HARNESS_WALL_MS: u32 = 250;
 
-/// CPU per live dispatch, shared by the bundle; set per call and in the upload metadata.
+/// CPU per live dispatch, shared by the bundle. Only the upload metadata binds it: a per-call
+/// `cpuMs` is ignored. The platform often grants about 2 s more before the kill, so a dispatch
+/// can cost about 2.05 s of CPU, and a kill that late reaches us as the 2 s race's loss.
 pub const RULE_CPU_MS: u32 = 50;
 
-/// CPU for a dry run's test script, which replays days of telemetry in one call.
+/// CPU for a dry run's test script, which replays days of telemetry in one call. With the grace
+/// of [`RULE_CPU_MS`] a call can spend about 4 s.
 pub const TEST_RULE_CPU_MS: u32 = 2_000;
 
 /// The most one rule's entry takes in a response: its result escaped twice, its logs, framing
@@ -347,7 +350,8 @@ pub fn read_cap(rules: usize) -> usize {
 pub enum DispatchOutcome {
   /// The namespace binding was missing or had no `get`: the platform's failure.
   Binding,
-  /// The call rejected or lost the 2 s race. `cpu_limit` when the rejection said so.
+  /// The call rejected or lost the 2 s race. `cpu_limit` when the rejection said so, which a
+  /// CPU kill after the platform's grace never does: it lands after the race.
   Failed {
     /// See [`is_cpu_limit`].
     cpu_limit: bool,
@@ -382,7 +386,7 @@ pub enum RunStatus {
   VersionMismatch,
   /// A result the harness or the validator refused.
   BadOutput,
-  /// The dispatch hit its CPU limit.
+  /// The dispatch hit its CPU limit inside the 2 s race.
   CpuLimit,
   /// The response was over [`read_cap`].
   Oversize,
@@ -1177,8 +1181,9 @@ fn concat2(a: &str, b: &str) -> String {
   s
 }
 
-/// The upload's metadata part. Every field is stated so nothing is inherited: no bindings, no
-/// subrequests, CPU per [`ScriptKind`], observability off. `subject` is the flock's uuid for a
+/// The upload's metadata part, the only place the CPU limit binds. Every field is stated so
+/// nothing is inherited: no bindings, CPU per [`ScriptKind`], observability off. `subrequests: 0`
+/// stops no egress; the namespace's outbound Worker does. `subject` is the flock's uuid for a
 /// live bundle and the rule's for a dry run; `account` is the owning org or user.
 pub fn upload_metadata(
   kind: ScriptKind,
