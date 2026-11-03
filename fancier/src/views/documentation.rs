@@ -142,7 +142,7 @@ pub fn DocumentationPage() -> Element {
               }
             }
             p { class: "text-base-content/70 leading-relaxed",
-              "The Dashboard page sums up every flock you can see: how many devices are online, which flocks they sit in, and which alerts are firing. Alerts send email when a value crosses a threshold or changes too fast, when a device goes stale or offline, or when its reports stop."
+              "The Dashboard page sums up every flock you can see: how many devices are online, which flocks they sit in, and which flock alerts are firing. Alerts send email when a value crosses a threshold or changes too fast, when a device goes stale or offline, or when its reports stop."
             }
           }
           div {
@@ -161,7 +161,7 @@ pub fn DocumentationPage() -> Element {
                 ", to pull readings into your own tools."
               }
               li {
-                "Forwarding: set a pigeon's Telemetry Endpoint and every report goes to a time-series database you run, as InfluxDB line protocol, in place of our history store. Only numeric values are forwarded. Threshold and rate-of-change alerts need the history we keep, so they stop for that pigeon; offline, stale and missing-report alerts keep working."
+                "Forwarding: set a pigeon's Telemetry Endpoint and every report goes to a time-series database you run, as InfluxDB line protocol, in place of our history store. A numeric value arrives as a number and any other value as a string. Threshold and rate-of-change alerts need the history we keep, so they stop for that pigeon; offline, stale and missing-report alerts keep working."
               }
             }
           }
