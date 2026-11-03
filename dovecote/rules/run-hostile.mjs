@@ -1,6 +1,7 @@
 // Hostile rules through the harness: each failure stays that rule's, and the response is JSON.
 // `bun run-hostile.mjs`. The harness imports its manifest as ./rules.js, so it runs from a
-// scratch copy holding hostile/ in place of the worked rules.
+// scratch copy holding hostile/ in place of the worked rules (under RULES_URL, from the copy
+// run-workerd.mjs serves instead).
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

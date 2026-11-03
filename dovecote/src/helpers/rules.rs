@@ -82,7 +82,8 @@ pub const REPLAY_MAX_READINGS: usize = 4_000;
 
 /// The compatibility date every rules script is uploaded with, moved only deliberately. It is
 /// kept apart from dovecote's own date so a dovecote bump does not change the runtime of rules
-/// tested under this one.
+/// tested under this one. `rules/run-workerd.mjs` reads this declaration's text, so it stays
+/// one `&str` literal.
 pub const RULES_COMPATIBILITY_DATE: &str = "2026-10-26";
 
 /// Bounds on the assistant's synthetic test cases, which structured outputs do not enforce.
