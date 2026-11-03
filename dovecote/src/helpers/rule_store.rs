@@ -18,6 +18,7 @@ use crate::helpers::rules::{
 };
 use capsules::{RuleAlertKind, RuleAlertScope};
 use serde_json::{Map, Value};
+use time::OffsetDateTime;
 use tokio_postgres::{Client, Transaction, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
@@ -354,6 +355,119 @@ pub async fn claim_mail(
     )
     .await?;
   Ok(row.get(0))
+}
+
+/// How long a deploy holds its flock's lease; the upload it guards is aborted at 30 s.
+pub const DEPLOY_LEASE_SECS: i64 = 60;
+
+/// Takes the lease, creating the flock's bundle row with the contract and tag it will be uploaded
+/// at when there is none. One upsert, so of two concurrent deploys exactly one gets the row.
+const TAKE_LEASE_SQL: &str = "INSERT INTO rule_bundles AS b
+    (flock_id, contract, account_tag, deploy_until)
+  VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+  ON CONFLICT (flock_id) DO UPDATE SET deploy_until = EXCLUDED.deploy_until
+  WHERE b.deploy_until < now()
+  RETURNING deploy_until";
+
+/// Frees the lease only while it is still the one taken, so a deploy that overran it never
+/// frees the next deploy's.
+const RELEASE_LEASE_SQL: &str = "UPDATE rule_bundles SET deploy_until = 'epoch'
+  WHERE flock_id = $1 AND deploy_until = $2
+  RETURNING 1";
+
+/// Takes `flock_id`'s deploy lease for [`DEPLOY_LEASE_SECS`]. `None` means a deploy is in
+/// progress (the route's 409); `Some` carries the lease to hand back to
+/// [`release_deploy_lease`]. A lease rather than an advisory lock, whose session behind
+/// Hyperdrive is not something to rely on.
+pub async fn take_deploy_lease(
+  client: &Client,
+  flock_id: Uuid,
+  contract: i32,
+  account_tag: &str,
+) -> std::result::Result<Option<OffsetDateTime>, tokio_postgres::Error> {
+  let secs = DEPLOY_LEASE_SECS as f64;
+  let rows = client
+    .query_typed(
+      TAKE_LEASE_SQL,
+      &[
+        (&flock_id, Type::UUID),
+        (&contract, Type::INT4),
+        (&account_tag, Type::TEXT),
+        (&secs, Type::FLOAT8),
+      ],
+    )
+    .await?;
+  Ok(rows.first().map(|row| row.get(0)))
+}
+
+/// Releases the lease [`take_deploy_lease`] returned. False when it had already expired and
+/// another deploy took it.
+pub async fn release_deploy_lease(
+  client: &Client,
+  flock_id: Uuid,
+  lease: OffsetDateTime,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let rows = client
+    .query_typed(
+      RELEASE_LEASE_SQL,
+      &[(&flock_id, Type::UUID), (&lease, Type::TIMESTAMPTZ)],
+    )
+    .await?;
+  Ok(!rows.is_empty())
+}
+
+/// What one assistant call cost, as the model that served it reported it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AssistantUsage {
+  /// Uncached input tokens.
+  pub input_tokens: i64,
+  /// Output tokens.
+  pub output_tokens: i64,
+  /// Input tokens read from the prompt cache.
+  pub cache_read_tokens: i64,
+  /// Input tokens written to the prompt cache.
+  pub cache_write_tokens: i64,
+  /// The call's price in millionths of a dollar.
+  pub cost_micro_usd: i64,
+}
+
+/// Adds one turn to the account's and the platform's rows for the UTC day of `$2`.
+const ASSISTANT_TURN_SQL: &str = "INSERT INTO rule_usage AS u (scope, day, assistant_turns,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro_usd)
+  SELECT s, (to_timestamp($2) AT TIME ZONE 'UTC')::date, 1, $3, $4, $5, $6, $7
+  FROM unnest(ARRAY[$1, 'platform']) AS s
+  ON CONFLICT (scope, day) DO UPDATE SET
+    assistant_turns = u.assistant_turns + 1,
+    input_tokens = u.input_tokens + EXCLUDED.input_tokens,
+    output_tokens = u.output_tokens + EXCLUDED.output_tokens,
+    cache_read_tokens = u.cache_read_tokens + EXCLUDED.cache_read_tokens,
+    cache_write_tokens = u.cache_write_tokens + EXCLUDED.cache_write_tokens,
+    cost_micro_usd = u.cost_micro_usd + EXCLUDED.cost_micro_usd";
+
+/// Records one assistant call at `now` against `account` (the flock owner's organization or
+/// user id, as text) and the platform. Every call counts, refused and explain-back ones included,
+/// and nothing is ever taken back, so deleting a rule refunds no allowance.
+pub async fn record_assistant_turn(
+  client: &Client,
+  account: &str,
+  now: i64,
+  usage: &AssistantUsage,
+) -> std::result::Result<(), tokio_postgres::Error> {
+  client
+    .query_typed(
+      ASSISTANT_TURN_SQL,
+      &[
+        (&account, Type::TEXT),
+        (&now, Type::INT8),
+        (&usage.input_tokens, Type::INT8),
+        (&usage.output_tokens, Type::INT8),
+        (&usage.cache_read_tokens, Type::INT8),
+        (&usage.cache_write_tokens, Type::INT8),
+        (&usage.cost_micro_usd, Type::INT8),
+      ],
+    )
+    .await?;
+  Ok(())
 }
 
 #[cfg(test)]
@@ -904,6 +1018,144 @@ pub(crate) mod pg {
         PLATFORM_RULE_MAIL_PER_DAY
       );
       drop(client);
+      db.drop().await;
+    });
+  }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_two_concurrent_deploys_leave_one_holding_the_lease() {
+    run(async {
+      let db = Scratch::new("lease").await;
+      let a = db.client().await;
+      let b = db.client().await;
+      let b_pid = pid(&b).await;
+
+      // Forced: the first deploy's insert is uncommitted when the second arrives.
+      let flock = new_flock(&a, None).await;
+      a.batch_execute("BEGIN").await.expect("begin");
+      let held = take_deploy_lease(&a, flock, 1, "acct-x")
+        .await
+        .expect("lease")
+        .expect("the first deploy holds it");
+      let second = tokio::spawn(async move {
+        let got = take_deploy_lease(&b, flock, 1, "acct-x")
+          .await
+          .expect("lease");
+        (b, got)
+      });
+      wait_until_blocked(b_pid).await;
+      a.batch_execute("COMMIT").await.expect("commit");
+      let (b, got) = second.await.expect("second caller");
+      assert_eq!(got, None);
+
+      // Unforced: both race on fresh flocks, existing rows and missing ones alike.
+      for round in 0..20 {
+        let flock = new_flock(&a, None).await;
+        if round % 2 == 1 {
+          let lease = take_deploy_lease(&a, flock, 1, "acct-x")
+            .await
+            .expect("lease");
+          release_deploy_lease(&a, flock, lease.expect("free"))
+            .await
+            .expect("release");
+        }
+        let (one, two) = futures::join!(
+          take_deploy_lease(&a, flock, 1, "acct-x"),
+          take_deploy_lease(&b, flock, 1, "acct-x"),
+        );
+        let holders = [one.expect("lease"), two.expect("lease")];
+        assert_eq!(holders.iter().flatten().count(), 1);
+      }
+
+      // A lease that outlived its deploy is taken over, and the late holder cannot free it.
+      a.execute(
+        "UPDATE rule_bundles SET deploy_until = now() - interval '1 second' WHERE flock_id = $1",
+        &[&flock],
+      )
+      .await
+      .expect("lease expired");
+      let taken = take_deploy_lease(&b, flock, 1, "acct-x")
+        .await
+        .expect("lease")
+        .expect("an expired lease is free");
+      assert!(
+        !release_deploy_lease(&a, flock, held)
+          .await
+          .expect("release")
+      );
+      assert_eq!(
+        take_deploy_lease(&a, flock, 1, "acct-x")
+          .await
+          .expect("lease"),
+        None
+      );
+      assert!(
+        release_deploy_lease(&b, flock, taken)
+          .await
+          .expect("release")
+      );
+      assert!(
+        take_deploy_lease(&a, flock, 1, "acct-x")
+          .await
+          .expect("lease")
+          .is_some()
+      );
+      drop((a, b));
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_assistant_turns_land_on_the_account_and_the_platform() {
+    run(async {
+      let db = Scratch::new("usage").await;
+      let a = db.client().await;
+      let b = db.client().await;
+      let turn = AssistantUsage {
+        input_tokens: 3_000,
+        output_tokens: 1_200,
+        cache_read_tokens: 9_000,
+        cache_write_tokens: 4_000,
+        cost_micro_usd: 130_000,
+      };
+      let now = DAY + 30;
+      let (one, two) = futures::join!(
+        record_assistant_turn(&a, "acct-a", now, &turn),
+        record_assistant_turn(&b, "acct-a", now, &turn),
+      );
+      one.expect("turn recorded");
+      two.expect("turn recorded");
+      record_assistant_turn(&a, "acct-b", now, &turn)
+        .await
+        .expect("turn recorded");
+      record_assistant_turn(&a, "acct-a", now + 86_400, &turn)
+        .await
+        .expect("turn recorded");
+      let totals = |scope: &'static str, at: i64| {
+        let a = &a;
+        async move {
+          let row = a
+            .query_one(
+              "SELECT assistant_turns, input_tokens, output_tokens, cache_read_tokens,
+                 cache_write_tokens, cost_micro_usd FROM rule_usage
+               WHERE scope = $1 AND day = (to_timestamp($2::bigint) AT TIME ZONE 'UTC')::date",
+              &[&scope, &at],
+            )
+            .await
+            .expect("usage row");
+          let turns: i32 = row.get(0);
+          let sums: [i64; 5] = std::array::from_fn(|i| row.get(i + 1));
+          (turns, sums)
+        }
+      };
+      let times = |n: i64| [3_000 * n, 1_200 * n, 9_000 * n, 4_000 * n, 130_000 * n];
+      assert_eq!(totals("acct-a", now).await, (2, times(2)));
+      assert_eq!(totals("acct-b", now).await, (1, times(1)));
+      assert_eq!(totals("platform", now).await, (3, times(3)));
+      assert_eq!(totals("acct-a", now + 86_400).await, (1, times(1)));
+      assert_eq!(totals("platform", now + 86_400).await, (1, times(1)));
+      drop((a, b));
       db.drop().await;
     });
   }
