@@ -1,10 +1,11 @@
 use capsules::TelemetryEndpoint;
 use worker::{
-  Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result, Url,
+  Context, Date, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result, Url,
   console_error, console_log, event,
 };
 
 use crate::helpers::ResolvedReading;
+use crate::helpers::rules::{PassLedger, PreGate, RuleWork, pass_vars, pre_gate};
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
   build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
@@ -119,6 +120,9 @@ impl TelemetryMessage {
 /// pigeon's DO, keeping the DO's SQLite `pigeon_telemetry` table as the
 /// store. Acks/retries per-message rather than failing the whole batch, so
 /// one malformed pigeon_id doesn't hold up every other device's report.
+///
+/// Rules run in a second pass after every message is handled, so a slow rule never delays the
+/// next message's history and alerts, which may be another tenant's.
 #[event(queue)]
 pub async fn queue_consumer(
   message_batch: MessageBatch<TelemetryMessage>,
@@ -131,9 +135,11 @@ pub async fn queue_consumer(
     return Ok(());
   };
 
+  let mut work = Vec::new();
   for message in message_batch.messages()? {
-    dispatch_to_do(&namespace, &env, &message).await;
+    dispatch_to_do(&namespace, &env, &message, &mut work).await;
   }
+  run_rules(&env, work).await;
 
   Ok(())
 }
@@ -142,6 +148,7 @@ async fn dispatch_to_do(
   namespace: &worker::ObjectNamespace,
   env: &Env,
   message: &Message<TelemetryMessage>,
+  work: &mut Vec<RuleWork>,
 ) {
   let body = message.body();
 
@@ -183,9 +190,9 @@ async fn dispatch_to_do(
   };
 
   if body.already_merged() {
-    dispatch_pre_merged(&stub, env, message, readings).await
+    dispatch_pre_merged(&stub, env, message, readings, work).await
   } else {
-    dispatch_write(&stub, env, message, readings).await
+    dispatch_write(&stub, env, message, readings, work).await
   }
 }
 
@@ -199,6 +206,7 @@ async fn dispatch_write(
   env: &Env,
   message: &Message<TelemetryMessage>,
   readings: Vec<ResolvedReading>,
+  work: &mut Vec<RuleWork>,
 ) {
   let body = message.body();
 
@@ -243,6 +251,7 @@ async fn dispatch_write(
             result.telemetry_endpoint.as_ref(),
           )
           .await;
+          push_work(work, body, false, result.readings);
         }
         Err(e) => {
           // Fall back to the readings the message itself carried, which
@@ -258,6 +267,7 @@ async fn dispatch_write(
             body.pigeon_id
           );
           store_and_alert(env, &body.pigeon_id, &readings, None).await;
+          push_work(work, body, true, readings);
         }
       }
     }
@@ -295,6 +305,7 @@ async fn dispatch_pre_merged(
   env: &Env,
   message: &Message<TelemetryMessage>,
   readings: Vec<ResolvedReading>,
+  work: &mut Vec<RuleWork>,
 ) {
   let body = message.body();
 
@@ -331,6 +342,7 @@ async fn dispatch_pre_merged(
       };
 
       store_and_alert(env, &body.pigeon_id, &readings, telemetry_endpoint.as_ref()).await;
+      push_work(work, body, false, readings);
     }
     Ok(resp) => {
       console_error!(
@@ -348,6 +360,54 @@ async fn dispatch_pre_merged(
       message.retry();
     }
   }
+}
+
+/// Queues a message's batch for the second pass once pass 1 has used it. `degraded` marks the
+/// enqueued fallback, whose `previous` only the Durable Object could have filled. The batch id
+/// hashes the payload exactly as enqueued, so a redelivery repeats it.
+fn push_work(
+  work: &mut Vec<RuleWork>,
+  body: &TelemetryMessage,
+  degraded: bool,
+  readings: Vec<ResolvedReading>,
+) {
+  let payload = body.readings_json.as_deref().unwrap_or(&body.metrics_json);
+  if let Some(item) = RuleWork::new(&body.pigeon_id, payload, degraded, readings) {
+    work.push(item);
+  }
+}
+
+/// The second pass: each batch pass 1 handled goes to its flock's rules, in order, until
+/// [`crate::helpers::rules::PASS_BUDGET_MS`] is spent. The messages are already acked, so nothing
+/// here retries, re-bills or re-alerts, and nothing returns an error. With `RULES_DISPATCH` not
+/// `"on"` it returns having read that var alone.
+async fn run_rules(env: &Env, work: Vec<RuleWork>) {
+  if work.is_empty() {
+    return;
+  }
+  let Some(vars) = pass_vars(|name| env.var(name).ok().map(|v| v.to_string())) else {
+    return;
+  };
+
+  let ledger = PassLedger::new(Date::now().as_millis());
+  let mut gated = 0usize;
+  let mut skipped = 0usize;
+  for item in &work {
+    let gate = pre_gate(
+      &item.pigeon_id,
+      Some(&vars.dispatch),
+      vars.excluded.as_deref(),
+    );
+    if gate != PreGate::Lookup {
+      continue;
+    }
+    if ledger.budget_spent(Date::now().as_millis()) {
+      skipped += 1;
+      continue;
+    }
+    gated += 1;
+  }
+  console_log!("Rules pass: {gated} batch(es) through the gates, {skipped} skipped for the budget");
 }
 
 /// Shared "where does this report's history go, and should it trip an
@@ -470,7 +530,115 @@ fn redact_endpoint_host(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use super::{TelemetryMessage, redact_endpoint_host};
+  use super::{TelemetryMessage, push_work, redact_endpoint_host};
+  use crate::helpers::ResolvedReading;
+  use crate::helpers::rules::{RuleWork, batch_id};
+  use serde_json::json;
+
+  fn batch() -> String {
+    let readings = json!([
+      {"at_secs": 1_760_000_000, "metrics": {"t": "20"}},
+      {"at_secs": 1_760_000_010, "metrics": {"t": "21"}},
+    ]);
+    json!({"pigeon_id": "p1", "reported_at_ms": 1, "readings_json": readings.to_string()})
+      .to_string()
+  }
+
+  fn flat() -> String {
+    json!({"pigeon_id": "p2", "reported_at_ms": 1, "metrics_json": r#"{"t":"20"}"#}).to_string()
+  }
+
+  fn merged() -> String {
+    let previous = json!({"t": {"value": "19", "reported_at": 1_759_999_990}});
+    json!({
+      "pigeon_id": "p3",
+      "reported_at_ms": 1,
+      "metrics_json": r#"{"t":"20"}"#,
+      "previous_values_json": previous.to_string(),
+    })
+    .to_string()
+  }
+
+  fn seen() -> String {
+    json!({"pigeon_id": "p4", "reported_at_ms": 1, "seen_at": 1_760_000_000}).to_string()
+  }
+
+  fn message(json: &str) -> TelemetryMessage {
+    serde_json::from_str(json).unwrap()
+  }
+
+  fn other_work() -> RuleWork {
+    RuleWork::new(
+      "p0",
+      "x",
+      false,
+      vec![ResolvedReading::new(1, Default::default())],
+    )
+    .unwrap()
+  }
+
+  /// Pass 1 is everything a message did before rules: its readings stored, billed and alerted on
+  /// as `readings_of` decoded them. Rule work is built from those same readings after pass 1 has
+  /// used them, so collecting it changes nothing pass 1 sees.
+  #[test]
+  fn pass_one_input_is_identical_with_and_without_rule_work() {
+    for (json, degraded) in [
+      (batch(), false),
+      (flat(), true),
+      (merged(), false),
+      (seen(), false),
+    ] {
+      let alone = message(&json).readings_of();
+
+      let body = message(&json);
+      let mut work = vec![other_work()];
+      let pass_one = body.readings_of();
+      assert_eq!(pass_one, alone, "{json}");
+      if let Some(readings) = pass_one {
+        push_work(&mut work, &body, degraded, readings);
+      }
+
+      assert_eq!(work[0], other_work(), "earlier work is untouched");
+      match alone {
+        None => assert_eq!(work.len(), 1, "a seen-only message runs no rule"),
+        Some(readings) => {
+          assert_eq!(work.len(), 2);
+          let pushed = &work[1];
+          assert_eq!(pushed.pigeon_id, body.pigeon_id);
+          assert_eq!(pushed.degraded, degraded);
+          assert_eq!(
+            pushed.readings, readings,
+            "rules see exactly what pass 1 stored"
+          );
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn rule_work_hashes_the_payload_the_message_carried() {
+    let body = message(&batch());
+    let mut work = Vec::new();
+    push_work(&mut work, &body, false, body.readings_of().unwrap());
+    let payload = body.readings_json.as_deref().unwrap();
+    assert_eq!(work[0].batch_id, batch_id("p1", payload));
+
+    let body = message(&merged());
+    let mut work = Vec::new();
+    push_work(&mut work, &body, false, body.readings_of().unwrap());
+    assert_eq!(work[0].batch_id, batch_id("p3", &body.metrics_json));
+    assert!(
+      work[0].readings[0].previous.is_some(),
+      "a merged message keeps its previous"
+    );
+
+    let mut again = Vec::new();
+    push_work(&mut again, &body, false, body.readings_of().unwrap());
+    assert_eq!(
+      again[0].batch_id, work[0].batch_id,
+      "a redelivery carries the same id"
+    );
+  }
 
   #[test]
   fn a_seen_only_message_and_an_old_message_both_decode() {

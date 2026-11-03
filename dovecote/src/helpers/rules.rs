@@ -135,9 +135,36 @@ pub enum PreGate {
   Lookup,
 }
 
+fn dispatch_on(dispatch: Option<&str>) -> bool {
+  dispatch.map(str::trim) == Some("on")
+}
+
+/// The second pass's vars, read once per consumer invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassVars {
+  /// `RULES_DISPATCH`, which is `"on"` whenever this exists.
+  pub dispatch: String,
+  /// `RULES_EXCLUDED_PIGEONS`, see [`excluded_pigeons`].
+  pub excluded: Option<String>,
+}
+
+/// Reads `RULES_DISPATCH` through `read` and, only when it is `"on"`, `RULES_EXCLUDED_PIGEONS`.
+/// `None` means rules are off and nothing else was read, so an unset switch costs the consumer
+/// no binding, statement or dispatch.
+pub fn pass_vars(read: impl Fn(&str) -> Option<String>) -> Option<PassVars> {
+  let dispatch = read("RULES_DISPATCH")?;
+  if !dispatch_on(Some(&dispatch)) {
+    return None;
+  }
+  Some(PassVars {
+    dispatch,
+    excluded: read("RULES_EXCLUDED_PIGEONS"),
+  })
+}
+
 /// Decides [`PreGate`] from the two vars alone, so an excluded pigeon costs no statement.
 pub fn pre_gate(pigeon_id: &str, dispatch: Option<&str>, excluded: Option<&str>) -> PreGate {
-  if dispatch.map(str::trim) != Some("on") {
+  if !dispatch_on(dispatch) {
     return PreGate::Off;
   }
   if excluded_pigeons(excluded)
@@ -568,11 +595,16 @@ impl PassLedger {
       Err(Skip::Breaker)
     } else if self.failed_flocks.iter().any(|f| f == flock_id) {
       Err(Skip::FlockFailed)
-    } else if now_ms.saturating_sub(self.started_ms) >= PASS_BUDGET_MS {
+    } else if self.budget_spent(now_ms) {
       Err(Skip::Budget)
     } else {
       Ok(())
     }
+  }
+
+  /// Whether [`PASS_BUDGET_MS`] has passed by `now_ms`, checked before a batch's first statement.
+  pub fn budget_spent(&self, now_ms: u64) -> bool {
+    now_ms.saturating_sub(self.started_ms) >= PASS_BUDGET_MS
   }
 
   /// Records a dispatch of `flock_id`, owned by `account`. A flock failure skips that flock for
@@ -1771,6 +1803,46 @@ mod tests {
     );
     assert_eq!(pre_gate(&other, Some("off"), None), PreGate::Off);
     assert_eq!(pre_gate(&other, Some("on"), None), PreGate::Lookup);
+  }
+
+  #[test]
+  fn an_unset_switch_reads_nothing_else() {
+    for dispatch in [None, Some(""), Some("off"), Some("ON"), Some("1")] {
+      let read = std::cell::RefCell::new(Vec::new());
+      let vars = pass_vars(|name| {
+        read.borrow_mut().push(name.to_string());
+        match name {
+          "RULES_DISPATCH" => dispatch.map(str::to_string),
+          _ => Some(FIELD_PIGEONS[0].to_string()),
+        }
+      });
+      assert_eq!(vars, None, "{dispatch:?}");
+      assert_eq!(read.into_inner(), ["RULES_DISPATCH"], "{dispatch:?}");
+    }
+    let extra = "3".repeat(64);
+    let vars = pass_vars(|name| match name {
+      "RULES_DISPATCH" => Some(" on ".to_string()),
+      "RULES_EXCLUDED_PIGEONS" => Some(extra.clone()),
+      _ => None,
+    });
+    let vars = vars.expect("on");
+    assert_eq!(vars.excluded.as_deref(), Some(extra.as_str()));
+    assert_eq!(
+      pre_gate(&extra, Some(&vars.dispatch), vars.excluded.as_deref()),
+      PreGate::Excluded
+    );
+  }
+
+  #[test]
+  fn the_pass_budget_alone() {
+    let ledger = PassLedger::new(5_000);
+    assert!(!ledger.budget_spent(5_000));
+    assert!(!ledger.budget_spent(5_000 + PASS_BUDGET_MS - 1));
+    assert!(ledger.budget_spent(5_000 + PASS_BUDGET_MS));
+    assert!(
+      !ledger.budget_spent(4_000),
+      "a clock that steps back spends nothing"
+    );
   }
 
   #[test]
