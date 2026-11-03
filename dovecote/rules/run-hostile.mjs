@@ -4,6 +4,7 @@
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { harnessIn } from "./target.mjs";
 
 // The runner keeps its own JSON before loading the bundle, since h-hang replaces the globals.
 const { stringify, parse } = JSON;
@@ -19,7 +20,7 @@ const check = (name, ok) => { console.log((ok ? "pass " : "FAIL ") + name); if (
 try {
   for (const f of ["main.js", "prelude.js"]) cpSync(join(import.meta.dirname, f), join(dir, f));
   cpSync(join(import.meta.dirname, "hostile"), dir, { recursive: true });
-  const harness = (await import(join(dir, "main.js"))).default;
+  const harness = await harnessIn(dir);
 
   const send = async (body) => {
     const res = await harness.fetch(new Request("https://rules/run", { method: "POST",

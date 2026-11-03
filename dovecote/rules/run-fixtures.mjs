@@ -1,8 +1,10 @@
 // Runs the worked rules through the harness with synthetic sign events. `bun run-fixtures.mjs`
 // or any runtime with fetch's Request and Response. The mail model below mirrors the platform's
 // fire/clear/notify rule only so the fixtures can state what would have been mailed.
-import harness from "./main.js";
 import { changed, held } from "./pidgeiot.js";
+import { harnessIn } from "./target.mjs";
+
+const harness = await harnessIn(import.meta.dirname);
 
 const call = async (body) =>
   (await harness.fetch(new Request("https://rules/run", { method: "POST",
