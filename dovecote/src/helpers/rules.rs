@@ -38,12 +38,15 @@ pub const FIELD_PIGEONS: [&str; 3] = [
 pub const HARNESS_WALL_MS: u32 = 250;
 
 /// CPU per live dispatch, shared by the bundle. Only the upload metadata binds it: a per-call
-/// `cpuMs` is ignored. The platform often grants about 2 s more before the kill, so a dispatch
-/// can cost about 2.05 s of CPU, and a kill that late reaches us as the 2 s race's loss.
+/// `cpuMs` is ignored. The platform's kill lands anywhere from the limit to about 2 s past it,
+/// so a dispatch can cost about 2.05 s of CPU, and a kill that late reaches dovecote as the 2 s
+/// race's loss. Over-limit work that finishes unkilled is an `ok` run the auto-pause never sees,
+/// so that per-dispatch bound applies indefinitely.
 pub const RULE_CPU_MS: u32 = 50;
 
-/// CPU for a dry run's test script, which replays days of telemetry in one call. With the grace
-/// of [`RULE_CPU_MS`] a call can spend about 4 s.
+/// CPU for a dry run's test script, which replays days of telemetry in one call. With the
+/// platform's grace (see [`RULE_CPU_MS`]) a call can spend about 4 s, if the grace measured only
+/// up to a 200 ms limit holds at 2000.
 pub const TEST_RULE_CPU_MS: u32 = 2_000;
 
 /// The most one rule's entry takes in a response: its result escaped twice, its logs, framing
@@ -58,7 +61,8 @@ pub const PASS_BUDGET_MS: u64 = 3_000;
 pub const AUTO_PAUSE_RUNS: i32 = 20;
 
 /// How old a `dispatch_failed` streak must also be before it pauses, so a runtime outage shorter
-/// than this pauses nothing while a rule that breaks every dispatch stops within it.
+/// than this pauses nothing while a rule that breaks every dispatch stops within it. A graced CPU
+/// kill arrives as a lost race, so it waits out this floor too.
 pub const DISPATCH_FAILED_PAUSE_SECS: i64 = 3_600;
 
 /// A version mismatch is a deploy in flight until it has lasted this long, then a run row.
@@ -350,8 +354,8 @@ pub fn read_cap(rules: usize) -> usize {
 pub enum DispatchOutcome {
   /// The namespace binding was missing or had no `get`: the platform's failure.
   Binding,
-  /// The call rejected or lost the 2 s race. `cpu_limit` when the rejection said so, which a
-  /// CPU kill after the platform's grace never does: it lands after the race.
+  /// The call rejected or lost the 2 s race. `cpu_limit` when the rejection said so. A CPU kill
+  /// the platform's grace delays past 2 s is never seen as one: the race has already been lost.
   Failed {
     /// See [`is_cpu_limit`].
     cpu_limit: bool,
@@ -365,8 +369,9 @@ pub enum DispatchOutcome {
   },
 }
 
-/// Whether a rejected dispatch's message names the CPU limit. The text is not a contract; a miss
-/// records `dispatch_failed`, which counts toward auto-pause all the same.
+/// Whether a rejected dispatch's message names the CPU limit. The text is not a contract and may
+/// be the rule's own: a miss records `dispatch_failed`, which counts toward auto-pause all the
+/// same, and a false match only pauses the rule sooner.
 pub fn is_cpu_limit(message: &str) -> bool {
   message.contains("exceeded CPU")
 }
@@ -386,7 +391,7 @@ pub enum RunStatus {
   VersionMismatch,
   /// A result the harness or the validator refused.
   BadOutput,
-  /// The dispatch hit its CPU limit inside the 2 s race.
+  /// The dispatch hit its CPU limit inside the dispatch's race.
   CpuLimit,
   /// The response was over [`read_cap`].
   Oversize,
@@ -2537,43 +2542,6 @@ mod tests {
   }
 
   #[test]
-  fn a_graced_cpu_kill_reads_as_a_lost_race() {
-    // The platform's grace lets a kill land past the 2 s race, so it carries no CPU text and
-    // pauses on the hour like any dispatch failure; a kill inside the race pauses at run 20.
-    let one = sent(&[("r6", 1)]);
-    let graced = classify(&one, DispatchOutcome::Failed { cpu_limit: false });
-    assert_eq!(graced, Classified::Flock(RunStatus::DispatchFailed));
-    let prompt = classify(&one, DispatchOutcome::Failed { cpu_limit: true });
-    assert_eq!(prompt, Classified::Flock(RunStatus::CpuLimit));
-
-    let (mut graced, mut prompt) = (FailStreak::default(), FailStreak::default());
-    for i in 0..AUTO_PAUSE_RUNS - 1 {
-      let now = T0 + i64::from(i) * 3;
-      let StreakWrite::Set(next) = next_streak(prompt, RunStatus::CpuLimit, now) else {
-        panic!("cpu_limit paused before run {AUTO_PAUSE_RUNS}");
-      };
-      prompt = next;
-      let StreakWrite::Set(next) = next_streak(graced, RunStatus::DispatchFailed, now) else {
-        panic!("dispatch_failed paused early");
-      };
-      graced = next;
-    }
-    let now = T0 + 60;
-    assert!(matches!(
-      next_streak(prompt, RunStatus::CpuLimit, now),
-      StreakWrite::Pause { ref reason, .. } if reason == "auto:cpu_limit"
-    ));
-    assert!(matches!(
-      next_streak(graced, RunStatus::DispatchFailed, now),
-      StreakWrite::Set(_)
-    ));
-    assert!(matches!(
-      next_streak(graced, RunStatus::DispatchFailed, T0 + DISPATCH_FAILED_PAUSE_SECS),
-      StreakWrite::Pause { ref reason, .. } if reason == "auto:dispatch_failed"
-    ));
-  }
-
-  #[test]
   fn a_dispatch_failed_streak_under_an_hour_pauses_nothing() {
     let mut streak = FailStreak::default();
     for i in 0..40 {
@@ -2613,6 +2581,19 @@ mod tests {
       next_streak(FailStreak::default(), RunStatus::Ok, T0),
       StreakWrite::Keep
     );
+
+    // A CPU kill inside the race is the rule's too: no hour floor.
+    let mut streak = FailStreak::default();
+    for i in 0..19 {
+      let StreakWrite::Set(next) = next_streak(streak, RunStatus::CpuLimit, T0 + i) else {
+        panic!("cpu_limit paused early");
+      };
+      streak = next;
+    }
+    assert!(matches!(
+      next_streak(streak, RunStatus::CpuLimit, T0 + 19),
+      StreakWrite::Pause { ref reason, .. } if reason == "auto:cpu_limit"
+    ));
   }
 
   #[test]

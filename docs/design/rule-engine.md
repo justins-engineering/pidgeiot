@@ -1,5 +1,9 @@
 # User-authored rule engine on Workers for Platforms (task #12)
 
+Superseded by the 2026-11-01 rule engine design. Kept as history: stage 1 measured
+`subRequests: 0` and a per-call `cpuMs` as no control (egress needs the outbound Worker; only the
+upload metadata's `cpu_ms` binds).
+
 Status: design doc, no code changes. Scope: let a user author their own data-processing
 logic against their pigeons' telemetry (and, later, shadow/lifecycle events), executed as
 isolated Workers via Cloudflare **Workers for Platforms** (dispatch namespaces, user
