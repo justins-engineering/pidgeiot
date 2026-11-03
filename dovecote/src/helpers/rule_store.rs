@@ -12,7 +12,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::helpers::missing_schema_objects;
-use tokio_postgres::Client;
+use crate::helpers::rules::{
+  ACCOUNT_RULE_MAIL_PER_DAY, FLOCK_FLAG_HOLD_SECS, NOTIFY_REPEAT_SECS, PLATFORM_RULE_MAIL_PER_DAY,
+  RULE_MAIL_PER_DAY, RULE_MAIL_PER_HOUR,
+};
+use capsules::{RuleAlertKind, RuleAlertScope};
+use serde_json::{Map, Value};
+use tokio_postgres::{Client, Transaction, types::Type};
+use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
 /// Every table and index [`RULE_TABLES_DDL`] creates, as `missing_schema_objects` names them.
@@ -178,6 +185,177 @@ pub async fn ensure_rule_tables(client: &Client) -> Result<()> {
   Ok(())
 }
 
+/// The `scope` column of `rule_state` and `rule_alert_state`: `''` for the flock, else the pigeon.
+pub fn scope_key(scope: RuleAlertScope, pigeon_id: &str) -> &str {
+  match scope {
+    RuleAlertScope::Flock => "",
+    RuleAlertScope::Pigeon => pigeon_id,
+  }
+}
+
+/// `capsules::merge_state` on the row: each top-level key set, `null` deleting it. The update
+/// reads the row it locks, so concurrent patches of different keys both land, and a patch that
+/// changes nothing writes nothing. The per-document caps were checked on the snapshot; a
+/// concurrent writer can overshoot them by its own patch, as design 1.4 accepts.
+const MERGE_STATE_SQL: &str = "WITH p AS (
+    SELECT $3::jsonb AS patch,
+      ARRAY(SELECT k FROM jsonb_each($3::jsonb) AS e(k, v) WHERE v = 'null'::jsonb) AS gone
+  )
+  INSERT INTO rule_state AS s (rule_id, scope, doc)
+  SELECT $1, $2, p.patch - p.gone FROM p
+  ON CONFLICT (rule_id, scope) DO UPDATE
+  SET doc = (s.doc || (SELECT patch FROM p)) - (SELECT gone FROM p), updated_at = now()
+  WHERE s.doc <> (s.doc || (SELECT patch FROM p)) - (SELECT gone FROM p)
+  RETURNING 1";
+
+/// A `fire`: inserts the flag, or turns it on when the batch is newer than the one that last
+/// changed it and, for the flock's flag, the flag has held [`FLOCK_FLAG_HOLD_SECS`]. Re-applies
+/// `rules::transition_applies` to the row it locks, so of two racing fires one moves the flag.
+const FIRE_SQL: &str = "INSERT INTO rule_alert_state AS s
+    (rule_id, scope, key, firing, decided_at, changed_at, last_sent_at)
+  VALUES ($1, $2, $3, true, to_timestamp($4), to_timestamp($5), to_timestamp($5))
+  ON CONFLICT (rule_id, scope, key) DO UPDATE
+  SET firing = true, decided_at = EXCLUDED.decided_at, changed_at = EXCLUDED.changed_at,
+    last_sent_at = EXCLUDED.last_sent_at
+  WHERE NOT s.firing AND EXCLUDED.decided_at > s.decided_at
+    AND (s.scope <> '' OR s.changed_at <= EXCLUDED.changed_at - make_interval(secs => $6))
+  RETURNING 1";
+
+/// A `clear`: the same conditions as [`FIRE_SQL`]; with no flag there is nothing to clear.
+const CLEAR_SQL: &str = "UPDATE rule_alert_state
+  SET firing = false, decided_at = to_timestamp($4), changed_at = to_timestamp($5),
+    last_sent_at = to_timestamp($5)
+  WHERE rule_id = $1 AND scope = $2 AND key = $3 AND firing
+    AND decided_at < to_timestamp($4)
+    AND (scope <> '' OR changed_at <= to_timestamp($5) - make_interval(secs => $6))
+  RETURNING 1";
+
+/// A `notify`: once per key within [`NOTIFY_REPEAT_SECS`], leaving any fire/clear flag as it is.
+const NOTIFY_SQL: &str = "INSERT INTO rule_alert_state AS s
+    (rule_id, scope, key, firing, decided_at, changed_at, last_sent_at)
+  VALUES ($1, $2, $3, false, to_timestamp($4), to_timestamp($5), to_timestamp($5))
+  ON CONFLICT (rule_id, scope, key) DO UPDATE
+  SET last_sent_at = EXCLUDED.last_sent_at
+  WHERE s.last_sent_at IS NULL
+    OR s.last_sent_at <= EXCLUDED.last_sent_at - make_interval(secs => $6)
+  RETURNING 1";
+
+/// One mail against the rule's hour and day, then the account's day, then the platform's day,
+/// each counter moved only under its cap and only when the one before moved. All three are UTC.
+///
+/// A refusal can leave an earlier counter one higher than the mail sent, but only below a cap
+/// that is already full for the rest of that day, so no mail is lost to it; the order is what
+/// keeps an account at its cap from spending the platform's day.
+const CLAIM_SQL: &str = "WITH t AS (
+    SELECT date_trunc('hour', to_timestamp($3), 'UTC') AS hour,
+      (to_timestamp($3) AT TIME ZONE 'UTC')::date AS day
+  ), r AS (
+    UPDATE rules SET
+      mail_in_hour = CASE WHEN mail_hour = t.hour THEN mail_in_hour + 1 ELSE 1 END,
+      mail_hour = t.hour,
+      mail_in_day = CASE WHEN mail_day = t.day THEN mail_in_day + 1 ELSE 1 END,
+      mail_day = t.day
+    FROM t
+    WHERE id = $1
+      AND (mail_hour IS DISTINCT FROM t.hour OR mail_in_hour < $4)
+      AND (mail_day IS DISTINCT FROM t.day OR mail_in_day < $5)
+    RETURNING 1
+  ), a AS (
+    INSERT INTO rule_usage AS u (scope, day, mail_sent)
+    SELECT $2, t.day, 1 FROM t WHERE EXISTS (SELECT 1 FROM r)
+    ON CONFLICT (scope, day) DO UPDATE SET mail_sent = u.mail_sent + 1
+    WHERE u.mail_sent < $6
+    RETURNING 1
+  ), p AS (
+    INSERT INTO rule_usage AS u (scope, day, mail_sent)
+    SELECT 'platform', t.day, 1 FROM t WHERE EXISTS (SELECT 1 FROM a)
+    ON CONFLICT (scope, day) DO UPDATE SET mail_sent = u.mail_sent + 1
+    WHERE u.mail_sent < $7
+    RETURNING 1
+  )
+  SELECT EXISTS (SELECT 1 FROM p)";
+
+/// Merges `patch` into the rule's document for `scope` ([`scope_key`]). True when it wrote.
+pub async fn merge_state(
+  tx: &Transaction<'_>,
+  rule_id: Uuid,
+  scope: &str,
+  patch: &Map<String, Value>,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let patch = Value::Object(patch.clone()).to_string();
+  let rows = tx
+    .query_typed(
+      MERGE_STATE_SQL,
+      &[
+        (&rule_id, Type::UUID),
+        (&scope, Type::TEXT),
+        (&patch, Type::TEXT),
+      ],
+    )
+    .await?;
+  Ok(!rows.is_empty())
+}
+
+/// Applies one alert of a result to its flag: `last_reading` is the batch's last reading and
+/// `now` dovecote's clock, both unix seconds. True when the flag moved or a `notify` is due, which
+/// is when the caller claims its mail with [`claim_mail`]; false for a restatement, an older batch
+/// or a held flock flag.
+pub async fn apply_alert(
+  tx: &Transaction<'_>,
+  rule_id: Uuid,
+  scope: &str,
+  key: &str,
+  kind: RuleAlertKind,
+  last_reading: i64,
+  now: i64,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let (sql, window) = match kind {
+    RuleAlertKind::Fire => (FIRE_SQL, FLOCK_FLAG_HOLD_SECS),
+    RuleAlertKind::Clear => (CLEAR_SQL, FLOCK_FLAG_HOLD_SECS),
+    RuleAlertKind::Notify => (NOTIFY_SQL, NOTIFY_REPEAT_SECS),
+  };
+  let window = window as f64;
+  let rows = tx
+    .query_typed(
+      sql,
+      &[
+        (&rule_id, Type::UUID),
+        (&scope, Type::TEXT),
+        (&key, Type::TEXT),
+        (&last_reading, Type::INT8),
+        (&now, Type::INT8),
+        (&window, Type::FLOAT8),
+      ],
+    )
+    .await?;
+  Ok(!rows.is_empty())
+}
+
+/// Claims one mail for `rule_id` at `now` under the rule, account and platform caps. `account`
+/// is the flock owner's organization or user id, as text. False is a suppressed mail.
+pub async fn claim_mail(
+  tx: &Transaction<'_>,
+  rule_id: Uuid,
+  account: &str,
+  now: i64,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let row = tx
+    .query_typed_one(
+      CLAIM_SQL,
+      &[
+        (&rule_id, Type::UUID),
+        (&account, Type::TEXT),
+        (&now, Type::INT8),
+        (&RULE_MAIL_PER_HOUR, Type::INT4),
+        (&RULE_MAIL_PER_DAY, Type::INT4),
+        (&ACCOUNT_RULE_MAIL_PER_DAY, Type::INT4),
+        (&PLATFORM_RULE_MAIL_PER_DAY, Type::INT4),
+      ],
+    )
+    .await?;
+  Ok(row.get(0))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -332,6 +510,109 @@ pub(crate) mod pg {
     }
   }
 
+  /// Polls until backend `pid` waits on a lock, so a test knows its second caller really is
+  /// blocked behind the first rather than merely late. Observes as the superuser: a role that is
+  /// not the session's own sees no wait event.
+  pub async fn wait_until_blocked(pid: i32) {
+    let observer = connect(None).await;
+    for _ in 0..500 {
+      let rows = observer
+        .query(
+          "SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'",
+          &[&pid],
+        )
+        .await
+        .expect("pg_stat_activity readable");
+      if !rows.is_empty() {
+        return;
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the second caller never waited on a lock");
+  }
+
+  /// This connection's backend pid.
+  pub async fn pid(client: &Client) -> i32 {
+    client
+      .query_one("SELECT pg_backend_pid()", &[])
+      .await
+      .expect("backend pid")
+      .get(0)
+  }
+
+  /// A flock owned by a fresh user, or by `org` when given.
+  pub async fn new_flock(client: &Client, org: Option<Uuid>) -> Uuid {
+    client
+      .query_one(
+        "INSERT INTO flocks (user_id, name, org_id) VALUES (gen_random_uuid(), 'f', $1)
+         RETURNING id",
+        &[&org],
+      )
+      .await
+      .expect("flock inserted")
+      .get(0)
+  }
+
+  /// A disabled rule in `flock`.
+  pub async fn new_rule(client: &Client, flock: Uuid) -> Uuid {
+    client
+      .query_one(
+        "INSERT INTO rules (flock_id, created_by, name) VALUES ($1, gen_random_uuid(), 'r')
+         RETURNING id",
+        &[&flock],
+      )
+      .await
+      .expect("rule inserted")
+      .get(0)
+  }
+
+  fn obj(value: serde_json::Value) -> Map<String, Value> {
+    match value {
+      Value::Object(map) => map,
+      _ => panic!("a test patch is an object"),
+    }
+  }
+
+  async fn doc(client: &Client, rule: Uuid, scope: &str) -> Value {
+    let text: String = client
+      .query_one(
+        "SELECT doc::text FROM rule_state WHERE rule_id = $1 AND scope = $2",
+        &[&rule, &scope],
+      )
+      .await
+      .expect("state row")
+      .get(0);
+    serde_json::from_str(&text).expect("state is JSON")
+  }
+
+  async fn mail_sent(client: &Client, scope: &str, now: i64) -> i32 {
+    client
+      .query_opt(
+        "SELECT mail_sent FROM rule_usage
+         WHERE scope = $1 AND day = (to_timestamp($2::bigint) AT TIME ZONE 'UTC')::date",
+        &[&scope, &now],
+      )
+      .await
+      .expect("usage readable")
+      .map_or(0, |row| row.get(0))
+  }
+
+  /// Claims `n` mails for one rule at `now`, each in its own transaction, and counts the grants.
+  async fn claims(client: &mut Client, rule: Uuid, account: &str, now: i64, n: usize) -> usize {
+    let mut granted = 0;
+    for _ in 0..n {
+      let tx = client.transaction().await.expect("tx");
+      if claim_mail(&tx, rule, account, now).await.expect("claim") {
+        granted += 1;
+      }
+      tx.commit().await.expect("commit");
+    }
+    granted
+  }
+
+  /// A unix time at the top of a UTC day, far from any real clock.
+  const DAY: i64 = 1_900_000_000 - 1_900_000_000 % 86_400;
+
   #[test]
   #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
   fn rule_store_the_migration_alone_creates_every_rule_table() {
@@ -378,6 +659,249 @@ pub(crate) mod pg {
           .await
           .expect("catalog readable")
           .is_empty()
+      );
+      drop(client);
+      db.drop().await;
+    });
+  }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_concurrent_merges_keep_both_keys() {
+    run(async {
+      let db = Scratch::new("merge").await;
+      let setup = db.client().await;
+      let rule = new_rule(&setup, new_flock(&setup, None).await).await;
+      // Round 0 races two inserts of a missing row, round 1 two updates of a present one.
+      for round in 0..2 {
+        let mut a = db.client().await;
+        let mut b = db.client().await;
+        let b_pid = pid(&b).await;
+        let ta = a.transaction().await.expect("tx");
+        let mine = obj(serde_json::json!({ "a": round }));
+        assert!(merge_state(&ta, rule, "", &mine).await.expect("merge"));
+        let second = tokio::spawn(async move {
+          let tb = b.transaction().await.expect("tx");
+          let theirs = obj(serde_json::json!({ "b": round }));
+          let changed = merge_state(&tb, rule, "", &theirs).await.expect("merge");
+          tb.commit().await.expect("commit");
+          changed
+        });
+        wait_until_blocked(b_pid).await;
+        ta.commit().await.expect("commit");
+        assert!(second.await.expect("second caller"));
+        assert_eq!(
+          doc(&setup, rule, "").await,
+          serde_json::json!({ "a": round, "b": round })
+        );
+      }
+
+      let mut client = db.client().await;
+      let tx = client.transaction().await.expect("tx");
+      let same = obj(serde_json::json!({ "b": 1 }));
+      assert!(!merge_state(&tx, rule, "", &same).await.expect("merge"));
+      let absent = obj(serde_json::json!({ "zz": null }));
+      assert!(!merge_state(&tx, rule, "", &absent).await.expect("merge"));
+      let gone = obj(serde_json::json!({ "a": null, "n": { "x": null } }));
+      assert!(merge_state(&tx, rule, "", &gone).await.expect("merge"));
+      tx.commit().await.expect("commit");
+      assert_eq!(
+        doc(&setup, rule, "").await,
+        serde_json::json!({ "b": 1, "n": { "x": null } })
+      );
+      drop((client, setup));
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_the_claim_mails_once_under_two_callers() {
+    run(async {
+      let db = Scratch::new("claim").await;
+      let setup = db.client().await;
+      let flock = new_flock(&setup, None).await;
+      let rule = new_rule(&setup, flock).await;
+      let account = Uuid::nil().to_string();
+      let now = DAY + 60;
+      for scope in [
+        scope_key(RuleAlertScope::Flock, "p1"),
+        scope_key(RuleAlertScope::Pigeon, "p1"),
+      ] {
+        let mut a = db.client().await;
+        let mut b = db.client().await;
+        let b_pid = pid(&b).await;
+        let ta = a.transaction().await.expect("tx");
+        let fired = apply_alert(&ta, rule, scope, "down", RuleAlertKind::Fire, now, now)
+          .await
+          .expect("transition");
+        assert!(fired);
+        assert!(claim_mail(&ta, rule, &account, now).await.expect("claim"));
+        let account_b = account.clone();
+        let second = tokio::spawn(async move {
+          let tb = b.transaction().await.expect("tx");
+          let fired = apply_alert(&tb, rule, scope, "down", RuleAlertKind::Fire, now, now)
+            .await
+            .expect("transition");
+          let mailed = fired && claim_mail(&tb, rule, &account_b, now).await.expect("claim");
+          tb.commit().await.expect("commit");
+          (fired, mailed)
+        });
+        wait_until_blocked(b_pid).await;
+        ta.commit().await.expect("commit");
+        assert_eq!(second.await.expect("second caller"), (false, false));
+      }
+      assert_eq!(mail_sent(&setup, &account, now).await, 2);
+      assert_eq!(mail_sent(&setup, "platform", now).await, 2);
+      let in_hour: i32 = setup
+        .query_one("SELECT mail_in_hour FROM rules WHERE id = $1", &[&rule])
+        .await
+        .expect("rule row")
+        .get(0);
+      assert_eq!(in_hour, 2);
+      drop(setup);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_a_flag_moves_only_for_a_newer_batch_and_a_flock_flag_holds() {
+    run(async {
+      let db = Scratch::new("transition").await;
+      let mut client = db.client().await;
+      let rule = new_rule(&client, new_flock(&client, None).await).await;
+      let tx = client.transaction().await.expect("tx");
+      let step = |scope: &'static str, key: &'static str, kind, last, now| {
+        let tx = &tx;
+        async move {
+          apply_alert(tx, rule, scope, key, kind, last, now)
+            .await
+            .expect("transition")
+        }
+      };
+      use RuleAlertKind::{Clear, Fire, Notify};
+      let t = DAY;
+      // A clear with no flag writes nothing.
+      assert!(!step("p1", "never", Clear, t + 100, t + 1_000).await);
+      // Pigeon scope: an older or equal batch never undoes a newer change; a restatement is quiet.
+      assert!(step("p1", "k", Fire, t + 100, t + 1_000).await);
+      assert!(!step("p1", "k", Fire, t + 150, t + 1_000).await);
+      assert!(!step("p1", "k", Clear, t + 90, t + 1_000).await);
+      assert!(!step("p1", "k", Clear, t + 100, t + 1_000).await);
+      assert!(step("p1", "k", Clear, t + 110, t + 1_001).await);
+      assert!(!step("p1", "k", Clear, t + 120, t + 1_002).await);
+      // Flock scope: at most one flip per FLOCK_FLAG_HOLD_SECS.
+      assert!(step("", "k", Fire, t + 100, t + 1_000).await);
+      assert!(!step("", "k", Clear, t + 200, t + 1_599).await);
+      assert!(step("", "k", Clear, t + 200, t + 1_600).await);
+      assert!(!step("", "k", Fire, t + 300, t + 1_700).await);
+      assert!(step("", "k", Fire, t + 300, t + 2_200).await);
+      // Notify: once per key a week.
+      let week = super::super::rules::NOTIFY_REPEAT_SECS;
+      assert!(step("p1", "boot", Notify, t + 100, t + 1_000).await);
+      assert!(!step("p1", "boot", Notify, t + 100, t + 1_000 + week - 1).await);
+      assert!(step("p1", "boot", Notify, t + 100, t + 1_000 + week).await);
+      tx.commit().await.expect("commit");
+      let flags: i64 = client
+        .query_one(
+          "SELECT count(*) FROM rule_alert_state WHERE rule_id = $1",
+          &[&rule],
+        )
+        .await
+        .expect("flags")
+        .get(0);
+      assert_eq!(flags, 3);
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_mail_caps_stop_at_their_numbers() {
+    use super::super::rules::{
+      ACCOUNT_RULE_MAIL_PER_DAY, PLATFORM_RULE_MAIL_PER_DAY, RULE_MAIL_PER_DAY, RULE_MAIL_PER_HOUR,
+    };
+    run(async {
+      let db = Scratch::new("caps").await;
+      let mut client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let hour = |n: i64| DAY + n * 3_600 + 5;
+      let per_hour = RULE_MAIL_PER_HOUR as usize;
+
+      // The rule's hour, then its day, then a new day.
+      let account = "acct-a";
+      let rule = new_rule(&client, flock).await;
+      assert_eq!(
+        claims(&mut client, rule, account, hour(0), per_hour + 1).await,
+        per_hour
+      );
+      let mut day = per_hour;
+      for n in 1..10 {
+        day += claims(&mut client, rule, account, hour(n), per_hour).await;
+      }
+      assert_eq!(day, RULE_MAIL_PER_DAY as usize);
+      assert_eq!(claims(&mut client, rule, account, hour(24), 1).await, 1);
+
+      // The account's day across rules; a refused claim leaves the platform count alone.
+      let account = "acct-b";
+      let day2 = |n: i64| hour(48 + n);
+      let mut granted = 0;
+      while granted < ACCOUNT_RULE_MAIL_PER_DAY as usize {
+        let rule = new_rule(&client, flock).await;
+        for n in 0..5 {
+          granted += claims(&mut client, rule, account, day2(n), per_hour).await;
+        }
+      }
+      assert_eq!(granted, ACCOUNT_RULE_MAIL_PER_DAY as usize);
+      let rule = new_rule(&client, flock).await;
+      assert_eq!(claims(&mut client, rule, account, day2(6), 1).await, 0);
+      assert_eq!(
+        mail_sent(&client, account, day2(0)).await,
+        ACCOUNT_RULE_MAIL_PER_DAY
+      );
+      assert_eq!(
+        mail_sent(&client, "platform", day2(0)).await,
+        ACCOUNT_RULE_MAIL_PER_DAY
+      );
+
+      // The platform's day, the last slot raced by two callers on other accounts.
+      let day3 = hour(96);
+      client
+        .execute(
+          "INSERT INTO rule_usage (scope, day, mail_sent)
+           VALUES ('platform', (to_timestamp($1::bigint) AT TIME ZONE 'UTC')::date, $2)",
+          &[&day3, &(PLATFORM_RULE_MAIL_PER_DAY - 1)],
+        )
+        .await
+        .expect("platform row seeded");
+      let (rule_a, rule_b) = (
+        new_rule(&client, flock).await,
+        new_rule(&client, flock).await,
+      );
+      let mut a = db.client().await;
+      let mut b = db.client().await;
+      let b_pid = pid(&b).await;
+      let ta = a.transaction().await.expect("tx");
+      assert!(
+        claim_mail(&ta, rule_a, "acct-c", day3)
+          .await
+          .expect("claim")
+      );
+      let second = tokio::spawn(async move {
+        let tb = b.transaction().await.expect("tx");
+        let claimed = claim_mail(&tb, rule_b, "acct-d", day3)
+          .await
+          .expect("claim");
+        tb.commit().await.expect("commit");
+        claimed
+      });
+      wait_until_blocked(b_pid).await;
+      ta.commit().await.expect("commit");
+      assert!(!second.await.expect("second caller"));
+      assert_eq!(
+        mail_sent(&client, "platform", day3).await,
+        PLATFORM_RULE_MAIL_PER_DAY
       );
       drop(client);
       db.drop().await;
