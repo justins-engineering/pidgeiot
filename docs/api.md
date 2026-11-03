@@ -80,6 +80,16 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /flocks/:flock_id/alerts/state`](#get-flocksflock_idalertsstate) | flock: view | Read fired/cleared state per pigeon in a flock |
 | [`PUT /alerts/:alert_id`](#put-alertsalert_id) | alert owner | Update an alert definition |
 | [`DELETE /alerts/:alert_id`](#delete-alertsalert_id) | alert owner | Delete an alert definition |
+| [`GET /flocks/:flock_id/rules`](#get-flocksflock_idrules) | flock: view | List a flock's rules |
+| [`POST /flocks/:flock_id/rules`](#post-flocksflock_idrules) | flock: manage | Create a disabled rule with no code |
+| [`GET /flocks/:flock_id/rules/:rule_id`](#get-flocksflock_idrulesrule_id) | flock: view | Read one rule and its versions |
+| [`PUT /flocks/:flock_id/rules/:rule_id`](#put-flocksflock_idrulesrule_id) | flock: manage | Rename, re-address, enable or disable a rule |
+| [`DELETE /flocks/:flock_id/rules/:rule_id`](#delete-flocksflock_idrulesrule_id) | flock: manage | Delete a rule and everything it stored |
+| [`POST /flocks/:flock_id/rules/:rule_id/versions`](#post-flocksflock_idrulesrule_idversions) | flock: manage | Save a rule's next version of code |
+| [`GET /flocks/:flock_id/rules/:rule_id/versions/:version`](#get-flocksflock_idrulesrule_idversionsversion) | flock: view | Read one version with its source |
+| [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/test`](#post-flocksflock_idrulesrule_idversionsversiontest) | flock: manage | Dry-run a version over recent telemetry |
+| [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/deploy`](#post-flocksflock_idrulesrule_idversionsversiondeploy) | flock: manage | Deploy a tested version and enable the rule |
+| [`GET /flocks/:flock_id/rules/:rule_id/runs`](#get-flocksflock_idrulesrule_idruns) | flock: view | Read a rule's recent run records |
 | [`POST /feedback`](#post-feedback) | no auth required (optionally authenticated) | Send the in-app feedback form |
 | [`POST /contact`](#post-contact) | no auth required (optionally authenticated) | Send the public contact form |
 | [`POST /errors`](#post-errors) | no auth required (identity only on the manual JSON path) | Ingest a crash report, or a note about one |
@@ -2405,6 +2415,179 @@ curl -s -X PUT https://api.pidgeiot.com/alerts/<alert_id> \
 
 Same ownership gate as `PUT` above. Returns `200` with an empty body. `alert_state` rows for this
 definition cascade-delete via the table's own foreign key.
+
+### Rules
+
+A rule is one JavaScript module, written by a flock's managers, that the platform runs over each
+telemetry batch of each pigeon in the flock. It returns alert decisions, derived values and a
+patch to its own stored state; it has no network, no bindings and no secrets. The module contract
+(what a rule receives and may return, and every cap on it) is `dovecote/rules/contract.d.ts`.
+
+A rule's life: [create](#post-flocksflock_idrules) it (disabled, no code), save versions of its
+code, [test](#post-flocksflock_idrulesrule_idversionsversiontest) a version, then
+[deploy](#post-flocksflock_idrulesrule_idversionsversiondeploy) a tested version, which also
+enables the rule. Rolling back is deploying an older version that still carries its test record.
+Rules are authored in every environment, but run only where dovecote has a rules namespace;
+elsewhere the test route, the deploy route and the delete of a deployed rule answer `503`
+(`Service Unavailable: rules run on staging`).
+
+Limits:
+
+- **Rules per account**: Perch 1, Builder 10, Growth and up unlimited, counted across every flock
+  the account owns, enabled or not. Checked at create and refused `403` in the shape of
+  [Per-tier limits](#per-tier-limits).
+- **Enabled rules per flock**: at most 20 (`capsules::MAX_ENABLED_RULES_PER_FLOCK`), on every
+  tier. One flock's rules run together in one dispatch, so this bounds that dispatch rather than
+  pricing anything. Enabling or deploying a 21st answers `409`.
+- **Source**: at most 64 KiB (`capsules::MAX_RULE_SOURCE_BYTES`), `413` past it. The only static
+  import allowed is `./pidgeiot.js`, the platform's helpers; any other answers `400`.
+- **Versions**: 50 per rule (`capsules::MAX_RULE_VERSIONS`). A save past it drops the oldest
+  version that is neither deployed nor uploading, never refuses.
+
+Recipients follow the [alert rules](#alerts): up to 8 addresses tied to the account, checked on
+write, lowercased and de-duplicated; an empty list means the flock's `owner_email`.
+
+The models are `capsules::Rule`, `RuleDetail`, `RuleVersion` and `RuleRun`. A rule reports
+`blocked: true` when the platform has stopped it, which only the platform can lift, and
+`paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after repeated
+failures did. A mutation answers with the updated body, so a client builds its state from that
+rather than reading the rule again.
+
+#### `GET /flocks/:flock_id/rules`
+
+**Auth:** flock: view
+
+The flock's rules, newest first, as `Vec<capsules::Rule>`.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `POST /flocks/:flock_id/rules`
+
+**Auth:** flock: manage
+
+Body: `capsules::RuleCreateRequest` (`{ name, recipients? }`). `name` is trimmed, 1 to 120 bytes,
+with no control character. Answers `201` with the new `capsules::Rule`: disabled, with no
+version. `403` when the account is at its rule limit.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Reboot loop","recipients":["oncall@example.com"]}'
+```
+
+#### `GET /flocks/:flock_id/rules/:rule_id`
+
+**Auth:** flock: view
+
+`capsules::RuleDetail`: `{ rule, versions }`, the versions newest first and without their
+`source` or `test_summary`, which the single version read carries. `404` when the flock has no
+such rule.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `PUT /flocks/:flock_id/rules/:rule_id`
+
+**Auth:** flock: manage
+
+Partial update, body `capsules::RuleUpdateRequest` (`{ name?, recipients?, enabled? }`); an
+omitted field keeps its value. `enabled: true` needs a deployed version (`409` without one), no
+platform block (`403`) and room in the flock (`409`), and clears a pause and the failure count.
+`enabled: false` stops the rule from the next batch on and records `paused_reason: "owner"`.
+Answers the updated `capsules::Rule`.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false}'
+```
+
+#### `DELETE /flocks/:flock_id/rules/:rule_id`
+
+**Auth:** flock: manage
+
+Deletes the rule with its versions, state, alert flags, values and runs. Returns `200` with an
+empty body. A rule that was ever deployed is part of the flock's rules script, which the delete
+has to rebuild, so where there is no rules namespace it answers `503` and changes nothing. The
+account's assistant allowance and mail counts are not refunded.
+
+#### `POST /flocks/:flock_id/rules/:rule_id/versions`
+
+**Auth:** flock: manage
+
+Saves the rule's next version. Body `capsules::RuleVersionCreateRequest`
+(`{ source, origin?, based_on? }`): `origin` is `"hand"` (the default) or `"assistant_edited"`
+for a person's edit of an assistant draft; `based_on` names the version it was edited from and
+must exist (`400` otherwise). Answers `201` with the `capsules::RuleVersion`, numbered one past
+the rule's newest, its `source` and `sha256` included. Saving neither tests nor deploys it.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"import { num } from \"./pidgeiot.js\";\nexport default (event) => ({});\n"}'
+```
+
+#### `GET /flocks/:flock_id/rules/:rule_id/versions/:version`
+
+**Auth:** flock: view
+
+One `capsules::RuleVersion` with its `source`, and its `test_summary` once a dry run has tested
+those bytes. `404` when the rule has no such version.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3 \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `POST /flocks/:flock_id/rules/:rule_id/versions/:version/test`
+
+**Auth:** flock: manage
+
+Dry-runs the version over the flock's recent telemetry beside the deployed version, applying
+nothing, and records the result on the version. Field pigeons the platform excludes from rules
+are never read. `404` when the rule has no such version; `503` where there is no rules
+namespace.
+
+#### `POST /flocks/:flock_id/rules/:rule_id/versions/:version/deploy`
+
+**Auth:** flock: manage
+
+Deploys the version and enables the rule. The body is optional: `capsules::RuleDeployRequest`
+(`{ reset_state? }`), where `reset_state: true` starts the version from empty state documents.
+Refused before anything is uploaded: `403` when the platform has blocked the rule, `409` when
+this version has no dry run of its exact bytes under the current contract, `409` when enabling
+it would put a 21st rule to work in the flock. `404` when the rule has no such version; `503`
+where there is no rules namespace.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/deploy \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"reset_state":false}'
+```
+
+#### `GET /flocks/:flock_id/rules/:rule_id/runs`
+
+**Auth:** flock: view
+
+The rule's newest 200 run records, as `Vec<capsules::RuleRun>`. A failed run is always
+recorded; a quiet successful one only while the rule is watched, for 24 hours after each deploy.
+Records are kept 14 days. `status` is one of `ok`, `threw`, `timeout`, `skipped`, `cpu_limit`,
+`bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error` and `logs` are the
+rule's own text and may hold anything its code put there. `404` when the flock has no such rule.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/runs \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
 
 ### Feedback
 

@@ -72,6 +72,7 @@ pub use usage::check_flock_alert_cap;
 pub use usage::check_ingest_fuse;
 pub use usage::check_org_cap;
 pub use usage::check_pigeon_alert_cap;
+pub use usage::check_rule_cap;
 pub use usage::check_seat_cap;
 pub use usage::count_billable_messages;
 pub use usage::ensure_billing_usage_tables;

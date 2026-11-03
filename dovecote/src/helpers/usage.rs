@@ -985,10 +985,6 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
 /// Whether the account owning this flock may create another rule. Counted per account like
 /// `check_alert_cap`, every rule of every flock the account owns, enabled or not, since a
 /// disabled rule still holds its versions and can be enabled again without a check. Fails open.
-#[cfg_attr(
-  any(not(test), target_arch = "wasm32"),
-  expect(dead_code, reason = "its caller is the rule create route")
-)]
 pub async fn check_rule_cap(client: &Client, access: &FlockAccess) -> EntitlementCap {
   let flock_id = access.flock_id();
   let rows = match client

@@ -5,10 +5,6 @@
 //! transaction and locks the rule's row, so it is fresh rather than Hyperdrive's cached copy and
 //! keeps the lock order of [`super::rule_store`]: an enable locks the flock's row first, to count
 //! its enabled rules without a racing enable, then the rule's.
-#![cfg_attr(
-  not(test),
-  expect(dead_code, reason = "its callers are the rule routes")
-)]
 
 use capsules::{
   MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_VERSIONS, RULE_CONTRACT, Rule,
