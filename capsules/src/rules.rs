@@ -207,7 +207,7 @@ pub enum RuleSeverity {
 }
 
 /// Whose condition an alert key names.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleAlertScope {
   /// One state per pigeon.

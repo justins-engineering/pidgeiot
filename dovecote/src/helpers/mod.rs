@@ -50,6 +50,8 @@ pub mod vies;
 
 pub mod nidd;
 
+pub mod rules;
+
 mod business_details;
 pub use business_details::ensure_business_details_columns;
 pub use business_details::load_business_details;
