@@ -1459,6 +1459,7 @@ dependencies = [
  "thingspace-sdk",
  "time",
  "time-tz",
+ "tokio",
  "tokio-postgres",
  "uuid",
  "wasm-bindgen",
