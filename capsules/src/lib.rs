@@ -62,6 +62,17 @@ pub use rules::{
   RuleVersionRef, RuleViolation, merge_state, state_doc_bytes, validate_result,
 };
 
+// The dashboard's rule routes: their bodies, their answers and the name and source checks the
+// editor and the routes both apply.
+pub mod rule_api;
+pub use rule_api::{
+  MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES,
+  MAX_RULE_VERSIONS, RULE_HELPERS_IMPORT, Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail,
+  RuleNameRejection, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleSourceRejection,
+  RuleUpdateRequest, RuleVersion, RuleVersionCreateRequest, RuleVersionRow, check_rule_source,
+  first_refused_import, normalize_rule_name,
+};
+
 // Tax identity for the billing entity -- the identifier types, the status
 // a lookup lands on, and the format rules dovecote's routes and fancier's
 // billing form both apply. Shared for the same reason `contact` is: one
