@@ -48,6 +48,20 @@ pub use contact::{
   MIN_CONTACT_MESSAGE_BYTES, format_contact_email, is_plausible_email,
 };
 
+// Rule contract 1: the event a user-authored rule receives, the result it may return, and the
+// validation dovecote applies to that untrusted result. Here so dovecote's dispatch path and its
+// dry run, and fancier's rule pages, read one definition of the contract and its caps.
+pub mod rules;
+pub use rules::{
+  MAX_RULE_ALERT_BODY_BYTES, MAX_RULE_ALERT_KEY_BYTES, MAX_RULE_ALERT_SUBJECT_BYTES,
+  MAX_RULE_ALERTS, MAX_RULE_ERROR_BYTES, MAX_RULE_FLOCK_STATE_BYTES, MAX_RULE_LOG_LINE_BYTES,
+  MAX_RULE_LOG_LINES, MAX_RULE_PIGEON_STATE_BYTES, MAX_RULE_RESULT_BYTES,
+  MAX_RULE_STATE_TOTAL_BYTES, MAX_RULE_VALUES, RESERVED_RULE_RESULT_FIELDS, RULE_CONTRACT,
+  RuleAlert, RuleAlertKind, RuleAlertScope, RuleEvent, RuleHook, RuleNamedRef, RulePrevious,
+  RuleProblem, RuleReading, RuleResult, RuleResultValue, RuleSeverity, RuleState, RuleStatePatch,
+  RuleVersionRef, RuleViolation, merge_state, state_doc_bytes, validate_result,
+};
+
 // Tax identity for the billing entity -- the identifier types, the status
 // a lookup lands on, and the format rules dovecote's routes and fancier's
 // billing form both apply. Shared for the same reason `contact` is: one
