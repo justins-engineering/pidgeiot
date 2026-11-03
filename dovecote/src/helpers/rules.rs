@@ -80,7 +80,9 @@ pub const PLATFORM_RULE_MAIL_PER_DAY: i32 = 2_000;
 /// Most readings one dry run replays, newest kept.
 pub const REPLAY_MAX_READINGS: usize = 4_000;
 
-/// The compatibility date every rules script is uploaded with, moved only deliberately.
+/// The compatibility date every rules script is uploaded with, moved only deliberately. It is
+/// kept apart from dovecote's own date so a dovecote bump does not change the runtime of rules
+/// tested under this one.
 pub const RULES_COMPATIBILITY_DATE: &str = "2026-10-26";
 
 /// Bounds on the assistant's synthetic test cases, which structured outputs do not enforce.
@@ -92,6 +94,7 @@ pub const MAX_CASE_EVENTS: usize = 8;
 /// Furthest a case reading may sit from the case's start: the notify window.
 pub const MAX_CASE_OFFSET_SECS: i64 = NOTIFY_REPEAT_SECS;
 
+/// The harness modules every bundle carries beside its rules.
 const HARNESS: [(&str, &str); 3] = [
   ("main.js", include_str!("../../rules/main.js")),
   ("prelude.js", include_str!("../../rules/prelude.js")),
@@ -273,6 +276,7 @@ pub struct DispatchRule {
   pub state: RuleState,
 }
 
+/// `LiveInput` in `dovecote/rules/wire.d.ts`.
 #[derive(Serialize)]
 struct LiveInput<'a> {
   mode: &'static str,
@@ -408,6 +412,7 @@ pub enum Classified {
   Platform,
 }
 
+/// `LiveOutput` in `dovecote/rules/wire.d.ts`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireOutput {
@@ -418,6 +423,7 @@ struct WireOutput {
   error: Option<String>,
 }
 
+/// One entry of `LiveOutput.results` in `dovecote/rules/wire.d.ts`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRun {
@@ -478,9 +484,12 @@ fn run_record(rule: &DispatchRule, run: WireRun) -> Option<RunRecord> {
     .logs
     .iter()
     .take(MAX_RULE_LOG_LINES)
-    .map(|line| cut(line, MAX_RULE_LOG_LINE_BYTES))
+    .map(|line| cut(&without_nul(line), MAX_RULE_LOG_LINE_BYTES))
     .collect();
-  let error = run.error.as_deref().map(|e| cut(e, MAX_RULE_ERROR_BYTES));
+  let error = run
+    .error
+    .as_deref()
+    .map(|e| cut(&without_nul(e), MAX_RULE_ERROR_BYTES));
   let (status, result, error) = match run.status.as_str() {
     "ok" => match validate_result(run.out_json.as_deref()?, &rule.state) {
       Ok(result) => (RunStatus::Ok, Some(result), None),
@@ -500,6 +509,16 @@ fn run_record(rule: &DispatchRule, run: WireRun) -> Option<RunRecord> {
     error,
     logs,
   })
+}
+
+/// `s` with each U+0000 replaced by U+FFFD: Postgres refuses U+0000 in `text` and `jsonb`, and a
+/// refused run row would fail the rule's whole apply.
+fn without_nul(s: &str) -> std::borrow::Cow<'_, str> {
+  if s.contains('\0') {
+    s.replace('\0', "\u{fffd}").into()
+  } else {
+    s.into()
+  }
 }
 
 /// `s` cut to at most `max` bytes on a character boundary.
@@ -522,12 +541,13 @@ pub enum Skip {
   Budget,
 }
 
-/// One consumer invocation's second pass: which flocks failed, whether the breaker tripped, and
-/// when the pass started. Times are milliseconds from any fixed origin.
+/// One consumer invocation's second pass: which flocks failed and their accounts, whether the
+/// breaker tripped, and when the pass started. Times are milliseconds from any fixed origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassLedger {
   started_ms: u64,
   failed_flocks: Vec<String>,
+  failed_accounts: Vec<String>,
   tripped: bool,
 }
 
@@ -537,6 +557,7 @@ impl PassLedger {
     Self {
       started_ms,
       failed_flocks: Vec::new(),
+      failed_accounts: Vec::new(),
       tripped: false,
     }
   }
@@ -554,16 +575,20 @@ impl PassLedger {
     }
   }
 
-  /// Records a dispatch. A flock failure skips that flock for the rest of the pass; a second
-  /// flock failing, or a platform failure, trips the breaker, so one tenant cannot trip it alone.
-  pub fn record(&mut self, flock_id: &str, classified: &Classified) {
+  /// Records a dispatch of `flock_id`, owned by `account`. A flock failure skips that flock for
+  /// the rest of the pass; failures under a second account, or a platform failure, trip the
+  /// breaker, so one tenant cannot trip it alone however many flocks it owns.
+  pub fn record(&mut self, flock_id: &str, account: &str, classified: &Classified) {
     match classified {
       Classified::Platform => self.tripped = true,
       Classified::Flock(_) => {
         if !self.failed_flocks.iter().any(|f| f == flock_id) {
           self.failed_flocks.push(flock_id.to_string());
         }
-        if self.failed_flocks.len() >= 2 {
+        if !self.failed_accounts.iter().any(|a| a == account) {
+          self.failed_accounts.push(account.to_string());
+        }
+        if self.failed_accounts.len() >= 2 {
           self.tripped = true;
         }
       }
@@ -666,6 +691,11 @@ pub type AlertFlags = HashMap<(RuleAlertScope, String), AlertFlag>;
 ///
 /// The plan applies this to its snapshot and the transition statement re-applies it to the row
 /// it finds, which is what makes two racing batches mail once.
+///
+/// An older batch never undoes a newer change. Restating a flag, including a `clear` with no
+/// flag, writes nothing, so a race can lose a restatement: an older batch that changes the flag
+/// lands over a newer one that only restated it, and the next batch corrects it with one more
+/// mail. That needs two batches of one key in flight at once; a flock flag's hold bounds it.
 pub fn transition_applies(
   current: Option<&AlertFlag>,
   firing: bool,
@@ -718,7 +748,9 @@ pub struct MailCounts {
 
 impl MailCounts {
   /// The counts at `now`: the rule's counters roll to zero at a new hour or day, while the
-  /// account and platform counts are read from today's `rule_usage` rows.
+  /// account and platform counts are read from today's `rule_usage` rows. Build one per rule, and
+  /// carry its account and platform counts into the next rule of the dispatch, so the plan claims
+  /// what the claim statement allows.
   pub fn at(rule: RuleMailCounters, account_day: i32, platform_day: i32, now: i64) -> Self {
     let hour = now - now.rem_euclid(3_600);
     let day = now.div_euclid(86_400);
@@ -766,7 +798,8 @@ pub struct AlertDecision {
 }
 
 /// The mail decision, one function for the live path and the dry run, so "would have mailed"
-/// means what live mails. A restated, unchanged flag decides nothing.
+/// means what live mails. A restated, unchanged flag decides nothing (see
+/// [`transition_applies`]).
 pub fn decide_alerts(
   flags: &AlertFlags,
   alerts: &[RuleAlert],
@@ -835,22 +868,20 @@ pub struct ApplyPlan {
   pub values: Vec<PlannedValue>,
   /// Flags that move, with their mails.
   pub alerts: Vec<AlertDecision>,
-  /// Whether a `rule_runs` row is kept.
+  /// Whether a `rule_runs` row is kept. It is inserted `ON CONFLICT DO NOTHING` on `(rule_id,
+  /// pigeon_id, batch_id)`, so a redelivered batch keeps the first delivery's row.
   pub run_row: bool,
-  /// Whether `fail_count` goes back to 0.
-  pub reset_fail: bool,
 }
 
 impl ApplyPlan {
-  /// Statements the plan runs: one per patch, one insert for all values, one per flag, the run
-  /// row and the reset. A quiet run is zero.
+  /// Statements the plan runs: one per patch, one insert for all values, one per flag and the
+  /// run row. A quiet run is zero. The streak write is [`next_streak`]'s, not the plan's.
   pub fn statements(&self) -> usize {
     usize::from(self.pigeon_patch.is_some())
       + usize::from(self.flock_patch.is_some())
       + usize::from(!self.values.is_empty())
       + self.alerts.len()
       + usize::from(self.run_row)
-      + usize::from(self.reset_fail)
   }
 }
 
@@ -869,8 +900,6 @@ pub struct RunContext<'a> {
   pub now: i64,
   /// Inside the watch window: every run keeps a row.
   pub watched: bool,
-  /// The rule's failure streak before this run.
-  pub fail_count: i32,
 }
 
 /// A patch would grow one dispatch's state past [`MAX_RULE_STATE_TOTAL_BYTES`]: that rule's
@@ -878,9 +907,10 @@ pub struct RunContext<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateBudgetExceeded;
 
-impl std::fmt::Display for StateBudgetExceeded {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str("flock state budget")
+impl StateBudgetExceeded {
+  /// The run's `error`.
+  pub fn as_str(self) -> &'static str {
+    "flock state budget"
   }
 }
 
@@ -896,17 +926,19 @@ pub fn plan_apply(
 ) -> Result<ApplyPlan, StateBudgetExceeded> {
   let pigeon = changed(&ctx.state.pigeon, result.state.pigeon.as_ref());
   let flock = changed(&ctx.state.flock, result.state.flock.as_ref());
-  let before = state_doc_bytes(&ctx.state.pigeon) + state_doc_bytes(&ctx.state.flock);
+  let before = state_doc_bytes(&ctx.state.pigeon).saturating_add(state_doc_bytes(&ctx.state.flock));
   let after = pigeon
     .as_ref()
     .map_or(state_doc_bytes(&ctx.state.pigeon), |(_, merged)| {
       state_doc_bytes(merged)
     })
-    + flock
-      .as_ref()
-      .map_or(state_doc_bytes(&ctx.state.flock), |(_, merged)| {
-        state_doc_bytes(merged)
-      });
+    .saturating_add(
+      flock
+        .as_ref()
+        .map_or(state_doc_bytes(&ctx.state.flock), |(_, merged)| {
+          state_doc_bytes(merged)
+        }),
+    );
   let total = state_total.saturating_sub(before).saturating_add(after);
   if total > MAX_RULE_STATE_TOTAL_BYTES && total > *state_total {
     return Err(StateBudgetExceeded);
@@ -937,7 +969,6 @@ pub fn plan_apply(
     values,
     alerts,
     run_row: false,
-    reset_fail: ctx.fail_count > 0,
   };
   plan.run_row = ctx.watched
     || !logs.is_empty()
@@ -1102,11 +1133,12 @@ pub fn bundle_modules(rules: &[BundleRule]) -> Option<Vec<(String, String)>> {
   Some(modules)
 }
 
-fn tag(prefix: &str, uuid: &str) -> String {
-  let mut tag = String::with_capacity(prefix.len() + uuid.len());
-  tag.push_str(prefix);
-  tag.push_str(uuid);
-  tag
+/// `a` then `b`, in one allocation of their size.
+fn concat2(a: &str, b: &str) -> String {
+  let mut s = String::with_capacity(a.len() + b.len());
+  s.push_str(a);
+  s.push_str(b);
+  s
 }
 
 /// The upload's metadata part. Every field is stated so nothing is inherited: no bindings, no
@@ -1122,7 +1154,7 @@ pub fn upload_metadata(
     return None;
   }
   let (cpu_ms, subject_tag) = match kind {
-    ScriptKind::Flock => (RULE_CPU_MS, tag("flock-", subject)),
+    ScriptKind::Flock => (RULE_CPU_MS, concat2("flock-", subject)),
     ScriptKind::Test => (TEST_RULE_CPU_MS, "test".to_string()),
   };
   let env_tag = match env {
@@ -1134,7 +1166,7 @@ pub fn upload_metadata(
     "compatibility_date": RULES_COMPATIBILITY_DATE,
     "bindings": [],
     "limits": { "cpu_ms": cpu_ms, "subrequests": 0 },
-    "tags": ["pidgeiot-rule", tag("acct-", account), subject_tag, env_tag],
+    "tags": ["pidgeiot-rule", concat2("acct-", account), subject_tag, env_tag],
     "observability": { "enabled": false },
   });
   Some(metadata.to_string())
@@ -1142,7 +1174,7 @@ pub fn upload_metadata(
 
 /// The upload's `Content-Type` header.
 pub fn multipart_content_type(boundary: &str) -> String {
-  tag("multipart/form-data; boundary=", boundary)
+  concat2("multipart/form-data; boundary=", boundary)
 }
 
 const PART_METADATA: &str =
@@ -1588,7 +1620,6 @@ mod tests {
       last_reading: now,
       now,
       watched: false,
-      fail_count: 0,
     }
   }
 
@@ -1603,8 +1634,8 @@ mod tests {
     }
   }
 
-  /// What the transition, merge, insert and claim statements do to one rule's rows: each
-  /// re-applies its predicate to the row it finds, as the SQL does, rather than trusting the
+  /// What the transition, merge, insert, run row and claim statements do to one rule's rows:
+  /// each re-applies its predicate to the row it finds, as the SQL does, rather than trusting the
   /// snapshot the plan was decided on.
   #[derive(Default)]
   struct Store {
@@ -1612,6 +1643,7 @@ mod tests {
     flock: Map<String, Value>,
     flags: AlertFlags,
     values: HashSet<(String, i64)>,
+    runs: HashSet<String>,
     writes: usize,
     mails: usize,
   }
@@ -1624,7 +1656,10 @@ mod tests {
       }
     }
 
-    fn apply(&mut self, plan: &ApplyPlan, now: i64) {
+    fn apply(&mut self, batch: &str, plan: &ApplyPlan, now: i64) {
+      if plan.run_row && self.runs.insert(batch.to_string()) {
+        self.writes += 1;
+      }
       for (doc, patch) in [
         (&mut self.pigeon, &plan.pigeon_patch),
         (&mut self.flock, &plan.flock_patch),
@@ -1665,12 +1700,13 @@ mod tests {
       }
     }
 
-    /// Plans `result` against this store as it stands and applies the plan.
+    /// Plans `result` against this store as it stands and applies the plan, as the batch whose
+    /// last reading is `last_reading`.
     fn run(&mut self, result: &RuleResult, last_reading: i64, now: i64) -> ApplyPlan {
       let state = self.snapshot();
       let flags = self.flags.clone();
       let plan = self.plan(result, &state, &flags, last_reading, now);
-      self.apply(&plan, now);
+      self.apply(&last_reading.to_string(), &plan, now);
       plan
     }
 
@@ -1985,11 +2021,31 @@ mod tests {
   }
 
   #[test]
+  fn a_nul_from_user_code_never_reaches_a_run_row() {
+    let body = json!({ "contract": 1, "results": [
+      { "id": "r6", "status": "threw", "error": "a\0b".repeat(400),
+        "logs": ["x\0y", "\0".repeat(300)] },
+      { "id": "r7", "status": "bad_output", "error": "\0" },
+    ]})
+    .to_string();
+    let records = per_rule(classify(&sent(&[("r6", 1), ("r7", 1)]), answered(&body)));
+    for record in &records {
+      let error = record.error.as_deref().expect("error kept");
+      assert!(!error.contains('\0') && error.len() <= MAX_RULE_ERROR_BYTES);
+      for line in &record.logs {
+        assert!(!line.contains('\0') && line.len() <= MAX_RULE_LOG_LINE_BYTES);
+      }
+    }
+    assert_eq!(records[0].logs[0], "x\u{fffd}y");
+    assert_eq!(records[1].error.as_deref(), Some("\u{fffd}"));
+  }
+
+  #[test]
   fn a_throwing_rule_never_fails_the_batch() {
     let rules = hostile_sent();
     let classified = classify(&rules, answered(LIVE_HOSTILE));
     let mut ledger = PassLedger::new(0);
-    ledger.record("f1", &classified);
+    ledger.record("f1", "a1", &classified);
     assert_eq!(ledger.may_dispatch("f1", 10), Ok(()));
     assert_eq!(ledger.may_dispatch("f2", 10), Ok(()));
 
@@ -2049,7 +2105,8 @@ mod tests {
       );
       // Redelivered beside the first: decided on the same stale snapshot.
       let racing = store.plan(result, &stale, &stale_flags, T0, T0 + 2);
-      store.apply(&racing, T0 + 2);
+      assert!(racing.run_row, "{} plans its run row again", record.id);
+      store.apply(&T0.to_string(), &racing, T0 + 2);
       assert_eq!(
         (store.writes, store.mails),
         (writes, mails),
@@ -2072,10 +2129,42 @@ mod tests {
       let a = store.plan(&result, &snapshot, &flags, T0, T0);
       let b = store.plan(&result, &snapshot, &flags, T0 + 5, T0 + 5);
       assert!(a.alerts[0].mailed && b.alerts[0].mailed);
-      store.apply(&a, T0);
-      store.apply(&b, T0 + 5);
+      store.apply("a", &a, T0);
+      store.apply("b", &b, T0 + 5);
       assert_eq!(store.mails, 1);
     }
+  }
+
+  #[test]
+  fn restating_writes_nothing_so_a_race_can_lose_a_restatement() {
+    let pigeon = RuleAlertScope::Pigeon;
+    let fire = RuleResult {
+      alerts: vec![alert("hot", RuleAlertKind::Fire, pigeon)],
+      ..RuleResult::default()
+    };
+    let clear = RuleResult {
+      alerts: vec![alert("hot", RuleAlertKind::Clear, pigeon)],
+      ..RuleResult::default()
+    };
+
+    // Firing since T0. X (last reading T0 + 10) clears; Y (T0 + 20) restates fire, which plans
+    // nothing, so X's clear lands and the next batch fires again.
+    let mut store = Store::default();
+    store.run(&fire, T0, T0);
+    let (state, flags) = (store.snapshot(), store.flags.clone());
+    let x = store.plan(&clear, &state, &flags, T0 + 10, T0 + 30);
+    let y = store.plan(&fire, &state, &flags, T0 + 20, T0 + 30);
+    assert!(y.alerts.is_empty());
+    store.apply("y", &y, T0 + 30);
+    store.apply("x", &x, T0 + 31);
+    store.run(&fire, T0 + 40, T0 + 50);
+    assert_eq!(store.mails, 3, "fire, the race's clear, fire again");
+
+    // No row yet. A newer clear restates the default and writes nothing, so an older fire lands.
+    let mut store = Store::default();
+    store.run(&clear, T0 + 60, T0 + 61);
+    store.run(&fire, T0, T0 + 62);
+    assert_eq!(store.mails, 1);
   }
 
   #[test]
@@ -2099,33 +2188,53 @@ mod tests {
     store.run(&fire, 1_600, 2_400);
     assert_eq!(store.mails, 2, "an older batch never undoes a newer one");
 
-    // Interleaved batches deciding on snapshots up to four batches stale.
-    let mut store = Store::default();
-    let mut history: Vec<(RuleState, AlertFlags)> = Vec::new();
-    let mut seed: u64 = 0x5eed;
-    let mut changes: Vec<(i64, i64)> = Vec::new();
-    for step in 0..400_i64 {
-      seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-      let now = 10_000 + step * 37;
-      let last_reading = now - (seed >> 33) as i64 % 300;
-      let stale = (seed >> 40) as usize % 5;
-      history.push((store.snapshot(), store.flags.clone()));
-      let (state, flags) = &history[history.len().saturating_sub(1 + stale)];
-      let result = if (seed >> 50) % 2 == 0 { &fire } else { &clear };
-      let plan = store.plan(result, state, flags, last_reading, now);
-      let before = store.flags.get(&(flock, "down".to_string())).copied();
-      store.apply(&plan, now);
-      let after = store.flags.get(&(flock, "down".to_string())).copied();
-      if let Some(flag) = after
-        && before.is_none_or(|b| b.firing != flag.firing)
-      {
-        changes.push((now, flag.decided_at));
+    // Interleaved batches deciding on snapshots up to four batches stale. Every change is decided
+    // on a newer batch than the change before it; a flock flag also holds ten minutes.
+    for scope in [flock, RuleAlertScope::Pigeon] {
+      let fire = RuleResult {
+        alerts: vec![alert("down", RuleAlertKind::Fire, scope)],
+        ..RuleResult::default()
+      };
+      let clear = RuleResult {
+        alerts: vec![alert("down", RuleAlertKind::Clear, scope)],
+        ..RuleResult::default()
+      };
+      let mut store = Store::default();
+      let mut history: Vec<(RuleState, AlertFlags)> = Vec::new();
+      let mut seed: u64 = 0x5eed;
+      let mut changes: Vec<(i64, i64)> = Vec::new();
+      for step in 0..400_i64 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let now = 10_000 + step * 37;
+        let last_reading = now - (seed >> 33) as i64 % 300;
+        let stale = (seed >> 40) as usize % 5;
+        history.push((store.snapshot(), store.flags.clone()));
+        let (state, flags) = &history[history.len().saturating_sub(1 + stale)];
+        let result = if (seed >> 50).is_multiple_of(2) {
+          &fire
+        } else {
+          &clear
+        };
+        let plan = store.plan(result, state, flags, last_reading, now);
+        let before = store.flags.get(&(scope, "down".to_string())).copied();
+        store.apply(&step.to_string(), &plan, now);
+        let after = store.flags.get(&(scope, "down".to_string())).copied();
+        if let Some(flag) = after
+          && before.is_none_or(|b| b.firing != flag.firing)
+        {
+          changes.push((now, flag.decided_at));
+        }
       }
-    }
-    assert!(changes.len() > 5, "the sequence must actually flip");
-    for pair in changes.windows(2) {
-      assert!(pair[1].0 - pair[0].0 >= FLOCK_FLAG_HOLD_SECS, "{pair:?}");
-      assert!(pair[1].1 > pair[0].1, "{pair:?}");
+      assert!(
+        changes.len() > 5,
+        "{scope:?}: the sequence must actually flip"
+      );
+      for pair in changes.windows(2) {
+        if scope == flock {
+          assert!(pair[1].0 - pair[0].0 >= FLOCK_FLAG_HOLD_SECS, "{pair:?}");
+        }
+        assert!(pair[1].1 > pair[0].1, "{scope:?}: {pair:?}");
+      }
     }
   }
 
@@ -2184,13 +2293,19 @@ mod tests {
       assert_eq!(plan.statements(), 0);
       assert_eq!(plan, ApplyPlan::default());
     }
+    assert_eq!(
+      next_streak(FailStreak::default(), RunStatus::Ok, T0),
+      StreakWrite::Keep
+    );
     let mut watched = ctx(&state, &flags, T0);
     watched.watched = true;
     assert_eq!(run(&watched, &mut total, &mut counts).statements(), 1);
-    let mut failing = ctx(&state, &flags, T0);
-    failing.fail_count = 3;
-    let plan = run(&failing, &mut total, &mut counts);
-    assert!(plan.reset_fail && !plan.run_row);
+    // A failing rule's good run writes its reset through the streak, not the plan.
+    let failing = FailStreak {
+      count: 3,
+      since: Some(T0 - 60),
+    };
+    assert_eq!(next_streak(failing, RunStatus::Ok, T0), StreakWrite::Reset);
     let logged = plan_apply(
       &quiet,
       &["hi".to_string()],
@@ -2219,7 +2334,7 @@ mod tests {
       &mut counts,
     );
     assert_eq!(refused, Err(StateBudgetExceeded));
-    assert_eq!(StateBudgetExceeded.to_string(), "flock state budget");
+    assert_eq!(StateBudgetExceeded.as_str(), "flock state budget");
     assert_eq!(
       total,
       MAX_RULE_STATE_TOTAL_BYTES - 100,
@@ -2382,21 +2497,25 @@ mod tests {
 
   #[test]
   fn the_breaker_and_the_pass_budget() {
+    let failed = Classified::Flock(RunStatus::DispatchFailed);
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("f1", &Classified::Flock(RunStatus::DispatchFailed));
+    ledger.record("f1", "a1", &failed);
     assert_eq!(ledger.may_dispatch("f1", 1_100), Err(Skip::FlockFailed));
     assert_eq!(ledger.may_dispatch("f2", 1_100), Ok(()));
-    ledger.record("f1", &Classified::Flock(RunStatus::Oversize));
+    ledger.record("f1", "a1", &Classified::Flock(RunStatus::Oversize));
+    ledger.record("f2", "a1", &Classified::Flock(RunStatus::CpuLimit));
+    assert_eq!(ledger.may_dispatch("f2", 1_100), Err(Skip::FlockFailed));
     assert_eq!(
-      ledger.may_dispatch("f2", 1_100),
+      ledger.may_dispatch("f3", 1_100),
       Ok(()),
-      "one tenant cannot trip it alone"
+      "one account's flocks cannot trip it alone"
     );
-    ledger.record("f2", &Classified::Flock(RunStatus::CpuLimit));
-    assert_eq!(ledger.may_dispatch("f3", 1_100), Err(Skip::Breaker));
+    ledger.record("f3", "a2", &failed);
+    assert_eq!(ledger.may_dispatch("f4", 1_100), Err(Skip::Breaker));
 
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("f1", &Classified::Platform);
+    ledger.record("f1", "a1", &Classified::Platform);
+
     assert_eq!(ledger.may_dispatch("f9", 1_100), Err(Skip::Breaker));
 
     let ledger = PassLedger::new(1_000);
