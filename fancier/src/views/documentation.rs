@@ -83,6 +83,115 @@ pub fn DocumentationPage() -> Element {
       }
     }
 
+    section { id: "docs-device-to-dashboard", class: "pb-16 md:pb-24",
+      div { class: "max-w-4xl mx-auto px-4 md:px-8",
+        h2 { class: "text-3xl md:text-4xl font-bold mb-4 tracking-tight",
+          "From a device to a customer dashboard"
+        }
+        p { class: "text-base-content/70 leading-relaxed mb-10 max-w-3xl",
+          "If you build devices for other businesses, this is how the pieces fit together, from a board on your bench to a page your customer signs in to."
+        }
+        div { class: "space-y-10",
+          div {
+            h3 { class: "text-xl font-bold mb-2", "Organizations, roles and invites" }
+            p { class: "text-base-content/70 leading-relaxed mb-4",
+              "An organization is a team of dashboard accounts that share flocks and one plan. Each person in it is an owner, an admin or a member. Owners and admins invite people, register and manage the organization's devices, set up alerts and firmware, and handle billing. Only an owner changes someone's role or deletes the organization, and an organization always keeps at least one owner. Members see everything the organization owns, edit shadows, and read telemetry, logs and alerts, but cannot register, delete or re-key a device."
+            }
+            p { class: "text-base-content/70 leading-relaxed",
+              "An invitation is a link emailed to one address at one role. It works once and expires after seven days. Removing someone from the organization removes their access to everything it owns within about 75 seconds. Seats are counted per organization: one on the free tier, three on Builder, unlimited from Growth up, and a pending invitation holds a seat."
+            }
+          }
+          div {
+            h3 { class: "text-xl font-bold mb-2", "Flocks" }
+            p { class: "text-base-content/70 leading-relaxed",
+              "A flock is a group of pigeons: a site, a product line, a deployment. You create a flock on your own account and move it into an organization with Transfer to org on the flock's page, which needs you to be an owner or admin of that organization. A flock that belongs to an organization stays there; it cannot move to another one."
+            }
+          }
+          div {
+            h3 { class: "text-xl font-bold mb-2", "Pigeons" }
+            p { class: "text-base-content/70 leading-relaxed",
+              "A pigeon is one device. Register one pigeon per physical board: each has its own token, its own shadow and its own telemetry, so two boards sharing a pigeon would overwrite each other's state."
+            }
+          }
+          div {
+            h3 { class: "text-xl font-bold mb-4", "What the dashboard shows" }
+            div { class: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-4",
+              div { class: "p-6 rounded-2xl bg-base-300/50 border border-base-content/10",
+                h4 { class: "font-bold mb-3", "For each pigeon" }
+                ul { class: "space-y-2 text-base-content/70 leading-relaxed list-disc ml-5",
+                  li {
+                    "Its connection state, online, stale or offline, judged against the reporting interval the device runs."
+                  }
+                  li {
+                    "The shadow: the config you set for the device, and the config it reports back once it has applied it."
+                  }
+                  li {
+                    "The latest value of every telemetry key, graphs of any numeric key over a range you pick, and a CSV export of its history."
+                  }
+                  li { "The logs the device uploaded." }
+                  li { "Its alerts and whether each one is firing." }
+                }
+              }
+              div { class: "p-6 rounded-2xl bg-base-300/50 border border-base-content/10",
+                h4 { class: "font-bold mb-3", "For each flock" }
+                ul { class: "space-y-2 text-base-content/70 leading-relaxed list-disc ml-5",
+                  li { "Its pigeons and their connection state." }
+                  li { "Graphs across the flock's pigeons, and a CSV export of their history." }
+                  li { "Alerts that apply to every pigeon in the flock." }
+                }
+              }
+            }
+            p { class: "text-base-content/70 leading-relaxed",
+              "The Dashboard page sums up every flock you can see: how many devices are online, which flocks they sit in, and which alerts are firing. Alerts send email when a value crosses a threshold or changes too fast, when a device goes stale or offline, or when its reports stop."
+            }
+          }
+          div {
+            h3 { class: "text-xl font-bold mb-2", "Custom dashboards are not here yet" }
+            p { class: "text-base-content/70 leading-relaxed mb-4",
+              "There is no dashboard builder and no branded page to hand a customer. Your customer signs in to the same dashboard you use and sees the flocks and pigeons of their organization. What exists instead:"
+            }
+            ul { class: "space-y-2 text-base-content/70 leading-relaxed list-disc ml-5",
+              li {
+                "Graphs on every pigeon and flock page, saved to each person's own account, so two members of one organization keep their own."
+              }
+              li { "CSV export of telemetry history from every pigeon and flock page." }
+              li {
+                "The telemetry history routes in the "
+                Link { class: "link link-secondary", to: Route::ApiReferencePage {}, "API reference" }
+                ", to pull readings into your own tools."
+              }
+              li {
+                "Forwarding: set a pigeon's Telemetry Endpoint and every report goes to a time-series database you run, as InfluxDB line protocol, in place of our history store. Only numeric values are forwarded. Threshold and rate-of-change alerts need the history we keep, so they stop for that pigeon; offline, stale and missing-report alerts keep working."
+              }
+            }
+          }
+          div {
+            h3 { class: "text-xl font-bold mb-2", "One organization per customer" }
+            p { class: "text-base-content/70 leading-relaxed mb-4",
+              "A small shop serving several customers can give each one an organization of its own:"
+            }
+            ol { class: "space-y-2 text-base-content/70 leading-relaxed list-decimal ml-5 mb-4",
+              li {
+                "Create the customer's organization on the Organizations page and choose its plan. Billing belongs to an organization, so each customer has its own plan and its own bill. An account can own one organization on the free tier; each further one needs a paid plan."
+              }
+              li {
+                "Create the customer's flocks, register their devices as pigeons, and move the flocks into the organization with Transfer to org."
+              }
+              li {
+                "Invite the customer's people by email: member for someone who watches devices and edits their config, admin for someone who will register devices or manage billing. The free tier's one seat is yours, so inviting anyone needs Builder or above."
+              }
+              li { "Keep yourself an owner, so you can still look after the devices." }
+            }
+            p { class: "text-base-content/70 leading-relaxed",
+              "Each organization sees only its own flocks, so one customer never sees another's devices, while your own Flocks and Dashboard pages show the flocks of every organization you belong to. There is no parent account above the organizations: each one is set up and billed on its own. See "
+              Link { class: "link link-secondary", to: Route::PricingPage {}, "pricing" }
+              " for what each plan includes."
+            }
+          }
+        }
+      }
+    }
+
     // Reference & source
     section { id: "docs-reference", class: "pb-16 md:pb-24",
       div { class: "max-w-4xl mx-auto px-4 md:px-8",
