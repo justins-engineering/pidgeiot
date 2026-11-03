@@ -982,6 +982,62 @@ async fn check_alert_cap(client: &Client, scope_sql: &str, scope_id: &str) -> En
   )
 }
 
+/// Whether the account owning this flock may create another rule. Counted per account like
+/// `check_alert_cap`, every rule of every flock the account owns, enabled or not, since a
+/// disabled rule still holds its versions and can be enabled again without a check. Fails open.
+#[cfg_attr(
+  any(not(test), target_arch = "wasm32"),
+  expect(dead_code, reason = "its caller is the rule create route")
+)]
+pub async fn check_rule_cap(client: &Client, access: &FlockAccess) -> EntitlementCap {
+  let flock_id = access.flock_id();
+  let rows = match client
+    .query_typed(
+      "WITH scope AS (SELECT f.org_id, f.user_id FROM flocks f WHERE f.id = $1::uuid)
+       SELECT o.plan AS org_plan, o.subscription_status AS org_status,
+         o.comp_plan AS comp_plan,
+         (SELECT COUNT(*)::bigint
+            FROM rules r
+            JOIN flocks rf ON rf.id = r.flock_id
+            WHERE (s.org_id IS NOT NULL AND rf.org_id = s.org_id)
+               OR (s.org_id IS NULL AND rf.org_id IS NULL
+                   AND rf.user_id = s.user_id)) AS rule_count
+       FROM scope s
+       LEFT JOIN organizations o ON o.id = s.org_id;",
+      &[(&flock_id, Type::TEXT)],
+    )
+    .await
+  {
+    Ok(rows) => rows,
+    Err(e) => {
+      console_error!("Rule cap check failed (failing open): {e}");
+      return EntitlementCap::Allow;
+    }
+  };
+
+  // Unknown flock: the route's own authorization already refused that case.
+  let Some(row) = rows.first() else {
+    return EntitlementCap::Allow;
+  };
+
+  let org_plan: Option<String> = row.get("org_plan");
+  let org_status: Option<String> = row.get("org_status");
+  let comp_plan: Option<String> = row.get("comp_plan");
+  let plan = effective_plan(
+    org_plan.as_deref(),
+    org_status.as_deref(),
+    comp_plan.as_deref(),
+  );
+
+  apply_cap(
+    plan,
+    plan.included_rules(),
+    row.get("rule_count"),
+    "rule",
+    None,
+  )
+}
+
 /// Free-tier organizations one account may own. Organizations served on a
 /// paid or complimentary tier do not count against it.
 ///
@@ -1644,6 +1700,21 @@ mod tests {
         Some("members plus pending invites")
       ),
       "Forbidden: the Builder tier includes 3 seats and this account already has 3 (members plus pending invites) -- upgrade to add more"
+    );
+  }
+
+  #[test]
+  fn the_rule_ladder_is_one_ten_then_unlimited() {
+    assert_eq!(BillingPlan::Perch.included_rules(), Some(1));
+    assert_eq!(BillingPlan::Builder.included_rules(), Some(10));
+    for plan in [BillingPlan::Growth, BillingPlan::Scale, BillingPlan::Fleet] {
+      assert_eq!(plan.included_rules(), None);
+    }
+    assert_eq!(
+      refusal(apply_cap(BillingPlan::Perch, Some(1), 1, "rule", None)).as_deref(),
+      Some(
+        "Forbidden: the free tier includes 1 rule and this account already has 1 -- upgrade to add more"
+      )
     );
   }
 

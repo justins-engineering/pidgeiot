@@ -2671,6 +2671,15 @@ impl BillingPlan {
     }
   }
 
+  /// Rules an account may hold across all of its flocks, enabled or not. `None` is unlimited.
+  pub fn included_rules(&self) -> Option<i64> {
+    match self {
+      BillingPlan::Perch => Some(1),
+      BillingPlan::Builder => Some(10),
+      BillingPlan::Growth | BillingPlan::Scale | BillingPlan::Fleet => None,
+    }
+  }
+
   /// Pooled messages one billed extra device adds to the account's
   /// allowance. It is not a separate figure to keep in step with the
   /// ladder: every tier's own allowance divided by its own device count is

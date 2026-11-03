@@ -1159,4 +1159,74 @@ pub(crate) mod pg {
       db.drop().await;
     });
   }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_the_rule_cap_stops_at_the_served_tier() {
+    use crate::helpers::EntitlementCap;
+    use crate::helpers::firmware::FlockAccess;
+    use crate::helpers::usage::check_rule_cap;
+    run(async {
+      let db = Scratch::new("rulecap").await;
+      let client = db.client().await;
+      let refused = |flock: Uuid| {
+        let client = &client;
+        async move {
+          let access = FlockAccess::assert_checked(&flock.to_string());
+          matches!(
+            check_rule_cap(client, &access).await,
+            EntitlementCap::Refuse(_)
+          )
+        }
+      };
+      let org = |plan: &'static str, status: &'static str| {
+        let client = &client;
+        async move {
+          let row = client
+            .query_one(
+              "INSERT INTO organizations (name, plan, subscription_status) VALUES ('o', $1, $2)
+               RETURNING id",
+              &[&plan, &status],
+            )
+            .await
+            .expect("org inserted");
+          row.get::<_, Uuid>(0)
+        }
+      };
+
+      // The free tier: one rule per account, whichever flock holds it; another account's rules
+      // never count.
+      let mine = new_flock(&client, None).await;
+      let theirs = new_flock(&client, None).await;
+      new_rule(&client, theirs).await;
+      assert!(!refused(mine).await);
+      new_rule(&client, mine).await;
+      assert!(refused(mine).await);
+
+      // Builder: ten across the organization's flocks.
+      let builder = org("builder", "active").await;
+      let (one, two) = (
+        new_flock(&client, Some(builder)).await,
+        new_flock(&client, Some(builder)).await,
+      );
+      for n in 0..9 {
+        new_rule(&client, if n % 2 == 0 { one } else { two }).await;
+      }
+      assert!(!refused(two).await);
+      new_rule(&client, one).await;
+      assert!(refused(two).await);
+
+      // A lapsed subscription is served as the free tier; Growth is unlimited.
+      let lapsed = org("builder", "canceled").await;
+      let flock = new_flock(&client, Some(lapsed)).await;
+      new_rule(&client, flock).await;
+      assert!(refused(flock).await);
+      let growth = new_flock(&client, Some(org("growth", "active").await)).await;
+      for _ in 0..25 {
+        new_rule(&client, growth).await;
+      }
+      assert!(!refused(growth).await);
+      drop(client);
+      db.drop().await;
+    });
+  }
 }
