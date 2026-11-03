@@ -25,7 +25,7 @@ const common = { contract: 1, hook: "telemetry", batch_id: "b", received_at: T0,
   flock: { id: "f", name: "F" }, pigeon: { id: "a", name: "A" },
   readings: [{ at: T0, metrics: { k: "1" }, previous: {} }] };
 const state = { pigeon: {}, flock: {} };
-const ids = ["big", "cyc", "get", "huge", "ok", "hang", "after"];
+const ids = ["big", "cyc", "get", "huge", "ok", "lone", "hang", "after"];
 
 const t = performance.now();
 const live = await call({ mode: "live", wall_ms: 250, common,
@@ -37,6 +37,9 @@ check("a cyclic result is that rule's bad_output", status.cyc === "bad_output");
 check("a throwing getter is that rule's bad_output", status.get === "bad_output");
 check("a result over 48 KiB is that rule's bad_output", status.huge === "bad_output");
 check("a healthy sibling still runs", status.ok === "ok");
+const lone = parse(live.results.find((r) => r.id === "lone").out_json ?? "{}").values?.[0];
+check("lone surrogates leave as U+FFFD, pairs and backslashes intact",
+  lone?.key === "k\ufffd" && lone?.value === "v\ufffd \u{1f600} \\ud800");
 check("a hang with the timer globals replaced still times out", status.hang === "timeout");
 check("rules after the hang are skipped", status.after === "skipped");
 console.log(ms + " ms " + stringify(live.results.map((r) =>
@@ -46,6 +49,12 @@ const wide = await call({ mode: "replay", wall_ms: 250, events: [common],
   rules: [{ id: "wide", version: 1 }] });
 check("state is capped in UTF-8 bytes, not UTF-16 units",
   wide.rules[0].runs[0].status === "bad_output");
+
+const proto = await call({ mode: "replay", wall_ms: 250, events: [common],
+  rules: [{ id: "proto", version: 1 }] });
+const kept = proto.rules[0].final.pigeons.a;
+check("a replay keeps a state key named __proto__, as live does",
+  Object.hasOwn(kept, "__proto__") && kept.__proto__ === "kept");
 
 const broken = await call({ mode: "live", wall_ms: 250, common, rules: 5 });
 check("a harness failure still answers JSON", broken.error === "harness_failed");

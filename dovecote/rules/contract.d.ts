@@ -71,7 +71,8 @@ export interface RuleValue {
 
 /**
  * What a rule may return. Every field is optional; returning nothing does nothing. The whole
- * result must serialize to JSON of at most 48 KiB. Every byte cap counts UTF-8 bytes.
+ * result must serialize to JSON of at most 48 KiB. Every byte cap counts UTF-8 bytes. Half of a
+ * surrogate pair, as `slice` can leave, arrives as U+FFFD.
  */
 export interface RuleResult {
   /** Up to 8. */

@@ -37,6 +37,12 @@ export default {
 // Caps count UTF-8 bytes, as dovecote does, not UTF-16 units.
 const bytes = (s) => encoder.encode(s).length;
 
+// JSON.stringify escapes a lone UTF-16 surrogate, which dovecote refuses as not JSON, and a
+// rule cutting text with slice() makes one easily. Pairs are written raw, so any surrogate
+// escape not preceded by an odd run of backslashes is lone.
+const wellFormed = (json) =>
+  json.replace(/(?<!\\)((?:\\\\)*)\\ud[89a-f][0-9a-f]{2}/g, "$1\\ufffd");
+
 // A trailing partial character decodes to one U+FFFD (3 bytes), hence the 3 held back.
 function cut(s, max) {
   const b = encoder.encode(s);
@@ -73,7 +79,7 @@ async function runOne(run, event, expired) {
     if (out === TIMEOUT) return { status: "timeout", logs };
     let json;
     try {
-      json = P.stringify(out ?? {});
+      json = wellFormed(P.stringify(out ?? {}));
     } catch (e) {
       const error = cut("result is not JSON: " + why(e), ERROR_BYTES);
       return { status: "bad_output", error, logs };
@@ -119,11 +125,12 @@ async function live(input) {
   return { contract: CONTRACT, results };
 }
 
-// The two state caps are mirrored here only so a replay threads state as live would.
+// The two state caps are mirrored here only so a replay threads state as live would. A
+// null-prototype document takes a key named __proto__ as a key, as dovecote's merge does.
 function merge(doc, patch, cap) {
   if (patch === undefined) return { doc };
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return { bad: true };
-  const next = { ...doc };
+  const next = Object.assign(Object.create(null), doc);
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete next[k];
     else next[k] = v;

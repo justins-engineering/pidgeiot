@@ -193,5 +193,14 @@ function mails(runs, events) {
     keys.length === 1 && outOf(r.results[0]).state.pigeon.lastBoot === T0 + 20);
 }
 
+// R6 cuts a stage by UTF-16 units, so the cut can split a pair; the result still reaches
+// dovecote as well-formed text.
+{
+  const common = ev("a", T0, { reset_cause: "16", reset_stage: "a".repeat(199) + "\u{1f600}" });
+  const r = await call({ mode: "live", wall_ms: 250, common,
+    rules: [{ id: "r6", version: 1, state: fresh }] });
+  check("R6 cuts a stage into well-formed text", outOf(r.results[0]).alerts[0].body.isWellFormed());
+}
+
 console.log(failures === 0 ? "all fixtures pass" : failures + " fixture(s) failed");
 process.exitCode = failures === 0 ? 0 : 1;
