@@ -24,10 +24,11 @@ pub const MAX_RULE_ALERTS: usize = 8;
 /// Longest alert key, in bytes of `[a-z0-9._:-]`.
 pub const MAX_RULE_ALERT_KEY_BYTES: usize = 64;
 
-/// Longest alert subject, in bytes. It becomes a mail subject, so no control character either.
+/// Longest alert subject, in bytes. It becomes a mail subject, so it holds no control character
+/// either: Unicode Cc, U+0000 to U+001F and U+007F to U+009F.
 pub const MAX_RULE_ALERT_SUBJECT_BYTES: usize = 120;
 
-/// Longest alert body, in bytes. Newline is the only control character it may hold.
+/// Longest alert body, in bytes. Newline is the only control character (Unicode Cc) it may hold.
 pub const MAX_RULE_ALERT_BODY_BYTES: usize = 1024;
 
 /// Most derived values in one result. Each value's key and value take the telemetry caps,
@@ -149,8 +150,11 @@ pub struct RuleState {
   pub flock: Map<String, Value>,
 }
 
-/// A validated rule result. Only [`validate_result`] builds one from a rule's output.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+/// A validated rule result.
+///
+/// It has no `Deserialize`, so [`validate_result`] is the only way to build one from a rule's
+/// output, and it serializes to the contract's own shape, so a validated result validates again.
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct RuleResult {
   /// Up to [`MAX_RULE_ALERTS`] mail decisions.
   pub alerts: Vec<RuleAlert>,
@@ -161,9 +165,9 @@ pub struct RuleResult {
 }
 
 /// A mail decision. The rule picks the words; the rule's settings pick the recipients.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct RuleAlert {
-  /// 1 to [`MAX_RULE_ALERT_KEY_BYTES`] bytes of `[a-z0-9._:-]`.
+  /// 1 to [`MAX_RULE_ALERT_KEY_BYTES`] bytes of `[a-z0-9._:-]`, unique per scope in one result.
   pub key: String,
   /// When it mails.
   pub kind: RuleAlertKind,
@@ -174,6 +178,7 @@ pub struct RuleAlert {
   /// 1 to [`MAX_RULE_ALERT_SUBJECT_BYTES`] bytes, no control character.
   pub subject: String,
   /// Up to [`MAX_RULE_ALERT_BODY_BYTES`] bytes; newline the only control character.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub body: Option<String>,
 }
 
@@ -212,23 +217,26 @@ pub enum RuleAlertScope {
 }
 
 /// A derived value: the contract's `RuleValue`, kept beside telemetry and never mixed into it.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct RuleResultValue {
-  /// 1 to [`MAX_TELEMETRY_KEY_BYTES`] bytes.
+  /// 1 to [`MAX_TELEMETRY_KEY_BYTES`] bytes, no U+0000.
   pub key: String,
-  /// Up to [`MAX_TELEMETRY_VALUE_BYTES`] bytes.
+  /// Up to [`MAX_TELEMETRY_VALUE_BYTES`] bytes, no U+0000.
   pub value: String,
-  /// Unix seconds as the rule gave it; the caller clamps it into the batch, `None` meaning the
-  /// last reading.
+  /// Integer Unix seconds as the rule gave it, a fraction refused; the caller clamps it into the
+  /// batch, `None` meaning the last reading.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub at: Option<i64>,
 }
 
 /// A shallow patch per state document, applied by [`merge_state`]; `None` leaves it untouched.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct RuleStatePatch {
   /// The patch to this pigeon's document; `null` values delete keys.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub pigeon: Option<Map<String, Value>>,
   /// The patch to the flock's document; `null` values delete keys.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub flock: Option<Map<String, Value>>,
 }
 
@@ -250,7 +258,8 @@ pub struct RuleViolation {
 pub enum RuleProblem {
   /// The result, or a state document after the merge, is over its byte cap.
   TooLarge,
-  /// The result does not parse, or nests deeper than the parser allows.
+  /// The result does not parse, nests deeper than the parser allows, or escapes a lone UTF-16
+  /// surrogate, as JavaScript writes a string cut inside a surrogate pair.
   NotJson,
   /// The result is JSON but not an object.
   NotAnObject,
@@ -270,18 +279,23 @@ pub enum RuleProblem {
   TooLong,
   /// An alert key outside `[a-z0-9._:-]`.
   BadCharacter,
-  /// A control character in a subject, or one other than newline in a body.
+  /// A control character (Unicode Cc: U+0000 to U+001F, U+007F to U+009F) in a subject, one
+  /// other than newline in a body, or U+0000 in a value or a state patch, which Postgres cannot
+  /// store.
   ControlCharacter,
   /// A word outside an enum's spellings.
   BadValue,
+  /// A second alert for a key the result already gave in the same scope.
+  Duplicate,
 }
 
 /// Validates one rule's serialized result against contract 1 and the rule's state snapshot.
 ///
 /// All or nothing: the first violation refuses the whole result. Every byte cap counts UTF-8
-/// bytes. The state caps apply to each document after `state`'s patch is merged into the
-/// snapshot the rule was given, and only to a document the result patches; a concurrent writer
-/// can still overshoot by one document, which the caller's state budget absorbs.
+/// bytes, and an alert key may appear once per scope. The state caps apply to each document the
+/// result patches, after the patch is merged into the snapshot the rule was given; a concurrent
+/// writer can still overshoot by one document, which the caller's state budget absorbs, and a
+/// document already over its cap still takes a patch that does not grow it.
 pub fn validate_result(out_json: &str, state: &RuleState) -> Result<RuleResult, RuleViolation> {
   if out_json.len() > MAX_RULE_RESULT_BYTES {
     return Err(at("result", RuleProblem::TooLarge));
@@ -302,8 +316,15 @@ pub fn validate_result(out_json: &str, state: &RuleState) -> Result<RuleResult, 
 
   let mut result = RuleResult::default();
   if let Some(alerts) = top.get("alerts") {
-    for (i, item) in list(alerts, "alerts", MAX_RULE_ALERTS)?.iter().enumerate() {
-      result.alerts.push(alert(item, i)?);
+    for (i, entry) in list(alerts, "alerts", MAX_RULE_ALERTS)?.iter().enumerate() {
+      let parsed = alert(entry, i)?;
+      // Two entries for one key would leave the winner to statement order, so a live run and a
+      // dry run could disagree.
+      let seen = |a: &RuleAlert| a.scope == parsed.scope && a.key == parsed.key;
+      if result.alerts.iter().any(seen) {
+        return Err(item("alerts.key", i, RuleProblem::Duplicate));
+      }
+      result.alerts.push(parsed);
     }
   }
   if let Some(values) = top.get("values") {
@@ -369,6 +390,7 @@ impl RuleProblem {
       RuleProblem::BadCharacter => "character outside [a-z0-9._:-]",
       RuleProblem::ControlCharacter => "control character",
       RuleProblem::BadValue => "not an allowed value",
+      RuleProblem::Duplicate => "repeated in its scope",
     }
   }
 }
@@ -520,10 +542,17 @@ fn derived_value(v: &Value, i: usize) -> Result<RuleResultValue, RuleViolation> 
     return Err(item("values", i, RuleProblem::WrongType));
   };
   only(obj, &["key", "value", "at"], "values", Some(i))?;
+  // Postgres TEXT cannot hold U+0000, and one refused statement fails the whole apply.
   let key = required(obj, "key", "values.key", i)?;
   sized(key, 1, MAX_TELEMETRY_KEY_BYTES, "values.key", i)?;
+  if key.contains('\0') {
+    return Err(item("values.key", i, RuleProblem::ControlCharacter));
+  }
   let value = required(obj, "value", "values.value", i)?;
   sized(value, 0, MAX_TELEMETRY_VALUE_BYTES, "values.value", i)?;
+  if value.contains('\0') {
+    return Err(item("values.value", i, RuleProblem::ControlCharacter));
+  }
   let at = match obj.get("at") {
     None => None,
     Some(n) => Some(
@@ -555,10 +584,32 @@ fn document(
   let Value::Object(doc) = doc else {
     return Err(at(field, RuleProblem::WrongType));
   };
-  if state_doc_bytes(&merge_state(stored, doc)) > max {
+  // Postgres jsonb cannot hold U+0000. Only the patch is walked: the stored copy came from there.
+  if object_holds_nul(doc) {
+    return Err(at(field, RuleProblem::ControlCharacter));
+  }
+  // Concurrent writers can leave a stored document over its cap; refusing a patch that does not
+  // grow it would refuse the rule on every run from then on.
+  let merged = state_doc_bytes(&merge_state(stored, doc));
+  if merged > max && merged > state_doc_bytes(stored) {
     return Err(at(field, RuleProblem::TooLarge));
   }
   Ok(Some(doc.clone()))
+}
+
+/// Whether any key or string in `obj`, at any depth, holds U+0000. Depth is bounded by the
+/// parser's recursion limit.
+fn object_holds_nul(obj: &Map<String, Value>) -> bool {
+  obj.iter().any(|(k, v)| k.contains('\0') || holds_nul(v))
+}
+
+fn holds_nul(v: &Value) -> bool {
+  match v {
+    Value::String(s) => s.contains('\0'),
+    Value::Array(items) => items.iter().any(holds_nul),
+    Value::Object(obj) => object_holds_nul(obj),
+    _ => false,
+  }
 }
 
 #[cfg(test)]
@@ -1106,7 +1157,9 @@ mod tests {
   fn violations_name_the_offending_index() {
     let mut bad = alert();
     bad["subject"] = json!("x\ry");
-    let v = refused(json!({ "alerts": [alert(), alert(), bad] }));
+    let mut second = alert();
+    second["key"] = json!("other");
+    let v = refused(json!({ "alerts": [alert(), second, bad] }));
     is(&v, "alerts.subject", Some(2), RuleProblem::ControlCharacter);
     assert_eq!(v.to_string(), "alerts[2].subject: control character");
   }
@@ -1220,5 +1273,130 @@ mod tests {
   fn reserved_names_take_precedence_over_unknown_ones() {
     let v = refused(json!({ "aaa": 1, "webhook": "https://example.com" }));
     is(&v, "webhook", None, RuleProblem::NotAvailableYet);
+  }
+
+  #[test]
+  fn nul_is_refused_wherever_postgres_would_refuse_it() {
+    is(
+      &refused(with_value("key", json!("k\u{0}"))),
+      "values.key",
+      Some(0),
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(with_value("value", json!("\u{0}"))),
+      "values.value",
+      Some(0),
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(json!({ "state": { "pigeon": { "a\u{0}": 1 } } })),
+      "state.pigeon",
+      None,
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(json!({ "state": { "pigeon": { "a\u{0}": null } } })),
+      "state.pigeon",
+      None,
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(json!({ "state": { "flock": { "a": "\u{0}" } } })),
+      "state.flock",
+      None,
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(json!({ "state": { "flock": { "a": ["ok", { "x": "y\u{0}" }] } } })),
+      "state.flock",
+      None,
+      RuleProblem::ControlCharacter,
+    );
+    is(
+      &refused(json!({ "state": { "pigeon": { "o": { "k\u{0}": 1 } } } })),
+      "state.pigeon",
+      None,
+      RuleProblem::ControlCharacter,
+    );
+  }
+
+  #[test]
+  fn values_refuse_only_nul_among_control_characters() {
+    assert!(check(with_value("value", json!("a\tb\nc"))).is_ok());
+    assert!(check(with_value("key", json!("a\u{7f}"))).is_ok());
+  }
+
+  #[test]
+  fn a_stored_document_is_never_walked_for_nul() {
+    let mut state = RuleState::default();
+    state.pigeon.insert("old".into(), json!("a\u{0}"));
+    assert!(check_with(&state, json!({ "state": { "pigeon": { "new": 1 } } })).is_ok());
+  }
+
+  #[test]
+  fn a_validated_result_validates_again_from_its_own_serialization() {
+    let mut no_body = alert();
+    no_body.as_object_mut().unwrap().remove("body");
+    no_body["key"] = json!("quiet");
+    let mut no_at = value();
+    no_at.as_object_mut().unwrap().remove("at");
+    let out = json!({
+      "alerts": [alert(), no_body],
+      "values": [value(), no_at],
+      "state": { "pigeon": { "n": 1, "gone": null } }
+    });
+    let first = check(out).unwrap();
+    let text = serde_json::to_string(&first).unwrap();
+    for absent in ["\"body\":null", "\"at\":null", "\"flock\":null"] {
+      assert!(!text.contains(absent), "{text}");
+    }
+    assert_eq!(validate_result(&text, &empty_state()).unwrap(), first);
+    let quiet = serde_json::to_string(&RuleResult::default()).unwrap();
+    assert_eq!(
+      validate_result(&quiet, &empty_state()).unwrap(),
+      RuleResult::default()
+    );
+  }
+
+  #[test]
+  fn a_repeated_alert_key_in_one_scope_is_refused() {
+    let mut clear = alert();
+    clear["kind"] = json!("clear");
+    let v = refused(json!({ "alerts": [alert(), clear] }));
+    is(&v, "alerts.key", Some(1), RuleProblem::Duplicate);
+    assert_eq!(v.to_string(), "alerts[1].key: repeated in its scope");
+
+    let mut flock = alert();
+    flock["scope"] = json!("flock");
+    assert!(check(json!({ "alerts": [alert(), flock] })).is_ok());
+  }
+
+  #[test]
+  fn an_over_cap_stored_document_still_takes_a_patch_that_does_not_grow_it() {
+    let mut state = RuleState::default();
+    state
+      .flock
+      .insert("k".into(), json!("x".repeat(MAX_RULE_FLOCK_STATE_BYTES)));
+    assert!(state_doc_bytes(&state.flock) > MAX_RULE_FLOCK_STATE_BYTES);
+    let same = json!({ "state": { "flock": { "k": "y".repeat(MAX_RULE_FLOCK_STATE_BYTES) } } });
+    assert!(check_with(&state, same).is_ok());
+    assert!(check_with(&state, json!({ "state": { "flock": { "k": "short" } } })).is_ok());
+    let grow = json!({ "state": { "flock": { "j": 1 } } });
+    is(
+      &check_with(&state, grow).unwrap_err(),
+      "state.flock",
+      None,
+      RuleProblem::TooLarge,
+    );
+  }
+
+  // JavaScript's JSON.stringify escapes a lone surrogate, which a `.slice` through a surrogate
+  // pair leaves behind; serde_json refuses it, so the whole result is not JSON.
+  #[test]
+  fn a_lone_surrogate_escape_is_not_json() {
+    let out = r#"{"values":[{"key":"k","value":"\ud83d"}]}"#;
+    let v = validate_result(out, &empty_state()).unwrap_err();
+    is(&v, "result", None, RuleProblem::NotJson);
   }
 }
