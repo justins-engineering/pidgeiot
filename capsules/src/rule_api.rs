@@ -23,6 +23,9 @@ pub const MAX_RULE_VERSIONS: i64 = 50;
 /// Most run records one read returns, newest first.
 pub const MAX_RULE_RUNS_PER_PAGE: i64 = 200;
 
+/// Most latest values one read returns, one per pigeon and key.
+pub const MAX_RULE_VALUES_RETURNED: i64 = 1000;
+
 /// The one module a rule may import: the platform's helpers, shipped in every rules script.
 pub const RULE_HELPERS_IMPORT: &str = "./pidgeiot.js";
 
@@ -62,8 +65,11 @@ impl RuleOrigin {
 /// Why a rule name was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleNameRejection {
+  /// Blank once trimmed.
   Empty,
+  /// Over [`MAX_RULE_NAME_BYTES`].
   TooLong,
+  /// Holds a control character, which a mail header or footer must not carry.
   ControlCharacter,
 }
 
@@ -97,7 +103,9 @@ pub fn normalize_rule_name(name: &str) -> Result<String, RuleNameRejection> {
 /// Why a rule's source was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleSourceRejection {
+  /// Blank.
   Empty,
+  /// Over [`MAX_RULE_SOURCE_BYTES`].
   TooLarge,
   /// A static import of anything but [`RULE_HELPERS_IMPORT`].
   Import,
@@ -418,8 +426,9 @@ impl From<RuleRunRow> for RuleRun {
   }
 }
 
-/// One recorded run of a rule over one pigeon's batch. A quiet successful run is recorded only
-/// while the rule is watched; a failure always is.
+/// One recorded run of a rule over one pigeon's batch. A failed run is recorded, but a skipped
+/// one only while the rule is watched and a version mismatch only once it has lasted ten minutes,
+/// longer than a deploy takes; a quiet successful run only while watched.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RuleRun {
   pub rule_id: Uuid,
@@ -441,6 +450,41 @@ pub struct RuleRun {
   pub logs: Vec<String>,
   #[serde(with = "time::serde::rfc3339")]
   pub ran_at: OffsetDateTime,
+}
+
+/// DB model for one `rule_values` row.
+#[derive(Deserialize, Debug, Clone)]
+pub struct RuleValueRow {
+  pub pigeon_id: String,
+  pub key: String,
+  pub value: String,
+  pub value_num: Option<f64>,
+  pub at: OffsetDateTime,
+}
+
+impl From<RuleValueRow> for RuleValue {
+  fn from(row: RuleValueRow) -> Self {
+    Self {
+      pigeon_id: row.pigeon_id,
+      key: row.key,
+      value: row.value,
+      value_num: row.value_num,
+      at: row.at,
+    }
+  }
+}
+
+/// A rule's latest derived value for one pigeon and key.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct RuleValue {
+  pub pigeon_id: String,
+  pub key: String,
+  pub value: String,
+  /// `value` as a number, when it parses as one.
+  pub value_num: Option<f64>,
+  /// The reading time the rule gave it, clamped into its batch.
+  #[serde(with = "time::serde::rfc3339")]
+  pub at: OffsetDateTime,
 }
 
 #[cfg(test)]
@@ -584,6 +628,36 @@ mod tests {
     assert_eq!(stale.test_summary, None);
     let json = serde_json::to_value(&stale).expect("version serializes");
     assert!(json.get("source").is_none() && json.get("test_summary").is_none());
+  }
+
+  #[test]
+  fn refusal_texts_name_their_caps() {
+    assert!(
+      RuleNameRejection::TooLong
+        .message()
+        .contains(&MAX_RULE_NAME_BYTES.to_string())
+    );
+    assert!(
+      RuleSourceRejection::TooLarge
+        .message()
+        .contains(&(MAX_RULE_SOURCE_BYTES / 1024).to_string())
+    );
+  }
+
+  #[test]
+  fn a_value_row_reads_as_its_rfc3339_model() {
+    let at = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("valid time");
+    let value = RuleValue::from(RuleValueRow {
+      pigeon_id: "p1".into(),
+      key: "dwell_s".into(),
+      value: "42".into(),
+      value_num: Some(42.0),
+      at,
+    });
+    let json = serde_json::to_value(&value).expect("value serializes");
+    assert_eq!(json["pigeon_id"], "p1");
+    assert_eq!(json["value_num"], 42.0);
+    assert_eq!(json["at"], "2027-01-15T08:00:00Z");
   }
 
   #[test]

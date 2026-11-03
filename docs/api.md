@@ -90,6 +90,8 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/test`](#post-flocksflock_idrulesrule_idversionsversiontest) | flock: manage | Dry-run a version over recent telemetry |
 | [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/deploy`](#post-flocksflock_idrulesrule_idversionsversiondeploy) | flock: manage | Deploy a tested version and enable the rule |
 | [`GET /flocks/:flock_id/rules/:rule_id/runs`](#get-flocksflock_idrulesrule_idruns) | flock: view | Read a rule's recent run records |
+| [`POST /flocks/:flock_id/rules/:rule_id/watch`](#post-flocksflock_idrulesrule_idwatch) | flock: manage | Record every run of a rule for an hour |
+| [`GET /flocks/:flock_id/rules/:rule_id/values`](#get-flocksflock_idrulesrule_idvalues) | flock: view | Read a rule's latest derived values |
 | [`POST /feedback`](#post-feedback) | no auth required (optionally authenticated) | Send the in-app feedback form |
 | [`POST /contact`](#post-contact) | no auth required (optionally authenticated) | Send the public contact form |
 | [`POST /errors`](#post-errors) | no auth required (identity only on the manual JSON path) | Ingest a crash report, or a note about one |
@@ -2427,9 +2429,12 @@ A rule's life: [create](#post-flocksflock_idrules) it (disabled, no code), save 
 code, [test](#post-flocksflock_idrulesrule_idversionsversiontest) a version, then
 [deploy](#post-flocksflock_idrulesrule_idversionsversiondeploy) a tested version, which also
 enables the rule. Rolling back is deploying an older version that still carries its test record.
-Rules are authored in every environment, but run only where dovecote has a rules namespace;
-elsewhere the test route, the deploy route and the delete of a deployed rule answer `503`
-(`Service Unavailable: rules run on staging`).
+Rules are open only to organizations the platform has enabled: every rule route on any other
+flock, a personal flock included, answers `403`
+(`Forbidden: rules are not enabled for this organization`). They run only where dovecote has a
+rules namespace; elsewhere the test route, the deploy route and the delete of a deployed rule
+answer `503` (`Service Unavailable: rules do not run in this environment`), and where the
+namespace exists but uploads are not built yet, `501`.
 
 Limits:
 
@@ -2447,9 +2452,9 @@ Limits:
 Recipients follow the [alert rules](#alerts): up to 8 addresses tied to the account, checked on
 write, lowercased and de-duplicated; an empty list means the flock's `owner_email`.
 
-The models are `capsules::Rule`, `RuleDetail`, `RuleVersion` and `RuleRun`. A rule reports
-`blocked: true` when the platform has stopped it, which only the platform can lift, and
-`paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after repeated
+The models are `capsules::Rule`, `RuleDetail`, `RuleVersion`, `RuleRun` and `RuleValue`. A
+rule reports `blocked: true` when the platform has stopped it, which only the platform can lift,
+and `paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after repeated
 failures did. A mutation answers with the updated body, so a client builds its state from that
 rather than reading the rule again.
 
@@ -2518,6 +2523,11 @@ empty body. A rule that was ever deployed is part of the flock's rules script, w
 has to rebuild, so where there is no rules namespace it answers `503` and changes nothing. The
 account's assistant allowance and mail counts are not refunded.
 
+```sh
+curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
 #### `POST /flocks/:flock_id/rules/:rule_id/versions`
 
 **Auth:** flock: manage
@@ -2552,9 +2562,13 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3 \
 **Auth:** flock: manage
 
 Dry-runs the version over the flock's recent telemetry beside the deployed version, applying
-nothing, and records the result on the version. Field pigeons the platform excludes from rules
-are never read. `404` when the rule has no such version; `503` where there is no rules
-namespace.
+nothing, and records the result on the version. `403` when the platform has blocked the rule;
+`404` when the rule has no such version; `503` where there is no rules namespace.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/test \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
 
 #### `POST /flocks/:flock_id/rules/:rule_id/versions/:version/deploy`
 
@@ -2578,14 +2592,45 @@ curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versi
 
 **Auth:** flock: view
 
-The rule's newest 200 run records, as `Vec<capsules::RuleRun>`. A failed run is always
-recorded; a quiet successful one only while the rule is watched, for 24 hours after each deploy.
-Records are kept 14 days. `status` is one of `ok`, `threw`, `timeout`, `skipped`, `cpu_limit`,
-`bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error` and `logs` are the
-rule's own text and may hold anything its code put there. `404` when the flock has no such rule.
+The rule's newest 200 run records, as `Vec<capsules::RuleRun>`. A failed run is recorded, but a
+`skipped` one only while the rule is watched and a `version_mismatch` only once it has lasted ten
+minutes, longer than a deploy takes. A quiet successful run is recorded only while the rule is
+watched: for 24 hours after each deploy, and for an hour after a
+[watch](#post-flocksflock_idrulesrule_idwatch). `status` is one of `ok`, `threw`, `timeout`,
+`skipped`, `cpu_limit`, `bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error`
+and `logs` are the rule's own text and may hold anything its code put there. `404` when the flock
+has no such rule.
 
 ```sh
 curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/runs \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `POST /flocks/:flock_id/rules/:rule_id/watch`
+
+**Auth:** flock: manage
+
+Records every run of the rule, quiet ones included, for the next hour; a longer watch, such as
+the one a deploy starts, is left as it is. No body. Answers the updated `capsules::Rule`, whose
+`watch_until` says when recording returns to failures only. `404` when the flock has no such
+rule.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/watch \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `GET /flocks/:flock_id/rules/:rule_id/values`
+
+**Auth:** flock: view
+
+The rule's latest derived value for each pigeon and key, as `Vec<capsules::RuleValue>`
+(`{ pigeon_id, key, value, value_num, at }`), ordered by pigeon then key, at most 1,000. `at` is
+the reading time the rule gave the value, clamped into its batch; `value_num` is the value as a
+number when it parses as one. `404` when the flock has no such rule.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/values \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
 

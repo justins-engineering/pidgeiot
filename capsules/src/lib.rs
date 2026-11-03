@@ -67,10 +67,11 @@ pub use rules::{
 pub mod rule_api;
 pub use rule_api::{
   MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES,
-  MAX_RULE_VERSIONS, RULE_HELPERS_IMPORT, Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail,
-  RuleNameRejection, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleSourceRejection,
-  RuleUpdateRequest, RuleVersion, RuleVersionCreateRequest, RuleVersionRow, check_rule_source,
-  first_refused_import, normalize_rule_name,
+  MAX_RULE_VALUES_RETURNED, MAX_RULE_VERSIONS, RULE_HELPERS_IMPORT, Rule, RuleCreateRequest,
+  RuleDeployRequest, RuleDetail, RuleNameRejection, RuleOrigin, RuleRow, RuleRun, RuleRunRow,
+  RuleSourceRejection, RuleUpdateRequest, RuleValue, RuleValueRow, RuleVersion,
+  RuleVersionCreateRequest, RuleVersionRow, check_rule_source, first_refused_import,
+  normalize_rule_name,
 };
 
 // Tax identity for the billing entity -- the identifier types, the status

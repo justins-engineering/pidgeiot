@@ -6,7 +6,9 @@
 //! mail takes the rule's `rules` row first ([`lock_rule`]), so two batches of one rule queue there
 //! instead of locking flag rows crosswise; the only rows two rules share are `rule_usage`'s,
 //! always taken account first, then platform. A deploy that resets state locks the `rules` row
-//! before it deletes from `rule_state`.
+//! before it deletes from `rule_state`. A transaction that counts a flock's enabled rules (an
+//! enable, a deploy's promote) locks the flock's `flocks` row `FOR NO KEY UPDATE` before any
+//! rule's row.
 #![cfg_attr(
   not(all(test, not(target_arch = "wasm32"))),
   expect(
@@ -1323,7 +1325,7 @@ pub(crate) mod pg {
       let refused = |flock: Uuid| {
         let client = &client;
         async move {
-          let access = FlockAccess::assert_checked(&flock.to_string());
+          let access = FlockAccess::assert_checked(&flock.to_string(), None);
           matches!(
             check_rule_cap(client, &access).await,
             EntitlementCap::Refuse(_)
@@ -1403,7 +1405,7 @@ pub(crate) mod pg {
           .await
           .expect("history row");
       }
-      let access = FlockAccess::assert_checked(&flock.to_string());
+      let access = FlockAccess::assert_checked(&flock.to_string(), None);
       let read = |exclude: Vec<String>| {
         let (client, access) = (&client, &access);
         async move {

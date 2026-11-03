@@ -1,8 +1,11 @@
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::rule_admin::{
-  DeleteOutcome, SaveOutcome, UpdateOutcome, create_rule, delete_unscripted_rule, deploy_refusal,
-  list_rules, list_runs, read_release, read_version, rule_detail, save_version, update_rule,
+  DeleteOutcome, RULES_ORG_REFUSED, SaveOutcome, UpdateOutcome, create_rule,
+  delete_unscripted_rule, deploy_refusal, latest_values, list_rules, list_runs, read_release,
+  read_version, rule_detail, rules_org_allowed, save_version, test_refusal, update_rule,
+  watch_rule,
 };
+use crate::helpers::rule_store::ensure_rule_tables;
 use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
   INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal, SEEN_HEADER,
@@ -345,14 +348,15 @@ fn check_alert_hold(condition: &capsules::AlertCondition) -> std::result::Result
 }
 
 /// The 503 text of a rule route that needs the rules namespace where this Worker has none.
-const RULES_UNAVAILABLE: &str = "Service Unavailable: rules run on staging";
+const RULES_UNAVAILABLE: &str = "Service Unavailable: rules do not run in this environment";
 
 const NO_SUCH_RULE: &str = "Not Found: no such rule in this flock";
 const NO_SUCH_VERSION: &str = "Not Found: no such version of this rule";
 
 /// The answer of a rule route once it reaches the rules namespace: 503 where this Worker has no
-/// `RULES` binding, and 501 where it has one, since this build makes no upload. The binding is
-/// read raw because a missing one reads as `undefined`, not as an error.
+/// `RULES` binding, and 501 where it has one, since this build makes no upload. Read raw, the
+/// way dispatch reads it: `Env::dynamic_dispatcher` also checks the binding's JS class name,
+/// which nothing has yet shown the namespace binding to carry.
 fn rules_namespace_response(env: &Env) -> Response {
   let bound = js_sys::Reflect::get(env, &wasm_bindgen::JsValue::from_str("RULES"))
     .is_ok_and(|binding| !binding.is_undefined());
@@ -363,9 +367,11 @@ fn rules_namespace_response(env: &Env) -> Response {
   }
 }
 
-/// The flock a rule route acts on, when the caller may `action` it: 400 for a malformed id, 403
-/// without access (never 401, which signs the dashboard out), 500 when the check fails.
+/// The flock a rule route acts on, when the caller may `action` it and `RULES_ALLOWED_ORG_IDS`
+/// lists its organization: 400 for a malformed id, 403 without access or outside the list (never
+/// 401, which signs the dashboard out), 500 when the check fails.
 async fn rule_flock_access(
+  env: &Env,
   client: &tokio_postgres::Client,
   flock_id: &str,
   principal: &Principal,
@@ -378,11 +384,20 @@ async fn rule_flock_access(
     FlockAction::View => "Forbidden: You do not have access to this flock",
     FlockAction::Manage => "Forbidden: Only flock managers can change its rules",
   };
-  match authorize_flock(client, flock_id, principal, action).await {
-    Ok(Some(access)) => Ok(access),
-    Ok(None) => Err(Response::error(refusal, 403).unwrap()),
-    Err(_) => Err(Response::error("Internal Server Error", 500).unwrap()),
+  let access = match authorize_flock(client, flock_id, principal, action).await {
+    Ok(Some(access)) => access,
+    Ok(None) => return Err(Response::error(refusal, 403).unwrap()),
+    Err(_) => return Err(Response::error("Internal Server Error", 500).unwrap()),
+  };
+  let listed = env
+    .var("RULES_ALLOWED_ORG_IDS")
+    .ok()
+    .map(|raw| raw.to_string());
+  if !rules_org_allowed(listed.as_deref(), access.org_id()) {
+    let (status, message) = RULES_ORG_REFUSED;
+    return Err(Response::error(message, status).unwrap());
   }
+  Ok(access)
 }
 
 /// The route's `:rule_id`, when it is a UUID.
@@ -4084,11 +4099,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         };
 
         get_db!(ctx.env, client, &cors);
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::View).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::View,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(rules) = list_rules(&client, &access).await else {
           return Response::error("Internal Server Error", 500)
@@ -4132,16 +4154,29 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         };
 
         get_db!(ctx.env, client, &cors);
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
         let recipients =
           match rule_recipients(&client, &access, &principal, &payload.recipients).await {
             Ok(recipients) => recipients,
             Err(resp) => return resp.with_cors(&cors),
           };
+        // The cap fails open on a database error, so the tables must exist before it counts.
+        let Ok(()) = ensure_rule_tables(&client).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
         if let EntitlementCap::Refuse(message) = check_rule_cap(&client, &access).await {
           return Response::error(message, 403).unwrap().with_cors(&cors);
         }
@@ -4173,11 +4208,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         };
 
         get_db!(ctx.env, client, &cors);
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::View).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::View,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(detail) = rule_detail(&client, &access, rule_id).await else {
           return Response::error("Internal Server Error", 500)
@@ -4224,11 +4266,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
         let recipients = match &payload.recipients {
           None => None,
           Some(to) => match rule_recipients(&client, &access, &principal, to).await {
@@ -4281,11 +4330,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(outcome) = delete_unscripted_rule(&mut client, &access, rule_id).await else {
           return Response::error("Internal Server Error", 500)
@@ -4343,11 +4399,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(outcome) = save_version(
           &mut client,
@@ -4399,11 +4462,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         };
 
         get_db!(ctx.env, client, &cors);
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::View).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::View,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(found) = read_version(&client, &access, rule_id, version).await else {
           return Response::error("Internal Server Error", 500)
@@ -4439,21 +4509,32 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(release) = read_release(&mut client, &access, rule_id, version).await else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
             .with_cors(&cors);
         };
-        if release.is_none() {
+        let Some(release) = release else {
           return Response::error(NO_SUCH_VERSION, 404)
             .unwrap()
             .with_cors(&cors);
+        };
+        if let Some(refusal) = test_refusal(&release) {
+          let (status, message) = refusal.response();
+          return Response::error(message, status).unwrap().with_cors(&cors);
         }
         rules_namespace_response(&ctx.env).with_cors(&cors)
       },
@@ -4490,11 +4571,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::Manage).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(release) = read_release(&mut client, &access, rule_id, version).await else {
           return Response::error("Internal Server Error", 500)
@@ -4530,11 +4618,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         };
 
         get_db!(ctx.env, client, &cors);
-        let access =
-          match rule_flock_access(&client, &flock_id, &principal, FlockAction::View).await {
-            Ok(access) => access,
-            Err(resp) => return resp.with_cors(&cors),
-          };
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::View,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
 
         let Ok(runs) = list_runs(&client, &access, rule_id).await else {
           return Response::error("Internal Server Error", 500)
@@ -4547,6 +4642,92 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .with_cors(&cors);
         };
         Response::from_json(&runs)?.with_cors(&cors)
+      },
+    )
+    .post_async(
+      "/flocks/:flock_id/rules/:rule_id/watch",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let (Some(flock_id), Some(rule_id)) = (ctx.param("flock_id").cloned(), rule_id_param(&ctx))
+        else {
+          return Response::error("Bad Request: invalid flock or rule id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::Manage,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(rule) = watch_rule(&client, &access, rule_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(rule) = rule else {
+          return Response::error(NO_SUCH_RULE, 404)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        Response::from_json(&rule)?.with_cors(&cors)
+      },
+    )
+    .get_async(
+      "/flocks/:flock_id/rules/:rule_id/values",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let (Some(flock_id), Some(rule_id)) = (ctx.param("flock_id").cloned(), rule_id_param(&ctx))
+        else {
+          return Response::error("Bad Request: invalid flock or rule id", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let access = match rule_flock_access(
+          &ctx.env,
+          &client,
+          &flock_id,
+          &principal,
+          FlockAction::View,
+        )
+        .await
+        {
+          Ok(access) => access,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+
+        let Ok(values) = latest_values(&client, &access, rule_id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(values) = values else {
+          return Response::error(NO_SUCH_RULE, 404)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        Response::from_json(&values)?.with_cors(&cors)
       },
     )
     // --- Feedback Route ---

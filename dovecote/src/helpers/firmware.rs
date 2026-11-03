@@ -73,6 +73,7 @@ pub async fn ensure_flock_firmware_table(client: &Client) -> Result<()> {
 /// (`helpers/pigeons.rs`), applied to the flock side.
 pub struct FlockAccess {
   flock_id: String,
+  org_id: Option<uuid::Uuid>,
 }
 
 impl FlockAccess {
@@ -80,12 +81,18 @@ impl FlockAccess {
     &self.flock_id
   }
 
+  /// The organization that owns the flock; `None` for a personal flock.
+  pub fn org_id(&self) -> Option<uuid::Uuid> {
+    self.org_id
+  }
+
   /// Constructible only from `helpers/orgs.rs::authorize_flock`'s passing
   /// case. Crate-private so no route can mint a proof without going
   /// through the real check.
-  pub(crate) fn assert_checked(flock_id: &str) -> Self {
+  pub(crate) fn assert_checked(flock_id: &str, org_id: Option<uuid::Uuid>) -> Self {
     Self {
       flock_id: flock_id.to_string(),
+      org_id,
     }
   }
 }

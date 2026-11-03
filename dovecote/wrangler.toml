@@ -126,6 +126,12 @@ head_sampling_rate = 1
 # only in dev, where it names a local test organization. Unset refuses every
 # Nidd create, the DEMO_PIGEON_IDS convention.
 #
+# RULES_ALLOWED_ORG_IDS -- comma-separated organization ids whose flocks may
+# author rules. Rule source is customer code, so rules stay shut
+# until an organization is listed: unset or empty refuses every rule route
+# 403, and a personal flock never passes. A Worker SECRET where set; dev
+# reads it from dovecote/.dev.vars, naming a local test organization.
+#
 # THINGSPACE_LOGIN_EPOCH (all three blocks) -- folded into the
 # ThingSpaceSession object's failed-login latch (objects/thingspace.rs).
 # Verizon locks the account after five failed logins, so the object stops

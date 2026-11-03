@@ -880,7 +880,7 @@ pub fn nidd_org_allowed(env: &worker::Env, org_id: &uuid::Uuid) -> bool {
 
 /// Whether a comma-separated list of organization ids names this one, compared as UUIDs so case
 /// and hyphenation cannot cause a false refusal. Unparseable entries name nothing.
-fn org_listed(raw: &str, org_id: &uuid::Uuid) -> bool {
+pub(crate) fn org_listed(raw: &str, org_id: &uuid::Uuid) -> bool {
   raw
     .split(',')
     .filter_map(|entry| uuid::Uuid::parse_str(entry.trim()).ok())

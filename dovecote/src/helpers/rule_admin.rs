@@ -1,20 +1,22 @@
 //! The statements behind the dashboard's rule routes, and the refusals they decide on.
 //!
 //! Every statement names the rule together with the flock a [`FlockAccess`] proved, so a rule id
-//! from another flock reads as absent. A read that gates a mutation runs inside the mutation's own
-//! transaction and locks the rule's row, so it is fresh rather than Hyperdrive's cached copy and
-//! keeps the lock order of [`super::rule_store`]: an enable locks the flock's row first, to count
-//! its enabled rules without a racing enable, then the rule's.
+//! from another flock reads as absent. A read that gates a mutation selects `now()`, which
+//! Hyperdrive never caches, and runs inside the mutation's own transaction under the rule's row
+//! lock, keeping the lock order of [`super::rule_store`]: an enable locks the flock's row first,
+//! to count its enabled rules without a racing enable, then the rule's.
 
 use capsules::{
-  MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_VERSIONS, RULE_CONTRACT, Rule,
-  RuleDetail, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleVersion, RuleVersionRow,
+  MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_VALUES_RETURNED, MAX_RULE_VERSIONS,
+  RULE_CONTRACT, Rule, RuleDetail, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleValue,
+  RuleValueRow, RuleVersion, RuleVersionRow,
 };
 use tokio_postgres::{Client, Row, Transaction, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
 use crate::helpers::firmware::FlockAccess;
+use crate::helpers::nidd::org_listed;
 use crate::helpers::rule_store::ensure_rule_tables;
 use crate::helpers::sha256_hex;
 
@@ -56,12 +58,14 @@ impl EnableRefusal {
   }
 }
 
-/// Why a deploy was refused before anything was uploaded.
+/// Why a test or a deploy was refused before anything was uploaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeployRefusal {
+  /// Blocked by the platform; a test would put the code back into the namespace.
   Blocked,
   /// No dry run of these bytes under the harness this build ships.
   Untested,
+  /// Deploying enables the rule, and the flock already runs [`MAX_ENABLED_RULES_PER_FLOCK`].
   FlockFull,
 }
 
@@ -79,6 +83,23 @@ impl DeployRefusal {
 const BLOCKED: &str = "Forbidden: this rule is blocked by the platform";
 const FLOCK_FULL: &str = "Conflict: a flock runs at most 20 enabled rules";
 
+/// The answer of every rule route on a flock whose organization `RULES_ALLOWED_ORG_IDS` does not
+/// list.
+pub const RULES_ORG_REFUSED: (u16, &str) = (
+  403,
+  "Forbidden: rules are not enabled for this organization",
+);
+
+/// Whether `listed`, the raw `RULES_ALLOWED_ORG_IDS`, names the flock's organization. Unset or
+/// empty names none and a personal flock has none, so rules stay shut until an organization is
+/// listed: rule source is customer code, stored only where the platform has opened rules.
+pub fn rules_org_allowed(listed: Option<&str>, org: Option<Uuid>) -> bool {
+  match (listed, org) {
+    (Some(raw), Some(org)) => org_listed(raw, &org),
+    _ => false,
+  }
+}
+
 /// Whether enabling `rule` is refused, given how many other rules of its flock are enabled. An
 /// already enabled rule is never refused, so a repeated enable is a no-op.
 pub fn enable_refusal(rule: &RuleRow, enabled_siblings: i64) -> Option<EnableRefusal> {
@@ -93,6 +114,16 @@ pub fn enable_refusal(rule: &RuleRow, enabled_siblings: i64) -> Option<EnableRef
   } else {
     None
   }
+}
+
+/// Whether testing a version of the rule is refused: a test uploads the version's code, so a
+/// platform block refuses it as it refuses a deploy.
+pub fn test_refusal(release: &Release) -> Option<DeployRefusal> {
+  release
+    .rule
+    .blocked_at
+    .is_some()
+    .then_some(DeployRefusal::Blocked)
 }
 
 /// Whether deploying `version` of `rule` is refused: blocked, not tested at these bytes under
@@ -286,7 +317,7 @@ async fn lock_rule_row(
       concat!(
         "SELECT ",
         rule_columns!(),
-        " FROM rules r WHERE r.id = $1 AND r.flock_id = $2 FOR UPDATE"
+        ", now() AS read_at FROM rules r WHERE r.id = $1 AND r.flock_id = $2 FOR UPDATE"
       ),
       &[(&rule_id, Type::UUID), (&flock, Type::UUID)],
     )
@@ -299,7 +330,7 @@ async fn lock_rule_row(
 async fn enabled_siblings(tx: &Transaction<'_>, flock: Uuid, rule_id: Uuid) -> Result<i64> {
   let row = tx
     .query_typed_one(
-      "SELECT count(*) FROM rules WHERE flock_id = $1 AND enabled AND id <> $2",
+      "SELECT count(*), now() FROM rules WHERE flock_id = $1 AND enabled AND id <> $2",
       &[(&flock, Type::UUID), (&rule_id, Type::UUID)],
     )
     .await
@@ -310,8 +341,11 @@ async fn enabled_siblings(tx: &Transaction<'_>, flock: Uuid, rule_id: Uuid) -> R
 /// What an update did.
 #[derive(Debug)]
 pub enum UpdateOutcome {
+  /// The rule as it now stands.
   Updated(Rule),
+  /// The flock has no such rule.
   NotFound,
+  /// Nothing changed.
   Refused(EnableRefusal),
 }
 
@@ -388,7 +422,9 @@ pub async fn update_rule(
 /// What a delete did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeleteOutcome {
+  /// The rule and every row cascading from it are gone.
   Deleted,
+  /// The flock has no such rule.
   NotFound,
   /// The rule has a module in the flock's script, or one uploading, so its delete must rebuild
   /// that script; nothing was changed.
@@ -425,7 +461,9 @@ pub async fn delete_unscripted_rule(
 /// What a save did.
 #[derive(Debug)]
 pub enum SaveOutcome {
+  /// The new version, with its source.
   Saved(RuleVersion),
+  /// The flock has no such rule.
   NotFound,
   /// `based_on` names no version of this rule.
   NoBase,
@@ -568,6 +606,75 @@ pub async fn list_runs(
   ))
 }
 
+/// Starts recording every run of the rule for an hour, or leaves a longer watch as it is;
+/// `None` when the flock has no such rule.
+pub async fn watch_rule(
+  client: &Client,
+  access: &FlockAccess,
+  rule_id: Uuid,
+) -> Result<Option<Rule>> {
+  ensure_rule_tables(client).await?;
+  let row = client
+    .query_typed_opt(
+      concat!(
+        "UPDATE rules AS r SET watch_until = GREATEST(r.watch_until, now() + interval '1 hour')
+         WHERE r.id = $1 AND r.flock_id = $2
+         RETURNING ",
+        rule_columns!()
+      ),
+      &[(&rule_id, Type::UUID), (&flock_uuid(access)?, Type::UUID)],
+    )
+    .await
+    .map_err(db_error("Rule watch error"))?;
+  Ok(row.as_ref().map(|r| Rule::from(rule_row(r))))
+}
+
+/// The rule's latest value for each pigeon and key, by pigeon then key, at most
+/// [`MAX_RULE_VALUES_RETURNED`]; `None` when the flock has no such rule.
+pub async fn latest_values(
+  client: &Client,
+  access: &FlockAccess,
+  rule_id: Uuid,
+) -> Result<Option<Vec<RuleValue>>> {
+  ensure_rule_tables(client).await?;
+  let found = client
+    .query_typed_opt(
+      "SELECT 1 FROM rules WHERE id = $1 AND flock_id = $2",
+      &[(&rule_id, Type::UUID), (&flock_uuid(access)?, Type::UUID)],
+    )
+    .await
+    .map_err(db_error("Rule read error"))?;
+  if found.is_none() {
+    return Ok(None);
+  }
+  let rows = client
+    .query_typed(
+      "SELECT DISTINCT ON (pigeon_id, key) pigeon_id, key, value, value_num, at
+       FROM rule_values WHERE rule_id = $1
+       ORDER BY pigeon_id, key, at DESC LIMIT $2",
+      &[
+        (&rule_id, Type::UUID),
+        (&MAX_RULE_VALUES_RETURNED, Type::INT8),
+      ],
+    )
+    .await
+    .map_err(db_error("Rule value list error"))?;
+  Ok(Some(
+    rows
+      .iter()
+      .map(|r| {
+        RuleValue::from(RuleValueRow {
+          pigeon_id: r.get("pigeon_id"),
+          key: r.get("key"),
+          value: r.get("value"),
+          value_num: r.get("value_num"),
+          at: r.get("at"),
+        })
+      })
+      .collect(),
+  ))
+}
+
 /// A fresh read of what a test or a deploy of one version decides on.
 #[derive(Debug, Clone)]
 pub struct Release {
@@ -580,6 +687,11 @@ pub struct Release {
 
 /// Reads the rule, the version and the flock's enabled count under the rule's lock, so a test
 /// record written a moment ago is seen; `None` when the flock has no such version.
+///
+/// The enabled count is advisory: it is taken without the flock's row lock and committed at once,
+/// so two deploys of two disabled rules can each see room for one more. The transaction that
+/// promotes a deploy must lock the flock's row `FOR NO KEY UPDATE` and recount before it sets
+/// `enabled`, as an enable does.
 pub async fn read_release(
   client: &mut Client,
   access: &FlockAccess,
@@ -600,7 +712,7 @@ pub async fn read_release(
       concat!(
         "SELECT ",
         version_columns!(),
-        " FROM rule_versions v WHERE v.rule_id = $1 AND v.version = $2"
+        ", now() AS read_at FROM rule_versions v WHERE v.rule_id = $1 AND v.version = $2"
       ),
       &[(&rule_id, Type::UUID), (&version, Type::INT4)],
     )
@@ -724,6 +836,41 @@ mod tests {
   }
 
   #[test]
+  fn a_blocked_rule_is_refused_a_test_too() {
+    let release = |rule| Release {
+      rule,
+      version: version(None, None),
+      enabled_siblings: MAX_ENABLED_RULES_PER_FLOCK,
+    };
+    assert_eq!(
+      test_refusal(&release(rule(false, None, true))),
+      Some(DeployRefusal::Blocked)
+    );
+    assert_eq!(test_refusal(&release(rule(true, Some(1), false))), None);
+  }
+
+  #[test]
+  fn rules_open_only_to_listed_organizations() {
+    let org = Uuid::from_u128(0xb30f_82fd);
+    let listed = org.to_string();
+    let mut two = String::with_capacity(2 * listed.len() + 2);
+    two.push_str("not-a-uuid, ");
+    two.push_str(&listed);
+    assert!(rules_org_allowed(Some(&listed), Some(org)));
+    assert!(rules_org_allowed(Some(&two), Some(org)));
+    assert!(!rules_org_allowed(None, Some(org)));
+    assert!(!rules_org_allowed(Some(""), Some(org)));
+    assert!(!rules_org_allowed(Some("not-a-uuid"), Some(org)));
+    assert!(!rules_org_allowed(Some(&listed), Some(Uuid::nil())));
+    assert!(!rules_org_allowed(Some(&listed), None));
+  }
+
+  #[test]
+  fn the_flock_ceiling_text_names_its_cap() {
+    assert!(FLOCK_FULL.contains(&MAX_ENABLED_RULES_PER_FLOCK.to_string()));
+  }
+
+  #[test]
   fn refusals_are_never_401() {
     let statuses = [
       EnableRefusal::NotDeployed.response().0,
@@ -732,6 +879,7 @@ mod tests {
       DeployRefusal::Blocked.response().0,
       DeployRefusal::Untested.response().0,
       DeployRefusal::FlockFull.response().0,
+      RULES_ORG_REFUSED.0,
     ];
     assert!(statuses.iter().all(|s| matches!(s, 403 | 409)));
   }
@@ -744,9 +892,10 @@ mod pg {
   use crate::helpers::rule_store::pg::{
     Scratch, new_flock, new_rule, pid, run, wait_until_blocked,
   };
+  use time::OffsetDateTime;
 
   fn access(flock: Uuid) -> FlockAccess {
-    FlockAccess::assert_checked(&flock.to_string())
+    FlockAccess::assert_checked(&flock.to_string(), None)
   }
 
   async fn deploy(client: &Client, rule: Uuid, version: i32) {
@@ -1178,6 +1327,115 @@ mod pg {
         read_release(&mut client, &a, rule, 2)
           .await
           .expect("release")
+          .is_none()
+      );
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_admin_watch_lengthens_never_shortens_and_stays_inside_the_flock() {
+    run(async {
+      let db = Scratch::new("admin_watch").await;
+      let client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let rule = new_rule(&client, flock).await;
+      let a = access(flock);
+      let watched = |r: &Rule| r.watch_until.expect("watched") - OffsetDateTime::now_utc();
+
+      let first = watch_rule(&client, &a, rule)
+        .await
+        .expect("watch")
+        .expect("found");
+      let left = watched(&first);
+      assert!(left > time::Duration::minutes(59) && left <= time::Duration::hours(1));
+
+      client
+        .execute(
+          "UPDATE rules SET watch_until = now() + interval '24 hours' WHERE id = $1",
+          &[&rule],
+        )
+        .await
+        .expect("deploy watch");
+      let kept = watch_rule(&client, &a, rule)
+        .await
+        .expect("watch")
+        .expect("found");
+      assert!(watched(&kept) > time::Duration::hours(23));
+
+      let elsewhere = access(new_flock(&client, None).await);
+      assert!(
+        watch_rule(&client, &elsewhere, rule)
+          .await
+          .expect("watch")
+          .is_none()
+      );
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_admin_values_read_the_latest_per_pigeon_and_key() {
+    run(async {
+      let db = Scratch::new("admin_values").await;
+      let client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let rule = new_rule(&client, flock).await;
+      let other = new_rule(&client, flock).await;
+      for pigeon in ["p1", "p2"] {
+        client
+          .execute(
+            "INSERT INTO pigeons (id, flock_id, connector, created_at, updated_at)
+             VALUES ($1, $2, '{}', now(), now())",
+            &[&pigeon, &flock],
+          )
+          .await
+          .expect("pigeon");
+      }
+      for (owner, pigeon, key, value, num, at) in [
+        (rule, "p1", "dwell_s", "10", Some(10.0), 100.0),
+        (rule, "p1", "dwell_s", "12", Some(12.0), 200.0),
+        (rule, "p1", "state", "open", None, 150.0),
+        (rule, "p2", "dwell_s", "7", Some(7.0), 50.0),
+        (other, "p1", "dwell_s", "99", Some(99.0), 300.0),
+      ] {
+        client
+          .execute(
+            "INSERT INTO rule_values (rule_id, pigeon_id, key, value, value_num, at)
+             VALUES ($1, $2, $3, $4, $5, to_timestamp($6))",
+            &[&owner, &pigeon, &key, &value, &num, &at],
+          )
+          .await
+          .expect("value");
+      }
+      let values = latest_values(&client, &access(flock), rule)
+        .await
+        .expect("values")
+        .expect("found");
+      let seen: Vec<(&str, &str, &str)> = values
+        .iter()
+        .map(|v| (v.pigeon_id.as_str(), v.key.as_str(), v.value.as_str()))
+        .collect();
+      assert_eq!(
+        seen,
+        [
+          ("p1", "dwell_s", "12"),
+          ("p1", "state", "open"),
+          ("p2", "dwell_s", "7")
+        ]
+      );
+      assert_eq!(values[0].value_num, Some(12.0));
+      assert_eq!(values[1].value_num, None);
+
+      let elsewhere = access(new_flock(&client, None).await);
+      assert!(
+        latest_values(&client, &elsewhere, rule)
+          .await
+          .expect("values")
           .is_none()
       );
       drop(client);

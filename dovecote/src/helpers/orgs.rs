@@ -995,7 +995,7 @@ pub async fn authorize_flock(
     },
   };
 
-  Ok(allowed.then(|| FlockAccess::assert_checked(flock_id_str)))
+  Ok(allowed.then(|| FlockAccess::assert_checked(flock_id_str, org_id)))
 }
 
 /// One flock by id, org/owner fields included -- used by the transfer route
