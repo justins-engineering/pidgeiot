@@ -2992,4 +2992,90 @@ mod tests {
       "a key repeated in one reading"
     );
   }
+
+  /// Each table of a wrangler config as its header and its single-line `key = value` pairs.
+  /// Enough TOML for the checks below, which fail closed on any form it does not read.
+  fn toml_tables(config: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
+    let mut tables = vec![("", Vec::new())];
+    for line in config.lines().map(str::trim) {
+      if line.starts_with('[') {
+        tables.push((line, Vec::new()));
+      } else if let Some((key, value)) = line.split_once('=') {
+        if !line.starts_with('#') {
+          tables
+            .last_mut()
+            .unwrap()
+            .1
+            .push((key.trim(), value.trim()));
+        }
+      }
+    }
+    tables
+  }
+
+  fn toml_value<'a>(table: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
+    table.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+  }
+
+  // A namespace binding without `outbound` gives rules the open internet, and production gets
+  // its namespace only at stage 3. The upload path finds the namespace through the same
+  // environment's vars, so they must name the bound one.
+  #[test]
+  fn rules_binding_always_carries_the_outbound_worker() {
+    let config = include_str!("../../wrangler.toml");
+    let outbound = include_str!("../../rules-outbound/wrangler.toml");
+    let outbound_name = toml_value(&toml_tables(outbound)[0].1, "name").unwrap();
+    let tables = toml_tables(config);
+    for line in config
+      .lines()
+      .map(str::trim)
+      .filter(|l| !l.starts_with('#'))
+    {
+      if line.contains("dispatch_namespaces") {
+        assert!(
+          line.starts_with("[[") && line.ends_with("dispatch_namespaces]]"),
+          "{line}"
+        );
+      }
+    }
+    let mut bound = Vec::new();
+    for (header, table) in &tables {
+      let Some(env) = header
+        .strip_prefix("[[")
+        .and_then(|h| h.strip_suffix("dispatch_namespaces]]"))
+      else {
+        continue;
+      };
+      let env = env.trim_end_matches('.');
+      assert_eq!(toml_value(table, "binding"), Some("\"RULES\""), "{header}");
+      let expected = concat2(
+        &concat2("{ service = \"", outbound_name.trim_matches('"')),
+        "\", parameters = [\"flock_id\"] }",
+      );
+      assert_eq!(
+        toml_value(table, "outbound"),
+        Some(expected.as_str()),
+        "{header}"
+      );
+      let namespace = toml_value(table, "namespace").unwrap();
+      let vars_header = if env.is_empty() {
+        "[vars]".to_string()
+      } else {
+        concat2(&concat2("[", env), ".vars]")
+      };
+      let (_, vars) = tables.iter().find(|(h, _)| *h == vars_header).unwrap();
+      assert_eq!(
+        toml_value(vars, "RULES_NAMESPACE"),
+        Some(namespace),
+        "{header}"
+      );
+      let account = toml_value(vars, "RULES_ACCOUNT_ID")
+        .unwrap()
+        .trim_matches('"');
+      assert!(account.len() == 32 && account.bytes().all(|b| b.is_ascii_hexdigit()));
+      bound.push(env);
+    }
+    assert_eq!(bound, ["env.staging"]);
+    assert_eq!(outbound_name, "\"dovecote-rules-outbound-staging\"");
+  }
 }
