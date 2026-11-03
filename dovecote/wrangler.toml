@@ -503,20 +503,15 @@ name = "DEVICE_AUTH_FAIL_LIMITER"
 namespace_id = "1014"
 simple = { limit = 10, period = 60 }
 
-# One budget for every Cloudflare API call the rules make (uploads,
-# deletes, re-tags, the daily sweep), all on one key, because the
-# Cloudflare budget is the API token's: 1,200 calls per 5 minutes. 150 a
-# minute leaves the rest of that 240 for the owner's own runbook. Over
-# it, and on Cloudflare's own 429, a rule route answers 429 "busy, retry
-# in a minute" and retries nothing itself (helpers/cf_api.rs). Whether
-# the count is global or per colo, and whether 150 binds on a 60 s window
-# (see DEVICE_FIRMWARE_LIMITER), must be burst-tested before rules open.
-# Staging only until production runs rules: 1016 is held for production
-# and 1018 for dev, keeping the per-binding triple.
+# The rules' Cloudflare API budget (helpers/cf_api.rs): the owner user's
+# 1,200 calls per 5 minutes leave 240 a minute, and 150 of them go to rules
+# as 25 per 10 s, a window short enough to bind (see DEVICE_FIRMWARE_LIMITER).
+# Counters are roughly per colo: E13 burst-tests it before rules open.
+# 1016 is held for production and 1018 for dev, with RULES.
 [[env.staging.ratelimits]]
 name = "CF_API_LIMITER"
 namespace_id = "1017"
-simple = { limit = 150, period = 60 }
+simple = { limit = 25, period = 10 }
 
 [[env.staging.hyperdrive]]
 binding = "YugabyteDB"

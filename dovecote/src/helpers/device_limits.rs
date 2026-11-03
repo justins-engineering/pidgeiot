@@ -97,7 +97,11 @@ pub async fn device_surface_limit(
   };
 
   match handle.limit(pigeon_id.to_string()).await {
-    Ok(outcome) if !outcome.success => Some(rate_limited_response(cors, limiter.window_secs)),
+    Ok(outcome) if !outcome.success => Some(rate_limited_response(
+      cors,
+      limiter.window_secs,
+      DEVICE_BUSY,
+    )),
     Ok(_) => None,
     Err(e) => {
       console_error!("device limits: {binding} check failed (failing open): {e}");
@@ -154,7 +158,7 @@ impl DeviceAuthGuard {
     let now_ms = Date::now().as_millis();
     let blocked = AUTH_FAILURE_PENALTIES
       .with(|penalties| penalty_active_at(&mut penalties.borrow_mut(), address, now_ms));
-    blocked.then(|| rate_limited_response(cors, DEVICE_AUTH_FAIL_LIMITER.window_secs))
+    blocked.then(|| rate_limited_response(cors, DEVICE_AUTH_FAIL_LIMITER.window_secs, DEVICE_BUSY))
   }
 
   /// Charges one authentication failure to this address.
@@ -195,11 +199,15 @@ impl DeviceAuthGuard {
   }
 }
 
-/// The one response every device limiter answers with.
+/// The body every device limiter answers with.
+const DEVICE_BUSY: &str = "Too Many Requests";
+
+/// The one 429 every limiter answers with, `body` its text: [`DEVICE_BUSY`] for a device, the
+/// rules' own for the Cloudflare API budget.
 ///
 /// 429 and never 401: the dashboard treats 401 as "session gone" and
 /// signs the tab out, and on the device side a 401 is the status that
-/// means the credential itself is wrong. `Retry-After` names the window
+/// means the credential itself is wrong. `Retry-After` names the whole wait
 /// rather than a computed remainder, because the counters are approximate
 /// and a caller that waits the full window is certainly clear of it. No
 /// device in the fleet reads it today (the Zephyr client surfaces neither
@@ -208,14 +216,18 @@ impl DeviceAuthGuard {
 /// failure there, and is retried on the next cycle rather than escalated);
 /// it is here for correctness, for anything else that speaks HTTP, and for
 /// whoever is debugging this with curl.
-fn rate_limited_response(cors: &Cors, window_secs: u32) -> worker::Result<Response> {
-  let mut response = Response::error("Too Many Requests", 429).unwrap();
+pub(crate) fn rate_limited_response(
+  cors: &Cors,
+  wait_secs: u32,
+  body: &str,
+) -> worker::Result<Response> {
+  let mut response = Response::error(body, 429).unwrap();
   if response
     .headers_mut()
-    .set("Retry-After", &window_secs.to_string())
+    .set("Retry-After", &wait_secs.to_string())
     .is_err()
   {
-    console_error!("device limits: failed to set Retry-After on a 429");
+    console_error!("limits: failed to set Retry-After on a 429");
   }
   response.with_cors(cors)
 }

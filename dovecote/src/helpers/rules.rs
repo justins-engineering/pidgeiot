@@ -3087,40 +3087,66 @@ mod tests {
     assert_eq!(outbound_name, "\"dovecote-rules-outbound-staging\"");
   }
 
-  // One budget per API token, so staging alone binds the limiter until production gets rules;
-  // 1016 (production) and 1018 (dev) are held for it, and a shared namespace_id shares counters.
+  // The Cloudflare budget is the owner user's, so each environment that binds `RULES` binds the
+  // limiter on its own id of the 1016/1017/1018 triple, and no other: a production `RULES`
+  // without it would deploy with nothing in front of Cloudflare's five-minute block. 25 per 10 s
+  // is 150 a minute on a window short enough to bind.
   #[test]
-  fn cf_api_limiter_is_staging_only_on_its_own_namespace() {
+  fn cf_api_limiter_goes_wherever_rules_go_on_its_own_namespace() {
     use crate::helpers::cf_api::{CF_API_LIMITER, CF_API_WINDOW_SECS};
     let tables = toml_tables(include_str!("../../wrangler.toml"));
     let quoted = concat2(&concat2("\"", CF_API_LIMITER), "\"");
+    let triple = [
+      ("", "\"1016\""),
+      ("env.staging", "\"1017\""),
+      ("env.dev", "\"1018\""),
+    ];
+    let simple = concat2(
+      &concat2("{ limit = 25, period = ", &CF_API_WINDOW_SECS.to_string()),
+      " }",
+    );
     let mut ids = Vec::new();
-    let mut bound = Vec::new();
+    let mut limited = Vec::new();
+    let mut rules = Vec::new();
     for (header, table) in &tables {
+      if let Some(env) = header
+        .strip_prefix("[[")
+        .and_then(|h| h.strip_suffix("dispatch_namespaces]]"))
+      {
+        rules.push(env.trim_end_matches('.'));
+        continue;
+      }
       let Some(env) = header
         .strip_prefix("[[")
         .and_then(|h| h.strip_suffix("ratelimits]]"))
       else {
         continue;
       };
+      let env = env.trim_end_matches('.');
       let id = toml_value(table, "namespace_id").expect("namespace_id missing");
       assert!(!ids.contains(&id), "{header} reuses {id}");
       ids.push(id);
+      let held = triple.iter().find(|(_, held)| *held == id);
       if toml_value(table, "name") == Some(quoted.as_str()) {
-        assert_eq!(id, "\"1017\"", "{header}");
-        let simple = concat2(
-          &concat2("{ limit = 150, period = ", &CF_API_WINDOW_SECS.to_string()),
-          " }",
+        assert_eq!(
+          held.map(|(e, _)| *e),
+          Some(env),
+          "{header} is off its triple id"
         );
         assert_eq!(
           toml_value(table, "simple"),
           Some(simple.as_str()),
           "{header}"
         );
-        bound.push(env.trim_end_matches('.'));
+        limited.push(env);
+      } else {
+        assert_eq!(held, None, "{header} takes {id}, held for {CF_API_LIMITER}");
       }
     }
-    assert_eq!(bound, ["env.staging"]);
-    assert!(!ids.contains(&"\"1016\"") && !ids.contains(&"\"1018\""));
+    assert_eq!(
+      limited, rules,
+      "the environments binding RULES and {CF_API_LIMITER} differ"
+    );
+    assert_eq!(rules, ["env.staging"]);
   }
 }
