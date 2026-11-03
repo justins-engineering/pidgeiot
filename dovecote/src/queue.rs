@@ -5,7 +5,7 @@ use worker::{
 };
 
 use crate::helpers::ResolvedReading;
-use crate::helpers::rules::{PassLedger, PreGate, RuleWork, pass_vars, pre_gate};
+use crate::helpers::rules::{PassLedger, PreGate, RuleWork, pass_vars};
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
   build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
@@ -364,7 +364,9 @@ async fn dispatch_pre_merged(
 
 /// Queues a message's batch for the second pass once pass 1 has used it. `degraded` marks the
 /// enqueued fallback, whose `previous` only the Durable Object could have filled. The batch id
-/// hashes the payload exactly as enqueued, so a redelivery repeats it.
+/// hashes the payload exactly as enqueued, so a redelivery repeats the id, though not the
+/// readings' `previous`: the write path merges again. A legacy flat payload holds values only, so
+/// two such reports with equal values share an id.
 fn push_work(
   work: &mut Vec<RuleWork>,
   body: &TelemetryMessage,
@@ -377,10 +379,10 @@ fn push_work(
   }
 }
 
-/// The second pass: each batch pass 1 handled goes to its flock's rules, in order, until
-/// [`crate::helpers::rules::PASS_BUDGET_MS`] is spent. The messages are already acked, so nothing
-/// here retries, re-bills or re-alerts, and nothing returns an error. With `RULES_DISPATCH` not
-/// `"on"` it returns having read that var alone.
+/// The second pass: applies `RULES_DISPATCH`, the field-pigeon gate and the
+/// [`crate::helpers::rules::PASS_BUDGET_MS`] budget to each batch, and logs how many the budget
+/// skipped. The messages are already acked, so nothing here retries, re-bills or re-alerts. With
+/// `RULES_DISPATCH` not `"on"` it returns having read that var alone.
 async fn run_rules(env: &Env, work: Vec<RuleWork>) {
   if work.is_empty() {
     return;
@@ -390,24 +392,18 @@ async fn run_rules(env: &Env, work: Vec<RuleWork>) {
   };
 
   let ledger = PassLedger::new(Date::now().as_millis());
-  let mut gated = 0usize;
   let mut skipped = 0usize;
   for item in &work {
-    let gate = pre_gate(
-      &item.pigeon_id,
-      Some(&vars.dispatch),
-      vars.excluded.as_deref(),
-    );
-    if gate != PreGate::Lookup {
+    if vars.gate(&item.pigeon_id) != PreGate::Lookup {
       continue;
     }
     if ledger.budget_spent(Date::now().as_millis()) {
       skipped += 1;
-      continue;
     }
-    gated += 1;
   }
-  console_log!("Rules pass: {gated} batch(es) through the gates, {skipped} skipped for the budget");
+  if skipped > 0 {
+    console_log!("Rules pass: {skipped} batch(es) skipped for the budget");
+  }
 }
 
 /// Shared "where does this report's history go, and should it trip an
@@ -577,42 +573,31 @@ mod tests {
     .unwrap()
   }
 
-  /// Pass 1 is everything a message did before rules: its readings stored, billed and alerted on
-  /// as `readings_of` decoded them. Rule work is built from those same readings after pass 1 has
-  /// used them, so collecting it changes nothing pass 1 sees.
+  /// `push_work` appends a message's readings unchanged and leaves earlier work alone. That pass
+  /// 1 sees the same readings is enforced by the move, which cannot precede `store_and_alert`'s
+  /// borrow, not by this test.
   #[test]
-  fn pass_one_input_is_identical_with_and_without_rule_work() {
-    for (json, degraded) in [
-      (batch(), false),
-      (flat(), true),
-      (merged(), false),
-      (seen(), false),
-    ] {
-      let alone = message(&json).readings_of();
-
+  fn push_work_moves_readings_unchanged_and_leaves_earlier_work() {
+    for json in [batch(), flat(), merged()] {
       let body = message(&json);
+      let readings = body.readings_of().unwrap();
       let mut work = vec![other_work()];
-      let pass_one = body.readings_of();
-      assert_eq!(pass_one, alone, "{json}");
-      if let Some(readings) = pass_one {
-        push_work(&mut work, &body, degraded, readings);
-      }
+      push_work(&mut work, &body, false, readings.clone());
 
+      assert_eq!(work.len(), 2, "{json}");
       assert_eq!(work[0], other_work(), "earlier work is untouched");
-      match alone {
-        None => assert_eq!(work.len(), 1, "a seen-only message runs no rule"),
-        Some(readings) => {
-          assert_eq!(work.len(), 2);
-          let pushed = &work[1];
-          assert_eq!(pushed.pigeon_id, body.pigeon_id);
-          assert_eq!(pushed.degraded, degraded);
-          assert_eq!(
-            pushed.readings, readings,
-            "rules see exactly what pass 1 stored"
-          );
-        }
-      }
+      assert_eq!(work[1].pigeon_id, body.pigeon_id);
+      assert_eq!(
+        work[1].readings, readings,
+        "rules see exactly what pass 1 stored"
+      );
     }
+    assert!(message(&seen()).readings_of().is_none());
+    assert_eq!(
+      RuleWork::new("p4", "x", false, Vec::new()),
+      None,
+      "no readings, no rule"
+    );
   }
 
   #[test]

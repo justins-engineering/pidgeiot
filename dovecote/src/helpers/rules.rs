@@ -139,13 +139,19 @@ fn dispatch_on(dispatch: Option<&str>) -> bool {
   dispatch.map(str::trim) == Some("on")
 }
 
-/// The second pass's vars, read once per consumer invocation.
+/// The second pass's vars, read once per consumer invocation. One exists only when
+/// `RULES_DISPATCH` is `"on"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassVars {
-  /// `RULES_DISPATCH`, which is `"on"` whenever this exists.
-  pub dispatch: String,
-  /// `RULES_EXCLUDED_PIGEONS`, see [`excluded_pigeons`].
-  pub excluded: Option<String>,
+  /// [`excluded_pigeons`] of `RULES_EXCLUDED_PIGEONS`, parsed once for the whole pass.
+  pub excluded: Vec<String>,
+}
+
+impl PassVars {
+  /// [`pre_gate`] for one batch with the switch known to be on.
+  pub fn gate(&self, pigeon_id: &str) -> PreGate {
+    pre_gate(pigeon_id, Some("on"), &self.excluded)
+  }
 }
 
 /// Reads `RULES_DISPATCH` through `read` and, only when it is `"on"`, `RULES_EXCLUDED_PIGEONS`.
@@ -157,20 +163,17 @@ pub fn pass_vars(read: impl Fn(&str) -> Option<String>) -> Option<PassVars> {
     return None;
   }
   Some(PassVars {
-    dispatch,
-    excluded: read("RULES_EXCLUDED_PIGEONS"),
+    excluded: excluded_pigeons(read("RULES_EXCLUDED_PIGEONS").as_deref()),
   })
 }
 
-/// Decides [`PreGate`] from the two vars alone, so an excluded pigeon costs no statement.
-pub fn pre_gate(pigeon_id: &str, dispatch: Option<&str>, excluded: Option<&str>) -> PreGate {
+/// Decides [`PreGate`] from the switch and the [`excluded_pigeons`] list alone, so an excluded
+/// pigeon costs no statement.
+pub fn pre_gate(pigeon_id: &str, dispatch: Option<&str>, excluded: &[String]) -> PreGate {
   if !dispatch_on(dispatch) {
     return PreGate::Off;
   }
-  if excluded_pigeons(excluded)
-    .iter()
-    .any(|id| id.eq_ignore_ascii_case(pigeon_id))
-  {
+  if excluded.iter().any(|id| id.eq_ignore_ascii_case(pigeon_id)) {
     return PreGate::Excluded;
   }
   PreGate::Lookup
@@ -1781,28 +1784,30 @@ mod tests {
       Some("not-an-id,,zz,fa8a8055"),
       Some(other.as_str()),
     ] {
+      let ids = excluded_pigeons(var);
       for id in FIELD_PIGEONS {
         assert_eq!(
-          pre_gate(id, Some("on"), var),
+          pre_gate(id, Some("on"), &ids),
           PreGate::Excluded,
           "{id} with {var:?}"
         );
         let upper = id.to_ascii_uppercase();
-        assert_eq!(pre_gate(&upper, Some("on"), var), PreGate::Excluded);
-        assert_eq!(pre_gate(id, None, var), PreGate::Off);
+        assert_eq!(pre_gate(&upper, Some("on"), &ids), PreGate::Excluded);
+        assert_eq!(pre_gate(id, None, &ids), PreGate::Off);
       }
     }
     // Whole ids only: a pigeon sharing a field pigeon's prefix still runs its rules.
     let mut cousin = FIELD_PIGEONS[0].to_string();
     cousin.replace_range(63..64, "0");
     assert_ne!(cousin, FIELD_PIGEONS[0]);
-    assert_eq!(pre_gate(&cousin, Some("on"), None), PreGate::Lookup);
+    let field = excluded_pigeons(None);
+    assert_eq!(pre_gate(&cousin, Some("on"), &field), PreGate::Lookup);
     assert_eq!(
-      pre_gate(&other, Some("on"), Some(&other)),
+      pre_gate(&other, Some("on"), &excluded_pigeons(Some(&other))),
       PreGate::Excluded
     );
-    assert_eq!(pre_gate(&other, Some("off"), None), PreGate::Off);
-    assert_eq!(pre_gate(&other, Some("on"), None), PreGate::Lookup);
+    assert_eq!(pre_gate(&other, Some("off"), &field), PreGate::Off);
+    assert_eq!(pre_gate(&other, Some("on"), &field), PreGate::Lookup);
   }
 
   #[test]
@@ -1826,11 +1831,11 @@ mod tests {
       _ => None,
     });
     let vars = vars.expect("on");
-    assert_eq!(vars.excluded.as_deref(), Some(extra.as_str()));
-    assert_eq!(
-      pre_gate(&extra, Some(&vars.dispatch), vars.excluded.as_deref()),
-      PreGate::Excluded
-    );
+    assert_eq!(vars.excluded, excluded_pigeons(Some(&extra)));
+    assert_eq!(vars.excluded.len(), 4);
+    assert_eq!(vars.gate(&extra), PreGate::Excluded);
+    assert_eq!(vars.gate(FIELD_PIGEONS[2]), PreGate::Excluded);
+    assert_eq!(vars.gate(&"4".repeat(64)), PreGate::Lookup);
   }
 
   #[test]
