@@ -15,6 +15,8 @@ import loud from "./h-loud.js";
 import same from "./h-same.js";
 import typo from "./h-typo.js";
 import proto from "./h-proto.js";
+import egress from "./h-fetch.js";
+import dial from "./h-socket.js";
 
 export default {
   big: { version: 1, run: big }, cyc: { version: 1, run: cyc }, get: { version: 1, run: get },
@@ -24,4 +26,5 @@ export default {
   lonethrow: { version: 1, run: lonethrow }, quotes: { version: 1, run: quotes },
   loud: { version: 1, run: loud }, same: { version: 1, run: same },
   typo: { version: 1, run: typo }, proto: { version: 1, run: proto },
+  egress: { version: 1, run: egress }, dial: { version: 1, run: dial },
 };

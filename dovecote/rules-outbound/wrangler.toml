@@ -1,16 +1,19 @@
-# The outbound Worker of the staging rules namespace, dovecote-rules-staging. Deploy from this
-# directory with `wrangler deploy` before any dispatch binding names it: a binding without it gives
-# rules the open internet. Production's, dovecote-rules-outbound, has no config until it is needed.
+# The outbound Worker of the staging rules namespace, dovecote-rules-staging. Deploy from dovecote/
+# with `bunx wrangler deploy -c rules-outbound/wrangler.toml` before any dispatch binding names it:
+# a binding without it gives rules the open internet. A plain deploy here is staging, unlike
+# dovecote's; production gets a config of its own.
 name = "dovecote-rules-outbound-staging"
 main = "index.js"
-# RULES_COMPATIBILITY_DATE in src/helpers/rules.rs, the date rules are uploaded with.
+# RULES_COMPATIBILITY_DATE in src/helpers/rules.rs (test.mjs checks): the connect() handling was
+# verified on staging at the rules' date, so it moves with the rules runtime.
 compatibility_date = "2026-10-26"
 send_metrics = false
 workers_dev = false
 preview_urls = false
 
-# Every refusal is kept: the log line is the only record of which flock's rules tried.
+# The console line is the only record of which flock's rules tried; an invocation log would be a
+# billed event for every refusal, outside the line's minute window, naming no flock.
 [observability.logs]
 enabled = true
-invocation_logs = true
+invocation_logs = false
 head_sampling_rate = 1

@@ -1,7 +1,7 @@
 // Hostile rules through the harness: each failure stays that rule's, and the response is JSON.
 // `bun run-hostile.mjs`. The harness imports its manifest as ./rules.js, so it runs from a
 // scratch copy holding hostile/ in place of the worked rules (under RULES_URL, from the copy
-// run-workerd.mjs serves instead).
+// run-workerd.mjs serves instead, where its egress cases run too).
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,6 +98,16 @@ try {
   check("a replay refuses a result with an unknown field and threads none of its state",
     runs.length === 2 && runs.every((r) => r.status === "bad_output" && !("out_json" in r)) &&
     typo.rules[0].final.pigeons.a === undefined);
+
+  // Under Bun a rule's fetch is real, so egress is only tried where the outbound Worker refuses
+  // it; run-workerd.mjs checks that Worker logged both refusals with the flock.
+  if (process.env.RULES_URL) {
+    const egress = await call({ mode: "live", wall_ms: 1000, common,
+      rules: [{ id: "egress", version: 1, state }, { id: "dial", version: 1, state }] });
+    const [fetched, dialed] = egress.results.map((r) => r.status);
+    check("a rule that ignores its refused fetch's answer still threw", fetched === "threw");
+    check("a rule that writes to a refused socket threw", dialed === "threw");
+  }
 
   const junk = await call("not json");
   check("a body that is not JSON answers bad_input", junk.error === "bad_input");

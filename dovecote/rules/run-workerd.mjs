@@ -41,9 +41,13 @@ const freePort = () => new Promise((resolve) => {
   });
 });
 
-// main.js first: workerd takes the first module as the entrypoint. Outbound requests go to a
-// network that allows no address, as the deployed rules' outbound Worker refuses them; workerd's
-// default would give hostile code the open internet.
+// The rules namespace's outbound Worker, run as the rules' global outbound with a fixed flock, so
+// the gate meets the refusals the deployed rules meet; workerd's default would give hostile code
+// the open internet. Copied as .mjs to stay out of the rules' own modules.
+const outbound = join(here, "..", "rules-outbound", "index.js");
+const FLOCK = "f-gate";
+
+// main.js first: workerd takes the first module as the entrypoint.
 function config(dir, port) {
   const names = readdirSync(dir, { recursive: true }).filter((f) => f.endsWith(".js"))
     .sort((a, b) => (b === "main.js") - (a === "main.js"));
@@ -51,14 +55,19 @@ function config(dir, port) {
   return [
     'using Workerd = import "/workerd/workerd.capnp";',
     "const config :Workerd.Config = (",
-    '  services = [(name = "rules", worker = .rules), (name = "none", network = (allow = []))],',
+    '  services = [(name = "rules", worker = .rules), (name = "outbound", worker = .outbound)],',
     '  sockets = [(name = "http", address = "127.0.0.1:' + port + '", http = (), ' +
       'service = "rules")],',
     ");",
     "const rules :Workerd.Worker = (",
     "  modules = [" + modules.join(", ") + "],",
     '  compatibilityDate = "' + date + '",',
-    '  globalOutbound = "none",',
+    '  globalOutbound = "outbound",',
+    ");",
+    "const outbound :Workerd.Worker = (",
+    '  modules = [(name = "outbound.mjs", esModule = embed "outbound.mjs")],',
+    '  bindings = [(name = "flock_id", text = "' + FLOCK + '")],',
+    '  compatibilityDate = "' + date + '",',
     ");",
     "",
   ].join("\n");
@@ -80,8 +89,19 @@ const suites = [
   { name: "worked", runner: "run-fixtures.mjs",
     files: readdirSync(here).filter((f) => f.endsWith(".js")) },
   { name: "hostile", runner: "run-hostile.mjs", files: ["main.js", "prelude.js"],
-    extra: "hostile" },
+    extra: "hostile", logged: ["rule egress refused " + FLOCK + " example.com 0",
+      "rule socket refused " + FLOCK + " 8.8.8.8:53 0"] },
 ];
+
+// The outbound Worker's lines reach the pipe only once the event loop runs again.
+async function logs(out, lines) {
+  for (let i = 0; i < 50; i++) {
+    const text = Buffer.concat(out).toString();
+    if (lines.every((l) => text.includes(l))) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
 
 const root = mkdtempSync(join(tmpdir(), "rules-workerd-"));
 let failures = 0;
@@ -91,6 +111,7 @@ try {
     mkdirSync(dir);
     for (const f of suite.files) cpSync(join(here, f), join(dir, f));
     if (suite.extra) cpSync(join(here, suite.extra), dir, { recursive: true });
+    cpSync(outbound, join(dir, "outbound.mjs"));
     const port = await freePort();
     writeFileSync(join(dir, "gate.capnp"), config(dir, port));
 
@@ -111,6 +132,12 @@ try {
       const run = spawnSync(process.execPath, args, { cwd: here, stdio: "inherit",
         env: { ...process.env, RULES_URL: url } });
       if (run.status !== 0) failures++;
+      if (!canned && suite.logged) {
+        const ok = await logs(out, suite.logged);
+        console.log((ok ? "pass " : "FAIL ") + "the outbound Worker logged both refusals with " +
+          "the flock");
+        if (!ok) failures++;
+      }
     } finally {
       child.kill();
     }
