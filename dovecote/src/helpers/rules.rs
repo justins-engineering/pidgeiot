@@ -3086,4 +3086,41 @@ mod tests {
     assert_eq!(bound, ["env.staging"]);
     assert_eq!(outbound_name, "\"dovecote-rules-outbound-staging\"");
   }
+
+  // One budget per API token, so staging alone binds the limiter until production gets rules;
+  // 1016 (production) and 1018 (dev) are held for it, and a shared namespace_id shares counters.
+  #[test]
+  fn cf_api_limiter_is_staging_only_on_its_own_namespace() {
+    use crate::helpers::cf_api::{CF_API_LIMITER, CF_API_WINDOW_SECS};
+    let tables = toml_tables(include_str!("../../wrangler.toml"));
+    let quoted = concat2(&concat2("\"", CF_API_LIMITER), "\"");
+    let mut ids = Vec::new();
+    let mut bound = Vec::new();
+    for (header, table) in &tables {
+      let Some(env) = header
+        .strip_prefix("[[")
+        .and_then(|h| h.strip_suffix("ratelimits]]"))
+      else {
+        continue;
+      };
+      let id = toml_value(table, "namespace_id").expect("namespace_id missing");
+      assert!(!ids.contains(&id), "{header} reuses {id}");
+      ids.push(id);
+      if toml_value(table, "name") == Some(quoted.as_str()) {
+        assert_eq!(id, "\"1017\"", "{header}");
+        let simple = concat2(
+          &concat2("{ limit = 150, period = ", &CF_API_WINDOW_SECS.to_string()),
+          " }",
+        );
+        assert_eq!(
+          toml_value(table, "simple"),
+          Some(simple.as_str()),
+          "{header}"
+        );
+        bound.push(env.trim_end_matches('.'));
+      }
+    }
+    assert_eq!(bound, ["env.staging"]);
+    assert!(!ids.contains(&"\"1016\"") && !ids.contains(&"\"1018\""));
+  }
 }

@@ -56,6 +56,8 @@ pub mod rule_store;
 
 pub mod rule_admin;
 
+pub mod cf_api;
+
 mod business_details;
 pub use business_details::ensure_business_details_columns;
 pub use business_details::load_business_details;
