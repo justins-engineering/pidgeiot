@@ -91,7 +91,7 @@ pub fn GettingStartedPage() -> Element {
           GsStep {
             number: "3",
             title: "Register a pigeon",
-            body: "Open the flock and click \"Register Pigeon.\" Give it a name (e.g. \"Simulated Pigeon\"), leave Serial and Board blank, and leave Protocol on its default, HTTPS (REST API) -- then click \"Register Device.\" The simulator below runs the wifi_init sample, an HTTPS build, so this pigeon's connector has to be HTTPS. A CoAP or MQTT pigeon needs the matching sample instead: coap_dtls_init, coap_tcp_init or mqtt_init.",
+            body: "Open the flock and click \"Register Pigeon.\" Give it a name (e.g. \"Simulated Pigeon\"), leave Serial and Board blank, and leave Protocol on its default, HTTPS (REST API) -- then click \"Register Device.\" The simulator below runs the wifi_init sample, an HTTPS build, and an HTTPS pigeon is the one whose page shows the https:// endpoint it dials. A CoAP or MQTT pigeon shows its own endpoint, which needs the matching sample instead: coap_dtls_init, coap_tcp_init or mqtt_init.",
           }
           GsStep {
             number: "4",
