@@ -95,3 +95,6 @@ pub use open_source::OpenSourcePage;
 
 mod legal;
 pub use legal::{DpaPage, PrivacyPage, SubprocessorsPage, TermsPage};
+
+mod rules;
+pub use rules::{FlockRules, RuleView};

@@ -12,11 +12,11 @@ use unic_langid::langid;
 use uuid::Uuid;
 use views::{
   AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DemoPage,
-  DocumentationPage, DpaPage, FeaturesPage, Flocks, GettingStartedPage, HowItWorksPage, Index,
-  InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons,
-  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, SelfHostingPage, ServerError, SessionInfo,
-  SettingsFlow, StoriesIndex, StoryPage, SubprocessorsPage, TermsPage, Unauthorized, UseCasesPage,
-  VerificationFlow, Wrapper,
+  DocumentationPage, DpaPage, FeaturesPage, FlockRules, Flocks, GettingStartedPage, HowItWorksPage,
+  Index, InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons,
+  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, RuleView, SelfHostingPage, ServerError,
+  SessionInfo, SettingsFlow, StoriesIndex, StoryPage, SubprocessorsPage, TermsPage, Unauthorized,
+  UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -77,6 +77,10 @@ enum Route {
     Pigeons { flock_id: Uuid },
     #[route("/flocks/:flock_id/pigeons/:pigeon_id")]
     PigeonView { flock_id: Uuid, pigeon_id: String },
+    #[route("/flocks/:flock_id/rules")]
+    FlockRules { flock_id: Uuid },
+    #[route("/flocks/:flock_id/rules/:rule_id")]
+    RuleView { flock_id: Uuid, rule_id: Uuid },
     #[route("/orgs")]
     Orgs {},
     #[route("/orgs/:org_id")]
@@ -532,5 +536,35 @@ mod public_route_trailing_slash {
       slug: "departure-board".to_string(),
     };
     assert_eq!(route.to_string(), "/stories/departure-board/");
+  }
+}
+
+// A rule's page has its own URL so a rule's mail or a bookmark can open it directly.
+#[cfg(test)]
+mod rule_routes {
+  use super::Route;
+  use std::str::FromStr;
+  use uuid::Uuid;
+
+  const FLOCK: &str = "8b0e4c9e-05ff-4a3b-9d5e-111111111111";
+  const RULE: &str = "1c2d3e4f-0000-4000-8000-222222222222";
+
+  #[test]
+  fn the_rules_list_and_one_rule_parse_and_print() {
+    let flock_id = Uuid::parse_str(FLOCK).unwrap();
+    let rule_id = Uuid::parse_str(RULE).unwrap();
+    let list = Route::from_str(&["/flocks/", FLOCK, "/rules"].concat()).unwrap();
+    assert!(matches!(list, Route::FlockRules { flock_id: f } if f == flock_id));
+    assert_eq!(list.to_string(), ["/flocks/", FLOCK, "/rules"].concat());
+    let one = Route::from_str(&["/flocks/", FLOCK, "/rules/", RULE].concat()).unwrap();
+    assert!(
+      matches!(one, Route::RuleView { flock_id: f, rule_id: r } if f == flock_id && r == rule_id)
+    );
+  }
+
+  #[test]
+  fn a_malformed_rule_id_is_not_a_rule_page() {
+    let route = Route::from_str(&["/flocks/", FLOCK, "/rules/not-a-uuid"].concat()).unwrap();
+    assert!(matches!(route, Route::PageNotFound { .. }), "got {route}");
   }
 }

@@ -339,6 +339,23 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
           FlockAlerts { flock_id }
         }
 
+        section {
+          id: "flock-rules",
+          class: "mt-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-base-100 border border-base-content/10 rounded-box p-6",
+          div {
+            h2 { class: "text-lg font-bold", "Rules" }
+            p { class: "text-sm text-base-content/70 max-w-2xl",
+              "Code you write that runs over each telemetry batch from this flock, for alerts "
+              "and derived values the built-in alerts cannot express."
+            }
+          }
+          Link {
+            to: Route::FlockRules { flock_id },
+            class: "btn btn-outline btn-sm shrink-0",
+            "Open rules"
+          }
+        }
+
         if can_manage {
           div { class: "mt-10",
             FlockDangerZone {
