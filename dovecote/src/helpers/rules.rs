@@ -114,7 +114,7 @@ fn is_pigeon_id(s: &str) -> bool {
   s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn is_lower_hex(s: &str) -> bool {
+pub(crate) fn is_lower_hex(s: &str) -> bool {
   s.bytes()
     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
@@ -1053,7 +1053,7 @@ pub enum RulesEnv {
   Staging,
 }
 
-fn is_uuid(s: &str) -> bool {
+pub(crate) fn is_uuid(s: &str) -> bool {
   s.len() == 36
     && s.bytes().enumerate().all(|(i, b)| match i {
       8 | 13 | 18 | 23 => b == b'-',
@@ -1187,33 +1187,60 @@ fn concat2(a: &str, b: &str) -> String {
   s
 }
 
+/// The tag every rules script carries, which the sweep lists by.
+pub const RULE_SCRIPT_TAG: &str = "pidgeiot-rule";
+
+/// A script's tags: [`RULE_SCRIPT_TAG`], `acct-<account>`, `flock-<subject>` (a dry run's `test`)
+/// and the environment's. An upload and a re-tag both state all four, so neither leaves one
+/// behind. `None` unless `account` and `subject` are canonical uuids.
+pub fn script_tags(
+  kind: ScriptKind,
+  account: &str,
+  subject: &str,
+  env: RulesEnv,
+) -> Option<[String; 4]> {
+  if !is_uuid(account) || !is_uuid(subject) {
+    return None;
+  }
+  let subject_tag = match kind {
+    ScriptKind::Flock => concat2("flock-", subject),
+    ScriptKind::Test => "test".to_string(),
+  };
+  let env_tag = match env {
+    RulesEnv::Production => "env-prod",
+    RulesEnv::Staging => "env-staging",
+  };
+  Some([
+    RULE_SCRIPT_TAG.to_string(),
+    concat2("acct-", account),
+    subject_tag,
+    env_tag.to_string(),
+  ])
+}
+
 /// The upload's metadata part, the only place the CPU limit binds. Every field is stated so
 /// nothing is inherited: no bindings, CPU per [`ScriptKind`], observability off. `subrequests: 0`
 /// stops no egress; the namespace's outbound Worker does. `subject` is the flock's uuid for a
-/// live bundle and the rule's for a dry run; `account` is the owning org or user.
+/// live bundle and the rule's for a dry run; `account` is the owning org or user. A rule supplies
+/// none of it, which is what keeps it from naming a binding: the API accepts one bound to any
+/// class on the account, dovecote's `Pigeons` included.
 pub fn upload_metadata(
   kind: ScriptKind,
   account: &str,
   subject: &str,
   env: RulesEnv,
 ) -> Option<String> {
-  if !is_uuid(account) || !is_uuid(subject) {
-    return None;
-  }
-  let (cpu_ms, subject_tag) = match kind {
-    ScriptKind::Flock => (RULE_CPU_MS, concat2("flock-", subject)),
-    ScriptKind::Test => (TEST_RULE_CPU_MS, "test".to_string()),
-  };
-  let env_tag = match env {
-    RulesEnv::Production => "env-prod",
-    RulesEnv::Staging => "env-staging",
+  let tags = script_tags(kind, account, subject, env)?;
+  let cpu_ms = match kind {
+    ScriptKind::Flock => RULE_CPU_MS,
+    ScriptKind::Test => TEST_RULE_CPU_MS,
   };
   let metadata = serde_json::json!({
     "main_module": "main.js",
     "compatibility_date": RULES_COMPATIBILITY_DATE,
     "bindings": [],
     "limits": { "cpu_ms": cpu_ms, "subrequests": 0 },
-    "tags": ["pidgeiot-rule", concat2("acct-", account), subject_tag, env_tag],
+    "tags": tags,
     "observability": { "enabled": false },
   });
   Some(metadata.to_string())
