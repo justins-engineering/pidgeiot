@@ -183,6 +183,31 @@ class Planner(unittest.TestCase):
     plan = self.plan(empty_inventory(alert_recipients=[["a9", "someone"]]))
     self.assertTrue(any("keeps mailing it" in n for n in plan["notes"]))
 
+  def test_a_rule_this_identity_wrote_on_a_flock_that_stays_holds_the_purge(self):
+    plan = self.plan(empty_inventory(rule_authored=[["version r1/2", "f9"]]))
+    self.assertTrue(any("version r1/2 on flock f9" in h for h in plan["holds"]))
+
+  def test_a_rule_written_on_a_flock_this_run_deletes_is_no_hold(self):
+    plan = self.plan(empty_inventory(flocks=[["f1", "Flock", "", "0"]],
+                                     rule_authored=[["rule r1", "f1"]],
+                                     rule_recipients=[["r1", "f1"]]))
+    self.assertEqual(plan["holds"], [])
+
+  def test_a_surviving_rule_mailing_this_address_holds_the_purge(self):
+    plan = self.plan(empty_inventory(rule_recipients=[["r9", "f9"]]))
+    self.assertTrue(any("rule r9" in h and "mails this address" in h for h in plan["holds"]))
+
+  def test_a_doomed_flocks_script_is_named_for_the_namespace_check(self):
+    flock = "8da9fa69-0000-4000-8000-000000000001"
+    plan = self.plan(empty_inventory(flocks=[[flock, "Flock", "", "0"]],
+                                     rule_scripts=[[flock]]))
+    name = "flock-" + flock.replace("-", "")
+    self.assertTrue(any(name in n for n in plan["notes"]))
+
+  def test_rule_usage_alone_makes_an_environment_worth_sweeping(self):
+    plan = self.plan(empty_inventory(rule_usage=1))
+    self.assertEqual(plan["empty_envs"], [])
+
   def test_a_stripe_carrying_org_is_held_until_the_flag_names_a_reason(self):
     inv = empty_inventory(orgs=[org_row("o1", customer="cus_x", subscription="sub_x")])
     self.assertIn("Stripe", self.plan(inv)["holds"][0])
@@ -246,6 +271,16 @@ class Sweep(unittest.TestCase):
   def test_correspondence_is_detached_rather_than_deleted(self):
     self.assertTrue(self.labels("fixture")["contact_submissions"].startswith("UPDATE"))
 
+  def test_rule_usage_goes_with_the_identity_and_its_deleted_orgs_never_the_platform(self):
+    sql = dict(purge.sweep_sql("fixture", rules=True))["rule_usage"]
+    self.assertIn("scope = :'id'", sql)
+    self.assertIn("scope = ANY(:'orgs'::text[])", sql)
+    self.assertNotIn("platform", sql)
+
+  def test_a_database_without_the_rule_tables_is_sent_no_rule_statement(self):
+    for _label, sql in purge.sweep_sql("fixture", rules=False):
+      self.assertNotIn("rule_", sql)
+
   def test_every_footprint_table_is_swept_or_verified(self):
     swept = " ".join(sql for _label, sql in purge.sweep_sql("fixture"))
     verified = " ".join(purge.VERIFY_QUERIES.values())
@@ -257,6 +292,40 @@ class Sweep(unittest.TestCase):
                   "organization_invites", "consent_events", "dashboard_state",
                   "error_events", "contact_submissions", "billing_usage_periods"):
       self.assertIn(table, verified, table)
+    rules_swept = " ".join(sql for _label, sql in purge.sweep_sql("fixture", rules=True))
+    rules_verified = " ".join(purge.RULE_VERIFY_QUERIES.values())
+    self.assertIn("rule_usage", rules_swept)
+    for table in ("rule_usage", "rules", "rule_bundles", "rule_runs", "rule_values"):
+      self.assertIn(table + " ", rules_verified, table)
+
+
+class RuleInventory(unittest.TestCase):
+  class FakeDb:
+    def __init__(self, rules):
+      self.name, self.rules, self.sent = "staging", rules, []
+
+    def has_rule_tables(self):
+      return self.rules
+
+    def rows(self, sql, **_params):
+      self.sent.append(sql)
+      return [["0"]] if sql.startswith("SELECT count(*)") else []
+
+  identity = {"id": "11111111-1111-1111-1111-111111111111", "email": "fixture@jes.contact"}
+
+  def test_a_database_without_the_rule_tables_is_asked_nothing_about_them(self):
+    db = self.FakeDb(rules=False)
+    inv = purge.inventory(db, self.identity)
+    self.assertFalse(any("rule_" in sql or "FROM rules" in sql for sql in db.sent))
+    for key in purge.RULE_INVENTORY_QUERIES:
+      self.assertFalse(inv[key], key)
+
+  def test_a_database_with_them_is_asked_every_rule_question(self):
+    db = self.FakeDb(rules=True)
+    inv = purge.inventory(db, self.identity)
+    for sql in purge.RULE_INVENTORY_QUERIES.values():
+      self.assertIn(sql, db.sent)
+    self.assertEqual(inv["rule_usage"], 0)
 
 
 class Paths(unittest.TestCase):
@@ -372,11 +441,12 @@ class FailureResolution(unittest.TestCase):
 
 
 class Bindings(unittest.TestCase):
-  def test_every_verify_query_uses_only_the_four_bindings_verify_rows_passes(self):
+  def test_every_verify_query_uses_only_the_bindings_verify_rows_passes(self):
     import re
-    for label, sql in purge.VERIFY_QUERIES.items():
+    queries = dict(purge.VERIFY_QUERIES, **purge.RULE_VERIFY_QUERIES)
+    for label, sql in queries.items():
       for name in re.findall(r":\'([a-z_]+)\'", sql):
-        self.assertIn(name, ("id", "email", "orgs", "pigeons"), label)
+        self.assertIn(name, ("id", "email", "orgs", "pigeons", "flocks"), label)
 
   def test_the_sweep_no_longer_binds_a_pigeon_list_it_is_not_given(self):
     for label, sql in purge.sweep_sql("fixture"):

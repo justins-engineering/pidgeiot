@@ -205,6 +205,7 @@ class Database:
   def __init__(self, name, uri):
     self.name = name
     self._env = pg_env(uri)
+    self._rules = None
 
   def rows(self, sql, **params):
     args = ["psql", "-X", "-q", "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1"]
@@ -224,6 +225,15 @@ class Database:
   def script(self, sql, **params):
     """One statement batch in a single transaction."""
     return self.rows("BEGIN;\n" + sql + "\nCOMMIT;\n", **params)
+
+  def has_rule_tables(self):
+    """Production has no rule tables until the rules migration runs, so a rule statement goes
+    only where every one it names exists."""
+    if self._rules is None:
+      self._rules = self.count("SELECT count(*) FROM unnest(:'t'::text[]) t"
+                               " WHERE to_regclass('public.' || t) IS NULL",
+                               t="{" + ",".join(RULE_TABLES) + "}") == 0
+    return self._rules
 
   def opened(self):
     """Server and database, so two environments cannot silently share one."""
@@ -415,6 +425,29 @@ INVENTORY_QUERIES = {
   "org_identity": "SELECT count(*)::text FROM organizations WHERE id = :'id'::uuid",
 }
 
+# The rule tables, asked about only where Database.has_rule_tables finds them.
+RULE_TABLES = ("rules", "rule_versions", "rule_runs", "rule_values", "rule_bundles", "rule_usage")
+
+RULE_INVENTORY_QUERIES = {
+  # scope is an account id as text with no foreign key, so nothing deletes a row with its
+  # org: the identity's own and those of the orgs it owns are what a purge can take.
+  "rule_usage": "SELECT count(*)::text FROM rule_usage WHERE scope = :'id'"
+                " OR scope IN (SELECT org_id::text FROM organization_members"
+                " WHERE user_id = :'id'::uuid AND role = 'owner')",
+  # created_by is NOT NULL on both, so authorship on a flock that stays cannot be blanked.
+  "rule_authored": "SELECT 'rule ' || r.id, r.flock_id::text FROM rules r"
+                   " WHERE r.created_by = :'id'::uuid"
+                   " UNION ALL SELECT 'version ' || v.rule_id || '/' || v.version,"
+                   " r.flock_id::text FROM rule_versions v JOIN rules r ON r.id = v.rule_id"
+                   " WHERE v.created_by = :'id'::uuid ORDER BY 1",
+  # As alert_recipients: an address on a rule's list is a reference to a person.
+  "rule_recipients": "SELECT id::text, flock_id::text FROM rules"
+                     " WHERE position(:'email' IN lower(recipients::text)) > 0 ORDER BY id",
+  # The namespace is out of the script's reach, so it names the scripts to check by hand.
+  "rule_scripts": "SELECT b.flock_id::text FROM rule_bundles b JOIN flocks f ON f.id = b.flock_id"
+                  " WHERE f.user_id = :'id'::uuid AND b.uploaded_at IS NOT NULL ORDER BY 1",
+}
+
 # The same columns, as one count each -- the post-apply proof.
 VERIFY_QUERIES = {
   "flocks.user_id": "SELECT count(*) FROM flocks WHERE user_id = :'id'::uuid",
@@ -451,19 +484,39 @@ VERIFY_QUERIES = {
                                   " WHERE id = ANY(:'pigeons'::text[])",
 }
 
+# Asked only where the rule tables exist. The flock and pigeon counts prove the cascades.
+RULE_VERIFY_QUERIES = {
+  "rule_usage.scope": "SELECT count(*) FROM rule_usage WHERE scope = :'id'",
+  "rule_usage.scope (deleted orgs)": "SELECT count(*) FROM rule_usage"
+                                     " WHERE scope = ANY(:'orgs'::text[])",
+  "rules.flock_id (deleted flocks)": "SELECT count(*) FROM rules"
+                                     " WHERE flock_id = ANY(:'flocks'::uuid[])",
+  "rule_bundles.flock_id (deleted flocks)": "SELECT count(*) FROM rule_bundles"
+                                            " WHERE flock_id = ANY(:'flocks'::uuid[])",
+  "rule_runs.pigeon_id (deleted pigeons)": "SELECT count(*) FROM rule_runs"
+                                           " WHERE pigeon_id = ANY(:'pigeons'::text[])",
+  "rule_values.pigeon_id (deleted pigeons)": "SELECT count(*) FROM rule_values"
+                                             " WHERE pigeon_id = ANY(:'pigeons'::text[])",
+}
+
 
 def inventory(db, identity):
   """Capture everything before a single delete: pigeon ids are DO addresses."""
   out = {"env": db.name}
-  for key, sql in INVENTORY_QUERIES.items():
+  queries = dict(INVENTORY_QUERIES)
+  if db.has_rule_tables():
+    queries.update(RULE_INVENTORY_QUERIES)
+  else:
+    out.update({key: 0 if key == "rule_usage" else [] for key in RULE_INVENTORY_QUERIES})
+  for key, sql in queries.items():
     rows = db.rows(sql, id=identity["id"], email=identity["email"] or NO_EMAIL)
-    out[key] = int(rows[0][0]) \
-        if key in ("errors", "contact", "usage", "owner_email", "org_identity") else rows
+    out[key] = int(rows[0][0]) if key in ("errors", "contact", "usage", "owner_email",
+                                          "org_identity", "rule_usage") else rows
   return out
 
 
 def is_empty(inv):
-  return not any(inv[k] for k in INVENTORY_QUERIES)
+  return not any(inv.get(k) for k in (*INVENTORY_QUERIES, *RULE_INVENTORY_QUERIES))
 
 
 # --- planning ----------------------------------------------------------
@@ -516,6 +569,19 @@ def plan_identity(identity, inventories, options):
       steps.append({"env": env, "kind": "flock", "target": flock_id})
       if org_id:
         org_flocks[org_id] = org_flocks.get(org_id, 0) + 1
+    doomed = {s["target"] for s in steps if s["env"] == env and s["kind"] == "flock"}
+    for what, flock_id in inv.get("rule_authored", []):
+      if flock_id not in doomed:
+        holds.append(f"{env}: {what} on flock {flock_id}, which stays, names this identity as "
+                     "its author -- created_by cannot be blanked")
+    for rule_id, flock_id in inv.get("rule_recipients", []):
+      if flock_id not in doomed:
+        holds.append(f"{env}: rule {rule_id} on flock {flock_id}, which stays, mails this "
+                     "address -- take it off that rule's list first")
+    for (flock_id,) in inv.get("rule_scripts", []):
+      if flock_id in doomed:
+        notes.append(f"{env}: namespace script flock-{flock_id.replace('-', '')} should be "
+                     "gone after its flock; the daily rule sweep deletes it if not")
     for alert_id, _name in inv["alerts"]:
       steps.append({"env": env, "kind": "alert", "target": alert_id})
     for alert_id, owner in inv["alert_recipients"]:
@@ -580,8 +646,9 @@ def plan_orgs(env, inv, options, identity_id, org_flocks):
   return steps, holds, notes, gone
 
 
-def sweep_sql(mode):
-  """What no route in the product reaches. One transaction per database."""
+def sweep_sql(mode, rules=False):
+  """What no route in the product reaches. One transaction per database; `rules` where the
+  rule tables exist."""
   consent = "DELETE FROM consent_events WHERE identity_id = :'id'::uuid"
   if mode == "erasure":
     # Article 17(3)(e): the acceptance record is the evidence of the
@@ -613,7 +680,12 @@ def sweep_sql(mode):
     ("dashboard_state", "DELETE FROM dashboard_state WHERE user_id = :'id'::uuid"),
     ("flocks.owner_email", "UPDATE flocks SET owner_email = NULL"
                            " WHERE lower(owner_email) = :'email'"),
-  ]
+  ] + ([
+    # A deleted org's mail and assistant counts would otherwise outlive it; 'platform' is
+    # never an id, so the platform's totals stay.
+    ("rule_usage", "DELETE FROM rule_usage"
+                   " WHERE scope = :'id' OR scope = ANY(:'orgs'::text[])"),
+  ] if rules else [])
 
 
 # --- the product's own routes ------------------------------------------
@@ -776,7 +848,8 @@ def purge_one(plan, identity, databases, kratos, run, options):
       run.mark(identity["id"], key)
       continue
     orgs = "{" + ",".join(plan["deleted_orgs"].get(env, [])) + "}"
-    statements = "\n".join(sql + ";" for _label, sql in sweep_sql(options["mode"]))
+    statements = "\n".join(sql + ";" for _label, sql
+                           in sweep_sql(options["mode"], db.has_rule_tables()))
     db.script(statements, id=identity["id"], email=identity["email"] or NO_EMAIL, orgs=orgs)
     run.log(identity=identity["id"], env=env, step="sweep", status="applied")
     run.mark(identity["id"], key)
@@ -835,9 +908,14 @@ def verify_rows(identity, plan, databases):
     orgs = "{" + ",".join(plan["deleted_orgs"].get(env, [])) + "}"
     pigeons = "{" + ",".join(s["target"] for s in plan["steps"]
                              if s["kind"] == "pigeon" and s["env"] == env) + "}"
-    for label, sql in VERIFY_QUERIES.items():
+    flocks = "{" + ",".join(s["target"] for s in plan["steps"]
+                            if s["kind"] == "flock" and s["env"] == env) + "}"
+    queries = dict(VERIFY_QUERIES)
+    if db.has_rule_tables():
+      queries.update(RULE_VERIFY_QUERIES)
+    for label, sql in queries.items():
       left = db.count(sql, id=identity["id"], email=identity["email"] or NO_EMAIL,
-                      orgs=orgs, pigeons=pigeons)
+                      orgs=orgs, pigeons=pigeons, flocks=flocks)
       if left:
         failures.append(f"{env}: {left} row(s) left in {label}")
   return failures

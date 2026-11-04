@@ -74,11 +74,20 @@ Proving it afterwards would be reporting a problem one step too late to fix.
    `organization_invites` rows on `user_id`/`email`/`invited_by`/`created_by`
    — `created_by` is `NOT NULL`, so a spent invite row is deleted rather than
    detached; `pigeon_acl` mirror rows; anything the API leg missed in
-   `error_events` and `dashboard_state`; and `flocks.owner_email`.
+   `error_events` and `dashboard_state`; and `flocks.owner_email`. Where the
+   rule tables exist (production has none until the rules migration runs),
+   also `rule_usage` for the identity and its deleted orgs: its `scope` is an
+   account id as text with no foreign key, so nothing else deletes it. Every
+   other rule table cascades from the flock or the pigeon. A rule or version
+   the identity wrote on a flock that stays, or a surviving rule whose list
+   names the address, holds the account: `created_by` is `NOT NULL`, and
+   editing another account's rule changes who it mails.
 7. **Prove the rows are gone, before the identity.** Direct `psql` only —
    one `SELECT count(*)` per identity-keyed column the sweep or the routes
    were responsible for, plus the deleted orgs' own rows and the deleted
-   pigeons' mirror rows, all zero. Never a list route: Hyperdrive's ~60 s
+   pigeons' mirror rows, all zero; with the rule tables, also `rule_usage`
+   and the deleted flocks' and pigeons' rule rows, which proves the cascades.
+   Never a list route: Hyperdrive's ~60 s
    query cache makes the natural list-write-list check poison its own
    result. A non-zero count stops that account **with its identity intact**,
    because the session is the only key to anything still keyed on it.
@@ -126,7 +135,7 @@ confers. The run holds any id that turns out to name an `organizations` row.
 
 ## What the procedure does not reach
 
-Seven things survive it. Each needs a deliberate decision rather than a flag.
+Eight things survive it. Each needs a deliberate decision rather than a flag.
 
 - **Stripe.** Deleting an organization does not touch its customer or
   subscription; the script never calls Stripe and refuses an org carrying
@@ -166,6 +175,11 @@ Seven things survive it. Each needs a deliberate decision rather than a flag.
   Clearing one needs a dovecote route that does not exist: every path into a
   pigeon's DO is gated by that pigeon's own access list, and the object no
   longer has one.
+- **A flock's rule script.** The flock delete removes its
+  `flock-<hex>` script from the rules dispatch namespace best-effort, after
+  its commit, with the daily rule sweep as the backstop. The purge cannot
+  see the namespace, so the plan names each script to expect gone; check it
+  with `wrangler dispatch-namespace` once the run ends.
 - **A pigeon's stored log dictionary in R2.** `DELETE /pigeons/:pigeon_id`
   removes `log-dictionaries/<pigeon_id>.json` best-effort and logs a failure
   rather than failing the request, so a failed R2 delete leaves the object
