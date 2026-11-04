@@ -1943,10 +1943,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       // The flock's rules cascade with it; its script is deleted after the commit, and the
       // daily sweep deletes it if that fails.
       let rules_script = match rules_namespace(&ctx.env) {
-        Ok(ns) => bundle_uploaded(&client, flock_id)
-          .await
-          .is_ok_and(|uploaded| uploaded)
-          .then_some(ns),
+        Ok(ns) => matches!(bundle_uploaded(&client, flock_id).await, Ok(true)).then_some(ns),
         Err(_) => None,
       };
 

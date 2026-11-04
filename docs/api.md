@@ -2442,12 +2442,16 @@ one change per flock at a time. Besides their own refusals, either can answer:
 
 - `409` while another deploy of the same flock is in progress, or when one finished first.
 - `429` (`Too Many Requests: rule deploys are busy, retry in a few minutes`, with `Retry-After`)
-  when the platform's budget of calls to Cloudflare is spent. Nothing changed.
+  when the platform's budget of calls to Cloudflare is spent.
 - `422` when the flock's rules do not load: `Unprocessable Content: the flock's rules did not
   load: ` followed by Cloudflare's own error, such as a top level that throws (with the rule's
-  own message) or overruns its startup CPU. Nothing changed.
-- `503` when the namespace refused the change (nothing changed) or did not confirm it, in which
-  case trying again finishes it.
+  own message) or overruns its startup CPU.
+- `503` when the namespace refused the change or did not confirm it. After `did not confirm the
+  change; retry in a minute`, trying again a minute later finishes it; sooner answers `409`.
+
+A deploy refused with any of these changed nothing but for that unconfirmed `503`, after which
+the version stays pending. A refused delete may already have disabled the rule; deleting it again
+finishes the delete.
 
 Limits:
 
@@ -2535,9 +2539,10 @@ Deletes the rule with its versions, state, alert flags, values and runs. Returns
 empty body. A rule that was ever deployed is part of the flock's rules script, which the delete
 has to rebuild, so where there is no rules namespace it answers `503` and changes nothing.
 Where there is one, the delete disables the rule first, rebuilds the script without it (or
-deletes the script when no other rule runs), then deletes the rows; when the namespace step
-fails the rule stays, disabled, to delete again. The account's assistant allowance and mail
-counts are not refunded.
+deletes the script when no other rule is deployed), then deletes the rows; when the namespace
+step fails the rule stays, disabled, to delete again. A `429` from the platform's own budget comes
+before the rule is disabled. The account's assistant allowance and mail counts are not
+refunded.
 
 ```sh
 curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
@@ -2597,13 +2602,14 @@ Deploys the version and enables the rule. The body is optional: `capsules::RuleD
 Refused before anything is uploaded: `403` when the platform has blocked the rule, `409` when
 this version has no dry run of its exact bytes under the current contract, `409` when enabling
 it would put a 21st rule to work in the flock. `404` when the rule has no such version; `503`
-where there is no rules namespace. The upload rebuilds the flock's script with every enabled
-rule at its deployed version and this version beside them; while it runs the rule reports this
-version as `pending_version`. Answers `200` with the `capsules::Rule` as the deploy left it:
-`deployed_version` names this version and `enabled` is true, unless the flock filled to 20
-enabled rules while the upload ran. A failure (see [Rules](#rules)) leaves the flock's script as
-it was and the version no longer pending, except after a `503` that the change was not
-confirmed, when `pending_version` still names it and deploying again finishes it.
+where there is no rules namespace. The upload rebuilds the flock's script with every deployed
+rule that is not blocked, enabled or not, at its deployed version and this version beside them;
+while it runs the rule reports this version as `pending_version`. Answers `200` with the
+`capsules::Rule` as the deploy left it: `deployed_version` names this version and `enabled` is
+true, unless the flock filled to 20 enabled rules while the upload ran. A failure (see
+[Rules](#rules)) leaves the flock's script as it was and the version no longer pending, except
+after a `503` that the change was not confirmed, when `pending_version` still names it and
+deploying again a minute later finishes it.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/deploy \

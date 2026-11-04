@@ -1,8 +1,8 @@
 //! dovecote's rule routes (docs/api.md, "Rules"). Every function hands back the server's own text
 //! on a refusal: a 403 at the rule limit, a 409 for an untested deploy, a 422 for rules that do
 //! not load, a 429 when deploys are busy and a 503 where rules do not run are each something the
-//! person has to read. Nothing here caches; each page builds its
-//! state from the answers, a mutation's included (Hyperdrive may serve a re-read from before it).
+//! person has to read. Nothing here caches; each page builds its state from the answers, a
+//! mutation's included (Hyperdrive may serve a re-read from before it).
 
 use crate::api::fetch_json_any_status;
 use crate::api::orgs::{error_text, parse, to_body};

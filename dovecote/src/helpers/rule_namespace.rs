@@ -27,13 +27,12 @@ use crate::helpers::firmware::FlockAccess;
 use crate::helpers::get_db_client;
 use crate::helpers::rule_admin::{
   BundleSource, DeployFinish, DeployRefusal, DeployStart, RebuildStart, abandon_deploy,
-  finish_deploy, finish_rebuild, flock_owner, retag_bundle, start_deploy, start_rebuild,
-  sweep_bundles,
+  finish_deploy, finish_rebuild, flock_owner, flock_uuid, free_lease, retag_bundle, start_deploy,
+  start_rebuild, sweep_bundles,
 };
-use crate::helpers::rule_store::release_deploy_lease;
 use crate::helpers::rules::{
-  BundleRule, RulesEnv, ScriptKind, bundle_modules, is_lower_hex, is_uuid, multipart_body,
-  multipart_content_type, script_name, script_tags, upload_metadata,
+  BundleRule, RulesEnv, ScriptKind, account_tag, bundle_modules, is_lower_hex, is_uuid,
+  multipart_body, multipart_content_type, script_name, script_tags, upload_metadata, uuid_str,
 };
 
 /// Every Cloudflare API URL starts here.
@@ -72,7 +71,9 @@ pub const TEST_SCRIPT_MAX_AGE_SECS: i64 = 3_600;
 /// Pages of a listing the sweep reads at most, so a cursor that never ends cannot hold it.
 pub const MAX_LIST_PAGES: usize = 50;
 
-/// The cron's period, of which the sweep takes the first firing each UTC day.
+/// The cron's period, of which the sweep takes the first firing each UTC day. It must match every
+/// `crons` line of `wrangler.toml`, which a test holds: a slower cron skips days, a faster one
+/// sweeps twice.
 const CRON_PERIOD_MS: f64 = 300_000.0;
 const DAY_MS: f64 = 86_400_000.0;
 
@@ -153,9 +154,13 @@ pub enum CfMethod {
 /// One Cloudflare API call, without its token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfRequest {
+  /// The HTTP method.
   pub method: CfMethod,
+  /// The whole URL, built from [`CF_API_BASE`] and checked names only.
   pub url: String,
+  /// The body's `Content-Type`, when there is a body.
   pub content_type: Option<String>,
+  /// The body.
   pub body: Option<String>,
 }
 
@@ -246,7 +251,7 @@ pub enum CfAnswer {
   Invalid(String),
   /// No such script.
   Missing,
-  /// Any other refusal: nothing changed.
+  /// Any other refusal: nothing changed. Status 0 is a call dovecote never sent.
   Refused { status: u16, codes: Vec<u64> },
   /// A 5xx, an unreadable success, no answer or no answer in time: the call may have landed.
   Unsure,
@@ -256,6 +261,14 @@ impl CfAnswer {
   /// Whether the call may have changed the script although it did not say so.
   pub fn may_have_landed(&self) -> bool {
     *self == CfAnswer::Unsure
+  }
+
+  /// A call dovecote could not build or send: nothing reached Cloudflare.
+  fn unsent() -> Self {
+    CfAnswer::Refused {
+      status: 0,
+      codes: Vec::new(),
+    }
   }
 }
 
@@ -320,10 +333,9 @@ pub fn readable_load_error(message: &str) -> String {
 }
 
 const LOAD_ERROR_HEAD: &str = "Unprocessable Content: the flock's rules did not load: ";
-const NAMESPACE_REFUSED: &str =
-  "Service Unavailable: the rules namespace refused the change; nothing was changed";
+const NAMESPACE_REFUSED: &str = "Service Unavailable: the rules namespace refused the change";
 const NAMESPACE_UNSURE: &str =
-  "Service Unavailable: the rules namespace did not confirm the change; retry";
+  "Service Unavailable: the rules namespace did not confirm the change; retry in a minute";
 
 /// The status and text for a call that did not come to [`CfAnswer::Done`]. Never 401, which signs
 /// the dashboard out: Cloudflare refusing our own token is ours, not the person's.
@@ -346,75 +358,69 @@ pub fn failure_response(answer: &CfAnswer) -> (u16, String) {
   }
 }
 
-/// The `acct-` tag of an owning organization or user, as [`script_tags`] writes it and
-/// `rule_bundles` records it.
-pub fn account_tag(account: Uuid) -> String {
-  let mut buf = Uuid::encode_buffer();
-  let id = account.hyphenated().encode_lower(&mut buf);
-  let mut tag = String::with_capacity(5 + id.len());
-  tag.push_str("acct-");
-  tag.push_str(id);
-  tag
-}
-
 /// One script of a listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedScript {
+  /// The script's name, its `id` in the listing.
   pub name: String,
+  /// Its tags, none when the listing gave none.
   pub tags: Vec<String>,
   /// Unix seconds of its last change, when the listing gave a readable time.
   pub modified_at: Option<i64>,
 }
 
-/// A listing page's scripts, and the cursor of the next page when there is one. Reads an entry's
-/// fields from its `script` object or from the entry itself; an entry without a name is skipped.
-pub fn listing(page: &Value) -> (Vec<ListedScript>, Option<String>) {
-  let field = |entry: &Value, key: &str| -> Option<Value> {
-    entry
-      .get("script")
-      .and_then(|s| s.get(key))
-      .filter(|v| !v.is_null())
-      .or_else(|| entry.get(key).filter(|v| !v.is_null()))
-      .cloned()
-  };
-  let scripts = page
-    .get("result")
-    .and_then(Value::as_array)
-    .map(|entries| {
-      entries
-        .iter()
-        .filter_map(|entry| {
-          let name = field(entry, "id")?.as_str()?.to_string();
-          let tags = field(entry, "tags")
-            .and_then(|t| t.as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|t| t.as_str().map(str::to_string))
-            .collect();
-          let modified_at = field(entry, "modified_on")
-            .and_then(|t| OffsetDateTime::parse(t.as_str()?, &Rfc3339).ok())
-            .map(OffsetDateTime::unix_timestamp);
-          Some(ListedScript {
-            name,
-            tags,
-            modified_at,
-          })
-        })
-        .collect()
-    })
-    .unwrap_or_default();
-  let cursor = page
-    .get("result_info")
+/// A listing page's scripts, and the cursor of the next page when there is one; `read_before` is
+/// how many scripts the pages before it held. `None` for a page that is not readable whole: no
+/// `result` array, an entry without a name, a `count` other than the entries, or a
+/// `total_count` or `total_pages` that the pages read cannot add up to. A partial listing would
+/// read every script it missed as lost, and the sweep would re-upload each one.
+pub fn listing(page: &Value, read_before: usize) -> Option<(Vec<ListedScript>, Option<String>)> {
+  let entries = page.get("result")?.as_array()?;
+  let mut scripts = Vec::with_capacity(entries.len());
+  for entry in entries {
+    let name = entry.get("id")?.as_str()?.to_string();
+    let tags = entry
+      .get("tags")
+      .and_then(Value::as_array)
+      .map(|tags| {
+        tags
+          .iter()
+          .filter_map(|t| t.as_str().map(str::to_string))
+          .collect()
+      })
+      .unwrap_or_default();
+    let modified_at = entry
+      .get("modified_on")
+      .and_then(Value::as_str)
+      .and_then(|t| OffsetDateTime::parse(t, &Rfc3339).ok())
+      .map(OffsetDateTime::unix_timestamp);
+    scripts.push(ListedScript {
+      name,
+      tags,
+      modified_at,
+    });
+  }
+  let info = page.get("result_info");
+  let number = |key: &str| info.and_then(|i| i.get(key)).and_then(Value::as_u64);
+  let cursor = info
     .and_then(|i| i.get("cursor"))
     .and_then(Value::as_str)
     .filter(|c| !c.is_empty())
     .map(str::to_string);
-  (scripts, cursor)
+  let read = read_before + scripts.len();
+  let whole = number("count").is_none_or(|count| count == scripts.len() as u64)
+    && number("total_count").is_none_or(|total| match cursor {
+      Some(_) => total >= read as u64,
+      None => total == read as u64,
+    })
+    && (cursor.is_some() || number("total_pages").is_none_or(|pages| pages <= 1));
+  whole.then_some((scripts, cursor))
 }
 
 /// A flock's bundle row as the sweep reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepBundle {
+  /// The flock the row is for.
   pub flock_id: Uuid,
   /// A bundle was uploaded at some point (`uploaded_at` set).
   pub uploaded: bool,
@@ -431,7 +437,9 @@ pub struct SweepBundle {
 /// One step of the daily sweep.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepAction {
-  /// Delete the script: a flock script with no bundle row, or an old dry-run script.
+  /// Delete the script: a flock script with no bundle row, or an old dry-run script. A flock
+  /// script's flock that still exists is rebuilt under its lease instead, since a first deploy may
+  /// have created its row since the listing.
   Delete(String),
   /// Rebuild the flock's script from its rows.
   Reupload(Uuid),
@@ -454,9 +462,11 @@ pub fn plan_sweep(scripts: &[ListedScript], bundles: &[SweepBundle], now: i64) -
   for script in scripts.iter().filter(|s| is_script_name(&s.name)) {
     let orphan = match flock_of(&script.name) {
       Some(flock) => !bundles.iter().any(|b| b.flock_id == flock),
+      // An untimed dry-run script is left: it costs nothing, and deleting it could cut a dry run
+      // short.
       None => script
         .modified_at
-        .is_none_or(|at| now - at > TEST_SCRIPT_MAX_AGE_SECS),
+        .is_some_and(|at| now - at > TEST_SCRIPT_MAX_AGE_SECS),
     };
     if orphan {
       plan.push(SweepAction::Delete(script.name.clone()));
@@ -468,7 +478,7 @@ pub fn plan_sweep(scripts: &[ListedScript], bundles: &[SweepBundle], now: i64) -
       .any(|s| flock_of(&s.name) == Some(bundle.flock_id));
     if bundle.stale_pending || bundle.uploaded != listed {
       plan.push(SweepAction::Reupload(bundle.flock_id));
-    } else if listed && bundle.account_tag != account_tag(bundle.owner) {
+    } else if listed && bundle.account_tag != account_tag(&uuid_str(bundle.owner)) {
       plan.push(SweepAction::Retag {
         flock: bundle.flock_id,
         owner: bundle.owner,
@@ -513,10 +523,7 @@ pub fn test_bundle_keys(
 pub async fn send(env: &Env, req: &CfRequest) -> CfAnswer {
   let Ok(token) = env.secret(RULES_TOKEN) else {
     console_error!("rules: {RULES_TOKEN} is not set");
-    return CfAnswer::Refused {
-      status: 0,
-      codes: Vec::new(),
-    };
+    return CfAnswer::unsent();
   };
   let token = token.to_string();
   let mut bearer = String::with_capacity(7 + token.len());
@@ -535,20 +542,14 @@ pub async fn send(env: &Env, req: &CfRequest) -> CfAnswer {
       .is_none_or(|ct| init.headers.set("Content-Type", ct).is_ok());
   if !headers_ok {
     console_error!("rules: could not set the API call's headers");
-    return CfAnswer::Refused {
-      status: 0,
-      codes: Vec::new(),
-    };
+    return CfAnswer::unsent();
   }
   if let Some(body) = &req.body {
     init.body = Some(body.as_str().into());
   }
   let Ok(request) = Request::new_with_init(&req.url, &init) else {
     console_error!("rules: could not build the API call");
-    return CfAnswer::Refused {
-      status: 0,
-      codes: Vec::new(),
-    };
+    return CfAnswer::unsent();
   };
   let controller = AbortController::default();
   let signal = controller.signal();
@@ -584,19 +585,10 @@ pub async fn send(env: &Env, req: &CfRequest) -> CfAnswer {
   answer
 }
 
-/// A canonical lowercase uuid, as script names and tags spell it.
-fn uuid_str(id: Uuid) -> String {
-  let mut buf = Uuid::encode_buffer();
-  id.hyphenated().encode_lower(&mut buf).to_string()
-}
-
 /// The answer for a script dovecote could not build: never sent, nothing changed.
 fn unbuildable() -> CfAnswer {
   console_error!("rules: could not build the script's upload");
-  CfAnswer::Refused {
-    status: 0,
-    codes: Vec::new(),
-  }
+  CfAnswer::unsent()
 }
 
 /// Uploads `flock`'s script built from `sources`, or deletes it when `sources` is empty. `Ok(true)`
@@ -744,15 +736,16 @@ const DEPLOY_OVERTAKEN: &str =
 /// The owning organization of a flock with rules, which its script is tagged for: rules open only
 /// to listed organizations, so a personal flock never gets this far.
 fn rules_account(access: &FlockAccess) -> Result<(Uuid, Uuid), Refusal> {
-  let flock = Uuid::parse_str(access.flock_id()).map_err(|_| Refusal::internal())?;
+  let flock = flock_uuid(access).map_err(|_| Refusal::internal())?;
   let account = access.org_id().ok_or_else(Refusal::internal)?;
   Ok((flock, account))
 }
 
 /// Deploys `version` of a rule: takes the flock's lease, uploads the flock's script with the
-/// version in it, then promotes it. On any failure the old script stays live and the version is
-/// no longer pending, unless the upload may have landed, when it stays pending for a retry or the
-/// sweep. The caller has already refused what [`super::rule_admin::deploy_refusal`] refuses.
+/// version in it, then promotes it. On a refusal the old script stays live and the version is no
+/// longer pending. When the upload may have landed, or landed but its promote failed, the version
+/// stays pending and the lease is left to lapse, for a retry after it or the sweep. The caller has
+/// already refused what [`super::rule_admin::deploy_refusal`] refuses.
 pub async fn deploy_version(
   env: &Env,
   ns: &Namespace,
@@ -782,7 +775,9 @@ pub async fn deploy_version(
     }
   };
   if let Some((refusal, may_have_landed)) = refused {
-    if let Err(e) = abandon_deploy(client, access, rule_id, version, lease, may_have_landed).await {
+    if !may_have_landed
+      && let Err(e) = abandon_deploy(client, access, rule_id, version, lease).await
+    {
       console_error!("rules: deploy abandon failed: {e}");
     }
     return Err(refusal);
@@ -800,13 +795,15 @@ pub async fn deploy_version(
   {
     Ok(DeployFinish::Promoted(rule)) => Ok(rule),
     Ok(DeployFinish::LeaseLost) => Err(Refusal::Status(409, DEPLOY_OVERTAKEN.to_string())),
-    Err(_) => Err(Refusal::internal()),
+    // The upload landed but is not recorded: the same answer as one that may have.
+    Err(_) => Err(Refusal::of(&CfAnswer::Unsure)),
   }
 }
 
 /// Deletes a rule the flock's script holds: disables it, rebuilds the script without it (or
-/// deletes the script when it was the last), then deletes the rows. A failure leaves the rule
-/// disabled and in place, to delete again.
+/// deletes the script when no deployed rule is left), then deletes the rows. The limiter is asked
+/// first, so its refusal changes nothing; a later failure leaves the rule disabled and in place,
+/// to delete again.
 pub async fn delete_scripted_rule(
   env: &Env,
   ns: &Namespace,
@@ -815,26 +812,22 @@ pub async fn delete_scripted_rule(
   rule_id: Uuid,
 ) -> Result<(), Refusal> {
   let (flock, account) = rules_account(access)?;
+  if !cf_api_allowed(env).await {
+    return Err(Refusal::Busy(CF_API_WINDOW_SECS));
+  }
   let started = start_rebuild(client, flock, Some(rule_id), account).await;
   let (lease, sources) = match started.map_err(|_| Refusal::internal())? {
     RebuildStart::Busy => return Err(Refusal::Status(409, DEPLOY_BUSY.to_string())),
     RebuildStart::NotFound => return Err(Refusal::NotFound),
     RebuildStart::Started { lease, sources } => (lease, sources),
   };
-  let outcome = if cf_api_allowed(env).await {
-    put_flock_script(env, ns, flock, account, &sources)
-      .await
-      .map_err(|answer| Refusal::of(&answer))
-  } else {
-    Err(Refusal::Busy(CF_API_WINDOW_SECS))
-  };
-  let script_gone = match outcome {
+  let script_gone = match put_flock_script(env, ns, flock, account, &sources).await {
     Ok(gone) => gone,
-    Err(refusal) => {
-      if let Err(e) = release_deploy_lease(client, flock, lease).await {
-        console_error!("Rule lease release error: {e}");
+    Err(answer) => {
+      if !answer.may_have_landed() {
+        free_lease(client, flock, lease).await;
       }
-      return Err(refusal);
+      return Err(Refusal::of(&answer));
     }
   };
   match finish_rebuild(client, flock, lease, Some(rule_id), script_gone, account).await {
@@ -859,46 +852,92 @@ pub async fn delete_flock_script(env: &Env, ns: &Namespace, flock: Uuid) {
   }
 }
 
-/// Rebuilds one flock's script from its rows for the sweep, under the flock's lease.
-async fn rebuild_flock(env: &Env, ns: &Namespace, client: &mut Client, flock: Uuid) -> bool {
-  let Ok(Some(owner)) = flock_owner(client, flock).await else {
-    return false;
-  };
-  let Ok(RebuildStart::Started { lease, sources }) =
-    start_rebuild(client, flock, None, owner).await
-  else {
-    return false;
-  };
-  match put_flock_script(env, ns, flock, owner, &sources).await {
-    Ok(gone) => finish_rebuild(client, flock, lease, None, gone, owner)
-      .await
-      .unwrap_or(false),
-    Err(_) => {
-      if let Err(e) = release_deploy_lease(client, flock, lease).await {
-        console_error!("Rule lease release error: {e}");
-      }
-      false
+/// What one step of the sweep came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+  Done,
+  Failed,
+  /// Cloudflare answered 429: every further call inside its block is refused and spends the
+  /// owner user's budget, so the sweep stops.
+  Busy,
+}
+
+impl Step {
+  /// The step a call that did not come to what the step needed counts as.
+  fn failed(answer: &CfAnswer) -> Self {
+    match answer {
+      CfAnswer::Busy(_) => Step::Busy,
+      _ => Step::Failed,
     }
   }
 }
 
+/// Rebuilds one flock's script from its rows for the sweep, under the flock's lease. With no
+/// deployed rule left that deletes the script and the row the lease created.
+async fn rebuild_flock(env: &Env, ns: &Namespace, client: &mut Client, flock: Uuid) -> Step {
+  let Ok(Some(owner)) = flock_owner(client, flock).await else {
+    return Step::Failed;
+  };
+  let Ok(RebuildStart::Started { lease, sources }) =
+    start_rebuild(client, flock, None, owner).await
+  else {
+    return Step::Failed;
+  };
+  match put_flock_script(env, ns, flock, owner, &sources).await {
+    Ok(gone) => match finish_rebuild(client, flock, lease, None, gone, owner).await {
+      Ok(true) => Step::Done,
+      _ => Step::Failed,
+    },
+    Err(answer) => {
+      if !answer.may_have_landed() {
+        free_lease(client, flock, lease).await;
+      }
+      Step::failed(&answer)
+    }
+  }
+}
+
+/// Deletes a listed script with no bundle row. A flock that still exists goes through
+/// [`rebuild_flock`] and its lease, since a first deploy may have created its row and script
+/// since the listing; a deleted flock's id is never reused, so its script is deleted bare.
+async fn delete_orphan(env: &Env, ns: &Namespace, client: &mut Client, name: &str) -> Step {
+  if let Some(flock) = flock_of(name) {
+    match flock_owner(client, flock).await {
+      Ok(Some(_)) => return rebuild_flock(env, ns, client, flock).await,
+      Ok(None) => {}
+      Err(_) => return Step::Failed,
+    }
+  }
+  let Some(req) = delete_request(ns, name) else {
+    return Step::Failed;
+  };
+  match send(env, &req).await {
+    CfAnswer::Done(_) | CfAnswer::Missing => Step::Done,
+    other => Step::failed(&other),
+  }
+}
+
 /// Re-tags one flock's script for `owner` and records it.
-async fn retag_flock(env: &Env, ns: &Namespace, client: &Client, flock: Uuid, owner: Uuid) -> bool {
+async fn retag_flock(env: &Env, ns: &Namespace, client: &Client, flock: Uuid, owner: Uuid) -> Step {
   let flock_id = uuid_str(flock);
   let req = script_name(ScriptKind::Flock, &flock_id).and_then(|name| {
     let tags = script_tags(ScriptKind::Flock, &uuid_str(owner), &flock_id, ns.env())?;
     tags_request(ns, &name, &tags)
   });
   let Some(req) = req else {
-    return false;
+    return Step::Failed;
   };
-  matches!(send(env, &req).await, CfAnswer::Done(_))
-    && retag_bundle(client, flock, owner).await.is_ok()
+  match send(env, &req).await {
+    CfAnswer::Done(_) if retag_bundle(client, flock, owner).await.is_ok() => Step::Done,
+    CfAnswer::Done(_) => Step::Failed,
+    other => Step::failed(&other),
+  }
 }
 
 /// The daily sweep, on the cron's first firing of each UTC day: reconciles the namespace with
-/// Postgres per [`plan_sweep`]. Stops when the API budget is spent, or when the listing cannot be
-/// read whole, since a script missing from a partial listing would read as lost.
+/// Postgres per [`plan_sweep`]. Stops when the API budget is spent or Cloudflare answers 429, or
+/// when the listing cannot be read whole, since a script missing from a partial listing would read
+/// as lost.
 pub async fn sweep_rule_scripts(env: &Env, scheduled_ms: f64) -> worker::Result<()> {
   if !sweep_due(scheduled_ms) {
     return Ok(());
@@ -920,7 +959,9 @@ pub async fn sweep_rule_scripts(env: &Env, scheduled_ms: f64) -> worker::Result<
     let CfAnswer::Done(page) = send(env, &req).await else {
       break;
     };
-    let (mut listed, next) = listing(&page);
+    let Some((mut listed, next)) = listing(&page, scripts.len()) else {
+      break;
+    };
     scripts.append(&mut listed);
     match next {
       Some(next) => cursor = Some(next),
@@ -944,18 +985,19 @@ pub async fn sweep_rule_scripts(env: &Env, scheduled_ms: f64) -> worker::Result<
       console_error!("rules sweep: the API budget is spent; tomorrow's sweep catches up");
       break;
     }
-    let ok = match action {
-      SweepAction::Delete(name) => match delete_request(&ns, name) {
-        Some(req) => matches!(send(env, &req).await, CfAnswer::Done(_) | CfAnswer::Missing),
-        None => false,
-      },
+    let step = match action {
+      SweepAction::Delete(name) => delete_orphan(env, &ns, &mut client, name).await,
       SweepAction::Reupload(flock) => rebuild_flock(env, &ns, &mut client, *flock).await,
       SweepAction::Retag { flock, owner } => retag_flock(env, &ns, &client, *flock, *owner).await,
     };
-    if ok {
-      done += 1;
-    } else {
-      failed += 1;
+    match step {
+      Step::Done => done += 1,
+      Step::Failed => failed += 1,
+      Step::Busy => {
+        failed += 1;
+        console_error!("rules sweep: Cloudflare answered 429; tomorrow's sweep catches up");
+        break;
+      }
     }
   }
   console_log!(
@@ -1270,26 +1312,72 @@ mod tests {
   fn a_listing_reads_names_tags_times_and_its_cursor() {
     let page = json!({
       "result": [
-        { "created_on": "2026-11-03T22:00:00Z", "modified_on": "2026-11-03T22:02:20.871877Z",
-          "script": { "id": FLOCK_NAME, "tags": ["pidgeiot-rule", "acct-x"],
-                      "modified_on": "2026-11-03T22:02:20.871877Z" } },
+        { "id": FLOCK_NAME, "tags": ["pidgeiot-rule", "acct-x"],
+          "created_on": "2026-11-03T22:00:00Z", "modified_on": "2026-11-03T22:02:20.871877Z" },
         { "id": "test-0b5e7c1a2d3f4a5b8c6d7e8f9a0b1c2d", "tags": null,
-          "modified_on": "2026-11-03T21:00:00Z" },
-        { "script": { "tags": [] } }
+          "modified_on": "2026-11-03T21:00:00Z" }
       ],
-      "result_info": { "count": 3, "cursor": "next-1" },
+      "result_info": { "count": 2, "cursor": "next-1" },
       "success": true
     });
-    let (scripts, cursor) = listing(&page);
+    let (scripts, cursor) = listing(&page, 0).expect("whole");
     assert_eq!(cursor.as_deref(), Some("next-1"));
-    assert_eq!(scripts.len(), 2, "an entry without a name is skipped");
+    assert_eq!(scripts.len(), 2);
     assert_eq!(scripts[0].name, FLOCK_NAME);
     assert_eq!(scripts[0].tags, ["pidgeiot-rule", "acct-x"]);
     assert_eq!(scripts[0].modified_at, Some(1_793_743_340));
     assert!(scripts[1].tags.is_empty());
     assert_eq!(scripts[1].modified_at, Some(1_793_739_600));
     let last = json!({ "result": [], "result_info": { "count": 0, "cursor": "" } });
-    assert_eq!(listing(&last), (vec![], None));
+    assert_eq!(listing(&last, 2), Some((vec![], None)));
+    let bare = json!({ "result": [{ "id": FLOCK_NAME }] });
+    assert_eq!(listing(&bare, 0).expect("whole").0.len(), 1);
+  }
+
+  #[test]
+  fn a_listing_not_readable_whole_reads_as_partial() {
+    let one = json!({ "id": FLOCK_NAME, "tags": [] });
+    for (page, read_before, why) in [
+      (json!({ "success": true }), 0, "no result"),
+      (json!({ "result": {} }), 0, "result not an array"),
+      (
+        json!({ "result": [one.clone(), { "tags": [] }] }),
+        0,
+        "an entry without a name",
+      ),
+      (
+        json!({ "result": [one.clone()], "result_info": { "count": 2, "cursor": "" } }),
+        0,
+        "count is not the entries",
+      ),
+      (
+        json!({ "result": [one.clone()], "result_info": { "page": 1, "total_count": 3 } }),
+        0,
+        "numbered pages, no cursor",
+      ),
+      (
+        json!({ "result": [one.clone()], "result_info": { "page": 1, "total_pages": 2 } }),
+        0,
+        "more pages, no cursor",
+      ),
+      (
+        json!({ "result": [one.clone()], "result_info": { "total_count": 2 } }),
+        2,
+        "fewer in all than were read",
+      ),
+      (
+        json!({ "result": [one.clone()], "result_info": { "cursor": "c", "total_count": 2 } }),
+        2,
+        "fewer in all than were read, mid-listing",
+      ),
+    ] {
+      assert_eq!(listing(&page, read_before), None, "{why}");
+    }
+    let page = |info: Value| json!({ "result": [one.clone()], "result_info": info });
+    let mid = page(json!({ "cursor": "c", "total_count": 3 }));
+    assert!(listing(&mid, 1).is_some(), "a cursor with more to come");
+    let end = page(json!({ "total_count": 3, "total_pages": 1 }));
+    assert!(listing(&end, 2).is_some(), "the last page adds up");
   }
 
   fn listed(name: &str, tags: &[&str], modified_at: Option<i64>) -> ListedScript {
@@ -1314,7 +1402,7 @@ mod tests {
   #[test]
   fn the_sweep_reconciles_the_listing_with_the_rows() {
     const NOW: i64 = 1_900_000_000;
-    let acct = account_tag(ACCOUNT.parse().unwrap());
+    let acct = account_tag(ACCOUNT);
     assert_eq!(acct, format!("acct-{ACCOUNT}"));
     let kept = "22222222-2222-4333-8444-555555555555";
     let kept_name = "flock-22222222222243338444555555555555";
@@ -1363,12 +1451,9 @@ mod tests {
       ]
     );
 
-    // A test script whose time did not read is old enough: it can only be an orphan.
+    // A test script whose time did not read is left: it may be a dry run in flight.
     let untimed = [listed(old_test, &[], None)];
-    assert_eq!(
-      plan_sweep(&untimed, &[], NOW),
-      vec![SweepAction::Delete(old_test.to_string())]
-    );
+    assert!(plan_sweep(&untimed, &[], NOW).is_empty());
     // A row never uploaded, with nothing pending, is a refused first deploy: nothing to do.
     let refused = [bundle(lost, false, &acct, ACCOUNT)];
     assert!(plan_sweep(&[], &refused, NOW).is_empty());
@@ -1396,6 +1481,20 @@ mod tests {
       .filter(|i| sweep_due(midnight + f64::from(*i) * 300_000.0))
       .count();
     assert_eq!(firings, 1);
+  }
+
+  #[test]
+  fn every_cron_fires_at_the_period_the_sweep_counts_on() {
+    let crons: Vec<&str> = include_str!("../../wrangler.toml")
+      .lines()
+      .map(str::trim)
+      .filter(|line| line.starts_with("crons"))
+      .collect();
+    assert!(!crons.is_empty());
+    assert_eq!(CRON_PERIOD_MS, 5.0 * 60_000.0, "*/5 is every five minutes");
+    for line in crons {
+      assert_eq!(line, "crons = [\"*/5 * * * *\"]");
+    }
   }
 
   #[test]
@@ -1579,7 +1678,7 @@ mod tests {
       )
     };
     let page = |label: &str| match answer(label) {
-      CfAnswer::Done(page) => listing(&page),
+      CfAnswer::Done(page) => listing(&page, 0).expect("whole"),
       other => panic!("{label}: {other:?}"),
     };
     let flock_id = uuid_str(it.flock);
@@ -1650,7 +1749,7 @@ mod tests {
     let row = SweepBundle {
       flock_id: it.flock,
       uploaded: true,
-      account_tag: account_tag(it.account),
+      account_tag: account_tag(&uuid_str(it.account)),
       owner: it.other,
       leased: false,
       stale_pending: false,

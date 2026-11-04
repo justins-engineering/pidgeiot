@@ -18,8 +18,9 @@ use worker::{Error, Result, console_error};
 
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::nidd::org_listed;
-use crate::helpers::rule_namespace::{SweepBundle, account_tag};
+use crate::helpers::rule_namespace::SweepBundle;
 use crate::helpers::rule_store::{ensure_rule_tables, release_deploy_lease, take_deploy_lease};
+use crate::helpers::rules::{account_tag, uuid_str};
 use crate::helpers::sha256_hex;
 
 macro_rules! rule_columns {
@@ -215,7 +216,8 @@ fn db_error(label: &'static str) -> impl FnOnce(tokio_postgres::Error) -> Error 
   }
 }
 
-fn flock_uuid(access: &FlockAccess) -> Result<Uuid> {
+/// The flock a [`FlockAccess`] proved, as a uuid.
+pub(crate) fn flock_uuid(access: &FlockAccess) -> Result<Uuid> {
   Uuid::parse_str(access.flock_id()).map_err(|_| Error::RustError("Invalid flock_id".into()))
 }
 
@@ -737,27 +739,33 @@ pub async fn read_release(
 /// One rule module of a flock's script, as the bundle is built from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleSource {
+  /// The rule, whose uuid keys its module.
   pub rule_id: Uuid,
+  /// The version the module holds.
   pub version: i32,
+  /// That version's code.
   pub source: String,
 }
 
-/// What a flock's script holds: every enabled, unblocked rule at its deployed version, and the
-/// candidate rule (`$2`) at version `$3` whether enabled or not, oldest rule first.
-const BUNDLE_SOURCES_SQL: &str = "SELECT r.id, v.version, v.source, now()
+/// What a flock's script holds: every unblocked rule at its deployed version, enabled or not,
+/// the candidate rule (`$2`) at version `$3`, and never the rule being deleted (`$4`), oldest rule
+/// first. A disabled rule keeps its module because an enable is a row change only: dropped from
+/// the script, a re-enabled rule would have nothing to run.
+const BUNDLE_SOURCES_SQL: &str = "SELECT r.id, v.version, v.source
   FROM rules r
   JOIN rule_versions v ON v.rule_id = r.id
    AND v.version = CASE WHEN r.id = $2 THEN $3 ELSE r.deployed_version END
-  WHERE r.flock_id = $1 AND r.blocked_at IS NULL
-    AND (r.id = $2 OR (r.enabled AND r.deployed_version IS NOT NULL))
+  WHERE r.flock_id = $1 AND r.blocked_at IS NULL AND r.id <> $4
   ORDER BY r.created_at, r.id";
 
 async fn bundle_sources(
   tx: &Transaction<'_>,
   flock: Uuid,
   candidate: Option<(Uuid, i32)>,
+  leave_out: Option<Uuid>,
 ) -> Result<Vec<BundleSource>> {
   let (rule, version) = candidate.unwrap_or((Uuid::nil(), 0));
+  let leave_out = leave_out.unwrap_or(Uuid::nil());
   let rows = tx
     .query_typed(
       BUNDLE_SOURCES_SQL,
@@ -765,6 +773,7 @@ async fn bundle_sources(
         (&flock, Type::UUID),
         (&rule, Type::UUID),
         (&version, Type::INT4),
+        (&leave_out, Type::UUID),
       ],
     )
     .await
@@ -782,7 +791,7 @@ async fn bundle_sources(
 }
 
 /// Frees a lease after a failure, logging rather than failing: an unfreed lease lapses by itself.
-async fn free_lease(client: &Client, flock: Uuid, lease: OffsetDateTime) {
+pub(crate) async fn free_lease(client: &Client, flock: Uuid, lease: OffsetDateTime) {
   if let Err(e) = release_deploy_lease(client, flock, lease).await {
     console_error!("Rule lease release error: {e}");
   }
@@ -813,7 +822,7 @@ pub async fn start_deploy(
 ) -> Result<DeployStart> {
   ensure_rule_tables(client).await?;
   let flock = flock_uuid(access)?;
-  let tag = account_tag(account);
+  let tag = account_tag(&uuid_str(account));
   let Some(lease) = take_deploy_lease(client, flock, RULE_CONTRACT as i32, &tag)
     .await
     .map_err(db_error("Rule lease error"))?
@@ -834,7 +843,7 @@ pub async fn start_deploy(
     )
     .await
     .map_err(db_error("Rule pending error"))?;
-    let sources = bundle_sources(&tx, flock, Some((rule_id, version))).await?;
+    let sources = bundle_sources(&tx, flock, Some((rule_id, version)), None).await?;
     tx.commit()
       .await
       .map_err(db_error("Rule deploy commit error"))?;
@@ -878,8 +887,10 @@ async fn lock_lease(tx: &Transaction<'_>, flock: Uuid, lease: OffsetDateTime) ->
 
 /// Promotes `version` after its upload, in one transaction: deployed, no longer pending, enabled
 /// when the flock has room, watched for 24 hours, its state reset when asked, the bundle row
-/// recorded and the lease freed. Locks the flock, then the bundle row, then the rule, so the
-/// enabled count it decides on is the one it commits.
+/// recorded and the lease freed. A sibling's pending version is cleared too: the upload built that
+/// rule at its deployed version, undoing whatever an unconfirmed deploy of it left. Locks the
+/// flock, then the bundle row, then the rule, so the enabled count it decides on is the one it
+/// commits.
 pub async fn finish_deploy(
   client: &mut Client,
   access: &FlockAccess,
@@ -890,7 +901,7 @@ pub async fn finish_deploy(
   account: Uuid,
 ) -> Result<DeployFinish> {
   let flock = flock_uuid(access)?;
-  let tag = account_tag(account);
+  let tag = account_tag(&uuid_str(account));
   let contract = RULE_CONTRACT as i32;
   let tx = client
     .transaction()
@@ -963,6 +974,13 @@ pub async fn finish_deploy(
     .map_err(db_error("Rule state reset error"))?;
   }
   tx.query_typed(
+    "UPDATE rules SET pending_version = NULL
+     WHERE flock_id = $1 AND id <> $2 AND pending_version IS NOT NULL",
+    &[(&flock, Type::UUID), (&rule_id, Type::UUID)],
+  )
+  .await
+  .map_err(db_error("Rule pending error"))?;
+  tx.query_typed(
     "UPDATE rule_bundles SET contract = $2, account_tag = $3, uploaded_at = now(),
        deploy_until = 'epoch'
      WHERE flock_id = $1",
@@ -980,31 +998,29 @@ pub async fn finish_deploy(
   Ok(DeployFinish::Promoted(Rule::from(rule_row(&row))))
 }
 
-/// Ends a deploy whose upload failed: frees the lease, and clears `pending_version` unless the
-/// upload may have landed, so a pending version still says the script may hold it.
+/// Ends a deploy whose upload was refused: clears `pending_version` and frees the lease. An upload
+/// that may have landed is not abandoned: its lease is left to lapse, so no other upload starts
+/// while the aborted one may still finish, and the version stays pending for a retry or the sweep.
 pub async fn abandon_deploy(
   client: &mut Client,
   access: &FlockAccess,
   rule_id: Uuid,
   version: i32,
   lease: OffsetDateTime,
-  may_have_landed: bool,
 ) -> Result<()> {
   let flock = flock_uuid(access)?;
-  if !may_have_landed {
-    client
-      .query_typed(
-        "UPDATE rules SET pending_version = NULL
-         WHERE id = $1 AND flock_id = $2 AND pending_version = $3",
-        &[
-          (&rule_id, Type::UUID),
-          (&flock, Type::UUID),
-          (&version, Type::INT4),
-        ],
-      )
-      .await
-      .map_err(db_error("Rule pending error"))?;
-  }
+  client
+    .query_typed(
+      "UPDATE rules SET pending_version = NULL
+       WHERE id = $1 AND flock_id = $2 AND pending_version = $3",
+      &[
+        (&rule_id, Type::UUID),
+        (&flock, Type::UUID),
+        (&version, Type::INT4),
+      ],
+    )
+    .await
+    .map_err(db_error("Rule pending error"))?;
   release_deploy_lease(client, flock, lease)
     .await
     .map_err(db_error("Rule lease release error"))?;
@@ -1036,7 +1052,7 @@ pub async fn start_rebuild(
   account: Uuid,
 ) -> Result<RebuildStart> {
   ensure_rule_tables(client).await?;
-  let tag = account_tag(account);
+  let tag = account_tag(&uuid_str(account));
   let Some(lease) = take_deploy_lease(client, flock, RULE_CONTRACT as i32, &tag)
     .await
     .map_err(db_error("Rule lease error"))?
@@ -1059,7 +1075,7 @@ pub async fn start_rebuild(
       .await
       .map_err(db_error("Rule disable error"))?;
     }
-    let sources = bundle_sources(&tx, flock, None).await?;
+    let sources = bundle_sources(&tx, flock, None, disable).await?;
     tx.commit()
       .await
       .map_err(db_error("Rule rebuild commit error"))?;
@@ -1091,7 +1107,7 @@ pub async fn finish_rebuild(
   script_gone: bool,
   account: Uuid,
 ) -> Result<bool> {
-  let tag = account_tag(account);
+  let tag = account_tag(&uuid_str(account));
   let contract = RULE_CONTRACT as i32;
   let tx = client
     .transaction()
@@ -1151,7 +1167,8 @@ const SWEEP_BUNDLES_SQL: &str = "SELECT b.flock_id, b.uploaded_at IS NOT NULL, b
   FROM rule_bundles b JOIN flocks f ON f.id = b.flock_id";
 
 /// The bundle rows for [`crate::helpers::rule_namespace::plan_sweep`]. A pending version counts
-/// as stale once the lease has been free for ten minutes, so a deploy in flight is never swept.
+/// as stale once the lease has been free for ten minutes, so a deploy in flight, or an unconfirmed
+/// one whose lease is left to lapse, is never swept.
 pub async fn sweep_bundles(client: &Client) -> Result<Vec<SweepBundle>> {
   ensure_rule_tables(client).await?;
   let rows = client
@@ -1175,7 +1192,7 @@ pub async fn sweep_bundles(client: &Client) -> Result<Vec<SweepBundle>> {
 
 /// Records that the flock's script is now tagged for `account`.
 pub async fn retag_bundle(client: &Client, flock: Uuid, account: Uuid) -> Result<()> {
-  let tag = account_tag(account);
+  let tag = account_tag(&uuid_str(account));
   client
     .query_typed(
       "UPDATE rule_bundles SET account_tag = $2 WHERE flock_id = $1",
@@ -1190,7 +1207,7 @@ pub async fn retag_bundle(client: &Client, flock: Uuid, account: Uuid) -> Result
 pub async fn flock_owner(client: &Client, flock: Uuid) -> Result<Option<Uuid>> {
   let row = client
     .query_typed_opt(
-      "SELECT COALESCE(org_id, user_id), now() FROM flocks WHERE id = $1",
+      "SELECT COALESCE(org_id, user_id), now() AS read_at FROM flocks WHERE id = $1",
       &[(&flock, Type::UUID)],
     )
     .await
@@ -1204,7 +1221,7 @@ pub async fn bundle_uploaded(client: &Client, flock: Uuid) -> Result<bool> {
   ensure_rule_tables(client).await?;
   let row = client
     .query_typed_opt(
-      "SELECT uploaded_at IS NOT NULL, now() FROM rule_bundles WHERE flock_id = $1",
+      "SELECT uploaded_at IS NOT NULL, now() AS read_at FROM rule_bundles WHERE flock_id = $1",
       &[(&flock, Type::UUID)],
     )
     .await
@@ -2003,9 +2020,20 @@ mod pg {
       let sibling = running(&client, flock, 3, "sib").await;
       let paused = running(&client, flock, 1, "paused").await;
       client
-        .execute("UPDATE rules SET enabled = false WHERE id = $1", &[&paused])
+        .execute(
+          "UPDATE rules SET enabled = false, pending_version = 2 WHERE id = $1",
+          &[&paused],
+        )
         .await
-        .expect("paused");
+        .expect("paused, an unconfirmed deploy of it pending");
+      let blocked = running(&client, flock, 1, "blocked").await;
+      client
+        .execute(
+          "UPDATE rules SET blocked_at = now() WHERE id = $1",
+          &[&blocked],
+        )
+        .await
+        .expect("blocked");
       let rule = new_rule(&client, flock).await;
       version_of(&client, rule, 1, "one").await;
       version_of(&client, rule, 2, "two").await;
@@ -2026,14 +2054,15 @@ mod pg {
       };
       assert_eq!(
         keys(&sources),
-        [(sibling, 3, "sib"), (rule, 2, "two")],
-        "enabled rules at their deployed versions, then the candidate; the paused rule left out"
+        [(sibling, 3, "sib"), (paused, 1, "paused"), (rule, 2, "two")],
+        "every deployed rule at its deployed version, paused or not, and the candidate; the \
+         blocked rule left out"
       );
       assert_eq!(
         rule_now(&client, rule).await.unwrap().pending_version,
         Some(2)
       );
-      let tag = account_tag(account);
+      let tag = account_tag(&uuid_str(account));
       assert_eq!(
         bundle_now(&client, flock).await,
         Some((tag.clone(), false, true))
@@ -2073,6 +2102,11 @@ mod pg {
         .expect("count")
         .get(0);
       assert_eq!(state, 0, "reset on deploy");
+      assert_eq!(
+        rule_now(&client, paused).await.unwrap().pending_version,
+        None,
+        "the upload built the sibling at its deployed version"
+      );
       assert_eq!(bundle_now(&client, flock).await, Some((tag, true, false)));
       assert!(matches!(
         start_deploy(&mut client, &a, rule, 1, account)
@@ -2087,7 +2121,7 @@ mod pg {
 
   #[test]
   #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
-  fn rule_admin_a_failed_deploy_frees_the_lease_and_clears_pending_unless_unsure() {
+  fn rule_admin_a_refused_deploy_frees_the_lease_and_an_unsure_one_lets_it_lapse() {
     run(async {
       let db = Scratch::new("admin_deploy_fail").await;
       let mut client = db.client().await;
@@ -2096,25 +2130,55 @@ mod pg {
       let rule = new_rule(&client, flock).await;
       version_of(&client, rule, 1, "one").await;
       let a = access(flock);
-      for keep in [false, true] {
-        let DeployStart::Started { lease, .. } = start_deploy(&mut client, &a, rule, 1, account)
+      let DeployStart::Started { lease, .. } = start_deploy(&mut client, &a, rule, 1, account)
+        .await
+        .expect("start")
+      else {
+        panic!("free");
+      };
+      abandon_deploy(&mut client, &a, rule, 1, lease)
+        .await
+        .expect("abandon");
+      let now = rule_now(&client, rule).await.unwrap();
+      assert_eq!((now.pending_version, now.deployed_version), (None, None));
+      assert!(!bundle_now(&client, flock).await.unwrap().2, "lease freed");
+
+      // An unsure upload is not abandoned: the lease and the pending version stay.
+      let DeployStart::Started { .. } = start_deploy(&mut client, &a, rule, 1, account)
+        .await
+        .expect("start")
+      else {
+        panic!("free");
+      };
+      assert!(matches!(
+        start_deploy(&mut client, &a, rule, 1, account)
           .await
-          .expect("start")
-        else {
-          panic!("free");
-        };
-        abandon_deploy(&mut client, &a, rule, 1, lease, keep)
-          .await
-          .expect("abandon");
-        let now = rule_now(&client, rule).await.unwrap();
-        assert_eq!(now.pending_version, keep.then_some(1), "keep {keep}");
-        assert_eq!(now.deployed_version, None);
+          .expect("retry"),
+        DeployStart::Busy
+      ));
+      let swept = |rows: Vec<SweepBundle>| {
+        let row = rows.into_iter().find(|r| r.flock_id == flock).expect("row");
+        (row.leased, row.stale_pending)
+      };
+      assert_eq!(
+        swept(sweep_bundles(&client).await.expect("read")),
+        (true, false)
+      );
+      for (lapsed, stale) in [("5 minutes", false), ("11 minutes", true)] {
+        let sql = format!(
+          "UPDATE rule_bundles SET deploy_until = now() - interval '{lapsed}' WHERE flock_id = $1"
+        );
+        client.execute(&sql, &[&flock]).await.expect("lapsed");
         assert_eq!(
-          bundle_now(&client, flock).await.unwrap().2,
-          false,
-          "lease freed"
+          swept(sweep_bundles(&client).await.expect("read")),
+          (false, stale),
+          "lapsed {lapsed}"
         );
       }
+      assert_eq!(
+        rule_now(&client, rule).await.unwrap().pending_version,
+        Some(1)
+      );
       drop(client);
       db.drop().await;
     });
@@ -2208,6 +2272,11 @@ mod pg {
       let account = new_org(&client).await;
       let flock = new_flock(&client, Some(account)).await;
       let keep = running(&client, flock, 2, "keep").await;
+      let idle = running(&client, flock, 1, "idle").await;
+      client
+        .execute("UPDATE rules SET enabled = false WHERE id = $1", &[&idle])
+        .await
+        .expect("disabled");
       let gone = running(&client, flock, 1, "gone").await;
       let RebuildStart::Started { lease, sources } =
         start_rebuild(&mut client, flock, Some(gone), account)
@@ -2216,7 +2285,7 @@ mod pg {
       else {
         panic!("free");
       };
-      assert_eq!(keys(&sources), [(keep, 2, "keep")]);
+      assert_eq!(keys(&sources), [(keep, 2, "keep"), (idle, 1, "idle")]);
       assert!(
         !rule_now(&client, gone).await.unwrap().enabled,
         "disabled before any upload"
@@ -2238,17 +2307,36 @@ mod pg {
       let RebuildStart::Started { lease, sources } =
         start_rebuild(&mut client, flock, Some(keep), account)
           .await
+          .expect("last enabled")
+      else {
+        panic!("free");
+      };
+      assert_eq!(
+        keys(&sources),
+        [(idle, 1, "idle")],
+        "a disabled rule keeps the script, so enabling it again has a module to run"
+      );
+      assert!(
+        finish_rebuild(&mut client, flock, lease, Some(keep), false, account)
+          .await
+          .expect("finish")
+      );
+
+      let RebuildStart::Started { lease, sources } =
+        start_rebuild(&mut client, flock, Some(idle), account)
+          .await
           .expect("last")
       else {
         panic!("free");
       };
       assert!(sources.is_empty());
       assert!(
-        finish_rebuild(&mut client, flock, lease, Some(keep), true, account)
+        finish_rebuild(&mut client, flock, lease, Some(idle), true, account)
           .await
           .expect("finish")
       );
       assert!(rule_now(&client, keep).await.is_none());
+      assert!(rule_now(&client, idle).await.is_none());
       assert_eq!(
         bundle_now(&client, flock).await,
         None,
@@ -2277,9 +2365,17 @@ mod pg {
       let stuck = new_flock(&client, Some(owner)).await;
       let busy = new_flock(&client, Some(owner)).await;
       for (flock, tag, until) in [
-        (calm, account_tag(moved), "'epoch'"),
-        (stuck, account_tag(owner), "now() - interval '11 minutes'"),
-        (busy, account_tag(owner), "now() + interval '1 minute'"),
+        (calm, account_tag(&uuid_str(moved)), "'epoch'"),
+        (
+          stuck,
+          account_tag(&uuid_str(owner)),
+          "now() - interval '11 minutes'",
+        ),
+        (
+          busy,
+          account_tag(&uuid_str(owner)),
+          "now() + interval '1 minute'",
+        ),
       ] {
         let sql = format!(
           "INSERT INTO rule_bundles (flock_id, contract, account_tag, uploaded_at, deploy_until)
@@ -2297,7 +2393,7 @@ mod pg {
         .expect("pending");
       let mut rows = sweep_bundles(&client).await.expect("read");
       rows.sort_by_key(|r| [calm, stuck, busy].iter().position(|f| *f == r.flock_id));
-      let owner_tag = account_tag(owner);
+      let owner_tag = account_tag(&uuid_str(owner));
       let seen: Vec<(Uuid, &str, Uuid, bool, bool)> = rows
         .iter()
         .map(|r| {
@@ -2313,7 +2409,13 @@ mod pg {
       assert_eq!(
         seen,
         [
-          (calm, account_tag(moved).as_str(), owner, false, false),
+          (
+            calm,
+            account_tag(&uuid_str(moved)).as_str(),
+            owner,
+            false,
+            false
+          ),
           (stuck, owner_tag.as_str(), owner, false, true),
           (busy, owner_tag.as_str(), owner, true, false),
         ]
