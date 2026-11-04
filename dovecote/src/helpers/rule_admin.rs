@@ -1742,21 +1742,21 @@ mod pg {
 
       let elsewhere = access(new_flock(&client, None).await);
       assert_eq!(
-        delete_unscripted_rule(&mut client, &elsewhere, draft)
+        delete_unscripted_rule(&client, &elsewhere, draft)
           .await
           .expect("delete"),
         DeleteOutcome::NotFound
       );
       for held in [live, uploading] {
         assert_eq!(
-          delete_unscripted_rule(&mut client, &a, held)
+          delete_unscripted_rule(&client, &a, held)
             .await
             .expect("delete"),
           DeleteOutcome::InScript
         );
       }
       assert_eq!(
-        delete_unscripted_rule(&mut client, &a, draft)
+        delete_unscripted_rule(&client, &a, draft)
           .await
           .expect("delete"),
         DeleteOutcome::Deleted
@@ -2363,7 +2363,7 @@ mod pg {
 
       // The scripted delete: classify, then rebuild on the same client.
       assert_eq!(
-        delete_unscripted_rule(&mut client, &a, gone)
+        delete_unscripted_rule(&client, &a, gone)
           .await
           .expect("classify"),
         DeleteOutcome::InScript

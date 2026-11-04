@@ -4369,7 +4369,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           Err(resp) => return resp.with_cors(&cors),
         };
 
-        let Ok(outcome) = delete_unscripted_rule(&mut client, &access, rule_id).await else {
+        let Ok(outcome) = delete_unscripted_rule(&client, &access, rule_id).await else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
             .with_cors(&cors);
