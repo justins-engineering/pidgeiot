@@ -314,11 +314,20 @@ pub async fn lock_rule(
   Ok(!rows.is_empty())
 }
 
-/// Opens a transaction for a rule write. End it with [`end`], never by dropping it.
+/// What bounds every rule transaction ([`begin`]): a lock wait or a statement past these answers
+/// an error instead of holding the request, and its pooled connection, until something gives.
+const TX_LIMITS_SQL: &str = "SET LOCAL lock_timeout = '2s'; SET LOCAL statement_timeout = '10s'";
+
+/// Opens a transaction under [`TX_LIMITS_SQL`]. End it with [`end`], never by dropping it.
 pub(crate) async fn begin(
   client: &mut Client,
 ) -> std::result::Result<Transaction<'_>, tokio_postgres::Error> {
-  client.transaction().await
+  let tx = client.transaction().await?;
+  if let Err(e) = tx.batch_execute(TX_LIMITS_SQL).await {
+    let _ = tx.rollback().await;
+    return Err(e);
+  }
+  Ok(tx)
 }
 
 /// Ends `tx` on its body's answer, committing an `Ok` and rolling back an `Err`, and waits for
@@ -2533,17 +2542,19 @@ pub(crate) mod pg {
         &work.readings,
         &answered_all(&[(a, "ok", &fire_up), (b, "threw", "")]),
       );
+      // A lock held elsewhere answers an error under the transaction's own lock_timeout.
       let mut other = db.client().await;
       let hold = other.transaction().await.expect("tx");
       hold
         .execute("SELECT 1 FROM rules WHERE id = $1 FOR UPDATE", &[&b])
         .await
         .expect("b locked");
-      client
-        .batch_execute("SET lock_timeout = '200ms'")
-        .await
-        .expect("timeout");
-      let (mails, failed) = record_runs(&mut client, &found, &work, &plans, 1).await;
+      let (mails, failed) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        record_runs(&mut client, &found, &work, &plans, 1),
+      )
+      .await
+      .expect("a lock wait ends in an error, not a hang");
       assert_eq!(mails.len(), 1, "a committed before b failed");
       assert_eq!(mails[0].alert.key, "up");
       assert_eq!(
@@ -2598,6 +2609,37 @@ pub(crate) mod pg {
       );
       drop(client);
       drop(setup);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_a_rule_transaction_bounds_its_waits_and_only_its_own() {
+    run(async {
+      let db = Scratch::new("tx_limits").await;
+      let mut client = db.client().await;
+      async fn limits(client: &impl tokio_postgres::GenericClient) -> (String, String) {
+        let row = client
+          .query_one(
+            "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')",
+            &[],
+          )
+          .await
+          .expect("settings");
+        (row.get(0), row.get(1))
+      }
+      let tx = begin(&mut client).await.expect("begin");
+      assert_eq!(limits(&tx).await, ("2s".into(), "10s".into()));
+      end(tx, Ok::<_, tokio_postgres::Error>(()), |e| e)
+        .await
+        .expect("commit");
+      assert_eq!(
+        limits(&client).await,
+        ("0".into(), "0".into()),
+        "SET LOCAL leaves a pooled connection as it found it"
+      );
+      drop(client);
       db.drop().await;
     });
   }
