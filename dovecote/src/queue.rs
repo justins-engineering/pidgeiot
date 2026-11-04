@@ -393,10 +393,12 @@ async fn run_rules(env: &Env, work: Vec<RuleWork>) {
   let counts = run_pass(&mut LivePass::new(env), &vars, &work).await;
   if counts != PassCounts::default() {
     console_log!(
-      "Rules pass: {} dispatched, {} unscripted, {} platform, skipped {} budget, {} breaker, \
-       {} account{}",
+      "Rules pass: {} dispatched, {} unscripted, {} unlisted, {} deploying, {} platform, \
+       skipped {} budget, {} breaker, {} account{}",
       counts.dispatched,
       counts.unscripted,
+      counts.unlisted,
+      counts.deploying,
       counts.platform,
       counts.budget,
       counts.breaker,

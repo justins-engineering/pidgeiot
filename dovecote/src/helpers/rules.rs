@@ -58,6 +58,11 @@ pub const RULE_WIRE_BYTES: usize = 103 * 1024;
 /// Hyperdrive time the pass holds.
 pub const PASS_BUDGET_MS: u64 = 3_000;
 
+/// An answered dispatch slower than this skips its account's other flocks for the invocation, as
+/// a failed one does. The harness stops a rule at [`HARNESS_WALL_MS`], so the rest is CPU it could
+/// not time, and two such flocks would otherwise spend the whole [`PASS_BUDGET_MS`].
+pub const SLOW_DISPATCH_MS: u64 = 4 * HARNESS_WALL_MS as u64;
+
 /// Consecutive failing runs that auto-pause a rule.
 pub const AUTO_PAUSE_RUNS: i32 = 20;
 
@@ -155,6 +160,9 @@ fn dispatch_on(dispatch: Option<&str>) -> bool {
 pub struct PassVars {
   /// [`excluded_pigeons`] of `RULES_EXCLUDED_PIGEONS`, parsed once for the whole pass.
   pub excluded: Vec<String>,
+  /// The raw `RULES_ALLOWED_ORG_IDS`: a flock of an organization it does not list is not
+  /// dispatched, so narrowing it stops deployed rules as well as their authors.
+  pub allowed_orgs: Option<String>,
 }
 
 impl PassVars {
@@ -164,7 +172,8 @@ impl PassVars {
   }
 }
 
-/// Reads `RULES_DISPATCH` through `read` and, only when it is `"on"`, `RULES_EXCLUDED_PIGEONS`.
+/// Reads `RULES_DISPATCH` through `read` and, only when it is `"on"`, `RULES_EXCLUDED_PIGEONS`
+/// and `RULES_ALLOWED_ORG_IDS`.
 /// `None` means rules are off and nothing else was read, so an unset switch costs the consumer
 /// no binding, statement or dispatch.
 pub fn pass_vars(read: impl Fn(&str) -> Option<String>) -> Option<PassVars> {
@@ -174,6 +183,7 @@ pub fn pass_vars(read: impl Fn(&str) -> Option<String>) -> Option<PassVars> {
   }
   Some(PassVars {
     excluded: excluded_pigeons(read("RULES_EXCLUDED_PIGEONS").as_deref()),
+    allowed_orgs: read("RULES_ALLOWED_ORG_IDS"),
   })
 }
 
@@ -562,17 +572,19 @@ fn cut(s: &str, max: usize) -> String {
 pub enum Skip {
   /// The breaker tripped this invocation.
   Breaker,
-  /// A dispatch of this account's already failed this invocation.
+  /// A dispatch of this account's already failed, or answered slowly, this invocation.
   AccountFailed,
   /// [`PASS_BUDGET_MS`] is spent.
   Budget,
 }
 
-/// One consumer invocation's second pass: which accounts' dispatches failed, whether the breaker
-/// tripped, and when the pass started. Times are milliseconds from any fixed origin.
+/// One consumer invocation's second pass: which accounts are skipped, which of them failed,
+/// whether the breaker tripped, and when the pass started. Times are milliseconds from any fixed
+/// origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassLedger {
   started_ms: u64,
+  skipped_accounts: Vec<String>,
   failed_accounts: Vec<String>,
   tripped: bool,
 }
@@ -582,6 +594,7 @@ impl PassLedger {
   pub fn new(started_ms: u64) -> Self {
     Self {
       started_ms,
+      skipped_accounts: Vec::new(),
       failed_accounts: Vec::new(),
       tripped: false,
     }
@@ -591,7 +604,7 @@ impl PassLedger {
   pub fn may_dispatch(&self, account: &str, now_ms: u64) -> Result<(), Skip> {
     if self.tripped {
       Err(Skip::Breaker)
-    } else if self.failed_accounts.iter().any(|a| a == account) {
+    } else if self.skipped_accounts.iter().any(|a| a == account) {
       Err(Skip::AccountFailed)
     } else if self.budget_spent(now_ms) {
       Err(Skip::Budget)
@@ -610,12 +623,16 @@ impl PassLedger {
     now_ms.saturating_sub(self.started_ms) >= PASS_BUDGET_MS
   }
 
-  /// Records a dispatch of a flock `account` owns. A failure skips that account's flocks for the
-  /// rest of the pass, so it costs others at most one 2 s wait; a second account's failure, or a
-  /// platform failure, trips the breaker, so one tenant cannot trip it alone.
-  pub fn record(&mut self, account: &str, classified: &Classified) {
-    match classified {
-      Classified::Platform => self.tripped = true,
+  /// Records a dispatch of a flock `account` owns that took `wall_ms`. A failure, or an answer
+  /// slower than [`SLOW_DISPATCH_MS`], skips that account's flocks for the rest of the pass, so it
+  /// costs others at most one 2 s wait. A second account's failure, or a platform failure, trips
+  /// the breaker, so one tenant cannot trip it alone; a slow answer never counts toward it.
+  pub fn record(&mut self, account: &str, classified: &Classified, wall_ms: u64) {
+    let skip = match classified {
+      Classified::Platform => {
+        self.tripped = true;
+        false
+      }
       Classified::Flock(_) => {
         if !self.failed_accounts.iter().any(|a| a == account) {
           self.failed_accounts.push(account.to_string());
@@ -623,8 +640,12 @@ impl PassLedger {
         if self.failed_accounts.len() >= 2 {
           self.tripped = true;
         }
+        true
       }
-      Classified::PerRule(_) => {}
+      Classified::PerRule(_) => wall_ms >= SLOW_DISPATCH_MS,
+    };
+    if skip && !self.skipped_accounts.iter().any(|a| a == account) {
+      self.skipped_accounts.push(account.to_string());
     }
   }
 }
@@ -1054,6 +1075,9 @@ pub struct Lookup {
   /// The flock's owning organization, else its user: whose mail it is and whose failure the
   /// breaker counts.
   pub account: Uuid,
+  /// The flock's organization; `None` for a personal flock, which `RULES_ALLOWED_ORG_IDS` can
+  /// never list.
+  pub org: Option<Uuid>,
   /// When the flock's script was last uploaded. `None` means it never was, so a dispatch could
   /// only find no script, which is the platform's doing, never the flock's.
   pub uploaded_at: Option<i64>,
@@ -1104,9 +1128,32 @@ pub struct RulePlan {
   pub writes: bool,
 }
 
+/// The error of a run whose result passed every check but Postgres refused to store.
+const UNSTORABLE: &str = "result could not be stored";
+
+impl RulePlan {
+  /// This run as `bad_output` with nothing applied, for when Postgres refused its writes: a
+  /// refusal that a check missed must still count toward the pause rather than recur unseen.
+  /// Logs are dropped, since they may be what was refused.
+  pub fn unstorable(&self) -> RulePlan {
+    RulePlan {
+      rule_id: self.rule_id,
+      version: self.version,
+      status: RunStatus::BadOutput,
+      error: Some(UNSTORABLE.to_string()),
+      logs: Vec::new(),
+      apply: None,
+      run_row: true,
+      writes: true,
+    }
+  }
+}
+
 /// Plans each rule's record of one dispatch by position: the i-th rule sent owns the i-th result,
-/// which [`classify`] has matched by id. A platform failure records nothing. Mail counts carry
-/// from rule to rule, so the plan claims what the claim statement allows.
+/// which [`classify`] has matched by id. A platform failure records nothing, nor does a whole
+/// failure while our own deploy holds the flock's lease, since the script may then be mid-upload
+/// or already deleted. Mail counts carry from rule to rule, so the plan claims what the claim
+/// statement allows.
 pub fn plan_record(
   lookup: &Lookup,
   readings: &[ResolvedReading],
@@ -1114,6 +1161,7 @@ pub fn plan_record(
 ) -> Vec<RulePlan> {
   let records = match classified {
     Classified::Platform => return Vec::new(),
+    Classified::Flock(_) if lookup.leased => return Vec::new(),
     Classified::PerRule(records) => Some(records),
     Classified::Flock(_) => None,
   };
@@ -1176,10 +1224,10 @@ pub fn plan_record(
   plans
 }
 
-/// A rule mail's recipients, chosen as alert mail chooses them: the rule's own list, each address
-/// kept only while it is still the flock owner's or an organization member's, and the owner when
-/// none is left. `members` is a comma-separated list. Returns the addresses and how many were
-/// dropped.
+/// The send-time recipient recheck alert mail and rule mail share: the definition's own list, each
+/// address kept only while it is still the flock owner's or an organization member's, and the
+/// owner when none is left. `members` is a comma-separated list. Returns the addresses and how
+/// many were dropped.
 pub fn deliverable_recipients(
   to: &[String],
   owner: Option<&str>,
@@ -1210,7 +1258,7 @@ pub fn deliverable_recipients(
 const RULE_MAIL_PREFIX: &str = "PidgeIoT rule: ";
 
 /// A rule mail's subject and text: the rule's own words under a fixed prefix, then a footer naming
-/// the rule, flock and pigeon, so a recipient can tell who wrote it and where to stop it.
+/// the severity, rule, flock and pigeon, so a recipient can tell who wrote it and where to stop it.
 pub fn rule_mail_message(
   alert: &RuleAlert,
   rule: &str,
@@ -1226,24 +1274,38 @@ pub fn rule_mail_message(
     RuleSeverity::Critical => "critical",
   };
   let body = alert.body.as_deref().unwrap_or("");
-  const STOP: &str = "\nA flock owner or admin can change this rule's recipients or disable it \
+  const GAP: &str = "\n\n";
+  const SEVERITY: &str = "--\nSeverity: ";
+  const RULE: &str = "\nRule: ";
+  const FLOCK: &str = "\nFlock: ";
+  const PIGEON: &str = "\nPigeon: ";
+  const STOP: &str = "\n\nA flock owner or admin can change this rule's recipients or disable it \
                       on the flock's Rules page.\n";
   let mut text = String::with_capacity(
-    body.len() + rule.len() + flock.len() + pigeon.len() + severity.len() + STOP.len() + 48,
+    body.len()
+      + GAP.len()
+      + SEVERITY.len()
+      + severity.len()
+      + RULE.len()
+      + rule.len()
+      + FLOCK.len()
+      + flock.len()
+      + PIGEON.len()
+      + pigeon.len()
+      + STOP.len(),
   );
   if !body.is_empty() {
     text.push_str(body);
-    text.push_str("\n\n");
+    text.push_str(GAP);
   }
-  text.push_str("--\nSeverity: ");
+  text.push_str(SEVERITY);
   text.push_str(severity);
-  text.push_str("\nRule: ");
+  text.push_str(RULE);
   text.push_str(rule);
-  text.push_str("\nFlock: ");
+  text.push_str(FLOCK);
   text.push_str(flock);
-  text.push_str("\nPigeon: ");
+  text.push_str(PIGEON);
   text.push_str(pigeon);
-  text.push('\n');
   text.push_str(STOP);
   (subject, text)
 }
@@ -2092,9 +2154,11 @@ mod tests {
     let vars = pass_vars(|name| match name {
       "RULES_DISPATCH" => Some(" on ".to_string()),
       "RULES_EXCLUDED_PIGEONS" => Some(extra.clone()),
+      "RULES_ALLOWED_ORG_IDS" => Some("listed".to_string()),
       _ => None,
     });
     let vars = vars.expect("on");
+    assert_eq!(vars.allowed_orgs.as_deref(), Some("listed"));
     assert_eq!(vars.excluded, excluded_pigeons(Some(&extra)));
     assert_eq!(vars.excluded.len(), 4);
     assert_eq!(vars.gate(&extra), PreGate::Excluded);
@@ -2383,7 +2447,7 @@ mod tests {
     let rules = hostile_sent();
     let classified = classify(&rules, answered(LIVE_HOSTILE));
     let mut ledger = PassLedger::new(0);
-    ledger.record("a1", &classified);
+    ledger.record("a1", &classified, 0);
     assert_eq!(ledger.may_dispatch("a1", 10), Ok(()));
 
     let records = per_rule(classified);
@@ -2836,26 +2900,42 @@ mod tests {
   fn the_breaker_and_the_pass_budget() {
     let failed = Classified::Flock(RunStatus::DispatchFailed);
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("a1", &Classified::PerRule(Vec::new()));
+    ledger.record("a1", &Classified::PerRule(Vec::new()), 0);
     assert_eq!(ledger.may_dispatch("a1", 1_100), Ok(()));
-    ledger.record("a1", &failed);
+    ledger.record("a1", &failed, 0);
     // A failed account's every flock waits for the next invocation, so one account with two
     // burning flocks costs other tenants one 2 s wait per invocation, not two.
     assert_eq!(ledger.may_dispatch("a1", 1_100), Err(Skip::AccountFailed));
     assert_eq!(ledger.may_dispatch("a2", 1_100), Ok(()));
-    ledger.record("a1", &Classified::Flock(RunStatus::Oversize));
+    ledger.record("a1", &Classified::Flock(RunStatus::Oversize), 0);
     assert_eq!(
       ledger.may_dispatch("a2", 1_100),
       Ok(()),
       "one account cannot trip it alone"
     );
-    ledger.record("a2", &failed);
+    ledger.record("a2", &failed, 0);
     assert_eq!(ledger.may_dispatch("a3", 1_100), Err(Skip::Breaker));
 
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("a1", &Classified::Platform);
+    ledger.record("a1", &Classified::Platform, 0);
     assert_eq!(ledger.may_dispatch("a9", 1_100), Err(Skip::Breaker));
     assert!(ledger.tripped());
+
+    // An answer that came back slow skips its account as a failure does, never counted for the
+    // breaker: nothing a rule writes can make a dispatch slow on another tenant's account.
+    let quiet = Classified::PerRule(Vec::new());
+    let mut ledger = PassLedger::new(1_000);
+    ledger.record("a1", &quiet, SLOW_DISPATCH_MS - 1);
+    assert_eq!(ledger.may_dispatch("a1", 1_100), Ok(()));
+    ledger.record("a1", &quiet, SLOW_DISPATCH_MS);
+    assert_eq!(ledger.may_dispatch("a1", 1_100), Err(Skip::AccountFailed));
+    ledger.record("a2", &quiet, SLOW_DISPATCH_MS);
+    ledger.record("a3", &failed, 0);
+    assert_eq!(
+      ledger.may_dispatch("a4", 1_100),
+      Ok(()),
+      "two slow, one failed"
+    );
 
     let ledger = PassLedger::new(1_000);
     assert_eq!(
@@ -2890,6 +2970,7 @@ mod tests {
       flock: named("f", "F"),
       pigeon: named("p", "P"),
       account: Uuid::from_u128(0xacc),
+      org: Some(Uuid::from_u128(0xacc)),
       uploaded_at: Some(T0 - 86_400),
       leased: false,
       account_mail_day: 0,
@@ -2974,6 +3055,30 @@ mod tests {
       assert!(plan.writes && plan.run_row && plan.apply.is_none() && plan.error.is_none());
     }
     assert!(plan_record(&found, &one, &Classified::Platform).is_empty());
+    let mut deploying = found.clone();
+    deploying.leased = true;
+    assert!(
+      plan_record(&deploying, &one, &flock).is_empty(),
+      "a script our deploy is replacing or deleting fails nobody's rule"
+    );
+  }
+
+  #[test]
+  fn a_result_postgres_refuses_records_as_bad_output_alone() {
+    let found = lookup(vec![live_rule(RA)]);
+    let values = r#"{"values":[{"key":"v","value":"7"}]}"#;
+    let plans = plan_record(
+      &found,
+      &[reading(T0, &[("k", "1")])],
+      &wire(&[(RA, "ok", values)]),
+    );
+    let refused = plans[0].unstorable();
+    assert_eq!(
+      (refused.rule_id, refused.version, refused.status),
+      (RA, 3, RunStatus::BadOutput)
+    );
+    assert!(refused.apply.is_none() && refused.logs.is_empty());
+    assert!(refused.run_row && refused.writes && refused.error.is_some());
   }
 
   #[test]

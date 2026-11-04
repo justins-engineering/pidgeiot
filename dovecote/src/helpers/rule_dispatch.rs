@@ -20,6 +20,7 @@ use worker::{Date, Delay, Env, Response, console_error};
 
 use crate::helpers::alerts::send_rule_email;
 use crate::helpers::get_db_client;
+use crate::helpers::rule_admin::rules_org_allowed;
 use crate::helpers::rule_store::{
   RuleMail, ensure_rule_tables, fresh_read, mail_targets, record_runs, rules_gate,
 };
@@ -58,7 +59,7 @@ pub(crate) trait PassIo {
     body: &str,
     cap: usize,
   ) -> DispatchOutcome;
-  /// Records the plans and sends the mail they claimed.
+  /// Records the plans and sends the mail they claimed, also when a later rule's record failed.
   async fn record(
     &mut self,
     lookup: &Lookup,
@@ -75,20 +76,25 @@ pub(crate) struct PassCounts {
   pub dispatched: usize,
   /// Batches of a flock whose script was never uploaded.
   pub unscripted: usize,
+  /// Batches of a flock whose organization `RULES_ALLOWED_ORG_IDS` does not list.
+  pub unlisted: usize,
+  /// Whole failures while our own deploy held the flock's lease, counted against no one.
+  pub deploying: usize,
   /// Dispatches the platform failed.
   pub platform: usize,
   /// Batches skipped for [`crate::helpers::rules::PASS_BUDGET_MS`].
   pub budget: usize,
   /// Batches skipped once the breaker tripped.
   pub breaker: usize,
-  /// Batches skipped because their account's dispatch already failed.
+  /// Batches skipped because their account's dispatch already failed or answered slowly.
   pub account: usize,
   /// Postgres failed and the rest were skipped.
   pub down: bool,
 }
 
 /// Runs each batch's rules: the field-pigeon gate and the breaker and budget before any
-/// statement, then the gate, the fresh read, one dispatch and its record.
+/// statement, then the gate, the fresh read, the organization allowlist, one dispatch and its
+/// record.
 pub(crate) async fn run_pass<I: PassIo>(
   io: &mut I,
   vars: &PassVars,
@@ -121,6 +127,10 @@ pub(crate) async fn run_pass<I: PassIo>(
         break;
       }
     };
+    if !rules_org_allowed(vars.allowed_orgs.as_deref(), lookup.org) {
+      counts.unlisted += 1;
+      continue;
+    }
     if lookup.uploaded_at.is_none() {
       counts.unscripted += 1;
       continue;
@@ -158,9 +168,14 @@ pub(crate) async fn run_pass<I: PassIo>(
     let outcome = io
       .dispatch(&script, &lookup.flock.id, &body, read_cap(sent.len()))
       .await;
-    let wall_ms = i32::try_from(io.now_ms().saturating_sub(started)).unwrap_or(i32::MAX);
+    let elapsed = io.now_ms().saturating_sub(started);
+    let wall_ms = i32::try_from(elapsed).unwrap_or(i32::MAX);
     let classified = classify(&sent, outcome);
-    ledger.record(&account, &classified);
+    if lookup.leased && matches!(classified, Classified::Flock(_)) {
+      counts.deploying += 1;
+      continue;
+    }
+    ledger.record(&account, &classified, elapsed);
     if classified == Classified::Platform {
       counts.platform += 1;
       continue;
@@ -246,18 +261,19 @@ impl PassIo for LivePass<'_> {
   ) -> Result<(), Down> {
     let env = self.env;
     let client = self.client().await?;
-    let mails = record_runs(client, lookup, work, plans, wall_ms)
-      .await
-      .map_err(|e| down("record", &e))?;
+    let (mails, failed) = record_runs(client, lookup, work, plans, wall_ms).await;
     if !mails.is_empty() {
       send_rule_mails(env, client, lookup, &mails).await;
     }
-    Ok(())
+    match failed {
+      Some(e) => Err(down("record", &e)),
+      None => Ok(()),
+    }
   }
 }
 
-/// Sends mail a committed run claimed. A send that fails is logged and not retried, as alert
-/// mail is not.
+/// Sends mail a committed run claimed. A send that fails is logged and, like alert mail, not
+/// retried.
 async fn send_rule_mails(env: &Env, client: &Client, lookup: &Lookup, mails: &[RuleMail]) {
   let mut rules: Vec<Uuid> = mails.iter().map(|mail| mail.rule_id).collect();
   rules.sort_unstable();
@@ -301,7 +317,7 @@ async fn send_rule_mails(env: &Env, client: &Client, lookup: &Lookup, mails: &[R
 
 /// Dispatches one flock's rules: the call and the body read raced against
 /// [`DISPATCH_WALL_MS`] and aborted when they lose.
-pub async fn dispatch(
+pub(crate) async fn dispatch(
   env: &Env,
   script: &str,
   flock_id: &str,
@@ -326,8 +342,8 @@ pub async fn dispatch(
   outcome
 }
 
-/// The flock's script through the `RULES` binding's own three-argument `get`, which `worker`
-/// 0.8.7's `DynamicDispatcher::get` does not expose. `outbound.flock_id` is always set: the
+/// The flock's script through the `RULES` binding's own three-argument `get`, which the `worker`
+/// crate's `DynamicDispatcher::get` does not expose. `outbound.flock_id` is always set: the
 /// binding refuses a `get` without it, and it is how the outbound Worker names who tried. No
 /// per-call limits: the platform ignores them and the upload metadata's bind. `None` is the
 /// platform's failure, since a missing script surfaces at the fetch, not here.
@@ -416,7 +432,7 @@ async fn send(
 
 /// Appends `chunk` to `body` up to `cap` + 1 bytes, one past the cap being enough to call the
 /// answer oversize. True once full.
-pub fn take_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+pub(crate) fn take_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
   let room = cap.saturating_add(1).saturating_sub(body.len());
   body.extend_from_slice(&chunk[..chunk.len().min(room)]);
   body.len() > cap
@@ -527,6 +543,7 @@ mod tests {
         name: "P".to_string(),
       },
       account: Uuid::from_u128(account),
+      org: Some(Uuid::from_u128(account)),
       uploaded_at: Some(T0 - 3_600),
       leased: false,
       account_mail_day: 0,
@@ -557,8 +574,19 @@ mod tests {
     .expect("a reading")
   }
 
+  /// The switch on and organizations 1 to 9 listed.
   fn vars() -> PassVars {
-    pass_vars(|name| (name == "RULES_DISPATCH").then(|| "on".to_string())).expect("on")
+    let listed: Vec<String> = (1..10).map(|n| uuid_str(Uuid::from_u128(n))).collect();
+    pass_vars(|name| match name {
+      "RULES_DISPATCH" => Some("on".to_string()),
+      "RULES_ALLOWED_ORG_IDS" => Some(listed.join(",")),
+      _ => None,
+    })
+    .expect("on")
+  }
+
+  fn recorded_flocks(fake: &Fake) -> Vec<&str> {
+    fake.recorded.iter().map(|(f, _, _)| f.as_str()).collect()
   }
 
   fn run(fake: &mut Fake, batches: &[&str]) -> PassCounts {
@@ -647,8 +675,10 @@ mod tests {
         .insert(uuid_str(flock(n)), DispatchOutcome::Failed);
     }
     let counts = run(&mut fake, &["p1", "p2", "p3", "p4"]);
-    let flocks: Vec<&str> = fake.recorded.iter().map(|(f, _, _)| f.as_str()).collect();
-    assert_eq!(flocks, [uuid_str(flock(1)), uuid_str(flock(3))]);
+    assert_eq!(
+      recorded_flocks(&fake),
+      [uuid_str(flock(1)), uuid_str(flock(3))]
+    );
     for (_, statuses, _) in &fake.recorded {
       assert_eq!(statuses.len(), 2);
       assert!(
@@ -659,6 +689,79 @@ mod tests {
     }
     assert_eq!((counts.account, counts.breaker), (1, 1));
     assert!(!fake.gated.contains(&"p4".to_string()));
+  }
+
+  #[test]
+  fn an_organization_the_allowlist_does_not_name_is_read_but_never_dispatched() {
+    let mut fake = Fake::default();
+    fake.lookups.insert("p1".into(), found(1, 1, 1));
+    fake.lookups.insert("p2".into(), found(2, 99, 1));
+    let mut personal = found(3, 3, 1);
+    personal.org = None;
+    fake.lookups.insert("p3".into(), personal);
+    let counts = run(&mut fake, &["p1", "p2", "p3"]);
+    assert_eq!(fake.gated, ["p1", "p2", "p3"]);
+    assert_eq!(recorded_flocks(&fake), [uuid_str(flock(1))]);
+    assert_eq!(fake.dispatched.len(), 1);
+    assert_eq!((counts.dispatched, counts.unlisted), (1, 2));
+
+    let mut fake = Fake::default();
+    fake.lookups.insert("p1".into(), found(1, 1, 1));
+    let unset = pass_vars(|name| (name == "RULES_DISPATCH").then(|| "on".to_string()));
+    let counts =
+      futures::executor::block_on(run_pass(&mut fake, &unset.expect("on"), &[work("p1")]));
+    assert!(
+      fake.dispatched.is_empty(),
+      "an unset allowlist lists no one"
+    );
+    assert_eq!(counts.unlisted, 1);
+  }
+
+  #[test]
+  fn a_slow_answer_skips_its_accounts_other_flocks_but_not_another_account() {
+    let mut fake = Fake {
+      dispatch_ms: 1_500,
+      ..Fake::default()
+    };
+    for (pigeon, n, account) in [("p1", 1, 1), ("p2", 2, 1), ("p3", 3, 2)] {
+      fake.lookups.insert(pigeon.into(), found(n, account, 1));
+    }
+    let counts = run(&mut fake, &["p1", "p2", "p3"]);
+    assert_eq!(
+      recorded_flocks(&fake),
+      [uuid_str(flock(1)), uuid_str(flock(3))]
+    );
+    assert_eq!((counts.account, counts.budget, counts.breaker), (1, 0, 0));
+    for (_, statuses, _) in &fake.recorded {
+      assert!(
+        statuses.iter().all(|(_, s)| *s == RunStatus::Ok),
+        "slow is no failure"
+      );
+    }
+  }
+
+  #[test]
+  fn a_whole_failure_during_our_deploy_counts_against_nobody() {
+    let mut fake = Fake::default();
+    let mut deploying = found(1, 1, 1);
+    deploying.leased = true;
+    fake.lookups.insert("p1".into(), deploying);
+    fake.lookups.insert("p2".into(), found(2, 1, 1));
+    fake.lookups.insert("p3".into(), found(3, 2, 1));
+    for n in [1, 3] {
+      fake
+        .outcomes
+        .insert(uuid_str(flock(n)), DispatchOutcome::Failed);
+    }
+    let counts = run(&mut fake, &["p1", "p2", "p3"]);
+    assert_eq!(
+      recorded_flocks(&fake),
+      [uuid_str(flock(2)), uuid_str(flock(3))]
+    );
+    assert_eq!(
+      (counts.deploying, counts.account, counts.breaker),
+      (1, 0, 0)
+    );
   }
 
   #[test]

@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::rules::deliverable_recipients;
 use super::timezone::{clock_for, org_timezone};
 use crate::helpers::{
   FlockAccess, PigeonAccess, ResolvedReading, get_db_client, missing_schema_objects, root_url,
@@ -1472,50 +1473,26 @@ async fn resolve_alert_context(
   let row = result.ok().flatten();
   let owner_email: Option<String> = row.as_ref().and_then(|row| row.get("owner_email"));
   let member_emails: Option<String> = row.as_ref().and_then(|row| row.get("member_emails"));
-  let mut context = AlertMailContext {
-    recipients: owner_email.iter().cloned().collect(),
+  // Defense-in-depth: the create/update routes already reject a recipient the account has no
+  // claim to, but definitions that predate that validation, or rows written outside the API, could
+  // still carry an arbitrary address, so delivery is never aimed at one the platform has not tied
+  // to this account.
+  let (recipients, refused) =
+    deliverable_recipients(to, owner_email.as_deref(), member_emails.as_deref());
+  if refused > 0 {
+    console_error!(
+      "Alert '{}' ({}): dropping {refused} recipient(s) no longer tied to this account",
+      def.name,
+      def.id
+    );
+  }
+  AlertMailContext {
+    recipients,
     pigeon_name: row.as_ref().and_then(|row| row.get("pigeon_name")),
     flock_id: row.as_ref().and_then(|row| row.get("flock_id")),
     flock_name: row.as_ref().and_then(|row| row.get("flock_name")),
     timezone: row.as_ref().and_then(|row| row.get("org_timezone")),
-  };
-
-  // Defense-in-depth: the create/update routes already reject a recipient
-  // the account has no claim to, but definitions that predate that
-  // validation (or rows written outside the API) could still carry an
-  // arbitrary address. At send time a recipient is honored only if it is
-  // still the flock's owner or a member of the organization that owns it
-  // -- anything else is dropped with a log line, so alert delivery can
-  // never be aimed at an address the platform hasn't tied to this account.
-  if !to.is_empty() {
-    let mut deliverable: Vec<String> = Vec::with_capacity(to.len());
-    let mut refused = 0usize;
-    for address in to {
-      let address = address.trim();
-      let known = owner_email
-        .iter()
-        .map(String::as_str)
-        .chain(member_emails.iter().flat_map(|list| list.split(',')))
-        .any(|known| known.trim().eq_ignore_ascii_case(address));
-      if known {
-        deliverable.push(address.to_string());
-      } else {
-        refused += 1;
-      }
-    }
-    if refused > 0 {
-      console_error!(
-        "Alert '{}' ({}): dropping {refused} recipient(s) no longer tied to this account",
-        def.name,
-        def.id
-      );
-    }
-    if !deliverable.is_empty() {
-      context.recipients = deliverable;
-    }
   }
-
-  context
 }
 
 async fn send_alert_email(

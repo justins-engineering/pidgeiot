@@ -2432,7 +2432,8 @@ code, [test](#post-flocksflock_idrulesrule_idversionsversiontest) a version, the
 enables the rule. Rolling back is deploying an older version that still carries its test record.
 Rules are open only to organizations the platform has enabled: every rule route on any other
 flock, a personal flock included, answers `403`
-(`Forbidden: rules are not enabled for this organization`). They run only where dovecote has a
+(`Forbidden: rules are not enabled for this organization`), and a deployed rule of a flock whose
+organization is no longer enabled stops running. They run only where dovecote has a
 rules namespace; elsewhere the test route, the deploy route and the delete of a deployed rule
 answer `503` (`Service Unavailable: rules do not run in this environment`), and where the
 namespace exists the test route answers `501` until dry runs are built.
@@ -2468,15 +2469,16 @@ Limits:
 
 Recipients follow the [alert rules](#alerts): up to 8 addresses tied to the account, checked on
 write, lowercased and de-duplicated; an empty list means the flock's `owner_email`. Each is checked
-again at send, as alert mail is. A rule's mail is plain text under the subject prefix
-`PidgeIoT rule: `, with a footer naming the rule, its flock and the pigeon whose batch decided it.
+again at send, as alert mail is, against an account read that can be up to about a minute old. A
+rule's mail is plain text under the subject prefix `PidgeIoT rule: `, with a footer naming its
+severity, the rule, its flock and the pigeon whose batch decided it.
 
 The models are `capsules::Rule`, `RuleDetail`, `RuleVersion`, `RuleRun` and `RuleValue`. A
 rule reports `blocked: true` when the platform has stopped it, which only the platform can lift,
 and `paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after 20 failing
 runs in a row did. A `dispatch_failed` streak, which the platform's own outages can also cause,
-pauses only once it is also an hour old. A mutation answers with the updated body, so a client builds its state from that
-rather than reading the rule again.
+pauses only once it is also an hour old. A mutation answers with the updated body, so a client
+builds its state from that rather than reading the rule again.
 
 #### `GET /flocks/:flock_id/rules`
 
