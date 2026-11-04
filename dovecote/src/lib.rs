@@ -1,9 +1,13 @@
+use crate::helpers::cf_api::busy_response;
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::rule_admin::{
-  DeleteOutcome, RULES_ORG_REFUSED, SaveOutcome, UpdateOutcome, create_rule,
+  DeleteOutcome, RULES_ORG_REFUSED, SaveOutcome, UpdateOutcome, bundle_uploaded, create_rule,
   delete_unscripted_rule, deploy_refusal, latest_values, list_rules, list_runs, read_release,
   read_version, rule_detail, rules_org_allowed, save_version, test_refusal, update_rule,
   watch_rule,
+};
+use crate::helpers::rule_namespace::{
+  Namespace, Refusal, delete_flock_script, delete_scripted_rule, deploy_version,
 };
 use crate::helpers::rule_store::ensure_rule_tables;
 use crate::helpers::{
@@ -353,17 +357,29 @@ const RULES_UNAVAILABLE: &str = "Service Unavailable: rules do not run in this e
 const NO_SUCH_RULE: &str = "Not Found: no such rule in this flock";
 const NO_SUCH_VERSION: &str = "Not Found: no such version of this rule";
 
-/// The answer of a rule route once it reaches the rules namespace: 503 where this Worker has no
-/// `RULES` binding, and 501 where it has one, since this build makes no upload. Read raw, the
-/// way dispatch reads it: `Env::dynamic_dispatcher` also checks the binding's JS class name,
-/// which nothing has yet shown the namespace binding to carry.
-fn rules_namespace_response(env: &Env) -> Response {
+/// The rules namespace a rule route uploads to, or its 503 where this Worker has no `RULES`
+/// binding or the binding's account and namespace vars are wrong. Read raw, the way dispatch
+/// reads it: `Env::dynamic_dispatcher` also checks the binding's JS class name, which nothing has
+/// yet shown the namespace binding to carry.
+fn rules_namespace(env: &Env) -> std::result::Result<Namespace, Response> {
   let bound = js_sys::Reflect::get(env, &wasm_bindgen::JsValue::from_str("RULES"))
     .is_ok_and(|binding| !binding.is_undefined());
-  if bound {
-    Response::error("Not Implemented: rule uploads", 501).unwrap()
-  } else {
-    Response::error(RULES_UNAVAILABLE, 503).unwrap()
+  match (bound, Namespace::of(env)) {
+    (true, Some(ns)) => Ok(ns),
+    (true, None) => {
+      console_error!("rules: RULES is bound but RULES_ACCOUNT_ID or RULES_NAMESPACE is not");
+      Err(Response::error(RULES_UNAVAILABLE, 503).unwrap())
+    }
+    (false, _) => Err(Response::error(RULES_UNAVAILABLE, 503).unwrap()),
+  }
+}
+
+/// The response for a rule route the namespace step refused.
+fn rule_refusal_response(cors: &worker::Cors, refusal: Refusal) -> worker::Result<Response> {
+  match refusal {
+    Refusal::NotFound => Response::error(NO_SUCH_RULE, 404).unwrap().with_cors(cors),
+    Refusal::Busy(wait_secs) => busy_response(cors, wait_secs),
+    Refusal::Status(status, text) => Response::error(text, status).unwrap().with_cors(cors),
   }
 }
 
@@ -1924,6 +1940,16 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           .with_cors(&cors);
       }
 
+      // The flock's rules cascade with it; its script is deleted after the commit, and the
+      // daily sweep deletes it if that fails.
+      let rules_script = match rules_namespace(&ctx.env) {
+        Ok(ns) => bundle_uploaded(&client, flock_id)
+          .await
+          .is_ok_and(|uploaded| uploaded)
+          .then_some(ns),
+        Err(_) => None,
+      };
+
       let Ok(outcome) = delete_flock_if_empty(&client, &flock_id).await else {
         return Response::error("Internal Server Error", 500)
           .unwrap()
@@ -1931,6 +1957,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       };
       if let Err(message) = outcome {
         return Response::error(message, 409).unwrap().with_cors(&cors);
+      }
+      if let Some(ns) = rules_script {
+        delete_flock_script(&ctx.env, &ns, flock_id).await;
       }
 
       Response::empty()?.with_cors(&cors)
@@ -4353,7 +4382,16 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           DeleteOutcome::NotFound => Response::error(NO_SUCH_RULE, 404)
             .unwrap()
             .with_cors(&cors),
-          DeleteOutcome::InScript => rules_namespace_response(&ctx.env).with_cors(&cors),
+          DeleteOutcome::InScript => {
+            let ns = match rules_namespace(&ctx.env) {
+              Ok(ns) => ns,
+              Err(resp) => return resp.with_cors(&cors),
+            };
+            match delete_scripted_rule(&ctx.env, &ns, &mut client, &access, rule_id).await {
+              Ok(()) => Response::empty()?.with_cors(&cors),
+              Err(refusal) => rule_refusal_response(&cors, refusal),
+            }
+          }
         }
       },
     )
@@ -4536,7 +4574,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           let (status, message) = refusal.response();
           return Response::error(message, status).unwrap().with_cors(&cors);
         }
-        rules_namespace_response(&ctx.env).with_cors(&cors)
+        match rules_namespace(&ctx.env) {
+          Ok(_) => Response::error("Not Implemented: rule dry runs", 501)
+            .unwrap()
+            .with_cors(&cors),
+          Err(resp) => resp.with_cors(&cors),
+        }
       },
     )
     .post_async(
@@ -4563,11 +4606,16 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .unwrap()
             .with_cors(&cors);
         };
-        if !body.trim().is_empty() && serde_json::from_str::<RuleDeployRequest>(&body).is_err() {
-          return Response::error("Bad Request: Invalid JSON payload", 400)
-            .unwrap()
-            .with_cors(&cors);
-        }
+        let request = if body.trim().is_empty() {
+          RuleDeployRequest::default()
+        } else {
+          let Ok(request) = serde_json::from_str::<RuleDeployRequest>(&body) else {
+            return Response::error("Bad Request: Invalid JSON payload", 400)
+              .unwrap()
+              .with_cors(&cors);
+          };
+          request
+        };
 
         get_db!(ctx.env, client, &cors);
         let mut client = client;
@@ -4598,7 +4646,24 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           let (status, message) = refusal.response();
           return Response::error(message, status).unwrap().with_cors(&cors);
         }
-        rules_namespace_response(&ctx.env).with_cors(&cors)
+        let ns = match rules_namespace(&ctx.env) {
+          Ok(ns) => ns,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+        match deploy_version(
+          &ctx.env,
+          &ns,
+          &mut client,
+          &access,
+          rule_id,
+          version,
+          request.reset_state,
+        )
+        .await
+        {
+          Ok(rule) => Response::from_json(&rule)?.with_cors(&cors),
+          Err(refusal) => rule_refusal_response(&cors, refusal),
+        }
       },
     )
     .get_async(

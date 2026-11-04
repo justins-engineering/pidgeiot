@@ -1,6 +1,7 @@
 //! dovecote's rule routes (docs/api.md, "Rules"). Every function hands back the server's own text
-//! on a refusal: a 403 at the rule limit, a 409 for an untested deploy and a 503 where rules do
-//! not run are each something the person has to read. Nothing here caches; each page builds its
+//! on a refusal: a 403 at the rule limit, a 409 for an untested deploy, a 422 for rules that do
+//! not load, a 429 when deploys are busy and a 503 where rules do not run are each something the
+//! person has to read. Nothing here caches; each page builds its
 //! state from the answers, a mutation's included (Hyperdrive may serve a re-read from before it).
 
 use crate::api::fetch_json_any_status;
@@ -127,8 +128,8 @@ pub async fn test(flock_id: Uuid, rule_id: Uuid, version: i32) -> Result<RuleVer
   call("POST", &path, None::<&()>).await
 }
 
-/// `POST .../versions/:version/deploy`: the rule as the deploy left it, which still names the
-/// version in `pending_version` when the upload did not finish.
+/// `POST .../versions/:version/deploy`: the rule as the deploy left it. A refusal's text is the
+/// server's, Cloudflare's load error for a rule that does not load included.
 pub async fn deploy(
   flock_id: Uuid,
   rule_id: Uuid,

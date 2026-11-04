@@ -138,6 +138,12 @@ head_sampling_rate = 1
 # in helpers/rules.rs checks it). The binding always carries its
 # outbound Worker (dovecote/rules-outbound): without one rules reach the
 # open internet. Production has neither until its outbound Worker exists.
+# RULES_NAMESPACE is one of the two names helpers/rule_namespace.rs knows
+# (dovecote-rules, dovecote-rules-staging); anything else answers 503.
+#
+# CF_RULES_API_TOKEN -- a Worker SECRET wherever RULES is bound: the API
+# token rule deploys, deletes, re-tags and the daily sweep use
+# (helpers/rule_namespace.rs). Read by name per call, never logged.
 #
 # THINGSPACE_LOGIN_EPOCH (all three blocks) -- folded into the
 # ThingSpaceSession object's failed-login latch (objects/thingspace.rs).

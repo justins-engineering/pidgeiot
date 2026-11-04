@@ -3,7 +3,6 @@
 //! wrangler share, and over which Cloudflare blocks every one of that user's calls for five
 //! minutes. A refused call answers [`CF_API_BUSY`] whether this Worker's limiter or Cloudflare
 //! refused it, and is never retried on its own: the person retries.
-#![expect(dead_code, reason = "its caller is the rule upload path")]
 
 use worker::{Cors, Env, Response, console_error};
 

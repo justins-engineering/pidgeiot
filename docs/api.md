@@ -432,7 +432,8 @@ Objects lived on. Delete the pigeons first, one at a time, through
 for an unknown flock id (missing and forbidden are deliberately indistinguishable). Returns
 `200` with an empty body on success, and on a flock that was already gone. Firmware images the
 flock's catalog referenced stay in R2: object keys are the image's own sha256, shared across
-flocks.
+flocks. The flock's [rules](#rules) go with it, and their script in the rules namespace is
+deleted after the flock is.
 
 The emptiness guard and the delete are one statement, but a pigeon created against this flock
 by a concurrent request can still commit just after the guard ran. That pigeon keeps its own
@@ -2434,7 +2435,19 @@ flock, a personal flock included, answers `403`
 (`Forbidden: rules are not enabled for this organization`). They run only where dovecote has a
 rules namespace; elsewhere the test route, the deploy route and the delete of a deployed rule
 answer `503` (`Service Unavailable: rules do not run in this environment`), and where the
-namespace exists but uploads are not built yet, `501`.
+namespace exists the test route answers `501` until dry runs are built.
+
+A deploy, and the delete of a deployed rule, change the flock's rules script in the namespace,
+one change per flock at a time. Besides their own refusals, either can answer:
+
+- `409` while another deploy of the same flock is in progress, or when one finished first.
+- `429` (`Too Many Requests: rule deploys are busy, retry in a few minutes`, with `Retry-After`)
+  when the platform's budget of calls to Cloudflare is spent. Nothing changed.
+- `422` when the flock's rules do not load: `Unprocessable Content: the flock's rules did not
+  load: ` followed by Cloudflare's own error, such as a top level that throws (with the rule's
+  own message) or overruns its startup CPU. Nothing changed.
+- `503` when the namespace refused the change (nothing changed) or did not confirm it, in which
+  case trying again finishes it.
 
 Limits:
 
@@ -2520,8 +2533,11 @@ curl -s -X PUT https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
 
 Deletes the rule with its versions, state, alert flags, values and runs. Returns `200` with an
 empty body. A rule that was ever deployed is part of the flock's rules script, which the delete
-has to rebuild, so where there is no rules namespace it answers `503` and changes nothing. The
-account's assistant allowance and mail counts are not refunded.
+has to rebuild, so where there is no rules namespace it answers `503` and changes nothing.
+Where there is one, the delete disables the rule first, rebuilds the script without it (or
+deletes the script when no other rule runs), then deletes the rows; when the namespace step
+fails the rule stays, disabled, to delete again. The account's assistant allowance and mail
+counts are not refunded.
 
 ```sh
 curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
@@ -2565,7 +2581,7 @@ Dry-runs the version over the flock's recent telemetry beside the deployed versi
 nothing, and records the result on the version. Answers `200` with the `capsules::RuleVersion`,
 its `tested_contract`, `tested_at` and `test_summary` set. `403` when the platform has blocked the
 rule; `404` when the rule has no such version; `503` where there is no rules namespace and `501`
-where the namespace exists but uploads are not built yet.
+where the namespace exists but dry runs are not built yet.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/test \
@@ -2581,10 +2597,13 @@ Deploys the version and enables the rule. The body is optional: `capsules::RuleD
 Refused before anything is uploaded: `403` when the platform has blocked the rule, `409` when
 this version has no dry run of its exact bytes under the current contract, `409` when enabling
 it would put a 21st rule to work in the flock. `404` when the rule has no such version; `503`
-where there is no rules namespace and `501` where the namespace exists but uploads are not built
-yet. Answers `200` with the `capsules::Rule` as the deploy left it: `deployed_version` names this
-version once the upload finished, and a `pending_version` still naming it means the deploy did
-not finish and can be retried.
+where there is no rules namespace. The upload rebuilds the flock's script with every enabled
+rule at its deployed version and this version beside them; while it runs the rule reports this
+version as `pending_version`. Answers `200` with the `capsules::Rule` as the deploy left it:
+`deployed_version` names this version and `enabled` is true, unless the flock filled to 20
+enabled rules while the upload ran. A failure (see [Rules](#rules)) leaves the flock's script as
+it was and the version no longer pending, except after a `503` that the change was not
+confirmed, when `pending_version` still names it and deploying again finishes it.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/deploy \

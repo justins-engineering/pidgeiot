@@ -1,5 +1,6 @@
 use worker::{Env, ScheduleContext, ScheduledEvent, console_error, console_log, event};
 
+use crate::helpers::rule_namespace::sweep_rule_scripts;
 use crate::helpers::{
   evaluate_scheduled_alerts, probe_kratos_health, report_billing_meters, sweep_error_retention,
   sweep_pending_tax_ids, sweep_telemetry_history_retention,
@@ -62,5 +63,11 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
   // sweeps above; internally rate-limited to one attempt per org per hour.
   if let Err(e) = sweep_pending_tax_ids(&env).await {
     console_error!("Pending VAT re-check sweep failed: {e}");
+  }
+
+  // Rules namespace reconciliation (helpers/rule_namespace.rs): once a day, on the first firing
+  // after midnight UTC, and only where the namespace vars are set.
+  if let Err(e) = sweep_rule_scripts(&env, event.schedule()).await {
+    console_error!("Rules script sweep failed: {e}");
   }
 }

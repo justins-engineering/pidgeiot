@@ -8,7 +8,8 @@
 //! always taken account first, then platform. A deploy that resets state locks the `rules` row
 //! before it deletes from `rule_state`. A transaction that counts a flock's enabled rules (an
 //! enable, a deploy's promote) locks the flock's `flocks` row `FOR NO KEY UPDATE` before any
-//! rule's row.
+//! rule's row, and a deploy's promote or a rebuild's finish locks the flock's `rule_bundles` row
+//! after the flock's and before any rule's.
 #![cfg_attr(
   not(all(test, not(target_arch = "wasm32"))),
   expect(
