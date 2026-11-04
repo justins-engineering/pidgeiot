@@ -298,7 +298,7 @@ const CLAIM_SQL: &str = "WITH t AS (
   )
   SELECT EXISTS (SELECT 1 FROM p)";
 
-/// Locks `rule_id`'s `rules` row for the rest of `tx`: the first statement of every transaction
+/// Locks `rule_id`'s `rules` row for the rest of `tx`: the first lock of every transaction
 /// that applies a rule's result (see the module's lock order). False when the rule is gone, and
 /// then the transaction writes nothing.
 pub async fn lock_rule(
