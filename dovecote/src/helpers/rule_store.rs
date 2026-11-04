@@ -22,10 +22,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::helpers::missing_schema_objects;
 use crate::helpers::rules::{
-  ACCOUNT_RULE_MAIL_PER_DAY, FLOCK_FLAG_HOLD_SECS, NOTIFY_REPEAT_SECS, PLATFORM_RULE_MAIL_PER_DAY,
-  RULE_MAIL_PER_DAY, RULE_MAIL_PER_HOUR,
+  ACCOUNT_RULE_MAIL_PER_DAY, AlertFlag, AlertFlags, FLOCK_FLAG_HOLD_SECS, FailStreak, LiveRule,
+  Lookup, NOTIFY_REPEAT_SECS, PLATFORM_RULE_MAIL_PER_DAY, PlannedValue, RULE_MAIL_PER_DAY,
+  RULE_MAIL_PER_HOUR, RuleMailCounters, RulePlan, RuleWork, StreakWrite, next_streak,
 };
-use capsules::{RuleAlertKind, RuleAlertScope};
+use capsules::{RuleAlert, RuleAlertKind, RuleAlertScope, RuleNamedRef, RuleState};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use tokio_postgres::error::SqlState;
@@ -402,6 +403,334 @@ pub async fn claim_mail(
   Ok(row.get(0))
 }
 
+/// The second pass's gate: whether a pigeon's flock has any live rule. It carries no `now()`, so
+/// Hyperdrive caches it and a flock without rules costs one cache hit per batch.
+const GATE_SQL: &str = "SELECT 1 FROM rules r JOIN pigeons p ON p.flock_id = r.flock_id
+  WHERE p.id = $1 AND r.enabled AND r.blocked_at IS NULL AND p.suspended_at IS NULL LIMIT 1";
+
+/// Whether `pigeon_id`'s flock has an enabled, unblocked rule and the pigeon is not suspended.
+pub async fn rules_gate(
+  client: &Client,
+  pigeon_id: &str,
+) -> std::result::Result<bool, tokio_postgres::Error> {
+  let rows = client
+    .query_typed(GATE_SQL, &[(&pigeon_id, Type::TEXT)])
+    .await?;
+  Ok(!rows.is_empty())
+}
+
+/// The second pass's fresh read: one row per live rule of the pigeon's flock, or one row with no
+/// rule. Its `now()` keeps Hyperdrive from caching it, so a disable, a block or a deploy acts on
+/// the next batch. Every column is named: nothing here reads a connector or an endpoint.
+const FRESH_READ_SQL: &str = "SELECT floor(extract(epoch FROM now()))::int8,
+    f.id, f.name, COALESCE(p.name, p.id), COALESCE(f.org_id, f.user_id),
+    floor(extract(epoch FROM b.uploaded_at))::int8, COALESCE(b.deploy_until > now(), false),
+    COALESCE((SELECT u.mail_sent FROM rule_usage u
+      WHERE u.scope = COALESCE(f.org_id, f.user_id)::text
+        AND u.day = (now() AT TIME ZONE 'UTC')::date), 0),
+    COALESCE((SELECT u.mail_sent FROM rule_usage u WHERE u.scope = 'platform'
+      AND u.day = (now() AT TIME ZONE 'UTC')::date), 0),
+    r.id, r.deployed_version, r.fail_count > 0, COALESCE(r.watch_until > now(), false),
+    r.pending_version IS NOT NULL,
+    floor(extract(epoch FROM r.mail_hour))::int8, r.mail_in_hour,
+    (r.mail_day - DATE '1970-01-01')::int8, r.mail_in_day,
+    (SELECT s.doc::text FROM rule_state s WHERE s.rule_id = r.id AND s.scope = p.id),
+    (SELECT s.doc::text FROM rule_state s WHERE s.rule_id = r.id AND s.scope = ''),
+    (SELECT json_agg(json_build_array(a.scope = '', a.key, a.firing,
+        floor(extract(epoch FROM a.decided_at))::int8,
+        floor(extract(epoch FROM a.changed_at))::int8,
+        floor(extract(epoch FROM a.last_sent_at))::int8))::text
+      FROM rule_alert_state a WHERE a.rule_id = r.id AND a.scope IN ('', p.id))
+  FROM pigeons p
+  JOIN flocks f ON f.id = p.flock_id
+  LEFT JOIN rules r ON r.flock_id = f.id AND r.enabled AND r.blocked_at IS NULL
+    AND r.deployed_version IS NOT NULL
+  LEFT JOIN rule_bundles b ON b.flock_id = f.id
+  WHERE p.id = $1 AND p.suspended_at IS NULL
+  ORDER BY r.created_at, r.id";
+
+/// One flag of [`FRESH_READ_SQL`]'s array: flock scope, key, firing, decided, changed, last sent.
+type FlagRow = (bool, String, bool, i64, i64, Option<i64>);
+
+fn state_doc(text: Option<String>) -> Map<String, Value> {
+  text
+    .and_then(|t| serde_json::from_str(&t).ok())
+    .unwrap_or_default()
+}
+
+fn flags(text: Option<String>) -> AlertFlags {
+  let rows: Vec<FlagRow> = text
+    .and_then(|t| serde_json::from_str(&t).ok())
+    .unwrap_or_default();
+  rows
+    .into_iter()
+    .map(
+      |(flock, key, firing, decided_at, changed_at, last_sent_at)| {
+        let scope = if flock {
+          RuleAlertScope::Flock
+        } else {
+          RuleAlertScope::Pigeon
+        };
+        let flag = AlertFlag {
+          firing,
+          decided_at,
+          changed_at,
+          last_sent_at,
+        };
+        ((scope, key), flag)
+      },
+    )
+    .collect()
+}
+
+/// What the second pass dispatches for `pigeon_id`: `None` when the pigeon is gone or suspended.
+pub async fn fresh_read(
+  client: &Client,
+  pigeon_id: &str,
+) -> std::result::Result<Option<Lookup>, tokio_postgres::Error> {
+  let rows = client
+    .query_typed(FRESH_READ_SQL, &[(&pigeon_id, Type::TEXT)])
+    .await?;
+  let Some(first) = rows.first() else {
+    return Ok(None);
+  };
+  let flock: Uuid = first.get(1);
+  let mut lookup = Lookup {
+    now: first.get(0),
+    flock: RuleNamedRef {
+      id: flock.to_string(),
+      name: first.get(2),
+    },
+    pigeon: RuleNamedRef {
+      id: pigeon_id.to_string(),
+      name: first.get(3),
+    },
+    account: first.get(4),
+    uploaded_at: first.get(5),
+    leased: first.get(6),
+    account_mail_day: first.get(7),
+    platform_mail_day: first.get(8),
+    rules: Vec::with_capacity(rows.len()),
+  };
+  for row in &rows {
+    let Some(id) = row.get::<_, Option<Uuid>>(9) else {
+      continue;
+    };
+    lookup.rules.push(LiveRule {
+      id,
+      version: row.get(10),
+      failing: row.get(11),
+      watched: row.get(12),
+      pending: row.get(13),
+      mail: RuleMailCounters {
+        hour_start: row.get(14),
+        in_hour: row.get(15),
+        day: row.get(16),
+        in_day: row.get(17),
+      },
+      state: RuleState {
+        pigeon: state_doc(row.get(18)),
+        flock: state_doc(row.get(19)),
+      },
+      flags: flags(row.get(20)),
+    });
+  }
+  Ok(Some(lookup))
+}
+
+/// Locks the rule's row, as [`lock_rule`] does, and reads its streak under the lock, so two
+/// batches' failures both count.
+const LOCK_STREAK_SQL: &str = "SELECT fail_count, floor(extract(epoch FROM fail_since))::int8
+  FROM rules WHERE id = $1 FOR UPDATE";
+
+/// Writes a streak, and with `$4` set disables the rule with that `paused_reason`.
+const STREAK_SQL: &str = "UPDATE rules SET fail_count = $2, fail_since = to_timestamp($3),
+    enabled = enabled AND $4::text IS NULL, paused_reason = COALESCE($4::text, paused_reason),
+    updated_at = CASE WHEN $4::text IS NULL THEN updated_at ELSE now() END
+  WHERE id = $1";
+
+const VALUES_SQL: &str = "INSERT INTO rule_values (rule_id, pigeon_id, key, value, value_num, at)
+  SELECT $1, $2, v.key, v.value, v.num, to_timestamp(v.at)
+  FROM unnest($3::text[], $4::text[], $5::float8[], $6::int8[]) AS v(key, value, num, at)
+  ON CONFLICT DO NOTHING";
+
+/// Keyed on the batch, so a redelivered batch keeps the first delivery's row.
+const RUN_SQL: &str = "INSERT INTO rule_runs (rule_id, version, pigeon_id, batch_id, status,
+    readings, alerts_sent, alerts_suppressed, values_written, state_changed, wall_ms, error, logs)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+  ON CONFLICT DO NOTHING";
+
+/// A rule mail claimed under the caps, to send once its transaction has committed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleMail {
+  /// The rule that decided it.
+  pub rule_id: Uuid,
+  /// Its words, scope and key.
+  pub alert: RuleAlert,
+}
+
+/// Records every plan that writes, one transaction per rule, and returns the mails claimed. A
+/// rule whose transaction loses a race writes nothing and the rest go on; any other error stops,
+/// so the caller skips the rest of its pass.
+pub async fn record_runs(
+  client: &mut Client,
+  lookup: &Lookup,
+  work: &RuleWork,
+  plans: &[RulePlan],
+  wall_ms: i32,
+) -> std::result::Result<Vec<RuleMail>, tokio_postgres::Error> {
+  let last = work
+    .readings
+    .iter()
+    .map(|r| r.at_secs)
+    .max()
+    .unwrap_or(lookup.now);
+  let mut mails = Vec::new();
+  for plan in plans.iter().filter(|plan| plan.writes) {
+    match record_run(client, lookup, work, plan, last, wall_ms).await {
+      Ok(mut claimed) => mails.append(&mut claimed),
+      Err(e) if is_contention(&e) => {
+        console_error!("rules: a run's record lost a race and wrote nothing");
+      }
+      Err(e) => return Err(e),
+    }
+  }
+  Ok(mails)
+}
+
+async fn record_run(
+  client: &mut Client,
+  lookup: &Lookup,
+  work: &RuleWork,
+  plan: &RulePlan,
+  last_reading: i64,
+  wall_ms: i32,
+) -> std::result::Result<Vec<RuleMail>, tokio_postgres::Error> {
+  let id = plan.rule_id;
+  let tx = client.transaction().await?;
+  let Some(row) = tx
+    .query_typed_opt(LOCK_STREAK_SQL, &[(&id, Type::UUID)])
+    .await?
+  else {
+    return Ok(Vec::new());
+  };
+  let streak = FailStreak {
+    count: row.get(0),
+    since: row.get(1),
+  };
+  let mut mails = Vec::new();
+  let (mut sent, mut suppressed, mut written, mut changed) = (0i32, 0i32, 0i32, false);
+  if let Some(apply) = &plan.apply {
+    if let Some(patch) = &apply.pigeon_patch {
+      changed |= merge_state_row(&tx, id, &work.pigeon_id, patch).await?;
+    }
+    if let Some(patch) = &apply.flock_patch {
+      changed |= merge_state_row(&tx, id, "", patch).await?;
+    }
+    written = insert_values(&tx, id, &work.pigeon_id, &apply.values).await?;
+    for decision in &apply.alerts {
+      let alert = &decision.alert;
+      let scope = scope_key(alert.scope, &work.pigeon_id);
+      if !apply_alert(
+        &tx,
+        id,
+        scope,
+        &alert.key,
+        alert.kind,
+        last_reading,
+        lookup.now,
+      )
+      .await?
+      {
+        continue;
+      }
+      if decision.mailed && claim_mail(&tx, id, lookup.account, lookup.now).await? {
+        sent += 1;
+        mails.push(RuleMail {
+          rule_id: id,
+          alert: alert.clone(),
+        });
+      } else {
+        suppressed += 1;
+      }
+    }
+  }
+  if plan.run_row {
+    let logs = Value::from(plan.logs.clone()).to_string();
+    let readings = i32::try_from(work.readings.len()).unwrap_or(i32::MAX);
+    tx.query_typed(
+      RUN_SQL,
+      &[
+        (&id, Type::UUID),
+        (&plan.version, Type::INT4),
+        (&work.pigeon_id, Type::TEXT),
+        (&work.batch_id, Type::TEXT),
+        (&plan.status.as_str(), Type::TEXT),
+        (&readings, Type::INT4),
+        (&sent, Type::INT4),
+        (&suppressed, Type::INT4),
+        (&written, Type::INT4),
+        (&changed, Type::BOOL),
+        (&wall_ms, Type::INT4),
+        (&plan.error, Type::TEXT),
+        (&logs, Type::TEXT),
+      ],
+    )
+    .await?;
+  }
+  let (next, reason) = match next_streak(streak, plan.status, lookup.now) {
+    StreakWrite::Keep => (None, None),
+    StreakWrite::Reset => (Some(FailStreak::default()), None),
+    StreakWrite::Set(next) => (Some(next), None),
+    StreakWrite::Pause { streak, reason } => (Some(streak), Some(reason)),
+  };
+  if let Some(next) = next {
+    tx.query_typed(
+      STREAK_SQL,
+      &[
+        (&id, Type::UUID),
+        (&next.count, Type::INT4),
+        (&next.since, Type::INT8),
+        (&reason, Type::TEXT),
+      ],
+    )
+    .await?;
+  }
+  tx.commit().await?;
+  Ok(mails)
+}
+
+/// Inserts a result's values, a value already stored at its key and time kept as it was. Returns
+/// how many were new.
+async fn insert_values(
+  tx: &Transaction<'_>,
+  rule_id: Uuid,
+  pigeon_id: &str,
+  values: &[PlannedValue],
+) -> std::result::Result<i32, tokio_postgres::Error> {
+  if values.is_empty() {
+    return Ok(0);
+  }
+  let keys: Vec<&str> = values.iter().map(|v| v.key.as_str()).collect();
+  let texts: Vec<&str> = values.iter().map(|v| v.value.as_str()).collect();
+  let nums: Vec<Option<f64>> = values.iter().map(|v| v.value_num).collect();
+  let ats: Vec<i64> = values.iter().map(|v| v.at).collect();
+  let rows = tx
+    .execute_typed(
+      VALUES_SQL,
+      &[
+        (&rule_id, Type::UUID),
+        (&pigeon_id, Type::TEXT),
+        (&keys, Type::TEXT_ARRAY),
+        (&texts, Type::TEXT_ARRAY),
+        (&nums, Type::FLOAT8_ARRAY),
+        (&ats, Type::INT8_ARRAY),
+      ],
+    )
+    .await?;
+  Ok(i32::try_from(rows).unwrap_or(i32::MAX))
+}
+
 /// How long a deploy holds its flock's lease; the upload it guards is aborted at 30 s.
 pub const DEPLOY_LEASE_SECS: i64 = 60;
 
@@ -574,6 +903,12 @@ pub(crate) mod pg {
   use tokio::net::TcpStream;
   use tokio_postgres::config::Host;
   use tokio_postgres::{Config, NoTls};
+
+  use crate::helpers::ResolvedReading;
+  use crate::helpers::rules::{
+    AUTO_PAUSE_RUNS, Classified, DispatchOutcome, DispatchRule, RunStatus, classify, plan_record,
+    uuid_str,
+  };
 
   const MIGRATION: &str = include_str!("../../../infra/migrations/2026-11-03-rules.sql");
   const INIT_DB: &str = include_str!("../../../infra/init-db.sql");
@@ -1446,6 +1781,328 @@ pub(crate) mod pg {
       };
       assert_eq!(replay(None).await, vec![other.clone()]);
       assert_eq!(replay(Some("")).await, vec![other.clone()]);
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  async fn new_org(client: &Client) -> Uuid {
+    client
+      .query_one(
+        "INSERT INTO organizations (name) VALUES ('o') RETURNING id",
+        &[],
+      )
+      .await
+      .expect("organization")
+      .get(0)
+  }
+
+  /// Every rule in `rules` enabled at `version`.
+  async fn deploy_enabled(client: &Client, rules: &[Uuid], version: i32) {
+    client
+      .execute(
+        "UPDATE rules SET enabled = true, deployed_version = $2 WHERE id = ANY($1)",
+        &[&rules, &version],
+      )
+      .await
+      .expect("deployed");
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_the_pass_reads_only_live_rules_and_this_pigeons_state() {
+    run(async {
+      let db = Scratch::new("pass_read").await;
+      let client = db.client().await;
+      let org = new_org(&client).await;
+      let flock = new_flock(&client, Some(org)).await;
+      new_pigeon(&client, flock, "p1").await;
+      new_pigeon(&client, flock, "p2").await;
+      assert!(!rules_gate(&client, "p1").await.expect("gate"), "no rules");
+      let a = new_rule(&client, flock).await;
+      let b = new_rule(&client, flock).await;
+      let off = new_rule(&client, flock).await;
+      let blocked = new_rule(&client, flock).await;
+      let undeployed = new_rule(&client, flock).await;
+      deploy_enabled(&client, &[a, b, blocked], 2).await;
+      client
+        .batch_execute(&format!(
+          "UPDATE rules SET blocked_at = now() WHERE id = '{blocked}';
+           UPDATE rules SET enabled = true WHERE id = '{undeployed}';
+           UPDATE pigeons SET name = 'Stop 9' WHERE id = 'p1';"
+        ))
+        .await
+        .expect("fixtures");
+      assert!(rules_gate(&client, "p1").await.expect("gate"));
+
+      let found = fresh_read(&client, "p1")
+        .await
+        .expect("read")
+        .expect("pigeon found");
+      assert_eq!(found.uploaded_at, None, "no bundle row yet");
+      assert!(!found.leased);
+      assert_eq!(found.account, org);
+      assert_eq!(
+        (found.flock.id.clone(), found.flock.name.as_str()),
+        (flock.to_string(), "f")
+      );
+      assert_eq!(
+        (found.pigeon.id.as_str(), found.pigeon.name.as_str()),
+        ("p1", "Stop 9")
+      );
+      let ids: Vec<Uuid> = found.rules.iter().map(|r| r.id).collect();
+      assert_eq!(ids, [a, b], "{off} {blocked} {undeployed} are not live");
+      assert!(found.rules.iter().all(|r| r.version == 2 && !r.failing));
+
+      client
+        .batch_execute(&format!(
+          "INSERT INTO rule_state (rule_id, scope, doc) VALUES
+             ('{a}', 'p1', '{{\"x\": 1}}'), ('{a}', 'p2', '{{\"y\": 2}}'),
+             ('{a}', '', '{{\"z\": 3}}');
+           INSERT INTO rule_alert_state (rule_id, scope, key, firing, decided_at, changed_at,
+             last_sent_at) VALUES
+             ('{a}', 'p1', 'k', true, to_timestamp(100), to_timestamp(200), NULL),
+             ('{a}', 'p2', 'k2', true, to_timestamp(100), to_timestamp(200), NULL),
+             ('{a}', '', 'kf', false, to_timestamp(100), to_timestamp(200), to_timestamp(300));
+           UPDATE rules SET mail_hour = to_timestamp(7200), mail_in_hour = 4,
+             mail_day = DATE '1970-01-02', mail_in_day = 9, fail_count = 2 WHERE id = '{a}';
+           UPDATE rules SET watch_until = now() + interval '1 hour', pending_version = 3
+             WHERE id = '{b}';
+           INSERT INTO rule_usage (scope, day, mail_sent) VALUES
+             ('{org}', (now() AT TIME ZONE 'UTC')::date, 5),
+             ('platform', (now() AT TIME ZONE 'UTC')::date, 6),
+             ('{org}', DATE '2000-01-01', 50);
+           INSERT INTO rule_bundles (flock_id, contract, account_tag, uploaded_at, deploy_until)
+             VALUES ('{flock}', 1, 't', now(), now() + interval '1 minute');"
+        ))
+        .await
+        .expect("state");
+      let found = fresh_read(&client, "p1")
+        .await
+        .expect("read")
+        .expect("pigeon found");
+      assert!(
+        found
+          .uploaded_at
+          .is_some_and(|at| (found.now - at).abs() < 5)
+      );
+      assert!(found.leased);
+      assert_eq!((found.account_mail_day, found.platform_mail_day), (5, 6));
+      let (ra, rb) = (&found.rules[0], &found.rules[1]);
+      assert_eq!(
+        Value::Object(ra.state.pigeon.clone()),
+        serde_json::json!({ "x": 1 })
+      );
+      assert_eq!(
+        Value::Object(ra.state.flock.clone()),
+        serde_json::json!({ "z": 3 })
+      );
+      assert_eq!(
+        ra.flags.len(),
+        2,
+        "another pigeon's flag is not this batch's"
+      );
+      let flag = ra.flags[&(RuleAlertScope::Pigeon, "k".to_string())];
+      assert_eq!(
+        (flag.firing, flag.decided_at, flag.changed_at),
+        (true, 100, 200)
+      );
+      assert_eq!(flag.last_sent_at, None);
+      let flock_flag = ra.flags[&(RuleAlertScope::Flock, "kf".to_string())];
+      assert_eq!(flock_flag.last_sent_at, Some(300));
+      assert_eq!(
+        ra.mail,
+        RuleMailCounters {
+          hour_start: Some(7200),
+          in_hour: 4,
+          day: Some(1),
+          in_day: 9,
+        }
+      );
+      assert!(ra.failing && !ra.watched && !ra.pending);
+      assert!(rb.watched && rb.pending && rb.state == RuleState::default());
+
+      client
+        .batch_execute("UPDATE pigeons SET suspended_at = now() WHERE id = 'p1'")
+        .await
+        .expect("suspend");
+      assert!(!rules_gate(&client, "p1").await.expect("gate"));
+      assert!(fresh_read(&client, "p1").await.expect("read").is_none());
+      assert!(fresh_read(&client, "nope").await.expect("read").is_none());
+      let bare = fresh_read(&client, "p2")
+        .await
+        .expect("read")
+        .expect("found");
+      assert_eq!(bare.pigeon.name, "p2", "an unnamed pigeon goes by its id");
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  fn one_reading(at: i64) -> RuleWork {
+    let metrics = [("k".to_string(), "1".to_string())].into_iter().collect();
+    let mut payload = String::with_capacity(20);
+    payload.push_str(&at.to_string());
+    RuleWork::new(
+      "p1",
+      &payload,
+      false,
+      vec![ResolvedReading::new(at, metrics)],
+    )
+    .expect("one reading")
+  }
+
+  /// One rule's answer as the harness gives it.
+  fn answered(rule: Uuid, status: &str, out_json: &str) -> Classified {
+    let run = serde_json::json!({
+      "id": uuid_str(rule), "status": status, "out_json": out_json, "error": "e", "logs": []
+    });
+    let body = serde_json::json!({ "contract": 1, "results": [run] }).to_string();
+    let sent = [DispatchRule {
+      id: uuid_str(rule),
+      version: 1,
+      state: RuleState::default(),
+    }];
+    classify(
+      &sent,
+      DispatchOutcome::Answered {
+        status: 200,
+        body: body.into_bytes(),
+      },
+    )
+  }
+
+  async fn rule_row(client: &Client, rule: Uuid) -> (bool, i32, Option<String>) {
+    let row = client
+      .query_one(
+        "SELECT enabled, fail_count, paused_reason FROM rules WHERE id = $1",
+        &[&rule],
+      )
+      .await
+      .expect("rule row");
+    (row.get(0), row.get(1), row.get(2))
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_a_run_records_its_plan_and_its_streak() {
+    run(async {
+      let db = Scratch::new("pass_record").await;
+      let mut client = db.client().await;
+      let org = new_org(&client).await;
+      let flock = new_flock(&client, Some(org)).await;
+      new_pigeon(&client, flock, "p1").await;
+      let rule = new_rule(&client, flock).await;
+      deploy_enabled(&client, &[rule], 1).await;
+      let found = fresh_read(&client, "p1")
+        .await
+        .expect("read")
+        .expect("found");
+      let at = found.now - 5;
+      let work = one_reading(at);
+      let out = r#"{"state":{"pigeon":{"n":1},"flock":{"m":2}},"values":[{"key":"v","value":"7"}],
+        "alerts":[{"key":"down","kind":"fire","severity":"critical","scope":"pigeon",
+        "subject":"s"}]}"#;
+      let plans = plan_record(&found, &work.readings, &answered(rule, "ok", out));
+      let mails = record_runs(&mut client, &found, &work, &plans, 42)
+        .await
+        .expect("recorded");
+      assert_eq!(mails.len(), 1);
+      assert_eq!(
+        (mails[0].rule_id, mails[0].alert.key.as_str()),
+        (rule, "down")
+      );
+      assert_eq!(
+        doc(&client, rule, "p1").await,
+        serde_json::json!({ "n": 1 })
+      );
+      assert_eq!(doc(&client, rule, "").await, serde_json::json!({ "m": 2 }));
+      let row = client
+        .query_one(
+          "SELECT status, readings, alerts_sent, alerts_suppressed, values_written,
+             state_changed, wall_ms, version FROM rule_runs WHERE rule_id = $1",
+          &[&rule],
+        )
+        .await
+        .expect("one run row");
+      let status: String = row.get(0);
+      let counts: (i32, i32, i32, i32) = (row.get(1), row.get(2), row.get(3), row.get(4));
+      assert_eq!((status.as_str(), counts), ("ok", (1, 1, 0, 1)));
+      let tail: (bool, Option<i32>, i32) = (row.get(5), row.get(6), row.get(7));
+      assert_eq!(tail, (true, Some(42), 1));
+      let value: String = client
+        .query_one("SELECT value FROM rule_values WHERE rule_id = $1", &[&rule])
+        .await
+        .expect("value row")
+        .get(0);
+      assert_eq!(value, "7");
+      assert_eq!(mail_sent(&client, &org.to_string(), found.now).await, 1);
+
+      // A redelivery keeps the first row and mails nothing more.
+      let again = record_runs(&mut client, &found, &work, &plans, 42)
+        .await
+        .expect("recorded");
+      assert!(again.is_empty());
+      let runs: i64 = client
+        .query_one("SELECT count(*) FROM rule_runs", &[])
+        .await
+        .expect("count")
+        .get(0);
+      assert_eq!(runs, 1);
+
+      // Twenty throws in a row pause the rule, each read under the row's lock.
+      for i in 1..=AUTO_PAUSE_RUNS {
+        let work = one_reading(at + i64::from(i));
+        let plans = plan_record(&found, &work.readings, &answered(rule, "threw", ""));
+        record_runs(&mut client, &found, &work, &plans, 1)
+          .await
+          .expect("recorded");
+      }
+      assert_eq!(
+        rule_row(&client, rule).await,
+        (false, AUTO_PAUSE_RUNS, Some("auto:threw".to_string()))
+      );
+
+      // A quiet success after a failure writes the reset alone.
+      client
+        .execute(
+          "UPDATE rules SET enabled = true, paused_reason = NULL, fail_count = 3,
+             fail_since = now() WHERE id = $1",
+          &[&rule],
+        )
+        .await
+        .expect("re-enabled");
+      let found = fresh_read(&client, "p1")
+        .await
+        .expect("read")
+        .expect("found");
+      let work = one_reading(at + 100);
+      let plans = plan_record(&found, &work.readings, &answered(rule, "ok", "{}"));
+      assert!(plans[0].writes && !plans[0].run_row);
+      record_runs(&mut client, &found, &work, &plans, 1)
+        .await
+        .expect("recorded");
+      assert_eq!(rule_row(&client, rule).await, (true, 0, None));
+
+      // A whole failure is every rule's, and a rule deleted since the read writes nothing.
+      let flock_failed = Classified::Flock(RunStatus::DispatchFailed);
+      let work = one_reading(at + 200);
+      let plans = plan_record(&found, &work.readings, &flock_failed);
+      record_runs(&mut client, &found, &work, &plans, 2_000)
+        .await
+        .expect("recorded");
+      assert_eq!(rule_row(&client, rule).await, (true, 1, None));
+      client
+        .execute("DELETE FROM rules WHERE id = $1", &[&rule])
+        .await
+        .expect("deleted");
+      let work = one_reading(at + 300);
+      assert!(
+        record_runs(&mut client, &found, &work, &plans, 2_000)
+          .await
+          .expect("a gone rule is no error")
+          .is_empty()
+      );
       drop(client);
       db.drop().await;
     });

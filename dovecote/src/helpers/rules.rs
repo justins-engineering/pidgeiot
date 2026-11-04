@@ -1021,6 +1021,161 @@ fn changed(
   (merged != *stored).then(|| (patch.clone(), merged))
 }
 
+/// One enabled rule as the second pass's fresh read found it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveRule {
+  /// The rule's id.
+  pub id: Uuid,
+  /// Its deployed version.
+  pub version: i32,
+  /// Its documents for this pigeon and the flock.
+  pub state: RuleState,
+  /// Its flags for this pigeon and the flock.
+  pub flags: AlertFlags,
+  /// Its own mail counters.
+  pub mail: RuleMailCounters,
+  /// Its failure streak is under way, so an `ok` run has a reset to write.
+  pub failing: bool,
+  /// Inside its watch window: every run keeps a row.
+  pub watched: bool,
+  /// A version of it is pending: a deploy is in flight, so a mismatch is expected.
+  pub pending: bool,
+}
+
+/// What the second pass's fresh read found for one batch's pigeon.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lookup {
+  /// Postgres's clock at the read, unix seconds: the run's `now` and the event's `received_at`.
+  pub now: i64,
+  /// The pigeon's flock.
+  pub flock: RuleNamedRef,
+  /// The pigeon.
+  pub pigeon: RuleNamedRef,
+  /// The flock's owning organization, else its user: whose mail it is and whose failure the
+  /// breaker counts.
+  pub account: Uuid,
+  /// When the flock's script was last uploaded. `None` means it never was, so a dispatch could
+  /// only find no script, which is the platform's doing, never the flock's.
+  pub uploaded_at: Option<i64>,
+  /// The flock's deploy lease is held.
+  pub leased: bool,
+  /// Rule mail claimed today under the account.
+  pub account_mail_day: i32,
+  /// Rule mail claimed today across the platform.
+  pub platform_mail_day: i32,
+  /// Every enabled, unblocked, deployed rule of the flock, in the order dispatched.
+  pub rules: Vec<LiveRule>,
+}
+
+impl Lookup {
+  /// The rules as the request names them.
+  pub fn dispatch_rules(&self) -> Vec<DispatchRule> {
+    self
+      .rules
+      .iter()
+      .map(|rule| DispatchRule {
+        id: uuid_str(rule.id),
+        version: rule.version,
+        state: rule.state.clone(),
+      })
+      .collect()
+  }
+}
+
+/// What one rule's run writes, decided before any statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RulePlan {
+  /// The rule.
+  pub rule_id: Uuid,
+  /// The version dispatched.
+  pub version: i32,
+  /// The run's outcome.
+  pub status: RunStatus,
+  /// User code's own text or a refusal.
+  pub error: Option<String>,
+  /// Captured `console.log` lines.
+  pub logs: Vec<String>,
+  /// The writes of an `ok` result.
+  pub apply: Option<ApplyPlan>,
+  /// Whether a `rule_runs` row is kept.
+  pub run_row: bool,
+  /// Whether the run writes anything, its streak included: a healthy rule's quiet `ok` and a
+  /// deploy's expected mismatch do not.
+  pub writes: bool,
+}
+
+/// Plans each rule's record of one dispatch by position: the i-th rule sent owns the i-th result,
+/// which [`classify`] has matched by id. A platform failure records nothing. Mail counts carry
+/// from rule to rule, so the plan claims what the claim statement allows.
+pub fn plan_record(
+  lookup: &Lookup,
+  readings: &[ResolvedReading],
+  classified: &Classified,
+) -> Vec<RulePlan> {
+  let records = match classified {
+    Classified::Platform => return Vec::new(),
+    Classified::PerRule(records) => Some(records),
+    Classified::Flock(_) => None,
+  };
+  let now = lookup.now;
+  let first = readings.iter().map(|r| r.at_secs).min().unwrap_or(now);
+  let last = readings.iter().map(|r| r.at_secs).max().unwrap_or(now);
+  let mut total = state_total(&lookup.dispatch_rules());
+  let (mut account_day, mut platform_day) = (lookup.account_mail_day, lookup.platform_mail_day);
+  let mut plans = Vec::with_capacity(lookup.rules.len());
+  for (i, rule) in lookup.rules.iter().enumerate() {
+    let record = records.and_then(|records| records.get(i));
+    let mut plan = RulePlan {
+      rule_id: rule.id,
+      version: rule.version,
+      status: match (classified, record) {
+        (Classified::Flock(status), _) => *status,
+        (_, Some(record)) => record.status,
+        _ => RunStatus::DispatchFailed,
+      },
+      error: record.and_then(|r| r.error.clone()),
+      logs: record.map(|r| r.logs.clone()).unwrap_or_default(),
+      apply: None,
+      run_row: false,
+      writes: false,
+    };
+    if let Some(result) = record.and_then(|r| r.result.as_ref()) {
+      let ctx = RunContext {
+        state: &rule.state,
+        flags: &rule.flags,
+        first_reading: first,
+        last_reading: last,
+        now,
+        watched: rule.watched,
+      };
+      let mut counts = MailCounts::at(rule.mail, account_day, platform_day, now);
+      match plan_apply(result, &plan.logs, &ctx, &mut total, &mut counts) {
+        Ok(apply) => {
+          account_day = counts.account_day;
+          platform_day = counts.platform_day;
+          plan.run_row = apply.run_row;
+          plan.writes = apply.statements() > 0 || rule.failing;
+          plan.apply = Some(apply);
+          plans.push(plan);
+          continue;
+        }
+        Err(refused) => {
+          plan.status = RunStatus::BadOutput;
+          plan.error = Some(refused.as_str().to_string());
+        }
+      }
+    }
+    let mismatch_age = match lookup.uploaded_at {
+      Some(at) if !rule.pending && !lookup.leased => now - at,
+      _ => 0,
+    };
+    plan.run_row = failure_keeps_row(plan.status, rule.watched, mismatch_age);
+    plan.writes = plan.run_row || plan.status.counts_toward_pause();
+    plans.push(plan);
+  }
+  plans
+}
+
 /// Which script a name is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptKind {
@@ -2638,6 +2793,151 @@ mod tests {
     assert_eq!(
       ledger.may_dispatch("a1", 1_000 + PASS_BUDGET_MS),
       Err(Skip::Budget)
+    );
+  }
+
+  const RA: Uuid = Uuid::from_u128(0xa);
+  const RB: Uuid = Uuid::from_u128(0xb);
+
+  fn live_rule(id: Uuid) -> LiveRule {
+    LiveRule {
+      id,
+      version: 3,
+      state: RuleState::default(),
+      flags: AlertFlags::new(),
+      mail: RuleMailCounters::default(),
+      failing: false,
+      watched: false,
+      pending: false,
+    }
+  }
+
+  fn lookup(rules: Vec<LiveRule>) -> Lookup {
+    Lookup {
+      now: T0,
+      flock: named("f", "F"),
+      pigeon: named("p", "P"),
+      account: Uuid::from_u128(0xacc),
+      uploaded_at: Some(T0 - 86_400),
+      leased: false,
+      account_mail_day: 0,
+      platform_mail_day: 0,
+      rules,
+    }
+  }
+
+  /// The harness's answer for `runs` of (rule, status, out_json or error).
+  fn wire(runs: &[(Uuid, &str, &str)]) -> Classified {
+    let results: Vec<Value> = runs
+      .iter()
+      .map(|(id, status, text)| match *status {
+        "ok" => json!({ "id": uuid_str(*id), "status": "ok", "out_json": text, "logs": [] }),
+        "threw" => json!({ "id": uuid_str(*id), "status": "threw", "error": text, "logs": ["l"] }),
+        other => json!({ "id": uuid_str(*id), "status": other, "logs": [] }),
+      })
+      .collect();
+    let body = json!({ "contract": 1, "results": results }).to_string();
+    let sent: Vec<DispatchRule> = runs
+      .iter()
+      .map(|(id, _, _)| DispatchRule {
+        id: uuid_str(*id),
+        version: 3,
+        state: RuleState::default(),
+      })
+      .collect();
+    classify(&sent, answered(&body))
+  }
+
+  const FIRE: &str =
+    r#"{"alerts":[{"key":"k","kind":"fire","severity":"warning","scope":"pigeon","subject":"s"}]}"#;
+
+  #[test]
+  fn each_rule_owns_the_result_in_its_position() {
+    let found = lookup(vec![live_rule(RA), live_rule(RB)]);
+    let readings = [
+      reading(T0 - 30, &[("k", "1")]),
+      reading(T0 - 10, &[("k", "2")]),
+    ];
+    let values = r#"{"values":[{"key":"v","value":"7","at":1}]}"#;
+    let plans = plan_record(
+      &found,
+      &readings,
+      &wire(&[(RA, "ok", values), (RB, "threw", "boom")]),
+    );
+    assert_eq!(plans.len(), 2);
+    assert_eq!((plans[0].rule_id, plans[0].status), (RA, RunStatus::Ok));
+    let apply = plans[0].apply.as_ref().expect("an ok run applies");
+    assert_eq!(apply.values[0].at, T0 - 30, "clamped into the batch");
+    assert!(plans[0].run_row && plans[0].writes);
+    assert_eq!((plans[1].rule_id, plans[1].status), (RB, RunStatus::Threw));
+    assert_eq!(plans[1].error.as_deref(), Some("boom"));
+    assert_eq!(plans[1].logs, ["l"]);
+    assert!(plans[1].apply.is_none() && plans[1].run_row && plans[1].writes);
+    assert_eq!(plans[1].version, 3);
+  }
+
+  #[test]
+  fn a_quiet_ok_writes_nothing_unless_a_streak_ends() {
+    let mut failing = live_rule(RB);
+    failing.failing = true;
+    let found = lookup(vec![live_rule(RA), failing]);
+    let plans = plan_record(
+      &found,
+      &[reading(T0, &[("k", "1")])],
+      &wire(&[(RA, "ok", "{}"), (RB, "ok", "{}")]),
+    );
+    assert!(!plans[0].writes && !plans[0].run_row);
+    assert!(plans[1].writes && !plans[1].run_row, "only the reset");
+  }
+
+  #[test]
+  fn a_whole_failure_is_every_rules_and_the_platforms_is_nobodys() {
+    let found = lookup(vec![live_rule(RA), live_rule(RB)]);
+    let one = [reading(T0, &[("k", "1")])];
+    let flock = Classified::Flock(RunStatus::DispatchFailed);
+    let plans = plan_record(&found, &one, &flock);
+    assert_eq!(plans.len(), 2);
+    for plan in &plans {
+      assert_eq!(plan.status, RunStatus::DispatchFailed);
+      assert!(plan.writes && plan.run_row && plan.apply.is_none() && plan.error.is_none());
+    }
+    assert!(plan_record(&found, &one, &Classified::Platform).is_empty());
+  }
+
+  #[test]
+  fn a_mismatch_during_a_deploy_is_quiet() {
+    let mut pending = live_rule(RA);
+    pending.pending = true;
+    let mut found = lookup(vec![pending, live_rule(RB)]);
+    let one = [reading(T0, &[("k", "1")])];
+    let both = wire(&[(RA, "version_mismatch", ""), (RB, "version_mismatch", "")]);
+    let plans = plan_record(&found, &one, &both);
+    assert!(!plans[0].writes, "a pending version is a deploy in flight");
+    assert!(
+      plans[1].run_row,
+      "a day-old upload holding another version is not"
+    );
+    found.leased = true;
+    assert!(plan_record(&found, &one, &both).iter().all(|p| !p.writes));
+    found.leased = false;
+    found.uploaded_at = Some(T0 - MISMATCH_ROW_AFTER_SECS + 1);
+    assert!(!plan_record(&found, &one, &both)[1].writes);
+  }
+
+  #[test]
+  fn mail_counts_carry_from_rule_to_rule() {
+    let mut found = lookup(vec![live_rule(RA), live_rule(RB)]);
+    found.account_mail_day = ACCOUNT_RULE_MAIL_PER_DAY - 1;
+    let plans = plan_record(
+      &found,
+      &[reading(T0, &[("k", "1")])],
+      &wire(&[(RA, "ok", FIRE), (RB, "ok", FIRE)]),
+    );
+    let mailed = |p: &RulePlan| p.apply.as_ref().expect("applied").alerts[0].mailed;
+    assert!(mailed(&plans[0]));
+    assert!(
+      !mailed(&plans[1]),
+      "the account's last mail went to the first rule"
     );
   }
 
