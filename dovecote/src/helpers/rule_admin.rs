@@ -19,7 +19,9 @@ use worker::{Error, Result, console_error};
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::nidd::org_listed;
 use crate::helpers::rule_namespace::SweepBundle;
-use crate::helpers::rule_store::{ensure_rule_tables, release_deploy_lease, take_deploy_lease};
+use crate::helpers::rule_store::{
+  begin, end, ensure_rule_tables, release_deploy_lease, take_deploy_lease,
+};
 use crate::helpers::rules::{account_tag, uuid_str};
 use crate::helpers::sha256_hex;
 
@@ -370,57 +372,57 @@ pub async fn update_rule(
     Some(to) => Some(serde_json::to_string(to).map_err(|e| Error::RustError(e.to_string()))?),
     None => None,
   };
-  let tx = client
-    .transaction()
+  let tx = begin(client)
     .await
     .map_err(db_error("Rule update begin error"))?;
-  if enabled == Some(true) {
-    tx.query_typed(
-      "SELECT 1 FROM flocks WHERE id = $1 FOR NO KEY UPDATE",
-      &[(&flock, Type::UUID)],
-    )
-    .await
-    .map_err(db_error("Flock lock error"))?;
-  }
-  let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
-    return Ok(UpdateOutcome::NotFound);
-  };
-  if enabled == Some(true) && !current.enabled {
-    let siblings = enabled_siblings(&tx, flock, rule_id).await?;
-    if let Some(refusal) = enable_refusal(&current, siblings) {
-      return Ok(UpdateOutcome::Refused(refusal));
+  let body = async {
+    if enabled == Some(true) {
+      tx.query_typed(
+        "SELECT 1 FROM flocks WHERE id = $1 FOR NO KEY UPDATE",
+        &[(&flock, Type::UUID)],
+      )
+      .await
+      .map_err(db_error("Flock lock error"))?;
     }
+    let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
+      return Ok(UpdateOutcome::NotFound);
+    };
+    if enabled == Some(true) && !current.enabled {
+      let siblings = enabled_siblings(&tx, flock, rule_id).await?;
+      if let Some(refusal) = enable_refusal(&current, siblings) {
+        return Ok(UpdateOutcome::Refused(refusal));
+      }
+    }
+    let row = tx
+      .query_typed_one(
+        concat!(
+          "UPDATE rules AS r SET
+             name = COALESCE($3, r.name),
+             recipients = COALESCE($4::jsonb, r.recipients),
+             enabled = COALESCE($5, r.enabled),
+             paused_reason = CASE WHEN $5 IS NULL OR $5 = r.enabled THEN r.paused_reason
+                                  WHEN $5 THEN NULL ELSE 'owner' END,
+             fail_count = CASE WHEN $5 AND NOT r.enabled THEN 0 ELSE r.fail_count END,
+             fail_since = CASE WHEN $5 AND NOT r.enabled THEN NULL ELSE r.fail_since END,
+             updated_at = now()
+           WHERE r.id = $1 AND r.flock_id = $2
+           RETURNING ",
+          rule_columns!()
+        ),
+        &[
+          (&rule_id, Type::UUID),
+          (&flock, Type::UUID),
+          (&name, Type::TEXT),
+          (&recipients, Type::TEXT),
+          (&enabled, Type::BOOL),
+        ],
+      )
+      .await
+      .map_err(db_error("Rule update error"))?;
+    Ok(UpdateOutcome::Updated(Rule::from(rule_row(&row))))
   }
-  let row = tx
-    .query_typed_one(
-      concat!(
-        "UPDATE rules AS r SET
-           name = COALESCE($3, r.name),
-           recipients = COALESCE($4::jsonb, r.recipients),
-           enabled = COALESCE($5, r.enabled),
-           paused_reason = CASE WHEN $5 IS NULL OR $5 = r.enabled THEN r.paused_reason
-                                WHEN $5 THEN NULL ELSE 'owner' END,
-           fail_count = CASE WHEN $5 AND NOT r.enabled THEN 0 ELSE r.fail_count END,
-           fail_since = CASE WHEN $5 AND NOT r.enabled THEN NULL ELSE r.fail_since END,
-           updated_at = now()
-         WHERE r.id = $1 AND r.flock_id = $2
-         RETURNING ",
-        rule_columns!()
-      ),
-      &[
-        (&rule_id, Type::UUID),
-        (&flock, Type::UUID),
-        (&name, Type::TEXT),
-        (&recipients, Type::TEXT),
-        (&enabled, Type::BOOL),
-      ],
-    )
-    .await
-    .map_err(db_error("Rule update error"))?;
-  tx.commit()
-    .await
-    .map_err(db_error("Rule update commit error"))?;
-  Ok(UpdateOutcome::Updated(Rule::from(rule_row(&row))))
+  .await;
+  end(tx, body, db_error("Rule update commit error")).await
 }
 
 /// What a delete did.
@@ -436,30 +438,30 @@ pub enum DeleteOutcome {
 }
 
 /// Deletes a rule that never reached the flock's script, with every row that cascades from it.
+/// One statement and no transaction: the `DELETE` rechecks its condition on the row it locks, so
+/// a deploy marking the rule pending first leaves it standing, and the route that goes on to
+/// rebuild the script reuses a client with nothing outstanding on it.
 pub async fn delete_unscripted_rule(
-  client: &mut Client,
+  client: &Client,
   access: &FlockAccess,
   rule_id: Uuid,
 ) -> Result<DeleteOutcome> {
   ensure_rule_tables(client).await?;
-  let flock = flock_uuid(access)?;
-  let tx = client
-    .transaction()
-    .await
-    .map_err(db_error("Rule delete begin error"))?;
-  let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
-    return Ok(DeleteOutcome::NotFound);
-  };
-  if current.deployed_version.is_some() || current.pending_version.is_some() {
-    return Ok(DeleteOutcome::InScript);
-  }
-  tx.query_typed("DELETE FROM rules WHERE id = $1", &[(&rule_id, Type::UUID)])
+  let row = client
+    .query_typed_one(
+      "WITH gone AS (DELETE FROM rules WHERE id = $1 AND flock_id = $2
+         AND deployed_version IS NULL AND pending_version IS NULL RETURNING 1)
+       SELECT EXISTS (SELECT 1 FROM gone),
+              EXISTS (SELECT 1 FROM rules WHERE id = $1 AND flock_id = $2)",
+      &[(&rule_id, Type::UUID), (&flock_uuid(access)?, Type::UUID)],
+    )
     .await
     .map_err(db_error("Rule delete error"))?;
-  tx.commit()
-    .await
-    .map_err(db_error("Rule delete commit error"))?;
-  Ok(DeleteOutcome::Deleted)
+  Ok(match (row.get(0), row.get(1)) {
+    (true, _) => DeleteOutcome::Deleted,
+    (false, true) => DeleteOutcome::InScript,
+    (false, false) => DeleteOutcome::NotFound,
+  })
 }
 
 /// What a save did.
@@ -489,61 +491,61 @@ pub async fn save_version(
   let sha256 = sha256_hex(source.as_bytes());
   let contract = RULE_CONTRACT as i32;
   let origin = origin.as_str();
-  let tx = client
-    .transaction()
+  let tx = begin(client)
     .await
     .map_err(db_error("Rule save begin error"))?;
-  let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
-    return Ok(SaveOutcome::NotFound);
-  };
-  let Some(row) = tx
-    .query_typed_opt(
-      concat!(
-        "INSERT INTO rule_versions AS v
-           (rule_id, version, source, sha256, contract, origin, based_on, created_by)
-         SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5, $6, $7
-         FROM rule_versions WHERE rule_id = $1
-         HAVING $6::integer IS NULL OR bool_or(version = $6)
-         RETURNING ",
-        version_columns!(),
-        ", v.test_summary::text AS test_summary, v.source"
-      ),
+  let body = async {
+    let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
+      return Ok(SaveOutcome::NotFound);
+    };
+    let Some(row) = tx
+      .query_typed_opt(
+        concat!(
+          "INSERT INTO rule_versions AS v
+             (rule_id, version, source, sha256, contract, origin, based_on, created_by)
+           SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5, $6, $7
+           FROM rule_versions WHERE rule_id = $1
+           HAVING $6::integer IS NULL OR bool_or(version = $6)
+           RETURNING ",
+          version_columns!(),
+          ", v.test_summary::text AS test_summary, v.source"
+        ),
+        &[
+          (&rule_id, Type::UUID),
+          (&source, Type::TEXT),
+          (&sha256, Type::TEXT),
+          (&contract, Type::INT4),
+          (&origin, Type::TEXT),
+          (&based_on, Type::INT4),
+          (&created_by, Type::UUID),
+        ],
+      )
+      .await
+      .map_err(db_error("Rule save error"))?
+    else {
+      return Ok(SaveOutcome::NoBase);
+    };
+    let keep: Vec<i32> = [current.deployed_version, current.pending_version]
+      .into_iter()
+      .flatten()
+      .collect();
+    tx.query_typed(
+      "DELETE FROM rule_versions
+       WHERE rule_id = $1 AND version <> ALL($3)
+         AND version <= (SELECT version FROM rule_versions WHERE rule_id = $1
+                         ORDER BY version DESC OFFSET $2 LIMIT 1)",
       &[
         (&rule_id, Type::UUID),
-        (&source, Type::TEXT),
-        (&sha256, Type::TEXT),
-        (&contract, Type::INT4),
-        (&origin, Type::TEXT),
-        (&based_on, Type::INT4),
-        (&created_by, Type::UUID),
+        (&MAX_RULE_VERSIONS, Type::INT8),
+        (&keep, Type::INT4_ARRAY),
       ],
     )
     .await
-    .map_err(db_error("Rule save error"))?
-  else {
-    return Ok(SaveOutcome::NoBase);
-  };
-  let keep: Vec<i32> = [current.deployed_version, current.pending_version]
-    .into_iter()
-    .flatten()
-    .collect();
-  tx.query_typed(
-    "DELETE FROM rule_versions
-     WHERE rule_id = $1 AND version <> ALL($3)
-       AND version <= (SELECT version FROM rule_versions WHERE rule_id = $1
-                       ORDER BY version DESC OFFSET $2 LIMIT 1)",
-    &[
-      (&rule_id, Type::UUID),
-      (&MAX_RULE_VERSIONS, Type::INT8),
-      (&keep, Type::INT4_ARRAY),
-    ],
-  )
-  .await
-  .map_err(db_error("Rule version prune error"))?;
-  tx.commit()
-    .await
-    .map_err(db_error("Rule save commit error"))?;
-  Ok(SaveOutcome::Saved(RuleVersion::from(version_row(&row))))
+    .map_err(db_error("Rule version prune error"))?;
+    Ok(SaveOutcome::Saved(RuleVersion::from(version_row(&row))))
+  }
+  .await;
+  end(tx, body, db_error("Rule save commit error")).await
 }
 
 /// One version with its source and test summary; `None` when the flock has no such version.
@@ -704,36 +706,36 @@ pub async fn read_release(
 ) -> Result<Option<Release>> {
   ensure_rule_tables(client).await?;
   let flock = flock_uuid(access)?;
-  let tx = client
-    .transaction()
+  let tx = begin(client)
     .await
     .map_err(db_error("Rule release begin error"))?;
-  let Some(rule) = lock_rule_row(&tx, flock, rule_id).await? else {
-    return Ok(None);
-  };
-  let Some(version) = tx
-    .query_typed_opt(
-      concat!(
-        "SELECT ",
-        version_columns!(),
-        ", now() AS read_at FROM rule_versions v WHERE v.rule_id = $1 AND v.version = $2"
-      ),
-      &[(&rule_id, Type::UUID), (&version, Type::INT4)],
-    )
-    .await
-    .map_err(db_error("Rule release version error"))?
-  else {
-    return Ok(None);
-  };
-  let enabled_siblings = enabled_siblings(&tx, flock, rule_id).await?;
-  tx.commit()
-    .await
-    .map_err(db_error("Rule release commit error"))?;
-  Ok(Some(Release {
-    rule,
-    version: version_row(&version),
-    enabled_siblings,
-  }))
+  let body = async {
+    let Some(rule) = lock_rule_row(&tx, flock, rule_id).await? else {
+      return Ok(None);
+    };
+    let Some(version) = tx
+      .query_typed_opt(
+        concat!(
+          "SELECT ",
+          version_columns!(),
+          ", now() AS read_at FROM rule_versions v WHERE v.rule_id = $1 AND v.version = $2"
+        ),
+        &[(&rule_id, Type::UUID), (&version, Type::INT4)],
+      )
+      .await
+      .map_err(db_error("Rule release version error"))?
+    else {
+      return Ok(None);
+    };
+    let enabled_siblings = enabled_siblings(&tx, flock, rule_id).await?;
+    Ok(Some(Release {
+      rule,
+      version: version_row(&version),
+      enabled_siblings,
+    }))
+  }
+  .await;
+  end(tx, body, db_error("Rule release commit error")).await
 }
 
 /// One rule module of a flock's script, as the bundle is built from it.
@@ -829,27 +831,27 @@ pub async fn start_deploy(
   else {
     return Ok(DeployStart::Busy);
   };
-  let started = async {
-    let tx = client
-      .transaction()
-      .await
-      .map_err(db_error("Rule deploy begin error"))?;
-    if lock_rule_row(&tx, flock, rule_id).await?.is_none() {
-      return Ok(None);
+  let started = match begin(client).await {
+    Ok(tx) => {
+      let body = async {
+        if lock_rule_row(&tx, flock, rule_id).await?.is_none() {
+          return Ok(None);
+        }
+        tx.query_typed(
+          "UPDATE rules SET pending_version = $2 WHERE id = $1",
+          &[(&rule_id, Type::UUID), (&version, Type::INT4)],
+        )
+        .await
+        .map_err(db_error("Rule pending error"))?;
+        bundle_sources(&tx, flock, Some((rule_id, version)), None)
+          .await
+          .map(Some)
+      }
+      .await;
+      end(tx, body, db_error("Rule deploy commit error")).await
     }
-    tx.query_typed(
-      "UPDATE rules SET pending_version = $2 WHERE id = $1",
-      &[(&rule_id, Type::UUID), (&version, Type::INT4)],
-    )
-    .await
-    .map_err(db_error("Rule pending error"))?;
-    let sources = bundle_sources(&tx, flock, Some((rule_id, version)), None).await?;
-    tx.commit()
-      .await
-      .map_err(db_error("Rule deploy commit error"))?;
-    Ok(Some(sources))
-  }
-  .await;
+    Err(e) => Err(db_error("Rule deploy begin error")(e)),
+  };
   match started {
     Ok(Some(sources)) => Ok(DeployStart::Started { lease, sources }),
     Ok(None) => {
@@ -903,99 +905,93 @@ pub async fn finish_deploy(
   let flock = flock_uuid(access)?;
   let tag = account_tag(&uuid_str(account));
   let contract = RULE_CONTRACT as i32;
-  let tx = client
-    .transaction()
+  let tx = begin(client)
     .await
     .map_err(db_error("Rule promote begin error"))?;
-  tx.query_typed(
-    "SELECT 1 FROM flocks WHERE id = $1 FOR NO KEY UPDATE",
-    &[(&flock, Type::UUID)],
-  )
-  .await
-  .map_err(db_error("Flock lock error"))?;
-  if !lock_lease(&tx, flock, lease).await? {
+  let body = async {
     tx.query_typed(
-      "UPDATE rules SET pending_version = NULL WHERE id = $1 AND pending_version = $2",
-      &[(&rule_id, Type::UUID), (&version, Type::INT4)],
-    )
-    .await
-    .map_err(db_error("Rule pending error"))?;
-    tx.commit()
-      .await
-      .map_err(db_error("Rule promote commit error"))?;
-    return Ok(DeployFinish::LeaseLost);
-  }
-  let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
-    // Unreachable while deletes take the lease too; frees it rather than wait out its 60 s.
-    tx.query_typed(
-      "UPDATE rule_bundles SET deploy_until = 'epoch' WHERE flock_id = $1",
+      "SELECT 1 FROM flocks WHERE id = $1 FOR NO KEY UPDATE",
       &[(&flock, Type::UUID)],
     )
     .await
-    .map_err(db_error("Rule lease release error"))?;
-    tx.commit()
+    .map_err(db_error("Flock lock error"))?;
+    if !lock_lease(&tx, flock, lease).await? {
+      tx.query_typed(
+        "UPDATE rules SET pending_version = NULL WHERE id = $1 AND pending_version = $2",
+        &[(&rule_id, Type::UUID), (&version, Type::INT4)],
+      )
       .await
-      .map_err(db_error("Rule promote commit error"))?;
-    return Ok(DeployFinish::LeaseLost);
-  };
-  let enable = current.enabled
-    || (current.blocked_at.is_none()
-      && enabled_siblings(&tx, flock, rule_id).await? < MAX_ENABLED_RULES_PER_FLOCK);
-  let row = tx
-    .query_typed_one(
-      concat!(
-        "UPDATE rules AS r SET
-           deployed_version = $2,
-           pending_version = NULL,
-           enabled = $3,
-           paused_reason = CASE WHEN $3 THEN NULL ELSE r.paused_reason END,
-           fail_count = CASE WHEN $3 AND NOT r.enabled THEN 0 ELSE r.fail_count END,
-           fail_since = CASE WHEN $3 AND NOT r.enabled THEN NULL ELSE r.fail_since END,
-           watch_until = now() + interval '24 hours',
-           updated_at = now()
-         WHERE r.id = $1
-         RETURNING ",
-        rule_columns!()
-      ),
+      .map_err(db_error("Rule pending error"))?;
+      return Ok(DeployFinish::LeaseLost);
+    }
+    let Some(current) = lock_rule_row(&tx, flock, rule_id).await? else {
+      // Unreachable while deletes take the lease too; frees it rather than wait out its 60 s.
+      tx.query_typed(
+        "UPDATE rule_bundles SET deploy_until = 'epoch' WHERE flock_id = $1",
+        &[(&flock, Type::UUID)],
+      )
+      .await
+      .map_err(db_error("Rule lease release error"))?;
+      return Ok(DeployFinish::LeaseLost);
+    };
+    let enable = current.enabled
+      || (current.blocked_at.is_none()
+        && enabled_siblings(&tx, flock, rule_id).await? < MAX_ENABLED_RULES_PER_FLOCK);
+    let row = tx
+      .query_typed_one(
+        concat!(
+          "UPDATE rules AS r SET
+             deployed_version = $2,
+             pending_version = NULL,
+             enabled = $3,
+             paused_reason = CASE WHEN $3 THEN NULL ELSE r.paused_reason END,
+             fail_count = CASE WHEN $3 AND NOT r.enabled THEN 0 ELSE r.fail_count END,
+             fail_since = CASE WHEN $3 AND NOT r.enabled THEN NULL ELSE r.fail_since END,
+             watch_until = now() + interval '24 hours',
+             updated_at = now()
+           WHERE r.id = $1
+           RETURNING ",
+          rule_columns!()
+        ),
+        &[
+          (&rule_id, Type::UUID),
+          (&version, Type::INT4),
+          (&enable, Type::BOOL),
+        ],
+      )
+      .await
+      .map_err(db_error("Rule promote error"))?;
+    if reset_state {
+      tx.query_typed(
+        "DELETE FROM rule_state WHERE rule_id = $1",
+        &[(&rule_id, Type::UUID)],
+      )
+      .await
+      .map_err(db_error("Rule state reset error"))?;
+    }
+    tx.query_typed(
+      "UPDATE rules SET pending_version = NULL
+       WHERE flock_id = $1 AND id <> $2 AND pending_version IS NOT NULL",
+      &[(&flock, Type::UUID), (&rule_id, Type::UUID)],
+    )
+    .await
+    .map_err(db_error("Rule pending error"))?;
+    tx.query_typed(
+      "UPDATE rule_bundles SET contract = $2, account_tag = $3, uploaded_at = now(),
+         deploy_until = 'epoch'
+       WHERE flock_id = $1",
       &[
-        (&rule_id, Type::UUID),
-        (&version, Type::INT4),
-        (&enable, Type::BOOL),
+        (&flock, Type::UUID),
+        (&contract, Type::INT4),
+        (&tag, Type::TEXT),
       ],
     )
     .await
-    .map_err(db_error("Rule promote error"))?;
-  if reset_state {
-    tx.query_typed(
-      "DELETE FROM rule_state WHERE rule_id = $1",
-      &[(&rule_id, Type::UUID)],
-    )
-    .await
-    .map_err(db_error("Rule state reset error"))?;
+    .map_err(db_error("Rule bundle record error"))?;
+    Ok(DeployFinish::Promoted(Rule::from(rule_row(&row))))
   }
-  tx.query_typed(
-    "UPDATE rules SET pending_version = NULL
-     WHERE flock_id = $1 AND id <> $2 AND pending_version IS NOT NULL",
-    &[(&flock, Type::UUID), (&rule_id, Type::UUID)],
-  )
-  .await
-  .map_err(db_error("Rule pending error"))?;
-  tx.query_typed(
-    "UPDATE rule_bundles SET contract = $2, account_tag = $3, uploaded_at = now(),
-       deploy_until = 'epoch'
-     WHERE flock_id = $1",
-    &[
-      (&flock, Type::UUID),
-      (&contract, Type::INT4),
-      (&tag, Type::TEXT),
-    ],
-  )
-  .await
-  .map_err(db_error("Rule bundle record error"))?;
-  tx.commit()
-    .await
-    .map_err(db_error("Rule promote commit error"))?;
-  Ok(DeployFinish::Promoted(Rule::from(rule_row(&row))))
+  .await;
+  end(tx, body, db_error("Rule promote commit error")).await
 }
 
 /// Ends a deploy whose upload was refused: clears `pending_version` and frees the lease. An upload
@@ -1059,29 +1055,27 @@ pub async fn start_rebuild(
   else {
     return Ok(RebuildStart::Busy);
   };
-  let started = async {
-    let tx = client
-      .transaction()
-      .await
-      .map_err(db_error("Rule rebuild begin error"))?;
-    if let Some(rule_id) = disable {
-      if lock_rule_row(&tx, flock, rule_id).await?.is_none() {
-        return Ok(None);
+  let started = match begin(client).await {
+    Ok(tx) => {
+      let body = async {
+        if let Some(rule_id) = disable {
+          if lock_rule_row(&tx, flock, rule_id).await?.is_none() {
+            return Ok(None);
+          }
+          tx.query_typed(
+            "UPDATE rules SET enabled = false, updated_at = now() WHERE id = $1",
+            &[(&rule_id, Type::UUID)],
+          )
+          .await
+          .map_err(db_error("Rule disable error"))?;
+        }
+        bundle_sources(&tx, flock, None, disable).await.map(Some)
       }
-      tx.query_typed(
-        "UPDATE rules SET enabled = false, updated_at = now() WHERE id = $1",
-        &[(&rule_id, Type::UUID)],
-      )
-      .await
-      .map_err(db_error("Rule disable error"))?;
+      .await;
+      end(tx, body, db_error("Rule rebuild commit error")).await
     }
-    let sources = bundle_sources(&tx, flock, None, disable).await?;
-    tx.commit()
-      .await
-      .map_err(db_error("Rule rebuild commit error"))?;
-    Ok(Some(sources))
-  }
-  .await;
+    Err(e) => Err(db_error("Rule rebuild begin error")(e)),
+  };
   match started {
     Ok(Some(sources)) => Ok(RebuildStart::Started { lease, sources }),
     Ok(None) => {
@@ -1109,53 +1103,53 @@ pub async fn finish_rebuild(
 ) -> Result<bool> {
   let tag = account_tag(&uuid_str(account));
   let contract = RULE_CONTRACT as i32;
-  let tx = client
-    .transaction()
+  let tx = begin(client)
     .await
     .map_err(db_error("Rule rebuild begin error"))?;
-  if !lock_lease(&tx, flock, lease).await? {
-    return Ok(false);
-  }
-  if let Some(rule_id) = delete {
+  let body = async {
+    if !lock_lease(&tx, flock, lease).await? {
+      return Ok(false);
+    }
+    if let Some(rule_id) = delete {
+      tx.query_typed(
+        "DELETE FROM rules WHERE id = $1 AND flock_id = $2",
+        &[(&rule_id, Type::UUID), (&flock, Type::UUID)],
+      )
+      .await
+      .map_err(db_error("Rule delete error"))?;
+    }
     tx.query_typed(
-      "DELETE FROM rules WHERE id = $1 AND flock_id = $2",
-      &[(&rule_id, Type::UUID), (&flock, Type::UUID)],
-    )
-    .await
-    .map_err(db_error("Rule delete error"))?;
-  }
-  tx.query_typed(
-    "UPDATE rules SET pending_version = NULL
-     WHERE flock_id = $1 AND pending_version IS NOT NULL",
-    &[(&flock, Type::UUID)],
-  )
-  .await
-  .map_err(db_error("Rule pending error"))?;
-  if script_gone {
-    tx.query_typed(
-      "DELETE FROM rule_bundles WHERE flock_id = $1",
+      "UPDATE rules SET pending_version = NULL
+       WHERE flock_id = $1 AND pending_version IS NOT NULL",
       &[(&flock, Type::UUID)],
     )
     .await
-    .map_err(db_error("Rule bundle delete error"))?;
-  } else {
-    tx.query_typed(
-      "UPDATE rule_bundles SET contract = $2, account_tag = $3, uploaded_at = now(),
-         deploy_until = 'epoch'
-       WHERE flock_id = $1",
-      &[
-        (&flock, Type::UUID),
-        (&contract, Type::INT4),
-        (&tag, Type::TEXT),
-      ],
-    )
-    .await
-    .map_err(db_error("Rule bundle record error"))?;
+    .map_err(db_error("Rule pending error"))?;
+    if script_gone {
+      tx.query_typed(
+        "DELETE FROM rule_bundles WHERE flock_id = $1",
+        &[(&flock, Type::UUID)],
+      )
+      .await
+      .map_err(db_error("Rule bundle delete error"))?;
+    } else {
+      tx.query_typed(
+        "UPDATE rule_bundles SET contract = $2, account_tag = $3, uploaded_at = now(),
+           deploy_until = 'epoch'
+         WHERE flock_id = $1",
+        &[
+          (&flock, Type::UUID),
+          (&contract, Type::INT4),
+          (&tag, Type::TEXT),
+        ],
+      )
+      .await
+      .map_err(db_error("Rule bundle record error"))?;
+    }
+    Ok(true)
   }
-  tx.commit()
-    .await
-    .map_err(db_error("Rule rebuild commit error"))?;
-  Ok(true)
+  .await;
+  end(tx, body, db_error("Rule rebuild commit error")).await
 }
 
 /// Every flock's bundle row with what the sweep decides on. A whole-table read, once a day.
@@ -1387,8 +1381,9 @@ mod tests {
 mod pg {
   use super::*;
   use crate::helpers::rule_store::pg::{
-    Scratch, new_flock, new_rule, pid, run, wait_until_blocked,
+    Scratch, new_flock, new_rule, pid, pipeline_watched, run, wait_until_blocked,
   };
+  use std::sync::atomic::Ordering;
   use time::OffsetDateTime;
 
   fn access(flock: Uuid) -> FlockAccess {
@@ -2349,6 +2344,93 @@ mod pg {
         RebuildStart::NotFound
       ));
       drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_admin_no_path_pipelines_a_request_behind_a_rollback() {
+    run(async {
+      let db = Scratch::new("admin_piped").await;
+      let setup = db.client().await;
+      let account = new_org(&setup).await;
+      let flock = new_flock(&setup, Some(account)).await;
+      let a = access(flock);
+      let gone = running(&setup, flock, 1, "gone").await;
+      let (mut client, piped) = pipeline_watched(&db).await;
+      let mut seen = Vec::new();
+
+      // The scripted delete: classify, then rebuild on the same client.
+      assert_eq!(
+        delete_unscripted_rule(&mut client, &a, gone)
+          .await
+          .expect("classify"),
+        DeleteOutcome::InScript
+      );
+      let RebuildStart::Started { lease, sources } =
+        start_rebuild(&mut client, flock, Some(gone), account)
+          .await
+          .expect("start")
+      else {
+        panic!("free");
+      };
+      assert!(sources.is_empty());
+      assert!(!rule_now(&setup, gone).await.unwrap().enabled);
+      assert!(
+        finish_rebuild(&mut client, flock, lease, Some(gone), true, account)
+          .await
+          .expect("finish")
+      );
+      seen.push(("classify, rebuild", piped.load(Ordering::SeqCst)));
+
+      // A rebuild and a deploy for a rule deleted under them, each freeing its lease after.
+      assert!(matches!(
+        start_rebuild(&mut client, flock, Some(gone), account)
+          .await
+          .expect("rebuild"),
+        RebuildStart::NotFound
+      ));
+      seen.push(("rebuild of a gone rule", piped.load(Ordering::SeqCst)));
+      assert!(matches!(
+        start_deploy(&mut client, &a, gone, 1, account)
+          .await
+          .expect("deploy"),
+        DeployStart::Gone
+      ));
+      seen.push(("deploy of a gone rule", piped.load(Ordering::SeqCst)));
+
+      // A finish whose lease lapsed, then the sweep's next statement on the same client.
+      assert!(
+        !finish_rebuild(&mut client, flock, lease, None, false, account)
+          .await
+          .expect("finish")
+      );
+      assert_eq!(
+        flock_owner(&client, flock).await.expect("owner"),
+        Some(account)
+      );
+      seen.push(("lapsed finish", piped.load(Ordering::SeqCst)));
+
+      // A route's refusal, then a statement on the same client.
+      assert!(matches!(
+        update_rule(&mut client, &a, gone, Some("n"), None, None)
+          .await
+          .expect("update"),
+        UpdateOutcome::NotFound
+      ));
+      assert_eq!(
+        flock_owner(&client, flock).await.expect("owner"),
+        Some(account)
+      );
+      seen.push(("refused update", piped.load(Ordering::SeqCst)));
+
+      assert!(
+        seen.iter().all(|(_, n)| *n == 0),
+        "requests sent behind a ROLLBACK, cumulative: {seen:?}"
+      );
+      drop(client);
+      drop(setup);
       db.drop().await;
     });
   }

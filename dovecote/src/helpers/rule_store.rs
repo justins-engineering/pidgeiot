@@ -314,6 +314,33 @@ pub async fn lock_rule(
   Ok(!rows.is_empty())
 }
 
+/// Opens a transaction for a rule write. End it with [`end`], never by dropping it.
+pub(crate) async fn begin(
+  client: &mut Client,
+) -> std::result::Result<Transaction<'_>, tokio_postgres::Error> {
+  client.transaction().await
+}
+
+/// Ends `tx` on its body's answer, committing an `Ok` and rolling back an `Err`, and waits for
+/// the server's reply either way. A dropped `Transaction` sends its `ROLLBACK` without waiting,
+/// so the client's next request goes out behind it, and through Hyperdrive that pair lost a
+/// reply: the next statement waited forever. Every `Ok` commits, early returns included, so a
+/// body returns early either before it writes or with writes it means to keep.
+pub(crate) async fn end<T, E>(
+  tx: Transaction<'_>,
+  body: std::result::Result<T, E>,
+  commit_error: impl FnOnce(tokio_postgres::Error) -> E,
+) -> std::result::Result<T, E> {
+  match body {
+    Ok(value) => tx.commit().await.map(|()| value).map_err(commit_error),
+    Err(e) => {
+      // The body's error is the one to report; a failed rollback means a broken connection.
+      let _ = tx.rollback().await;
+      Err(e)
+    }
+  }
+}
+
 /// True for a deadlock or serialization failure: one rule's apply losing a race, which the caller
 /// counts as that rule's `dispatch_failed` rather than as Postgres being down.
 pub fn is_contention(error: &tokio_postgres::Error) -> bool {
@@ -643,103 +670,106 @@ async fn record_run(
   wall_ms: i32,
 ) -> std::result::Result<Vec<RuleMail>, tokio_postgres::Error> {
   let id = plan.rule_id;
-  let tx = client.transaction().await?;
-  let Some(row) = tx
-    .query_typed_opt(
-      LOCK_STREAK_SQL,
-      &[(&id, Type::UUID), (&plan.version, Type::INT4)],
-    )
-    .await?
-  else {
-    return Ok(Vec::new());
-  };
-  if !row.get::<_, bool>(2) {
-    return Ok(Vec::new());
-  }
-  let streak = FailStreak {
-    count: row.get(0),
-    since: row.get(1),
-  };
-  let mut mails = Vec::new();
-  let (mut sent, mut suppressed, mut written, mut changed) = (0i32, 0i32, 0i32, false);
-  if let Some(apply) = &plan.apply {
-    if let Some(patch) = &apply.pigeon_patch {
-      changed |= merge_state_row(&tx, id, &work.pigeon_id, patch).await?;
-    }
-    if let Some(patch) = &apply.flock_patch {
-      changed |= merge_state_row(&tx, id, "", patch).await?;
-    }
-    written = insert_values(&tx, id, &work.pigeon_id, &apply.values).await?;
-    for decision in &apply.alerts {
-      let alert = &decision.alert;
-      let scope = scope_key(alert.scope, &work.pigeon_id);
-      if !apply_alert(
-        &tx,
-        id,
-        scope,
-        &alert.key,
-        alert.kind,
-        last_reading,
-        lookup.now,
+  let tx = begin(client).await?;
+  let body = async {
+    let Some(row) = tx
+      .query_typed_opt(
+        LOCK_STREAK_SQL,
+        &[(&id, Type::UUID), (&plan.version, Type::INT4)],
       )
       .await?
-      {
-        continue;
+    else {
+      return Ok(Vec::new());
+    };
+    if !row.get::<_, bool>(2) {
+      return Ok(Vec::new());
+    }
+    let streak = FailStreak {
+      count: row.get(0),
+      since: row.get(1),
+    };
+    let mut mails = Vec::new();
+    let (mut sent, mut suppressed, mut written, mut changed) = (0i32, 0i32, 0i32, false);
+    if let Some(apply) = &plan.apply {
+      if let Some(patch) = &apply.pigeon_patch {
+        changed |= merge_state_row(&tx, id, &work.pigeon_id, patch).await?;
       }
-      if decision.mailed && claim_mail(&tx, id, lookup.account, lookup.now).await? {
-        sent += 1;
-        mails.push(RuleMail {
-          rule_id: id,
-          alert: alert.clone(),
-        });
-      } else {
-        suppressed += 1;
+      if let Some(patch) = &apply.flock_patch {
+        changed |= merge_state_row(&tx, id, "", patch).await?;
+      }
+      written = insert_values(&tx, id, &work.pigeon_id, &apply.values).await?;
+      for decision in &apply.alerts {
+        let alert = &decision.alert;
+        let scope = scope_key(alert.scope, &work.pigeon_id);
+        if !apply_alert(
+          &tx,
+          id,
+          scope,
+          &alert.key,
+          alert.kind,
+          last_reading,
+          lookup.now,
+        )
+        .await?
+        {
+          continue;
+        }
+        if decision.mailed && claim_mail(&tx, id, lookup.account, lookup.now).await? {
+          sent += 1;
+          mails.push(RuleMail {
+            rule_id: id,
+            alert: alert.clone(),
+          });
+        } else {
+          suppressed += 1;
+        }
       }
     }
+    if plan.run_row {
+      let logs = Value::from(plan.logs.clone()).to_string();
+      let readings = i32::try_from(work.readings.len()).unwrap_or(i32::MAX);
+      tx.query_typed(
+        RUN_SQL,
+        &[
+          (&id, Type::UUID),
+          (&plan.version, Type::INT4),
+          (&work.pigeon_id, Type::TEXT),
+          (&work.batch_id, Type::TEXT),
+          (&plan.status.as_str(), Type::TEXT),
+          (&readings, Type::INT4),
+          (&sent, Type::INT4),
+          (&suppressed, Type::INT4),
+          (&written, Type::INT4),
+          (&changed, Type::BOOL),
+          (&wall_ms, Type::INT4),
+          (&plan.error, Type::TEXT),
+          (&logs, Type::TEXT),
+        ],
+      )
+      .await?;
+    }
+    let (next, reason) = match next_streak(streak, plan.status, lookup.now) {
+      StreakWrite::Keep => (None, None),
+      StreakWrite::Reset => (Some(FailStreak::default()), None),
+      StreakWrite::Set(next) => (Some(next), None),
+      StreakWrite::Pause { streak, reason } => (Some(streak), Some(reason)),
+    };
+    if let Some(next) = next {
+      tx.query_typed(
+        STREAK_SQL,
+        &[
+          (&id, Type::UUID),
+          (&next.count, Type::INT4),
+          (&next.since, Type::INT8),
+          (&reason, Type::TEXT),
+        ],
+      )
+      .await?;
+    }
+    Ok(mails)
   }
-  if plan.run_row {
-    let logs = Value::from(plan.logs.clone()).to_string();
-    let readings = i32::try_from(work.readings.len()).unwrap_or(i32::MAX);
-    tx.query_typed(
-      RUN_SQL,
-      &[
-        (&id, Type::UUID),
-        (&plan.version, Type::INT4),
-        (&work.pigeon_id, Type::TEXT),
-        (&work.batch_id, Type::TEXT),
-        (&plan.status.as_str(), Type::TEXT),
-        (&readings, Type::INT4),
-        (&sent, Type::INT4),
-        (&suppressed, Type::INT4),
-        (&written, Type::INT4),
-        (&changed, Type::BOOL),
-        (&wall_ms, Type::INT4),
-        (&plan.error, Type::TEXT),
-        (&logs, Type::TEXT),
-      ],
-    )
-    .await?;
-  }
-  let (next, reason) = match next_streak(streak, plan.status, lookup.now) {
-    StreakWrite::Keep => (None, None),
-    StreakWrite::Reset => (Some(FailStreak::default()), None),
-    StreakWrite::Set(next) => (Some(next), None),
-    StreakWrite::Pause { streak, reason } => (Some(streak), Some(reason)),
-  };
-  if let Some(next) = next {
-    tx.query_typed(
-      STREAK_SQL,
-      &[
-        (&id, Type::UUID),
-        (&next.count, Type::INT4),
-        (&next.since, Type::INT8),
-        (&reason, Type::TEXT),
-      ],
-    )
-    .await?;
-  }
-  tx.commit().await?;
-  Ok(mails)
+  .await;
+  end(tx, body, |e| e).await
 }
 
 /// Who a rule's mail may go to, read only when a run claimed one: the rule's name and list, and
@@ -985,8 +1015,13 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod pg {
   use super::*;
+  use std::collections::VecDeque;
   use std::future::Future;
-  use tokio::net::TcpStream;
+  use std::sync::atomic::AtomicUsize;
+  use std::sync::{Arc, Mutex};
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+  use tokio::net::tcp::OwnedReadHalf;
+  use tokio::net::{TcpListener, TcpStream};
   use tokio_postgres::config::Host;
   use tokio_postgres::{Config, NoTls};
 
@@ -1132,6 +1167,94 @@ pub(crate) mod pg {
       .await
       .expect("backend pid")
       .get(0)
+  }
+
+  /// One protocol message off `half` as raw bytes, with its tag (0 for the untagged startup
+  /// message); `None` once the peer closes.
+  async fn wire_message(half: &mut OwnedReadHalf, tagged: bool) -> Option<(u8, Vec<u8>)> {
+    let mut raw = Vec::with_capacity(5);
+    let mut tag = 0;
+    if tagged {
+      tag = half.read_u8().await.ok()?;
+      raw.push(tag);
+    }
+    let len = half.read_u32().await.ok()?;
+    raw.extend_from_slice(&len.to_be_bytes());
+    let start = raw.len();
+    raw.resize(start + len as usize - 4, 0);
+    half.read_exact(&mut raw[start..]).await.ok()?;
+    Some((tag, raw))
+  }
+
+  /// A connection to `db` through a proxy that holds each `ReadyForQuery` back 20 ms and counts
+  /// every message the client writes while a simple query's reply is still outstanding. Every
+  /// simple query the code awaits is answered first, so a count means a dropped `Transaction`'s
+  /// `ROLLBACK` with a request pipelined behind it: what Hyperdrive answered with silence.
+  pub async fn pipeline_watched(db: &Scratch) -> (Client, Arc<AtomicUsize>) {
+    let mut config = config();
+    let Some(Host::Tcp(host)) = config.get_hosts().first().cloned() else {
+      panic!("DOVECOTE_TEST_PG names no TCP host");
+    };
+    let port = config.get_ports().first().copied().unwrap_or(5432);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy binds");
+    let local = listener.local_addr().expect("proxy address").port();
+    let piped = Arc::new(AtomicUsize::new(0));
+    let counted = piped.clone();
+    tokio::spawn(async move {
+      let (front, _) = listener.accept().await.expect("client reaches the proxy");
+      let back = TcpStream::connect((host.as_str(), port))
+        .await
+        .expect("dev Postgres reachable");
+      let (mut client_read, mut client_write) = front.into_split();
+      let (mut server_read, mut server_write) = back.into_split();
+      // Each request awaiting its ReadyForQuery, true for a simple query.
+      let waiting = Arc::new(Mutex::new(VecDeque::<bool>::new()));
+      let ready = Arc::new(AtomicBool::new(false));
+      let (up_waiting, up_ready) = (waiting.clone(), ready.clone());
+      tokio::spawn(async move {
+        let mut tagged = false;
+        while let Some((tag, raw)) = wire_message(&mut client_read, tagged).await {
+          tagged = true;
+          if up_ready.load(Ordering::SeqCst) && tag != b'X' {
+            let mut waiting = up_waiting.lock().expect("proxy state");
+            if waiting.iter().any(|simple| *simple) {
+              counted.fetch_add(1, Ordering::SeqCst);
+            }
+            match tag {
+              b'Q' => waiting.push_back(true),
+              b'S' => waiting.push_back(false),
+              _ => {}
+            }
+          }
+          if server_write.write_all(&raw).await.is_err() {
+            return;
+          }
+        }
+      });
+      while let Some((tag, raw)) = wire_message(&mut server_read, true).await {
+        if tag == b'Z' && ready.swap(true, Ordering::SeqCst) {
+          tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+          waiting.lock().expect("proxy state").pop_front();
+        }
+        if client_write.write_all(&raw).await.is_err() {
+          return;
+        }
+      }
+    });
+    config.dbname(&db.name);
+    let stream = TcpStream::connect(("127.0.0.1", local))
+      .await
+      .expect("proxy reachable");
+    let (client, connection) = config
+      .connect_raw(stream, NoTls)
+      .await
+      .expect("dev Postgres accepts the proxied connection");
+    tokio::spawn(connection);
+    client
+      .batch_execute("SET ROLE dovecote;")
+      .await
+      .expect("role");
+    (client, piped)
   }
 
   /// A flock owned by a fresh user, or by `org` when given.
@@ -2430,6 +2553,51 @@ pub(crate) mod pg {
       hold.rollback().await.expect("released");
       drop(other);
       drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_a_run_that_writes_nothing_pipelines_nothing_behind_it() {
+    run(async {
+      let db = Scratch::new("pass_piped").await;
+      let setup = db.client().await;
+      let org = new_org(&setup).await;
+      let flock = new_flock(&setup, Some(org)).await;
+      new_pigeon(&setup, flock, "p1").await;
+      let a = new_rule(&setup, flock).await;
+      let b = new_rule(&setup, flock).await;
+      deploy_enabled(&setup, &[a, b], 1).await;
+      let found = fresh_read(&setup, "p1")
+        .await
+        .expect("read")
+        .expect("found");
+      let work = one_reading(found.now - 5);
+      let plans = plan_record(
+        &found,
+        &work.readings,
+        &answered_all(&[(a, "ok", FIRE_DOWN), (b, "ok", FIRE_DOWN)]),
+      );
+      setup
+        .execute("UPDATE rules SET enabled = false WHERE id = $1", &[&a])
+        .await
+        .expect("a disabled since the read");
+      let (mut client, piped) = pipeline_watched(&db).await;
+      let (mails, failed) = record_runs(&mut client, &found, &work, &plans, 1).await;
+      assert!(failed.is_none());
+      assert_eq!(
+        mails.len(),
+        1,
+        "b still records behind a's empty transaction"
+      );
+      assert_eq!(
+        piped.load(Ordering::SeqCst),
+        0,
+        "nothing sent behind a ROLLBACK"
+      );
+      drop(client);
+      drop(setup);
       db.drop().await;
     });
   }

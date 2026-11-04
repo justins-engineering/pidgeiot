@@ -64,6 +64,7 @@ thingspace-sdk = { git = "https://github.com/justins-engineering/thingspace-sdk-
 sha1 = "0.10"
 
 # Drives the rule statements against the dev Postgres from host tests. tokio-postgres already
-# brings tokio in; the socket and the runtime are what a test needs and the Worker does not.
+# brings tokio in; the socket, its reads and writes, and the runtime are what a test needs and the
+# Worker does not.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
