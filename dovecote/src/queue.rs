@@ -1,11 +1,12 @@
 use capsules::TelemetryEndpoint;
 use worker::{
-  Context, Date, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result, Url,
+  Context, Env, Message, MessageBatch, MessageExt, Method, Request, RequestInit, Result, Url,
   console_error, console_log, event,
 };
 
 use crate::helpers::ResolvedReading;
-use crate::helpers::rules::{PassLedger, PreGate, RuleWork, pass_vars};
+use crate::helpers::rule_dispatch::{LivePass, PassCounts, run_pass};
+use crate::helpers::rules::{RuleWork, pass_vars};
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
   build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
@@ -379,9 +380,8 @@ fn push_work(
   }
 }
 
-/// The second pass: applies `RULES_DISPATCH`, the field-pigeon gate and the
-/// [`crate::helpers::rules::PASS_BUDGET_MS`] budget to each batch, and logs how many the budget
-/// skipped. The messages are already acked, so nothing here retries, re-bills or re-alerts. With
+/// The second pass: runs each batch's rules (see [`run_pass`]) and logs one line of counts. The
+/// messages are already acked, so nothing here retries, re-bills or re-alerts. With
 /// `RULES_DISPATCH` not `"on"` it returns having read that var alone.
 async fn run_rules(env: &Env, work: Vec<RuleWork>) {
   if work.is_empty() {
@@ -390,19 +390,19 @@ async fn run_rules(env: &Env, work: Vec<RuleWork>) {
   let Some(vars) = pass_vars(|name| env.var(name).ok().map(|v| v.to_string())) else {
     return;
   };
-
-  let ledger = PassLedger::new(Date::now().as_millis());
-  let mut skipped = 0usize;
-  for item in &work {
-    if vars.gate(&item.pigeon_id) != PreGate::Lookup {
-      continue;
-    }
-    if ledger.budget_spent(Date::now().as_millis()) {
-      skipped += 1;
-    }
-  }
-  if skipped > 0 {
-    console_log!("Rules pass: {skipped} batch(es) skipped for the budget");
+  let counts = run_pass(&mut LivePass::new(env), &vars, &work).await;
+  if counts != PassCounts::default() {
+    console_log!(
+      "Rules pass: {} dispatched, {} unscripted, {} platform, skipped {} budget, {} breaker, \
+       {} account{}",
+      counts.dispatched,
+      counts.unscripted,
+      counts.platform,
+      counts.budget,
+      counts.breaker,
+      counts.account,
+      if counts.down { ", Postgres down" } else { "" }
+    );
   }
 }
 

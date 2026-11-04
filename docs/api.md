@@ -2467,12 +2467,15 @@ Limits:
   version that is neither deployed nor uploading, never refuses.
 
 Recipients follow the [alert rules](#alerts): up to 8 addresses tied to the account, checked on
-write, lowercased and de-duplicated; an empty list means the flock's `owner_email`.
+write, lowercased and de-duplicated; an empty list means the flock's `owner_email`. Each is checked
+again at send, as alert mail is. A rule's mail is plain text under the subject prefix
+`PidgeIoT rule: `, with a footer naming the rule, its flock and the pigeon whose batch decided it.
 
 The models are `capsules::Rule`, `RuleDetail`, `RuleVersion`, `RuleRun` and `RuleValue`. A
 rule reports `blocked: true` when the platform has stopped it, which only the platform can lift,
-and `paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after repeated
-failures did. A mutation answers with the updated body, so a client builds its state from that
+and `paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after 20 failing
+runs in a row did. A `dispatch_failed` streak, which the platform's own outages can also cause,
+pauses only once it is also an hour old. A mutation answers with the updated body, so a client builds its state from that
 rather than reading the rule again.
 
 #### `GET /flocks/:flock_id/rules`

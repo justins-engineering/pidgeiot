@@ -1639,7 +1639,37 @@ fn redact_email(email: &str) -> String {
 /// digests, the Kratos readiness probe) and the free-tier allowance
 /// warning, which is the one send on this path that goes to a customer.
 pub(crate) async fn send_text_email(env: &Env, to: &str, subject: &str, text: &str) -> Result<()> {
-  send_email(env, to, subject, text, None).await
+  send_email(env, to, subject, text, None, Logged::Subject(subject)).await
+}
+
+/// A user-authored rule's mail, text only. Its log lines name the rule, never the subject, which
+/// is the rule's own text and may hold anything its code put there.
+pub(crate) async fn send_rule_email(
+  env: &Env,
+  to: &str,
+  subject: &str,
+  text: &str,
+  rule_id: &str,
+) -> Result<()> {
+  send_email(env, to, subject, text, None, Logged::Rule(rule_id)).await
+}
+
+/// What a send's log lines name.
+#[derive(Clone, Copy)]
+enum Logged<'a> {
+  /// A platform mail's own subject.
+  Subject(&'a str),
+  /// The rule that wrote the mail.
+  Rule(&'a str),
+}
+
+impl std::fmt::Display for Logged<'_> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Logged::Subject(subject) => write!(f, "subject: {subject}"),
+      Logged::Rule(rule) => write!(f, "rule: {rule}"),
+    }
+  }
 }
 
 /// Both parts of a formatted customer-facing message, so a client that
@@ -1651,6 +1681,7 @@ pub(crate) async fn send_email_message(env: &Env, to: &str, message: &EmailMessa
     &message.subject,
     &message.text,
     Some(&message.html),
+    Logged::Subject(&message.subject),
   )
   .await
 }
@@ -1665,17 +1696,18 @@ async fn send_email(
   subject: &str,
   text: &str,
   html: Option<&str>,
+  logged: Logged<'_>,
 ) -> Result<()> {
   let Ok(sender) = env.send_email(EMAIL_BINDING) else {
     console_error!(
-      "No {EMAIL_BINDING} binding -- cannot send mail to {} (subject: {subject})",
+      "No {EMAIL_BINDING} binding -- cannot send mail to {} ({logged})",
       redact_email(to)
     );
     return Err(no_email_binding());
   };
 
   let from = mail_from_address(env);
-  send_via_binding(&sender, &from, to, subject, text, html).await
+  send_via_binding(&sender, &from, to, subject, text, html, logged).await
 }
 
 /// Failure returned when no `[[send_email]]` binding resolves. Its own
@@ -1699,6 +1731,7 @@ async fn send_via_binding(
   subject: &str,
   text: &str,
   html: Option<&str>,
+  logged: Logged<'_>,
 ) -> Result<()> {
   let mut builder = SendEmailBuilder::builder(from, to, subject).text(text);
   if let Some(html) = html {
@@ -1708,7 +1741,7 @@ async fn send_via_binding(
   match sender.send_with_builder(&builder.build()).await {
     Ok(_) => {
       console_log!(
-        "Email Service accepted mail to {} (subject: {subject})",
+        "Email Service accepted mail to {} ({logged})",
         redact_email(to)
       );
       Ok(())

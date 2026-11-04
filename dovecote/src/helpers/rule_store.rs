@@ -700,6 +700,50 @@ async fn record_run(
   Ok(mails)
 }
 
+/// Who a rule's mail may go to, read only when a run claimed one: the rule's name and list, and
+/// the addresses the account holds, as alert mail rechecks them at send.
+const MAIL_TARGETS_SQL: &str = "SELECT r.id, r.name, r.recipients::text, f.owner_email,
+    (SELECT string_agg(DISTINCT m.email, ',') FROM organization_members m
+      WHERE m.org_id = f.org_id AND m.email IS NOT NULL)
+  FROM rules r JOIN flocks f ON f.id = r.flock_id WHERE r.id = ANY($1)";
+
+/// One rule's [`MAIL_TARGETS_SQL`] row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MailTarget {
+  /// The rule.
+  pub rule_id: Uuid,
+  /// Its name, for the mail's footer.
+  pub name: String,
+  /// Its own recipient list.
+  pub recipients: Vec<String>,
+  /// The flock owner's address.
+  pub owner_email: Option<String>,
+  /// The owning organization's member addresses, comma-separated.
+  pub member_emails: Option<String>,
+}
+
+/// [`MailTarget`]s of `rules`.
+pub async fn mail_targets(
+  client: &Client,
+  rules: &[Uuid],
+) -> std::result::Result<Vec<MailTarget>, tokio_postgres::Error> {
+  let rows = client
+    .query_typed(MAIL_TARGETS_SQL, &[(&rules, Type::UUID_ARRAY)])
+    .await?;
+  Ok(
+    rows
+      .iter()
+      .map(|row| MailTarget {
+        rule_id: row.get(0),
+        name: row.get(1),
+        recipients: serde_json::from_str(row.get(2)).unwrap_or_default(),
+        owner_email: row.get(3),
+        member_emails: row.get(4),
+      })
+      .collect(),
+  )
+}
+
 /// Inserts a result's values, a value already stored at its key and time kept as it was. Returns
 /// how many were new.
 async fn insert_values(
@@ -1985,6 +2029,64 @@ pub(crate) mod pg {
 
   #[test]
   #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_mail_targets_carry_the_list_and_the_accounts_addresses() {
+    run(async {
+      let db = Scratch::new("pass_mail").await;
+      let client = db.client().await;
+      let org = new_org(&client).await;
+      let flock = new_flock(&client, Some(org)).await;
+      let rule = new_rule(&client, flock).await;
+      let other = new_rule(&client, new_flock(&client, None).await).await;
+      client
+        .execute(
+          "UPDATE rules SET name = 'Dark', recipients = '[\"ops@x.io\"]' WHERE id = $1",
+          &[&rule],
+        )
+        .await
+        .expect("list");
+      client
+        .execute(
+          "UPDATE flocks SET owner_email = 'own@x.io' WHERE id = $1",
+          &[&flock],
+        )
+        .await
+        .expect("owner");
+      for email in ["ops@x.io", "b@x.io"] {
+        client
+          .execute(
+            "INSERT INTO organization_members (org_id, user_id, role, email)
+             VALUES ($1, gen_random_uuid(), 'member', $2)",
+            &[&org, &email],
+          )
+          .await
+          .expect("member");
+      }
+      let targets = mail_targets(&client, &[rule]).await.expect("read");
+      assert_eq!(targets.len(), 1, "only the rules asked for");
+      let target = &targets[0];
+      assert_eq!((target.rule_id, target.name.as_str()), (rule, "Dark"));
+      assert_eq!(target.recipients, ["ops@x.io"]);
+      assert_eq!(target.owner_email.as_deref(), Some("own@x.io"));
+      let mut members: Vec<&str> = target
+        .member_emails
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .collect();
+      members.sort_unstable();
+      assert_eq!(members, ["b@x.io", "ops@x.io"]);
+      let lone = mail_targets(&client, &[other]).await.expect("read");
+      assert_eq!(
+        (lone[0].owner_email.clone(), lone[0].member_emails.clone()),
+        (None, None)
+      );
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
   fn rule_store_a_run_records_its_plan_and_its_streak() {
     run(async {
       let db = Scratch::new("pass_record").await;
@@ -2101,6 +2203,12 @@ pub(crate) mod pg {
         record_runs(&mut client, &found, &work, &plans, 2_000)
           .await
           .expect("a gone rule is no error")
+          .is_empty()
+      );
+      assert!(
+        mail_targets(&client, &[rule])
+          .await
+          .expect("read")
           .is_empty()
       );
       drop(client);

@@ -19,8 +19,8 @@ use capsules::{
   MAX_RULE_ERROR_BYTES, MAX_RULE_LOG_LINE_BYTES, MAX_RULE_LOG_LINES, MAX_RULE_STATE_TOTAL_BYTES,
   MAX_TELEMETRY_BATCH_READINGS, MAX_TELEMETRY_KEY_BYTES, MAX_TELEMETRY_KEYS,
   MAX_TELEMETRY_VALUE_BYTES, RULE_CONTRACT, RuleAlert, RuleAlertKind, RuleAlertScope, RuleHook,
-  RuleNamedRef, RulePrevious, RuleReading, RuleResult, RuleState, TelemetryHistoryPoint,
-  merge_state, state_doc_bytes, validate_result,
+  RuleNamedRef, RulePrevious, RuleReading, RuleResult, RuleSeverity, RuleState,
+  TelemetryHistoryPoint, merge_state, state_doc_bytes, validate_result,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1174,6 +1174,78 @@ pub fn plan_record(
     plans.push(plan);
   }
   plans
+}
+
+/// A rule mail's recipients, chosen as alert mail chooses them: the rule's own list, each address
+/// kept only while it is still the flock owner's or an organization member's, and the owner when
+/// none is left. `members` is a comma-separated list. Returns the addresses and how many were
+/// dropped.
+pub fn deliverable_recipients(
+  to: &[String],
+  owner: Option<&str>,
+  members: Option<&str>,
+) -> (Vec<String>, usize) {
+  let owner_only: Vec<String> = owner.iter().map(|o| (*o).to_string()).collect();
+  let known = |address: &str| {
+    owner
+      .into_iter()
+      .chain(members.into_iter().flat_map(|list| list.split(',')))
+      .any(|known| known.trim().eq_ignore_ascii_case(address))
+  };
+  let kept: Vec<String> = to
+    .iter()
+    .map(|address| address.trim())
+    .filter(|address| known(address))
+    .map(str::to_string)
+    .collect();
+  let refused = to.len() - kept.len();
+  if kept.is_empty() {
+    (owner_only, refused)
+  } else {
+    (kept, refused)
+  }
+}
+
+/// The subject prefix every rule mail carries, so a rule's words never pass for the platform's.
+const RULE_MAIL_PREFIX: &str = "PidgeIoT rule: ";
+
+/// A rule mail's subject and text: the rule's own words under a fixed prefix, then a footer naming
+/// the rule, flock and pigeon, so a recipient can tell who wrote it and where to stop it.
+pub fn rule_mail_message(
+  alert: &RuleAlert,
+  rule: &str,
+  flock: &str,
+  pigeon: &str,
+) -> (String, String) {
+  let mut subject = String::with_capacity(RULE_MAIL_PREFIX.len() + alert.subject.len());
+  subject.push_str(RULE_MAIL_PREFIX);
+  subject.push_str(&alert.subject);
+  let severity = match alert.severity {
+    RuleSeverity::Info => "info",
+    RuleSeverity::Warning => "warning",
+    RuleSeverity::Critical => "critical",
+  };
+  let body = alert.body.as_deref().unwrap_or("");
+  const STOP: &str = "\nA flock owner or admin can change this rule's recipients or disable it \
+                      on the flock's Rules page.\n";
+  let mut text = String::with_capacity(
+    body.len() + rule.len() + flock.len() + pigeon.len() + severity.len() + STOP.len() + 48,
+  );
+  if !body.is_empty() {
+    text.push_str(body);
+    text.push_str("\n\n");
+  }
+  text.push_str("--\nSeverity: ");
+  text.push_str(severity);
+  text.push_str("\nRule: ");
+  text.push_str(rule);
+  text.push_str("\nFlock: ");
+  text.push_str(flock);
+  text.push_str("\nPigeon: ");
+  text.push_str(pigeon);
+  text.push('\n');
+  text.push_str(STOP);
+  (subject, text)
 }
 
 /// Which script a name is for.
@@ -2939,6 +3011,47 @@ mod tests {
       !mailed(&plans[1]),
       "the account's last mail went to the first rule"
     );
+  }
+
+  #[test]
+  fn rule_mail_goes_only_to_addresses_the_account_holds() {
+    let to = [
+      "Ops@Example.com".to_string(),
+      "stranger@else.org".to_string(),
+    ];
+    let (sent, refused) = deliverable_recipients(
+      &to,
+      Some("owner@example.com"),
+      Some("a@x.io,ops@example.com"),
+    );
+    assert_eq!((sent, refused), (vec!["Ops@Example.com".to_string()], 1));
+    let (sent, refused) = deliverable_recipients(&to[1..], Some("owner@example.com"), None);
+    assert_eq!((sent, refused), (vec!["owner@example.com".to_string()], 1));
+    assert_eq!(
+      deliverable_recipients(&[], None, Some("a@x.io")),
+      (Vec::new(), 0)
+    );
+  }
+
+  #[test]
+  fn rule_mail_carries_a_fixed_prefix_and_names_its_rule() {
+    let mut fire = alert("down", RuleAlertKind::Fire, RuleAlertScope::Pigeon);
+    fire.subject = "Stop 9 is dark".to_string();
+    fire.body = Some("No frame since 9:40.".to_string());
+    let (subject, text) = rule_mail_message(&fire, "Dark signs", "Holyoke", "Stop 9");
+    assert_eq!(subject, "PidgeIoT rule: Stop 9 is dark");
+    assert!(text.starts_with("No frame since 9:40.\n\n"));
+    for line in [
+      "Rule: Dark signs",
+      "Flock: Holyoke",
+      "Pigeon: Stop 9",
+      "Severity: warning",
+    ] {
+      assert!(text.contains(line), "{line}");
+    }
+    fire.body = None;
+    let (_, text) = rule_mail_message(&fire, "r", "f", "p");
+    assert!(text.starts_with("--\n"));
   }
 
   #[test]

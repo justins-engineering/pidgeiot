@@ -60,6 +60,8 @@ pub mod cf_api;
 
 pub mod rule_namespace;
 
+pub mod rule_dispatch;
+
 mod business_details;
 pub use business_details::ensure_business_details_columns;
 pub use business_details::load_business_details;
