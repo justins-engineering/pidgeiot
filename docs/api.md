@@ -2627,7 +2627,7 @@ The rule's newest 200 run records, as `Vec<capsules::RuleRun>`. A failed run is 
 minutes, longer than a deploy takes. A quiet successful run is recorded only while the rule is
 watched: for 24 hours after each deploy, and for an hour after a
 [watch](#post-flocksflock_idrulesrule_idwatch). `status` is one of `ok`, `threw`, `timeout`,
-`skipped`, `cpu_limit`, `bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error`
+`skipped`, `bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error`
 and `logs` are the rule's own text and may hold anything its code put there. `404` when the flock
 has no such rule.
 

@@ -435,8 +435,8 @@ pub struct RuleRun {
   pub version: i32,
   pub pigeon_id: String,
   pub batch_id: String,
-  /// `ok`, `threw`, `timeout`, `skipped`, `cpu_limit`, `bad_output`, `oversize`,
-  /// `version_mismatch` or `dispatch_failed`.
+  /// `ok`, `threw`, `timeout`, `skipped`, `bad_output`, `oversize`, `version_mismatch` or
+  /// `dispatch_failed`.
   pub status: String,
   pub readings: i32,
   pub alerts_sent: i32,

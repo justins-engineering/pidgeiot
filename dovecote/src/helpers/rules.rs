@@ -356,12 +356,10 @@ pub fn read_cap(rules: usize) -> usize {
 pub enum DispatchOutcome {
   /// The namespace binding was missing or had no `get`: the platform's failure.
   Binding,
-  /// The call rejected or lost the 2 s race. `cpu_limit` when the rejection said so. A CPU kill
-  /// the platform's grace delays past 2 s is never seen as one: the race has already been lost.
-  Failed {
-    /// See [`is_cpu_limit`].
-    cpu_limit: bool,
-  },
+  /// The call rejected or lost the 2 s race. Its message is never read: a rule's own throw
+  /// crosses the binding with its text intact, so a CPU or memory kill, a missing script and a
+  /// rule forging any of their messages are told apart by nothing a rule cannot write.
+  Failed,
   /// The script answered. `body` holds at most [`read_cap`] + 1 bytes.
   Answered {
     /// HTTP status.
@@ -369,13 +367,6 @@ pub enum DispatchOutcome {
     /// The body as read.
     body: Vec<u8>,
   },
-}
-
-/// Whether a rejected dispatch's message names the CPU limit. The text is not a contract and may
-/// be the rule's own: a miss records `dispatch_failed`, which counts toward auto-pause all the
-/// same, and a false match only pauses the rule sooner.
-pub fn is_cpu_limit(message: &str) -> bool {
-  message.contains("exceeded CPU")
 }
 
 /// A rule run's outcome, as `rule_runs.status` records it.
@@ -393,8 +384,6 @@ pub enum RunStatus {
   VersionMismatch,
   /// A result the harness or the validator refused.
   BadOutput,
-  /// The dispatch hit its CPU limit inside the dispatch's race.
-  CpuLimit,
   /// The response was over [`read_cap`].
   Oversize,
   /// The dispatch failed in a way user code can cause: a 5xx, a harness failure, a lost race, a
@@ -412,7 +401,6 @@ impl RunStatus {
       RunStatus::Skipped => "skipped",
       RunStatus::VersionMismatch => "version_mismatch",
       RunStatus::BadOutput => "bad_output",
-      RunStatus::CpuLimit => "cpu_limit",
       RunStatus::Oversize => "oversize",
       RunStatus::DispatchFailed => "dispatch_failed",
     }
@@ -447,8 +435,8 @@ pub struct RunRecord {
 pub enum Classified {
   /// The harness answered for each rule, in the order sent.
   PerRule(Vec<RunRecord>),
-  /// The dispatch failed whole: every rule records this status and the flock is skipped for the
-  /// rest of the invocation.
+  /// The dispatch failed whole: every rule records this status and the flock's account is skipped
+  /// for the rest of the invocation.
   Flock(RunStatus),
   /// The platform failed: nothing is counted against anyone and the breaker trips.
   Platform,
@@ -487,10 +475,7 @@ struct WireRun {
 pub fn classify(sent: &[DispatchRule], outcome: DispatchOutcome) -> Classified {
   let body = match outcome {
     DispatchOutcome::Binding => return Classified::Platform,
-    DispatchOutcome::Failed { cpu_limit: true } => return Classified::Flock(RunStatus::CpuLimit),
-    DispatchOutcome::Failed { cpu_limit: false } => {
-      return Classified::Flock(RunStatus::DispatchFailed);
-    }
+    DispatchOutcome::Failed => return Classified::Flock(RunStatus::DispatchFailed),
     DispatchOutcome::Answered { status: 200, body } => body,
     DispatchOutcome::Answered { .. } => return Classified::Flock(RunStatus::DispatchFailed),
   };
@@ -577,18 +562,17 @@ fn cut(s: &str, max: usize) -> String {
 pub enum Skip {
   /// The breaker tripped this invocation.
   Breaker,
-  /// This flock's dispatch already failed this invocation.
-  FlockFailed,
+  /// A dispatch of this account's already failed this invocation.
+  AccountFailed,
   /// [`PASS_BUDGET_MS`] is spent.
   Budget,
 }
 
-/// One consumer invocation's second pass: which flocks failed and their accounts, whether the
-/// breaker tripped, and when the pass started. Times are milliseconds from any fixed origin.
+/// One consumer invocation's second pass: which accounts' dispatches failed, whether the breaker
+/// tripped, and when the pass started. Times are milliseconds from any fixed origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassLedger {
   started_ms: u64,
-  failed_flocks: Vec<String>,
   failed_accounts: Vec<String>,
   tripped: bool,
 }
@@ -598,18 +582,17 @@ impl PassLedger {
   pub fn new(started_ms: u64) -> Self {
     Self {
       started_ms,
-      failed_flocks: Vec::new(),
       failed_accounts: Vec::new(),
       tripped: false,
     }
   }
 
-  /// Whether a batch of `flock_id` may dispatch at `now_ms`.
-  pub fn may_dispatch(&self, flock_id: &str, now_ms: u64) -> Result<(), Skip> {
+  /// Whether a batch of a flock `account` owns may dispatch at `now_ms`.
+  pub fn may_dispatch(&self, account: &str, now_ms: u64) -> Result<(), Skip> {
     if self.tripped {
       Err(Skip::Breaker)
-    } else if self.failed_flocks.iter().any(|f| f == flock_id) {
-      Err(Skip::FlockFailed)
+    } else if self.failed_accounts.iter().any(|a| a == account) {
+      Err(Skip::AccountFailed)
     } else if self.budget_spent(now_ms) {
       Err(Skip::Budget)
     } else {
@@ -617,21 +600,23 @@ impl PassLedger {
     }
   }
 
+  /// Whether the breaker tripped, after which nothing else in the pass runs a statement.
+  pub fn tripped(&self) -> bool {
+    self.tripped
+  }
+
   /// Whether [`PASS_BUDGET_MS`] has passed by `now_ms`, checked before a batch's first statement.
   pub fn budget_spent(&self, now_ms: u64) -> bool {
     now_ms.saturating_sub(self.started_ms) >= PASS_BUDGET_MS
   }
 
-  /// Records a dispatch of `flock_id`, owned by `account`. A flock failure skips that flock for
-  /// the rest of the pass; failures under a second account, or a platform failure, trip the
-  /// breaker, so one tenant cannot trip it alone however many flocks it owns.
-  pub fn record(&mut self, flock_id: &str, account: &str, classified: &Classified) {
+  /// Records a dispatch of a flock `account` owns. A failure skips that account's flocks for the
+  /// rest of the pass, so it costs others at most one 2 s wait; a second account's failure, or a
+  /// platform failure, trips the breaker, so one tenant cannot trip it alone.
+  pub fn record(&mut self, account: &str, classified: &Classified) {
     match classified {
       Classified::Platform => self.tripped = true,
       Classified::Flock(_) => {
-        if !self.failed_flocks.iter().any(|f| f == flock_id) {
-          self.failed_flocks.push(flock_id.to_string());
-        }
         if !self.failed_accounts.iter().any(|a| a == account) {
           self.failed_accounts.push(account.to_string());
         }
@@ -2050,15 +2035,12 @@ mod tests {
       classify(&worked_sent(), five_hundred),
       Classified::Flock(RunStatus::DispatchFailed)
     );
-    let rejected = DispatchOutcome::Failed { cpu_limit: false };
+    // A rejection carries no text: its message may be the rule's own, so a CPU kill, a missing
+    // script and a forged "Worker not found." all read alike, and the flock's.
     assert_eq!(
-      classify(&one, rejected),
+      classify(&one, DispatchOutcome::Failed),
       Classified::Flock(RunStatus::DispatchFailed)
     );
-    let cpu = DispatchOutcome::Failed { cpu_limit: true };
-    assert_eq!(classify(&one, cpu), Classified::Flock(RunStatus::CpuLimit));
-    assert!(is_cpu_limit("Worker exceeded CPU time limit."));
-    assert!(!is_cpu_limit("Worker not found"));
     assert_eq!(
       classify(&one, DispatchOutcome::Binding),
       Classified::Platform
@@ -2174,9 +2156,8 @@ mod tests {
     let rules = hostile_sent();
     let classified = classify(&rules, answered(LIVE_HOSTILE));
     let mut ledger = PassLedger::new(0);
-    ledger.record("f1", "a1", &classified);
-    assert_eq!(ledger.may_dispatch("f1", 10), Ok(()));
-    assert_eq!(ledger.may_dispatch("f2", 10), Ok(()));
+    ledger.record("a1", &classified);
+    assert_eq!(ledger.may_dispatch("a1", 10), Ok(()));
 
     let records = per_rule(classified);
     let ok = records.iter().find(|r| r.id == "ok").expect("sibling");
@@ -2622,51 +2603,40 @@ mod tests {
       next_streak(FailStreak::default(), RunStatus::Ok, T0),
       StreakWrite::Keep
     );
-
-    // A CPU kill inside the race is the rule's too: no hour floor.
-    let mut streak = FailStreak::default();
-    for i in 0..19 {
-      let StreakWrite::Set(next) = next_streak(streak, RunStatus::CpuLimit, T0 + i) else {
-        panic!("cpu_limit paused early");
-      };
-      streak = next;
-    }
-    assert!(matches!(
-      next_streak(streak, RunStatus::CpuLimit, T0 + 19),
-      StreakWrite::Pause { ref reason, .. } if reason == "auto:cpu_limit"
-    ));
   }
 
   #[test]
   fn the_breaker_and_the_pass_budget() {
     let failed = Classified::Flock(RunStatus::DispatchFailed);
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("f1", "a1", &failed);
-    assert_eq!(ledger.may_dispatch("f1", 1_100), Err(Skip::FlockFailed));
-    assert_eq!(ledger.may_dispatch("f2", 1_100), Ok(()));
-    ledger.record("f1", "a1", &Classified::Flock(RunStatus::Oversize));
-    ledger.record("f2", "a1", &Classified::Flock(RunStatus::CpuLimit));
-    assert_eq!(ledger.may_dispatch("f2", 1_100), Err(Skip::FlockFailed));
+    ledger.record("a1", &Classified::PerRule(Vec::new()));
+    assert_eq!(ledger.may_dispatch("a1", 1_100), Ok(()));
+    ledger.record("a1", &failed);
+    // A failed account's every flock waits for the next invocation, so one account with two
+    // burning flocks costs other tenants one 2 s wait per invocation, not two.
+    assert_eq!(ledger.may_dispatch("a1", 1_100), Err(Skip::AccountFailed));
+    assert_eq!(ledger.may_dispatch("a2", 1_100), Ok(()));
+    ledger.record("a1", &Classified::Flock(RunStatus::Oversize));
     assert_eq!(
-      ledger.may_dispatch("f3", 1_100),
+      ledger.may_dispatch("a2", 1_100),
       Ok(()),
-      "one account's flocks cannot trip it alone"
+      "one account cannot trip it alone"
     );
-    ledger.record("f3", "a2", &failed);
-    assert_eq!(ledger.may_dispatch("f4", 1_100), Err(Skip::Breaker));
+    ledger.record("a2", &failed);
+    assert_eq!(ledger.may_dispatch("a3", 1_100), Err(Skip::Breaker));
 
     let mut ledger = PassLedger::new(1_000);
-    ledger.record("f1", "a1", &Classified::Platform);
-
-    assert_eq!(ledger.may_dispatch("f9", 1_100), Err(Skip::Breaker));
+    ledger.record("a1", &Classified::Platform);
+    assert_eq!(ledger.may_dispatch("a9", 1_100), Err(Skip::Breaker));
+    assert!(ledger.tripped());
 
     let ledger = PassLedger::new(1_000);
     assert_eq!(
-      ledger.may_dispatch("f1", 1_000 + PASS_BUDGET_MS - 1),
+      ledger.may_dispatch("a1", 1_000 + PASS_BUDGET_MS - 1),
       Ok(())
     );
     assert_eq!(
-      ledger.may_dispatch("f1", 1_000 + PASS_BUDGET_MS),
+      ledger.may_dispatch("a1", 1_000 + PASS_BUDGET_MS),
       Err(Skip::Budget)
     );
   }

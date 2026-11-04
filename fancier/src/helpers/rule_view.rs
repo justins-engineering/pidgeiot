@@ -444,7 +444,6 @@ mod tests {
     for status in [
       "threw",
       "timeout",
-      "cpu_limit",
       "bad_output",
       "oversize",
       "version_mismatch",
