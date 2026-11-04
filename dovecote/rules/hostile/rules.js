@@ -17,6 +17,7 @@ import typo from "./h-typo.js";
 import proto from "./h-proto.js";
 import egress from "./h-fetch.js";
 import dial from "./h-socket.js";
+import burn from "./h-burn.js";
 
 export default {
   big: { version: 1, run: big }, cyc: { version: 1, run: cyc }, get: { version: 1, run: get },
@@ -27,4 +28,5 @@ export default {
   loud: { version: 1, run: loud }, same: { version: 1, run: same },
   typo: { version: 1, run: typo }, proto: { version: 1, run: proto },
   egress: { version: 1, run: egress }, dial: { version: 1, run: dial },
+  burn: { version: 1, run: burn },
 };

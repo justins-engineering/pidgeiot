@@ -71,6 +71,12 @@ try {
     quotes.logs.length === 20 && quotes.logs.every((l) => escaped(l) <= 256) &&
     loud.status === "threw" && escaped(loud.error) <= 1024 && escaped(loud.error) > 1000);
 
+  // The harness cannot time a rule (Workers timers advance only after I/O), so a rule that burns
+  // CPU and returns answers ok; only the platform's metadata limit can stop it.
+  const [burn] = (await call({ mode: "live", wall_ms: 250, common,
+    rules: [{ id: "burn", version: 1, state }] })).results;
+  check("a rule that burns CPU and finishes is ok", burn?.status === "ok");
+
   const wide = await call({ mode: "replay", wall_ms: 250, events: [common],
     rules: [{ id: "wide", version: 1 }] });
   check("state is capped in UTF-8 bytes, not UTF-16 units",
