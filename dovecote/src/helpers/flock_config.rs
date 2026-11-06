@@ -438,39 +438,47 @@ where
   })))
 }
 
-/// A flock's layer and version, `None` for an unknown flock. A plain read: a caller that must
-/// not act on a stale one checks again with [`mirror_flock_apply_pg_db`]'s answer.
-pub async fn read_flock_layer(client: &Client, flock_id: &Uuid) -> Result<Option<(String, i32)>> {
+/// A flock's layer as a create, a move or a mirror reads it, with the board of the image its
+/// `firmware` names (`None` for none or an untagged image). One statement reads both, so the
+/// board always belongs to this layer, however stale a cached read of it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlockLayer {
+  pub config_json: String,
+  pub version: i32,
+  pub firmware_board: Option<String>,
+}
+
+impl FlockLayer {
+  /// From a row carrying `flock_config`, `config_version` and `firmware_board`; `None` when the
+  /// flock is gone.
+  pub fn from_row(row: &tokio_postgres::Row) -> Option<Self> {
+    let config: Option<String> = row.get("flock_config");
+    let version: Option<i32> = row.get("config_version");
+    config.zip(version).map(|(config_json, version)| Self {
+      config_json,
+      version,
+      firmware_board: row.get("firmware_board"),
+    })
+  }
+}
+
+/// A flock's layer, `None` for an unknown flock. A plain read: a caller that must not act on a
+/// stale one checks again with [`mirror_flock_apply_pg_db`]'s answer.
+pub async fn read_flock_layer(client: &Client, flock_id: &Uuid) -> Result<Option<FlockLayer>> {
   ensure_flock_config_columns(client).await?;
+  crate::helpers::ensure_flock_firmware_table(client).await?;
   let rows = client
     .query_typed(
-      "SELECT target_config::text AS target_config, config_version FROM flocks WHERE id = $1;",
+      "SELECT f.target_config::text AS flock_config, f.config_version,
+         (SELECT ff.board FROM flock_firmware ff
+          WHERE ff.flock_id = f.id AND ff.sha256 = f.target_config #>> '{firmware,sha256}')
+           AS firmware_board
+       FROM flocks f WHERE f.id = $1;",
       &[(flock_id, Type::UUID)],
     )
     .await
     .map_err(|e| db_error("Flock layer read error", e))?;
-  Ok(
-    rows
-      .into_iter()
-      .next()
-      .map(|row| (row.get("target_config"), row.get("config_version"))),
-  )
-}
-
-/// The board of the image a stored layer's `firmware` names in the flock's catalog, `None` when
-/// it names none or the image is untagged.
-pub async fn layer_firmware_board(
-  client: &Client,
-  flock_id: &Uuid,
-  config_json: &str,
-) -> Result<Option<String>> {
-  let Some(layer) = capsules::parse_layer(config_json) else {
-    return Ok(None);
-  };
-  match layer_firmware_sha(&layer) {
-    Ok(Some(sha)) => crate::helpers::get_firmware_board(client, &flock_id.to_string(), &sha).await,
-    _ => Ok(None),
-  }
+  Ok(rows.first().and_then(FlockLayer::from_row))
 }
 
 /// Mirrors a pigeon's shadow and the flock version it took, and answers the layer its flock
@@ -482,8 +490,9 @@ pub async fn mirror_flock_apply_pg_db(
   flock_id: &Uuid,
   shadow: &PigeonShadow,
   flock_version: i32,
-) -> Result<Option<(String, i32)>> {
+) -> Result<Option<FlockLayer>> {
   ensure_flock_config_columns(client).await?;
+  crate::helpers::ensure_flock_firmware_table(client).await?;
   let rows = client
     .query_typed(
       "UPDATE pigeon_shadow SET
@@ -496,7 +505,10 @@ pub async fn mirror_flock_apply_pg_db(
        WHERE id = $1
        RETURNING
          (SELECT target_config::text FROM flocks WHERE id = $8) AS flock_config,
-         (SELECT config_version FROM flocks WHERE id = $8) AS config_version;",
+         (SELECT config_version FROM flocks WHERE id = $8) AS config_version,
+         (SELECT ff.board FROM flocks f JOIN flock_firmware ff ON ff.flock_id = f.id
+          WHERE f.id = $8 AND ff.sha256 = f.target_config #>> '{firmware,sha256}')
+           AS firmware_board;",
       &[
         (&pigeon_id, Type::TEXT),
         (&shadow.target_version, Type::INT4),
@@ -510,11 +522,7 @@ pub async fn mirror_flock_apply_pg_db(
     )
     .await
     .map_err(|e| db_error("Postgres flock apply mirror error", e))?;
-  Ok(rows.into_iter().next().and_then(|row| {
-    let config: Option<String> = row.get("flock_config");
-    let version: Option<i32> = row.get("config_version");
-    config.zip(version)
-  }))
+  Ok(rows.first().and_then(FlockLayer::from_row))
 }
 
 #[cfg(test)]
@@ -815,7 +823,7 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pg {
   use super::*;
-  use crate::helpers::rule_store::pg::{Scratch, new_flock, run};
+  use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
 
   fn pass(
     _: &[FlockMember],
@@ -844,16 +852,78 @@ mod pg {
         .await
         .expect("write");
       assert_eq!(stale.err(), Some(STALE_VERSION));
-      let (text, version) = read_flock_layer(&client, &flock)
+      let stored = read_flock_layer(&client, &flock)
         .await
         .expect("read")
         .expect("flock found");
-      assert_eq!((text.as_str(), version), (r#"{"a": 1}"#, 1));
+      assert_eq!(
+        (stored.config_json.as_str(), stored.version),
+        (r#"{"a": 1}"#, 1)
+      );
 
       let unknown = write_flock_config(&mut client, &Uuid::nil(), "{}", 0, None, pass)
         .await
         .expect("write");
       assert!(matches!(unknown, Ok(None)));
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn the_layer_reads_carry_the_board_of_the_image_it_names() {
+    run(async {
+      let db = Scratch::new("flock_config_board").await;
+      let mut client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      new_pigeon(&client, flock, "p1").await;
+      client
+        .execute(
+          "INSERT INTO pigeon_shadow (id, updated_at) VALUES ('p1', 0)",
+          &[],
+        )
+        .await
+        .expect("shadow");
+      client
+        .execute(
+          "INSERT INTO flock_firmware (flock_id, version, size, sha256, board)
+           VALUES ($1, '1.0.0', 10, 'ab', 'nrf9160')",
+          &[&flock],
+        )
+        .await
+        .expect("image");
+
+      let none = read_flock_layer(&client, &flock).await.expect("read");
+      assert_eq!(none.expect("flock found").firmware_board, None);
+
+      let layer = r#"{"firmware":{"version":"1.0.0","size":10,"sha256":"ab"}}"#;
+      write_flock_config(&mut client, &flock, layer, 0, Some("ab"), pass)
+        .await
+        .expect("write")
+        .expect("not refused")
+        .expect("flock found");
+      let read = read_flock_layer(&client, &flock)
+        .await
+        .expect("read")
+        .expect("flock found");
+      assert_eq!(
+        (read.version, read.firmware_board.as_deref()),
+        (1, Some("nrf9160"))
+      );
+
+      let shadow = PigeonShadow {
+        target_version: 1,
+        current_version: 0,
+        target_config: JsonString::new("{}".to_string()).unwrap(),
+        current_config: JsonString::new("{}".to_string()).unwrap(),
+        updated_at: 0,
+      };
+      let mirrored = mirror_flock_apply_pg_db(&client, "p1", &flock, &shadow, 0)
+        .await
+        .expect("mirror")
+        .expect("flock found");
+      assert_eq!(mirrored, read);
       drop(client);
       db.drop().await;
     });

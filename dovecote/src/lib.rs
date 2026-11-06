@@ -1,7 +1,7 @@
 use crate::helpers::cf_api::busy_response;
 use crate::helpers::flock_config::{
-  FLOCK_CONFIG_QUEUE, FlockConfigApply, FlockMoveAnswer, apply_messages, check_flock_write,
-  enqueue_flock_applies, layer_firmware_board, layer_firmware_sha, mirror_flock_apply_pg_db,
+  FLOCK_CONFIG_QUEUE, FlockConfigApply, FlockLayer, FlockMoveAnswer, apply_messages,
+  check_flock_write, enqueue_flock_applies, layer_firmware_sha, mirror_flock_apply_pg_db,
   read_flock_config, read_flock_layer, write_flock_config,
 };
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
@@ -558,30 +558,15 @@ fn internal_json_request<T: serde::Serialize>(method: Method, body: &T) -> worke
   Request::new_with_init("https://internal/", &init)
 }
 
-/// Queues one pigeon's apply of its flock's layer, looking up the board the layer's firmware
-/// names. Best-effort and logged: the flock page shows a member left behind, and writing the
-/// layer again repairs it.
-async fn enqueue_one_apply(
-  env: &Env,
-  client: &tokio_postgres::Client,
-  pigeon_id: &str,
-  flock_id: &uuid::Uuid,
-  config_json: &str,
-  version: i32,
-) {
-  let firmware_board = match layer_firmware_board(client, flock_id, config_json).await {
-    Ok(board) => board,
-    Err(e) => {
-      console_error!("Flock layer apply for {pigeon_id}: board lookup failed: {e}");
-      return;
-    }
-  };
+/// Queues one pigeon's apply of its flock's layer. Best-effort and logged: the flock page shows
+/// a member left behind, and writing the layer again repairs it.
+async fn enqueue_one_apply(env: &Env, pigeon_id: &str, flock_id: &uuid::Uuid, layer: &FlockLayer) {
   let ids = [pigeon_id.to_string()];
   let applies = apply_messages(
     flock_id,
-    version,
-    config_json,
-    firmware_board.as_deref(),
+    layer.version,
+    &layer.config_json,
+    layer.firmware_board.as_deref(),
     &[],
     &ids,
   );
@@ -2344,12 +2329,10 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       // A pigeon created into a configured flock takes the flock's layer like any member, through
       // the queue. One whose mirror insert failed is missing from the flock's member list too,
       // and misses the layer the same way.
-      if let Some((config_json, version)) = flock_layer
-        && version > 0
+      if let Some(layer) = flock_layer
+        && layer.version > 0
       {
-        let pigeon_id = &pcr.pigeon.id;
-        enqueue_one_apply(&ctx.env, &client, pigeon_id, &payload.flock_id, &config_json, version)
-          .await;
+        enqueue_one_apply(&ctx.env, &pcr.pigeon.id, &payload.flock_id, &layer).await;
       }
 
       let headers = Headers::new();
@@ -2834,16 +2817,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
       // The destination's layer goes in with the move, so the device sees one new version. A
       // stale cached read here is caught after the mirror below.
-      let Ok(Some((config_json, flock_version))) =
-        read_flock_layer(&client, &payload.flock_id).await
-      else {
-        return Response::error("Internal Server Error", 500)
-          .unwrap()
-          .with_cors(&cors);
-      };
-      let Ok(firmware_board) =
-        layer_firmware_board(&client, &payload.flock_id, &config_json).await
-      else {
+      let Ok(Some(layer)) = read_flock_layer(&client, &payload.flock_id).await else {
         return Response::error("Internal Server Error", 500)
           .unwrap()
           .with_cors(&cors);
@@ -2851,9 +2825,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       let apply = FlockConfigApply {
         pigeon_id: pigeon_id.clone(),
         flock_id: payload.flock_id.to_string(),
-        flock_version,
-        config_json,
-        firmware_board,
+        flock_version: layer.version,
+        config_json: layer.config_json,
+        firmware_board: layer.firmware_board,
         adopt_json: None,
       };
       let Ok(move_req) = internal_json_request(Method::Put, &apply) else {
@@ -2891,10 +2865,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       )
       .await
       {
-        Ok(Some((config_json, version))) if version > moved.shadow.flock_version => {
-          let pigeon_id = &moved.pigeon.id;
-          enqueue_one_apply(&ctx.env, &client, pigeon_id, &payload.flock_id, &config_json, version)
-            .await;
+        Ok(Some(layer)) if layer.version > moved.shadow.flock_version => {
+          enqueue_one_apply(&ctx.env, &moved.pigeon.id, &payload.flock_id, &layer).await;
         }
         Ok(_) => {}
         Err(e) => console_error!("External DB Sync Error for shadow {}: {e}", moved.pigeon.id),

@@ -10,6 +10,7 @@ use tokio_postgres::{Client, types::Type};
 use worker::{Env, Headers, Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
+use crate::helpers::flock_config::FlockLayer;
 use crate::helpers::missing_schema_objects;
 
 /// A connector with every secret removed: the token, a PSK secret, and a Nidd pigeon's claim key,
@@ -476,15 +477,16 @@ fn mirrored_connector(connector: &Connector) -> String {
 /// earlier pigeon left under the id; the cascades take its shadow, ACL, history and alerts. That
 /// is safe because the DO has just created this pigeon, so no live one holds the id.
 ///
-/// Answers the flock's layer and version, read by the shadow insert itself: the pigeon row's
-/// foreign key holds a key-share lock on the flock until the commit, so a flock write either
-/// committed before that read or lists this pigeon among its members.
+/// Answers the flock's layer, read by the shadow insert itself: the pigeon row's foreign key
+/// holds a key-share lock on the flock until the commit, so a flock write either committed
+/// before that read or lists this pigeon among its members.
 pub async fn insert_pigeon_pg_db(
   mut client: Client,
   pcr: &PigeonDetail,
-) -> worker::Result<Option<(String, i32)>> {
+) -> worker::Result<Option<FlockLayer>> {
   ensure_pigeons_board_column(&client).await?;
   crate::helpers::flock_config::ensure_flock_config_columns(&client).await?;
+  crate::helpers::ensure_flock_firmware_table(&client).await?;
 
   let tx = client.transaction().await.map_err(|e| {
     console_error!("Postgres transaction error: {e}");
@@ -567,7 +569,10 @@ pub async fn insert_pigeon_pg_db(
          updated_at = EXCLUDED.updated_at
        RETURNING
          (SELECT target_config::text FROM flocks WHERE id = $7) AS flock_config,
-         (SELECT config_version FROM flocks WHERE id = $7) AS config_version;",
+         (SELECT config_version FROM flocks WHERE id = $7) AS config_version,
+         (SELECT ff.board FROM flocks f JOIN flock_firmware ff ON ff.flock_id = f.id
+          WHERE f.id = $7 AND ff.sha256 = f.target_config #>> '{firmware,sha256}')
+           AS firmware_board;",
       &[
         (&pigeon.id, Type::TEXT),
         (&shadow.target_version, Type::INT4),
@@ -583,11 +588,7 @@ pub async fn insert_pigeon_pg_db(
       console_error!("Postgres pigeon_shadow sync error: {e}");
       worker::Error::RustError("Internal Server Error".into())
     })?;
-  let flock_layer = rows.into_iter().next().and_then(|row| {
-    let config: Option<String> = row.get("flock_config");
-    let version: Option<i32> = row.get("config_version");
-    config.zip(version)
-  });
+  let flock_layer = rows.first().and_then(FlockLayer::from_row);
 
   tx.commit().await.map_err(|e| {
     console_error!("Postgres commit error: {e}");
