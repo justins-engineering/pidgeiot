@@ -1631,6 +1631,8 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
 ```
 
 - `400` for a `target_config` that is not a JSON object.
+- `400` for a top-level `flock_firmware_repush`, the flock layer's re-push counter: a pigeon
+  copy would override the flock's for good. A pigeon re-pushes with `firmware_repush`.
 - `413` "Payload Too Large: this NIDD pigeon's target_config must serialize to at most <n>
   bytes", for a `Nidd` pigeon, counted on the merged config and checked before anything is
   written. One downlink frame carries
@@ -1866,8 +1868,10 @@ Refused with nothing written:
 - `400` for a top-level `reboot`: in a flock layer it would reboot every member on every later
   change to any member's config. Reboot pigeons one at a time.
 - `400` for a top-level `firmware_repush`, the pigeon layer's own re-push counter. A flock
-  re-pushes its firmware by advancing `flock_firmware_repush` instead, which no pigeon layer
-  overrides.
+  re-pushes its firmware by advancing `flock_firmware_repush` instead, which a pigeon layer cannot
+  carry. That key is top-level, so advancing it gives **every** member a new `target_version`,
+  including one that pins its own `firmware` or opts out with `"firmware": null`: each such
+  member's FOTA attempt budget reopens on its own image, and each `Nidd` member gets a downlink.
 - `400` for a `firmware` key unless the image and **every** member are tagged with one board, the
   same fail-closed rule as a pigeon's own assignment. A flock that mixes boards assigns firmware
   per pigeon. A pigeon opts out of the flock's image with `"firmware": null` in its layer, or pins

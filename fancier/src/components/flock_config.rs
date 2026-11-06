@@ -62,7 +62,7 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
                 button {
                   class: "btn btn-outline btn-secondary btn-sm",
                   disabled: busy(),
-                  title: "Re-sends the flock's firmware under a new target version on every pigeon that takes it",
+                  title: "Moves every pigeon in this flock to a new target version, so each tries its firmware again, including one that pins its own image",
                   onclick: {
                       let layer = current.target_config.clone();
                       let version = current.config_version;

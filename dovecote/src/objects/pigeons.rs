@@ -3088,6 +3088,14 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
   let serde_json::Value::Object(pigeon_layer) = &body.target_config else {
     return Response::error("Bad Request: target_config must be a JSON object", 400);
   };
+  // A pigeon copy would override the flock's counter for good, so flock re-pushes stop here.
+  if pigeon_layer.contains_key(capsules::FLOCK_FIRMWARE_REPUSH_KEY) {
+    return Response::error(
+      "Bad Request: flock_firmware_repush belongs to the flock; a pigeon re-pushes with \
+       firmware_repush",
+      400,
+    );
+  }
 
   // Only when this pigeon's own layer names an image: a `null` opts out of the flock's, and a
   // flock's image was checked against every member when the flock wrote it.
