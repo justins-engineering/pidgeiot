@@ -97,4 +97,4 @@ mod legal;
 pub use legal::{DpaPage, PrivacyPage, SubprocessorsPage, TermsPage};
 
 mod rules;
-pub use rules::{FlockRules, RuleView};
+pub use rules::{FlockRules, FlockRulesCard, RuleView};

@@ -288,6 +288,13 @@ pub fn save_origin(base: Option<&RuleVersion>) -> RuleOrigin {
   }
 }
 
+/// Whether the flock page shows its Rules card: only once the rules list has answered. A refusal
+/// is what a flock outside the platform's rules allowlist gets, and a failed read shows nothing
+/// rather than a card that may lead nowhere.
+pub fn rules_card_shown(list: Option<&Result<Vec<Rule>, String>>) -> bool {
+  matches!(list, Some(Ok(_)))
+}
+
 /// The addresses typed into the recipients field, split on commas and whitespace. dovecote checks
 /// each one; this only splits.
 pub fn parse_recipients(text: &str) -> Vec<String> {
@@ -638,6 +645,18 @@ mod tests {
       origin_label(RuleOrigin::AssistantEdited),
       "Assistant, edited"
     );
+  }
+
+  #[test]
+  fn the_rules_card_waits_for_the_list_and_hides_on_a_refusal() {
+    assert!(!rules_card_shown(None), "nothing before the answer");
+    let refused = Err("Forbidden: rules are not enabled for this organization".to_string());
+    assert!(!rules_card_shown(Some(&refused)));
+    assert!(
+      rules_card_shown(Some(&Ok(vec![]))),
+      "an empty list still opens rules"
+    );
+    assert!(rules_card_shown(Some(&Ok(vec![rule()]))));
   }
 
   #[test]

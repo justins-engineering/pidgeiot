@@ -9,7 +9,8 @@ use crate::helpers::rule_dry_run_view::{
 };
 use crate::helpers::rule_view::{
   Badge, bar_hours, deploy_outcome, failure_groups, hourly_bars, hours_ago, origin_label,
-  parse_recipients, rule_badges, save_origin, test_badge, unfinished_deploy, version_label,
+  parse_recipients, rule_badges, rules_card_shown, save_origin, test_badge, unfinished_deploy,
+  version_label,
 };
 use crate::helpers::telemetry_export::display_utc;
 use crate::{LocalSession, Route, api};
@@ -42,6 +43,35 @@ fn RuleBadges(badges: Vec<Badge>) -> Element {
     div { class: "flex flex-wrap gap-1",
       for badge in badges {
         span { class: "badge badge-sm whitespace-nowrap {badge.class}", "{badge.label}" }
+      }
+    }
+  }
+}
+
+/// The flock page's way into its rules, shown only once the rules list answers: rules are open
+/// to the organizations the platform lists, and every other flock's list answers 403, so a plain
+/// account never sees a card that leads to a refusal.
+#[component]
+pub fn FlockRulesCard(flock_id: Uuid) -> Element {
+  let answer = use_resource(move || async move { api::rules::list(flock_id).await });
+  if !rules_card_shown(answer.read().as_ref()) {
+    return rsx! {};
+  }
+  rsx! {
+    section {
+      id: "flock-rules",
+      class: "mt-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-base-100 border border-base-content/10 rounded-box p-6",
+      div {
+        h2 { class: "text-lg font-bold", "Rules" }
+        p { class: "text-sm text-base-content/70 max-w-2xl",
+          "Code you write that runs over each telemetry batch from this flock, for alerts "
+          "and derived values the built-in alerts cannot express."
+        }
+      }
+      Link {
+        to: Route::FlockRules { flock_id },
+        class: "btn btn-outline btn-sm shrink-0",
+        "Open rules"
       }
     }
   }
