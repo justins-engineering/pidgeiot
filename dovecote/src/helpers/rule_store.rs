@@ -984,6 +984,32 @@ pub async fn replay_history(
   query_telemetry_history_for_flock(client, access, None, Some(since), None, &exclude).await
 }
 
+/// Deletes what rules stored under a deleted pigeon, best effort: its state documents and alert
+/// flags key on the pigeon's id as text, with no foreign key to cascade, and a NIDD pigeon's id
+/// comes back when its IMEI is created again. Nothing is done under an excluded pigeon, and where
+/// the rule tables do not exist nothing is logged.
+pub async fn delete_pigeon_rule_rows(client: &Client, pigeon_id: &str) {
+  if excluded_pigeons(None)
+    .iter()
+    .any(|id| id.eq_ignore_ascii_case(pigeon_id))
+  {
+    return;
+  }
+  let deleted = client
+    .execute_typed(
+      "WITH s AS (DELETE FROM rule_state WHERE scope = $1)
+       DELETE FROM rule_alert_state WHERE scope = $1",
+      &[(&pigeon_id, Type::TEXT)],
+    )
+    .await;
+  if let Err(e) = deleted
+    && e.code() != Some(&SqlState::UNDEFINED_TABLE)
+  {
+    let code = e.code().map_or("none", |code| code.code());
+    console_error!("rules: a deleted pigeon's rule rows were not deleted, SQLSTATE {code}");
+  }
+}
+
 /// The flock's name and its pigeons' names for a dry run, never naming a pigeon
 /// [`excluded_pigeons`] names; `None` when the flock is gone.
 pub async fn replay_names(
@@ -1437,6 +1463,61 @@ pub(crate) mod pg {
       db.drop().await;
     });
   }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_a_deleted_pigeon_leaves_no_rule_rows_and_a_missing_table_is_quiet() {
+    run(async {
+      let db = Scratch::new("pigeon_rows").await;
+      let client = db.client().await;
+      let rule = new_rule(&client, new_flock(&client, None).await).await;
+      let field = crate::helpers::rules::FIELD_PIGEONS[0];
+      for scope in ["p1", "p2", "", field] {
+        client
+          .execute(
+            "INSERT INTO rule_state (rule_id, scope, doc) VALUES ($1, $2, '{}')",
+            &[&rule, &scope],
+          )
+          .await
+          .expect("state");
+        client
+          .execute(
+            "INSERT INTO rule_alert_state (rule_id, scope, key, firing, decided_at)
+             VALUES ($1, $2, 'k', true, now())",
+            &[&rule, &scope],
+          )
+          .await
+          .expect("flag");
+      }
+      delete_pigeon_rule_rows(&client, "p1").await;
+      delete_pigeon_rule_rows(&client, field).await;
+      for table in ["rule_state", "rule_alert_state"] {
+        let mut sql = String::with_capacity(18 + table.len());
+        sql.push_str("SELECT scope FROM ");
+        sql.push_str(table);
+        let mut scopes: Vec<String> = client
+          .query(sql.as_str(), &[])
+          .await
+          .expect("read")
+          .iter()
+          .map(|r| r.get(0))
+          .collect();
+        scopes.sort_unstable();
+        assert_eq!(
+          scopes,
+          ["", field, "p2"],
+          "{table}: the flock's and other pigeons' stay"
+        );
+      }
+      client
+        .batch_execute("DROP TABLE rule_alert_state, rule_state;")
+        .await
+        .expect("dropped");
+      delete_pigeon_rule_rows(&client, "p2").await;
+      drop(client);
+      db.drop().await;
+    });
+  }
+
   #[test]
   #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
   fn rule_store_concurrent_merges_keep_both_keys() {

@@ -11,6 +11,7 @@ use worker::{Env, Headers, Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
 use crate::helpers::missing_schema_objects;
+use crate::helpers::rule_store::delete_pigeon_rule_rows;
 
 /// A connector with every secret removed: the token, a PSK secret, and a Nidd pigeon's claim key,
 /// which signs every downlink for the device's life. What the read routes answer with. The PSK
@@ -478,6 +479,11 @@ fn mirrored_connector(connector: &Connector) -> String {
 pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
   ensure_pigeons_board_column(&client).await?;
 
+  // Outside the transaction: a failure here must not abort the mirror insert.
+  if matches!(pcr.pigeon.connector, Connector::Nidd(_)) {
+    delete_pigeon_rule_rows(&client, &pcr.pigeon.id).await;
+  }
+
   let tx = client.transaction().await.map_err(|e| {
     console_error!("Postgres transaction error: {e}");
     worker::Error::RustError("Internal Server Error".into())
@@ -770,6 +776,7 @@ pub async fn delete_pigeon_pg_db(client: Client, pigeon_id: &str) -> worker::Res
       console_error!("Postgres pigeon delete sync error: {e}");
       worker::Error::RustError("Internal Server Error".into())
     })?;
+  delete_pigeon_rule_rows(&client, pigeon_id).await;
 
   Ok(())
 }
