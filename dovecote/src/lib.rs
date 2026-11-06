@@ -2648,7 +2648,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         let applies = apply_messages(
           &flock_id,
           written.config_version,
-          &config_json,
+          &written.config_json,
           written.image_board.as_deref(),
           &body.adopt,
           &member_ids,
@@ -2666,7 +2666,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           .with_cors(&cors);
         }
 
-        let Ok(target_config) = JsonString::new(config_json) else {
+        let Ok(target_config) = JsonString::new(written.config_json) else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
             .with_cors(&cors);

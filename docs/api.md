@@ -1591,11 +1591,11 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
 {
   "target_version": 1,
   "current_version": 0,
-  "target_config": "{\"telemetry_interval\":60}",
+  "target_config": "{\"stop_id\":\"414\",\"telemetry_interval\":60}",
   "current_config": "{}",
   "updated_at": 1784302765,
   "pigeon_config": "{\"stop_id\":\"414\"}",
-  "flock_config": "{\"telemetry_interval\":60}",
+  "flock_config": "{\"telemetry_interval\": 60}",
   "flock_version": 2
 }
 ```
@@ -1833,7 +1833,7 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/config \
 ```json
 {
   "flock_id": "0192b7a4-6d1e-7c55-9a0f-2f4b8e6c1d20",
-  "target_config": "{\"telemetry_interval\":60}",
+  "target_config": "{\"telemetry_interval\": 60}",
   "config_version": 3,
   "members": 12,
   "members_on_version": 11

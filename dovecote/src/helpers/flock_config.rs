@@ -339,6 +339,9 @@ pub async fn read_flock_config(client: &Client, flock_id: &Uuid) -> Result<Optio
 
 /// What a flock write stored, and the members it found under the flock's row lock.
 pub struct FlockWrite {
+  /// The layer as Postgres renders it, the one text every member takes: a create or a move reads
+  /// this same rendering, so a member never differs by how it joined.
+  pub config_json: String,
   pub config_version: i32,
   pub members: Vec<FlockMember>,
   /// The board of the image the layer's `firmware` names, when it names a tagged one.
@@ -392,7 +395,7 @@ where
     .query_typed(
       "UPDATE flocks SET target_config = $2::jsonb, config_version = config_version + 1
        WHERE id = $1 AND config_version = $4
-       RETURNING config_version,
+       RETURNING target_config::text AS target_config, config_version,
          (SELECT COALESCE(json_agg(json_build_object(
              'id', p.id,
              'board', p.board,
@@ -428,6 +431,7 @@ where
     .map_err(|e| db_error("Flock config commit error", e))?;
 
   Ok(Ok(Some(FlockWrite {
+    config_json: row.get("target_config"),
     config_version: row.get("config_version"),
     members,
     image_board,
@@ -834,6 +838,7 @@ mod pg {
         .expect("not refused")
         .expect("flock found");
       assert_eq!(first.config_version, 1);
+      assert_eq!(first.config_json, r#"{"a": 1}"#, "the stored rendering");
 
       let stale = write_flock_config(&mut client, &flock, r#"{"a":2}"#, 0, None, pass)
         .await
