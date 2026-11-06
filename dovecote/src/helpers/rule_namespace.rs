@@ -496,10 +496,6 @@ pub fn sweep_due(scheduled_ms: f64) -> bool {
 
 /// The keys of a dry-run bundle: the candidate's `<rule>-v<version>`, and the deployed
 /// version's beside it when there is one. `None` unless `rule` is a uuid and the two differ.
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the test route uses it once dry runs dispatch")
-)]
 pub fn test_bundle_keys(
   rule: &str,
   candidate: i32,
@@ -639,10 +635,6 @@ pub async fn put_flock_script(
 
 /// A dry run's modules: the harness, the candidate at `candidate` and, when the rule has one,
 /// the deployed version beside it, under the keys [`test_bundle_keys`] gives.
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the test route uses it once dry runs dispatch")
-)]
 pub fn test_script_modules(
   rule: Uuid,
   candidate: (i32, &str),
@@ -664,18 +656,19 @@ pub fn test_script_modules(
   bundle_modules(&rules)
 }
 
-/// Uploads `rule`'s dry-run script, `test-<rule>`, at the dry run's CPU limit and tagged `test`.
-#[expect(dead_code, reason = "the test route calls it once dry runs dispatch")]
+/// Uploads `rule`'s dry-run script, `test-<rule>`, tagged `test`, at the CPU limit `kind` gives:
+/// the dry run's for the replays, the live one for the CPU check.
 pub async fn put_test_script(
   env: &Env,
   ns: &Namespace,
   rule: Uuid,
   account: Uuid,
+  kind: ScriptKind,
   modules: &[(String, String)],
 ) -> Result<(), CfAnswer> {
   let rule_id = uuid_str(rule);
-  let req = script_name(ScriptKind::Test, &rule_id).and_then(|name| {
-    let metadata = upload_metadata(ScriptKind::Test, &uuid_str(account), &rule_id, ns.env())?;
+  let req = script_name(kind, &rule_id).and_then(|name| {
+    let metadata = upload_metadata(kind, &uuid_str(account), &rule_id, ns.env())?;
     upload_request(ns, &name, &boundary()?, &metadata, modules)
   });
   let Some(req) = req else {
@@ -689,7 +682,6 @@ pub async fn put_test_script(
 
 /// Deletes `rule`'s dry-run script; one already gone counts as deleted. A failure is left to the
 /// daily sweep, which deletes test scripts older than [`TEST_SCRIPT_MAX_AGE_SECS`].
-#[expect(dead_code, reason = "the test route calls it once dry runs dispatch")]
 pub async fn delete_test_script(env: &Env, ns: &Namespace, rule: Uuid) -> Result<(), CfAnswer> {
   let Some(req) =
     script_name(ScriptKind::Test, &uuid_str(rule)).and_then(|name| delete_request(ns, &name))
@@ -714,7 +706,7 @@ pub enum Refusal {
 }
 
 impl Refusal {
-  fn of(answer: &CfAnswer) -> Self {
+  pub(crate) fn of(answer: &CfAnswer) -> Self {
     match answer {
       CfAnswer::Busy(wait) => Refusal::Busy(*wait),
       other => {
@@ -724,7 +716,7 @@ impl Refusal {
     }
   }
 
-  fn internal() -> Self {
+  pub(crate) fn internal() -> Self {
     Refusal::Status(500, "Internal Server Error".to_string())
   }
 }
@@ -735,7 +727,7 @@ const DEPLOY_OVERTAKEN: &str =
 
 /// The owning organization of a flock with rules, which its script is tagged for: rules open only
 /// to listed organizations, so a personal flock never gets this far.
-fn rules_account(access: &FlockAccess) -> Result<(Uuid, Uuid), Refusal> {
+pub(crate) fn rules_account(access: &FlockAccess) -> Result<(Uuid, Uuid), Refusal> {
   let flock = flock_uuid(access).map_err(|_| Refusal::internal())?;
   let account = access.org_id().ok_or_else(Refusal::internal)?;
   Ok((flock, account))

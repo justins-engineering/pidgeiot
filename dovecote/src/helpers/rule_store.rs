@@ -18,6 +18,7 @@
   )
 )]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::helpers::missing_schema_objects;
@@ -981,6 +982,35 @@ pub async fn replay_history(
 ) -> Result<TelemetryHistoryPage> {
   let exclude = excluded_pigeons(excluded_var);
   query_telemetry_history_for_flock(client, access, None, Some(since), None, &exclude).await
+}
+
+/// The flock's name and its pigeons' names for a dry run, never naming a pigeon
+/// [`excluded_pigeons`] names; `None` when the flock is gone.
+pub async fn replay_names(
+  client: &Client,
+  access: &FlockAccess,
+  excluded_var: Option<&str>,
+) -> std::result::Result<Option<(String, HashMap<String, String>)>, tokio_postgres::Error> {
+  let Ok(flock) = Uuid::parse_str(access.flock_id()) else {
+    return Ok(None);
+  };
+  let exclude = excluded_pigeons(excluded_var);
+  let rows = client
+    .query_typed(
+      "SELECT f.name, p.id, COALESCE(p.name, '') FROM flocks f
+       LEFT JOIN pigeons p ON p.flock_id = f.id AND p.id <> ALL($2)
+       WHERE f.id = $1",
+      &[(&flock, Type::UUID), (&exclude, Type::TEXT_ARRAY)],
+    )
+    .await?;
+  let Some(first) = rows.first() else {
+    return Ok(None);
+  };
+  let names = rows
+    .iter()
+    .filter_map(|row| Some((row.get::<_, Option<String>>(1)?, row.get(2))))
+    .collect();
+  Ok(Some((first.get(0), names)))
 }
 
 #[cfg(test)]

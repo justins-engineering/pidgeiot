@@ -249,7 +249,7 @@ impl PassIo for LivePass<'_> {
     body: &str,
     cap: usize,
   ) -> DispatchOutcome {
-    dispatch(self.env, script, flock_id, body, cap).await
+    dispatch(self.env, script, flock_id, body, cap, DISPATCH_WALL_MS).await
   }
 
   async fn record(
@@ -315,14 +315,15 @@ async fn send_rule_mails(env: &Env, client: &Client, lookup: &Lookup, mails: &[R
   }
 }
 
-/// Dispatches one flock's rules: the call and the body read raced against
-/// [`DISPATCH_WALL_MS`] and aborted when they lose.
+/// Dispatches one rules script: the call and the body read raced against `wall_ms`
+/// ([`DISPATCH_WALL_MS`] live) and aborted when they lose.
 pub(crate) async fn dispatch(
   env: &Env,
   script: &str,
   flock_id: &str,
   body: &str,
   cap: usize,
+  wall_ms: u64,
 ) -> DispatchOutcome {
   let Some(fetcher) = rules_fetcher(env, script, flock_id) else {
     return DispatchOutcome::Binding;
@@ -332,7 +333,7 @@ pub(crate) async fn dispatch(
   };
   let signal = controller.signal();
   let call = pin!(send(&fetcher, body, &signal, cap));
-  let wall = pin!(Delay::from(Duration::from_millis(DISPATCH_WALL_MS)));
+  let wall = pin!(Delay::from(Duration::from_millis(wall_ms)));
   let outcome = match select(call, wall).await {
     Either::Left((outcome, _)) => outcome,
     Either::Right(((), _)) => DispatchOutcome::Failed,
@@ -342,7 +343,7 @@ pub(crate) async fn dispatch(
   outcome
 }
 
-/// The flock's script through the `RULES` binding's own three-argument `get`, which the `worker`
+/// A rules script through the `RULES` binding's own three-argument `get`, which the `worker`
 /// crate's `DynamicDispatcher::get` does not expose. `outbound.flock_id` is always set: the
 /// binding refuses a `get` without it, and it is how the outbound Worker names who tried. No
 /// per-call limits: the platform ignores them and the upload metadata's bind. `None` is the

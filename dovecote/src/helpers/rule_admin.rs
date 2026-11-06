@@ -11,6 +11,7 @@ use capsules::{
   RULE_CONTRACT, Rule, RuleDetail, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleValue,
   RuleValueRow, RuleVersion, RuleVersionRow,
 };
+use std::collections::HashMap;
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row, Transaction, types::Type};
 use uuid::Uuid;
@@ -18,6 +19,7 @@ use worker::{Error, Result, console_error};
 
 use crate::helpers::firmware::FlockAccess;
 use crate::helpers::nidd::org_listed;
+use crate::helpers::rule_dry_run::Seed;
 use crate::helpers::rule_namespace::SweepBundle;
 use crate::helpers::rule_store::{
   begin, end, ensure_rule_tables, release_deploy_lease, take_deploy_lease,
@@ -790,6 +792,144 @@ async fn bundle_sources(
       })
       .collect(),
   )
+}
+
+/// What a dry run reads beside its release.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DryRunSources {
+  /// The tested version's code.
+  pub candidate: String,
+  /// The deployed version and its code, when it is another version than the tested one.
+  pub deployed: Option<(i32, String)>,
+  /// Every enabled, unblocked rule of the flock at its deployed version, and this rule at the
+  /// tested version in its own place, oldest rule first: what the flock would dispatch once the
+  /// version is deployed.
+  pub bundle: Vec<BundleSource>,
+  /// The live state of each bundle rule, for the given pigeons and the flock.
+  pub seeds: HashMap<Uuid, Seed>,
+}
+
+const DRY_RUN_BUNDLE_SQL: &str = "SELECT r.id, v.version, v.source
+  FROM rules r
+  JOIN rule_versions v ON v.rule_id = r.id
+   AND v.version = CASE WHEN r.id = $2 THEN $3 ELSE r.deployed_version END
+  WHERE r.flock_id = $1 AND r.blocked_at IS NULL AND (r.id = $2 OR r.enabled)
+  ORDER BY r.created_at, r.id";
+
+/// Reads what a dry run of `version` needs; `None` when the version is gone. `pigeons` are the
+/// replay's, so no state is read under any other pigeon.
+pub async fn dry_run_sources(
+  client: &Client,
+  access: &FlockAccess,
+  release: &Release,
+  pigeons: &[String],
+) -> Result<Option<DryRunSources>> {
+  let flock = flock_uuid(access)?;
+  let rule_id = release.rule.id;
+  let version = release.version.version;
+  let rows = client
+    .query_typed(
+      DRY_RUN_BUNDLE_SQL,
+      &[
+        (&flock, Type::UUID),
+        (&rule_id, Type::UUID),
+        (&version, Type::INT4),
+      ],
+    )
+    .await
+    .map_err(db_error("Rule dry-run bundle read error"))?;
+  let bundle: Vec<BundleSource> = rows
+    .iter()
+    .map(|row| BundleSource {
+      rule_id: row.get(0),
+      version: row.get(1),
+      source: row.get(2),
+    })
+    .collect();
+  let Some(candidate) = bundle
+    .iter()
+    .find(|s| s.rule_id == rule_id)
+    .map(|s| s.source.clone())
+  else {
+    return Ok(None);
+  };
+  let deployed = match release.rule.deployed_version.filter(|d| *d != version) {
+    Some(deployed) => client
+      .query_typed_opt(
+        "SELECT source FROM rule_versions WHERE rule_id = $1 AND version = $2",
+        &[(&rule_id, Type::UUID), (&deployed, Type::INT4)],
+      )
+      .await
+      .map_err(db_error("Rule dry-run deployed read error"))?
+      .map(|row| (deployed, row.get(0))),
+    None => None,
+  };
+  let rules: Vec<Uuid> = bundle.iter().map(|s| s.rule_id).collect();
+  let rows = client
+    .query_typed(
+      "SELECT rule_id, scope, doc::text FROM rule_state
+       WHERE rule_id = ANY($1) AND (scope = '' OR scope = ANY($2))",
+      &[(&rules, Type::UUID_ARRAY), (&pigeons, Type::TEXT_ARRAY)],
+    )
+    .await
+    .map_err(db_error("Rule dry-run state read error"))?;
+  let mut seeds: HashMap<Uuid, Seed> = HashMap::new();
+  for row in &rows {
+    let text: String = row.get(2);
+    let Ok(serde_json::Value::Object(doc)) = serde_json::from_str(&text) else {
+      continue;
+    };
+    let seed = seeds.entry(row.get(0)).or_default();
+    let scope: String = row.get(1);
+    if scope.is_empty() {
+      seed.flock = doc;
+    } else {
+      seed.pigeons.insert(scope, doc);
+    }
+  }
+  Ok(Some(DryRunSources {
+    candidate,
+    deployed,
+    bundle,
+    seeds,
+  }))
+}
+
+/// Records a finished dry run on the version it tested, only while the version still holds the
+/// bytes that ran, and answers it as the single read does; `None` when it no longer does.
+pub async fn record_test(
+  client: &Client,
+  access: &FlockAccess,
+  rule_id: Uuid,
+  version: i32,
+  sha256: &str,
+  summary: &str,
+) -> Result<Option<RuleVersion>> {
+  let contract = RULE_CONTRACT as i32;
+  let row = client
+    .query_typed_opt(
+      concat!(
+        "UPDATE rule_versions v SET tested_sha256 = v.sha256, tested_contract = $4,
+           tested_at = now(), test_summary = $5::jsonb
+         FROM rules r
+         WHERE r.id = v.rule_id AND r.flock_id = $1 AND v.rule_id = $2 AND v.version = $3
+           AND v.sha256 = $6
+         RETURNING ",
+        version_columns!(),
+        ", v.test_summary::text AS test_summary, v.source"
+      ),
+      &[
+        (&flock_uuid(access)?, Type::UUID),
+        (&rule_id, Type::UUID),
+        (&version, Type::INT4),
+        (&contract, Type::INT4),
+        (&summary, Type::TEXT),
+        (&sha256, Type::TEXT),
+      ],
+    )
+    .await
+    .map_err(db_error("Rule test record error"))?;
+  Ok(row.as_ref().map(|v| RuleVersion::from(version_row(v))))
 }
 
 /// Frees a lease after a failure, logging rather than failing: an unfreed lease lapses by itself.
@@ -2511,6 +2651,153 @@ mod pg {
           .await
           .expect("read")
       );
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_admin_a_dry_run_reads_the_would_be_bundle_and_records_only_the_bytes_it_ran() {
+    use crate::helpers::rule_store::pg::new_pigeon;
+    use crate::helpers::rule_store::replay_names;
+    use crate::helpers::rules::FIELD_PIGEONS;
+    run(async {
+      let db = Scratch::new("admin_dry_run").await;
+      let mut client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let a = access(flock);
+      let author = Uuid::from_u128(7);
+      let save = async |client: &mut Client, rule, source: &str| match save_version(
+        client,
+        &a,
+        rule,
+        author,
+        source,
+        RuleOrigin::Hand,
+        None,
+      )
+      .await
+      .expect("save")
+      {
+        SaveOutcome::Saved(v) => v,
+        _ => panic!("save refused"),
+      };
+      // Created in this order: a live sibling, the rule under test, a disabled one, a blocked one.
+      let sibling = new_rule(&client, flock).await;
+      let rule = new_rule(&client, flock).await;
+      let disabled = new_rule(&client, flock).await;
+      let blocked = new_rule(&client, flock).await;
+      save(&mut client, sibling, "sibling").await;
+      save(&mut client, rule, "old").await;
+      let candidate = save(&mut client, rule, "new").await;
+      save(&mut client, disabled, "disabled").await;
+      save(&mut client, blocked, "blocked").await;
+      for id in [sibling, rule, disabled, blocked] {
+        deploy(&client, id, 1).await;
+      }
+      client
+        .execute(
+          "UPDATE rules SET enabled = true WHERE id = ANY($1)",
+          &[&vec![sibling, blocked]],
+        )
+        .await
+        .expect("enabled");
+      client
+        .execute(
+          "UPDATE rules SET blocked_at = now() WHERE id = $1",
+          &[&blocked],
+        )
+        .await
+        .expect("blocked");
+      for (id, scope, doc) in [
+        (rule, "", r#"{"seen":3}"#),
+        (rule, "p1", r#"{"n":1}"#),
+        (rule, "p2", r#"{"n":2}"#),
+        (sibling, "p1", r#"{"s":1}"#),
+      ] {
+        client
+          .execute(
+            "INSERT INTO rule_state (rule_id, scope, doc) VALUES ($1, $2, $3::text::jsonb)",
+            &[&id, &scope, &doc],
+          )
+          .await
+          .expect("state");
+      }
+
+      let release = read_release(&mut client, &a, rule, 2)
+        .await
+        .expect("read")
+        .expect("found");
+      let sources = dry_run_sources(&client, &a, &release, &["p1".to_string()])
+        .await
+        .expect("read")
+        .expect("found");
+      assert_eq!(sources.candidate, "new");
+      assert_eq!(sources.deployed, Some((1, "old".to_string())));
+      let bundle: Vec<(Uuid, i32)> = sources
+        .bundle
+        .iter()
+        .map(|s| (s.rule_id, s.version))
+        .collect();
+      assert_eq!(
+        bundle,
+        [(sibling, 1), (rule, 2)],
+        "enabled siblings and the candidate in its place; never disabled or blocked rules"
+      );
+      let seed = &sources.seeds[&rule];
+      assert_eq!(seed.flock["seen"], 3);
+      assert_eq!(
+        seed.pigeons.keys().collect::<Vec<_>>(),
+        ["p1"],
+        "only the replay's pigeons"
+      );
+      assert_eq!(sources.seeds[&sibling].pigeons["p1"]["s"], 1);
+
+      assert!(deploy_refusal(&release) == Some(DeployRefusal::Untested));
+      let summary = r#"{"window":{"from":null,"to":null,"readings":0,"batches":0,"pigeons":0,
+        "cut":false},"candidate":{"version":2,"runs":0,"ok":0,"threw":0,"timeout":0,
+        "bad_output":0,"values":0,"mails":[],"mails_total":0,"errors":[],"logs":[],
+        "stopped_at":null,"diverged_at":null,"pigeon_state_bytes":0,"flock_state_bytes":0},
+        "deployed":null,"seeded":null,"mails":{"new":[],"gone":[],"unchanged":0},"cases":[],
+        "cpu":{"candidate":"not_run","bundle":"not_run","batches":0,"load_error":null}}"#;
+      let stale = record_test(&client, &a, rule, 2, "not-these-bytes", summary)
+        .await
+        .expect("record");
+      assert!(
+        stale.is_none(),
+        "a record counts only for the bytes that ran"
+      );
+      let elsewhere = access(new_flock(&client, None).await);
+      let foreign = record_test(&client, &elsewhere, rule, 2, &candidate.sha256, summary)
+        .await
+        .expect("record");
+      assert!(foreign.is_none());
+      let tested = record_test(&client, &a, rule, 2, &candidate.sha256, summary)
+        .await
+        .expect("record")
+        .expect("recorded");
+      assert_eq!(tested.tested_contract, Some(RULE_CONTRACT as i32));
+      assert!(tested.tested_at.is_some() && tested.source.as_deref() == Some("new"));
+      assert_eq!(tested.test_summary.expect("typed").candidate.version, 2);
+      let release = read_release(&mut client, &a, rule, 2)
+        .await
+        .expect("read")
+        .expect("found");
+      assert_eq!(
+        deploy_refusal(&release),
+        None,
+        "the route's record is what deploy reads"
+      );
+
+      new_pigeon(&client, flock, "p1").await;
+      new_pigeon(&client, flock, FIELD_PIGEONS[0]).await;
+      let (name, names) = replay_names(&client, &a, None)
+        .await
+        .expect("read")
+        .expect("found");
+      assert_eq!(name, "f");
+      assert!(names.contains_key("p1") && !names.contains_key(FIELD_PIGEONS[0]));
       drop(client);
       db.drop().await;
     });

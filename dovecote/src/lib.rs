@@ -6,6 +6,7 @@ use crate::helpers::rule_admin::{
   read_version, rule_detail, rules_org_allowed, save_version, test_refusal, update_rule,
   watch_rule,
 };
+use crate::helpers::rule_dry_run::test_version;
 use crate::helpers::rule_namespace::{
   Namespace, Refusal, delete_flock_script, delete_scripted_rule, deploy_version,
 };
@@ -62,8 +63,8 @@ use capsules::{
   TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use capsules::{
-  RuleCreateRequest, RuleDeployRequest, RuleOrigin, RuleSourceRejection, RuleUpdateRequest,
-  RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
+  RuleCreateRequest, RuleDeployRequest, RuleOrigin, RuleSourceRejection, RuleTestRequest,
+  RuleUpdateRequest, RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
 };
 use futures::future::join_all;
 use worker::{
@@ -4525,7 +4526,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
     )
     .post_async(
       "/flocks/:flock_id/rules/:rule_id/versions/:version/test",
-      |req, ctx: RouteContext<()>| async move {
+      |mut req, ctx: RouteContext<()>| async move {
         let cors = build_cors(&ctx.env, &req);
         let Ok(principal) = require_principal(&req, &ctx.env).await else {
           return Response::error("Unauthorized", 401)
@@ -4540,6 +4541,22 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           return Response::error("Bad Request: invalid flock, rule or version", 400)
             .unwrap()
             .with_cors(&cors);
+        };
+        // The body is optional: no body tests without synthetic cases.
+        let Ok(body) = req.text().await else {
+          return Response::error("Bad Request: Failed to read body", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let request = if body.trim().is_empty() {
+          RuleTestRequest::default()
+        } else {
+          let Ok(request) = serde_json::from_str::<RuleTestRequest>(&body) else {
+            return Response::error("Bad Request: Invalid JSON payload", 400)
+              .unwrap()
+              .with_cors(&cors);
+          };
+          request
         };
 
         get_db!(ctx.env, client, &cors);
@@ -4571,11 +4588,13 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           let (status, message) = refusal.response();
           return Response::error(message, status).unwrap().with_cors(&cors);
         }
-        match rules_namespace(&ctx.env) {
-          Ok(_) => Response::error("Not Implemented: rule dry runs", 501)
-            .unwrap()
-            .with_cors(&cors),
-          Err(resp) => resp.with_cors(&cors),
+        let ns = match rules_namespace(&ctx.env) {
+          Ok(ns) => ns,
+          Err(resp) => return resp.with_cors(&cors),
+        };
+        match test_version(&ctx.env, &ns, &client, &access, &release, &request).await {
+          Ok(tested) => Response::from_json(&tested)?.with_cors(&cors),
+          Err(refusal) => rule_refusal_response(&cors, refusal),
         }
       },
     )

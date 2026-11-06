@@ -551,7 +551,7 @@ fn run_record(rule: &DispatchRule, run: WireRun) -> Option<RunRecord> {
 
 /// `s` with each U+0000 replaced by U+FFFD: Postgres refuses U+0000 in `text` and `jsonb`, and a
 /// refused run row would fail the rule's whole apply.
-fn without_nul(s: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn without_nul(s: &str) -> std::borrow::Cow<'_, str> {
   if s.contains('\0') {
     s.replace('\0', "\u{fffd}").into()
   } else {
@@ -560,7 +560,7 @@ fn without_nul(s: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// `s` cut to at most `max` bytes on a character boundary.
-fn cut(s: &str, max: usize) -> String {
+pub(crate) fn cut(s: &str, max: usize) -> String {
   let mut end = s.len().min(max);
   while !s.is_char_boundary(end) {
     end -= 1;
@@ -1318,6 +1318,8 @@ pub enum ScriptKind {
   Flock,
   /// A rule's dry run, `test-<rule uuid>`.
   Test,
+  /// The same script uploaded again for the dry run's CPU check, at the live limit.
+  CpuCheck,
 }
 
 /// The environment a script is tagged with.
@@ -1345,7 +1347,7 @@ pub fn script_name(kind: ScriptKind, uuid: &str) -> Option<String> {
   }
   let prefix = match kind {
     ScriptKind::Flock => "flock-",
-    ScriptKind::Test => "test-",
+    ScriptKind::Test | ScriptKind::CpuCheck => "test-",
   };
   let mut name = String::with_capacity(prefix.len() + 32);
   name.push_str(prefix);
@@ -1492,7 +1494,7 @@ pub fn script_tags(
   }
   let subject_tag = match kind {
     ScriptKind::Flock => concat2("flock-", subject),
-    ScriptKind::Test => "test".to_string(),
+    ScriptKind::Test | ScriptKind::CpuCheck => "test".to_string(),
   };
   let env_tag = match env {
     RulesEnv::Production => "env-prod",
@@ -1520,7 +1522,7 @@ pub fn upload_metadata(
 ) -> Option<String> {
   let tags = script_tags(kind, account, subject, env)?;
   let cpu_ms = match kind {
-    ScriptKind::Flock => RULE_CPU_MS,
+    ScriptKind::Flock | ScriptKind::CpuCheck => RULE_CPU_MS,
     ScriptKind::Test => TEST_RULE_CPU_MS,
   };
   let metadata = serde_json::json!({
@@ -3252,6 +3254,18 @@ mod tests {
       ])
     );
     assert!(upload_metadata(ScriptKind::Flock, "x", FLOCK, RulesEnv::Staging).is_none());
+
+    let cpu: Value = serde_json::from_str(
+      &upload_metadata(ScriptKind::CpuCheck, ACCOUNT, RULE_A, RulesEnv::Staging).expect("uuids"),
+    )
+    .expect("JSON");
+    assert_eq!(cpu["limits"]["cpu_ms"], RULE_CPU_MS, "the live limit");
+    assert_eq!(cpu["tags"], test["tags"], "swept as a test script");
+    assert_eq!(
+      script_name(ScriptKind::CpuCheck, RULE_A),
+      script_name(ScriptKind::Test, RULE_A),
+      "it replaces the dry run's own script, so one delete removes either"
+    );
   }
 
   #[test]

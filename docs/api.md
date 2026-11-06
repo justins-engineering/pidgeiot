@@ -2435,8 +2435,7 @@ flock, a personal flock included, answers `403`
 (`Forbidden: rules are not enabled for this organization`), and a deployed rule of a flock whose
 organization is no longer enabled stops running. They run only where dovecote has a
 rules namespace; elsewhere the test route, the deploy route and the delete of a deployed rule
-answer `503` (`Service Unavailable: rules do not run in this environment`), and where the
-namespace exists the test route answers `501` until dry runs are built.
+answer `503` (`Service Unavailable: rules do not run in this environment`).
 
 A deploy, and the delete of a deployed rule, change the flock's rules script in the namespace,
 one change per flock at a time. Besides their own refusals, either can answer:
@@ -2587,11 +2586,48 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3 \
 
 **Auth:** flock: manage
 
-Dry-runs the version over the flock's recent telemetry beside the deployed version, applying
-nothing, and records the result on the version. Answers `200` with the `capsules::RuleVersion`,
-its `tested_contract`, `tested_at` and `test_summary` set. `403` when the platform has blocked the
-rule; `404` when the rule has no such version; `503` where there is no rules namespace and `501`
-where the namespace exists but dry runs are not built yet.
+Dry-runs the version in the rules namespace, the runtime its live runs use, and applies
+nothing: no mail is sent, no state or value is stored. The body is optional:
+`capsules::RuleTestRequest` (`{ cases? }`), synthetic test cases (`capsules::RuleTestCase`), none
+or two to five, each of at most eight batches from the abstract pigeons `"a"`, `"b"` and `"c"`,
+each batch at most 64 readings `after_secs` 0 to 7 days from the case's start, with the mails it
+expects as `{ key, kind }`. A case that breaks those bounds answers `400` before anything runs.
+
+The dry run uploads a script of its own, `test-<rule>`, holding this version and the deployed
+version beside it, then replays, each from empty state: every case through this version, then the
+flock's last 7 days of telemetry history through both versions, the newest 4,000 readings
+regrouped per pigeon into batches of up to 64. Pigeons that forward telemetry to their own
+endpoint keep no history here, so they are not replayed. When the rule has stored state, this
+version replays the same window once more seeded with it, so a failure only there is what
+`reset_state` on deploy avoids. Mails are decided as live decides them: a `fire` or `clear` only
+when the flag changes, a `notify` once a week per key, the rule's hourly and daily caps applied
+(a capped mail reports `sent: false`). Then, as a CPU check, the same name is uploaded again at
+the live CPU limit holding every enabled rule of the flock with this version in its place, and
+dispatched as live over the ten busiest batches: this version alone, then all of them together.
+The check is a warning, never a refusal: a fresh script gets about 2 s of CPU grace, so a pass
+promises little, while a batch that loses its race reports `over`. The script is deleted after;
+a failed delete is left to the daily sweep. A test costs up to three Cloudflare API calls.
+
+Answers `200` with the `capsules::RuleVersion`, its `tested_contract`, `tested_at` and
+`test_summary` set; the record counts only for the exact bytes that ran, and is what a deploy
+checks. `test_summary` is a `capsules::RuleDryRun`: `window` (`from`, `to`, `readings`,
+`batches`, `pigeons`, and `cut` when older readings were left out), `candidate` and `deployed`
+(each a `capsules::RuleReplayed`: run counts by outcome, values written, the mails it would have
+sent with `mails_total`, its errors grouped by text, its first 20 log lines, `stopped_at` when a
+timeout stopped it, `diverged_at` when a result the platform refuses still carried state the
+harness kept, and its final state sizes), `seeded`, `mails` (`new` and `gone` against the
+deployed version, matched by pigeon, key and kind within 5 minutes, and an `unchanged` count),
+`cases` (each `{ name, passed, expected, got, error }`) and `cpu` (`candidate` and `bundle`, each
+`pass`, `over`, `did_not_load` or `not_run`, with `batches` and Cloudflare's `load_error`). Lists
+of mails stop at 100 and error groups at 10.
+
+Refusals: `403` when the platform has blocked the rule; `404` when the rule has no such version;
+`422` (`Unprocessable Content: this version did not load: ` and Cloudflare's own error) when its
+top level throws or overruns its startup CPU; `422` (`Unprocessable Content: the dry run did not
+finish: ` and why) when a replay was stopped, most likely past its CPU, or produced more than
+4 MiB; `409` when another test of the same rule replaced the script mid-run; and the `429` and
+`503` a deploy answers when the platform's budget of calls to Cloudflare is spent or the namespace
+refused or did not confirm the upload (see [Rules](#rules)). None of them records anything.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/test \
