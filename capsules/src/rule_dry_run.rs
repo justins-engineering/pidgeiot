@@ -19,6 +19,13 @@ pub const MAX_DRY_RUN_LOGS: usize = 20;
 /// candidate's are matched against the deployed version's.
 pub const DRY_RUN_MAIL_MATCH_SECS: i64 = 300;
 
+/// Most bytes of a test route body, checked before it is parsed: room for five cases of eight
+/// batches, each the size a device's batch may be ([`MAX_TELEMETRY_BATCH_BYTES`]), in the
+/// wordier key and value pairs a case spells metrics in.
+///
+/// [`MAX_TELEMETRY_BATCH_BYTES`]: crate::MAX_TELEMETRY_BATCH_BYTES
+pub const MAX_RULE_TEST_BODY_BYTES: usize = 1024 * 1024;
+
 /// Body of `POST .../versions/:version/test`; may be omitted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -371,5 +378,34 @@ mod tests {
     assert_eq!(req.cases.len(), 2);
     assert_eq!(req.cases[0].events[0].pigeon, RuleCasePigeon::A);
     assert!(serde_json::from_value::<RuleTestRequest>(json!({ "events": [] })).is_err());
+  }
+
+  #[test]
+  fn five_cases_of_device_sized_batches_fit_the_body_cap() {
+    // 14 pairs of the longest key and value are just under one device batch's raw bytes.
+    let metrics: Vec<RuleCaseMetric> = (0..14u8)
+      .map(|i| RuleCaseMetric {
+        key: char::from(b'a' + i).to_string().repeat(128),
+        value: "9".repeat(1024),
+      })
+      .collect();
+    let event = RuleCaseEvent {
+      pigeon: RuleCasePigeon::A,
+      readings: vec![RuleCaseReading {
+        after_secs: 604_800,
+        metrics,
+      }],
+    };
+    let case = RuleTestCase {
+      name: "n".repeat(128),
+      events: vec![event; 8],
+      expect: vec![],
+    };
+    let body = serde_json::to_string(&RuleTestRequest {
+      cases: vec![case; 5],
+    })
+    .expect("serializes");
+    assert!(body.len() > 40 * 14 * 1152, "the body carries every batch");
+    assert!(body.len() <= MAX_RULE_TEST_BODY_BYTES);
   }
 }

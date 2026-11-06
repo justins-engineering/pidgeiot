@@ -4548,6 +4548,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .unwrap()
             .with_cors(&cors);
         };
+        if body.len() > capsules::MAX_RULE_TEST_BODY_BYTES {
+          return Response::error("Payload Too Large: test body exceeds size cap", 413)
+            .unwrap()
+            .with_cors(&cors);
+        }
         let request = if body.trim().is_empty() {
           RuleTestRequest::default()
         } else {

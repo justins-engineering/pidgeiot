@@ -77,10 +77,10 @@ pub use rule_api::{
 // A rule's dry run: the synthetic cases the test route takes and the result it records.
 pub mod rule_dry_run;
 pub use rule_dry_run::{
-  DRY_RUN_MAIL_MATCH_SECS, MAX_DRY_RUN_ERRORS, MAX_DRY_RUN_LOGS, MAX_DRY_RUN_MAILS, RuleCaseEvent,
-  RuleCaseMail, RuleCaseMetric, RuleCaseOutcome, RuleCasePigeon, RuleCaseReading, RuleCpuCheck,
-  RuleCpuResult, RuleDryMail, RuleDryRun, RuleErrorGroup, RuleMailChange, RuleReplayWindow,
-  RuleReplayed, RuleTestCase, RuleTestRequest,
+  DRY_RUN_MAIL_MATCH_SECS, MAX_DRY_RUN_ERRORS, MAX_DRY_RUN_LOGS, MAX_DRY_RUN_MAILS,
+  MAX_RULE_TEST_BODY_BYTES, RuleCaseEvent, RuleCaseMail, RuleCaseMetric, RuleCaseOutcome,
+  RuleCasePigeon, RuleCaseReading, RuleCpuCheck, RuleCpuResult, RuleDryMail, RuleDryRun,
+  RuleErrorGroup, RuleMailChange, RuleReplayWindow, RuleReplayed, RuleTestCase, RuleTestRequest,
 };
 
 // Tax identity for the billing entity -- the identifier types, the status
