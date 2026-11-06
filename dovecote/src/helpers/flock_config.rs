@@ -829,7 +829,9 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pg {
   use super::*;
-  use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
+  use crate::helpers::rule_store::pg::{
+    Scratch, new_flock, new_pigeon, pid, run, wait_until_blocked,
+  };
 
   fn pass(
     _: &[FlockMember],
@@ -931,6 +933,45 @@ mod pg {
         .expect("flock found");
       assert_eq!(mirrored, read);
       drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_flock_write_waits_out_a_pigeon_joining_and_lists_it() {
+    run(async {
+      let db = Scratch::new("flock_config_join").await;
+      let mut joining = db.client().await;
+      let flock = new_flock(&joining, None).await;
+
+      // The create's pigeon row holds a key-share lock on the flock until it commits.
+      let tx = joining.transaction().await.expect("begin");
+      tx.execute(
+        "INSERT INTO pigeons (id, flock_id, connector, created_at, updated_at)
+         VALUES ('p1', $1, '{}', now(), now())",
+        &[&flock],
+      )
+      .await
+      .expect("pigeon");
+
+      let mut writer = db.client().await;
+      let writer_pid = pid(&writer).await;
+      let write = tokio::spawn(async move {
+        write_flock_config(&mut writer, &flock, r#"{"a":1}"#, 0, None, pass)
+          .await
+          .expect("write")
+          .expect("not refused")
+          .expect("flock found")
+          .members
+      });
+      wait_until_blocked(writer_pid).await;
+      tx.commit().await.expect("commit");
+
+      let members = write.await.expect("write task");
+      assert_eq!(members.len(), 1);
+      assert_eq!(members[0].id, "p1");
+      drop(joining);
       db.drop().await;
     });
   }
