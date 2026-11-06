@@ -4592,10 +4592,17 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           Ok(ns) => ns,
           Err(resp) => return resp.with_cors(&cors),
         };
-        match test_version(&ctx.env, &ns, &client, &access, &release, &request).await {
-          Ok(tested) => Response::from_json(&tested)?.with_cors(&cors),
-          Err(refusal) => rule_refusal_response(&cors, refusal),
-        }
+        let tested = match test_version(&ctx.env, &ns, &client, &access, &release, &request).await
+        {
+          Ok(tested) => tested,
+          Err(refusal) => return rule_refusal_response(&cors, refusal),
+        };
+        let Ok(resp) = Response::from_json(&tested) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        resp.with_cors(&cors)
       },
     )
     .post_async(
