@@ -2,8 +2,11 @@
 //! test and deploy panel, its versions, runs and values. Rule code is only ever text here: the
 //! dashboard's origin holds the session cookie, so nothing on these pages evaluates it.
 
-use crate::components::{ConfirmModal, DangerAction, DangerZone, JsonViewer};
+use crate::components::{ConfirmModal, DangerAction, DangerZone};
 use crate::helpers::can_manage_flock;
+use crate::helpers::rule_dry_run_view::{
+  case_text, change_text, cpu_text, mail_text, mails_text, runs_text, seeded_text, window_text,
+};
 use crate::helpers::rule_view::{
   Badge, bar_hours, deploy_outcome, failure_groups, hourly_bars, hours_ago, origin_label,
   parse_recipients, rule_badges, save_origin, test_badge, unfinished_deploy, version_label,
@@ -12,8 +15,9 @@ use crate::helpers::telemetry_export::display_utc;
 use crate::{LocalSession, Route, api};
 use capsules::{
   MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES, Rule, RuleCreateRequest,
-  RuleDeployRequest, RuleDetail, RuleOrigin, RuleRun, RuleSourceRejection, RuleUpdateRequest,
-  RuleValue, RuleVersion, RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
+  RuleDeployRequest, RuleDetail, RuleDryMail, RuleDryRun, RuleOrigin, RuleReplayed, RuleRun,
+  RuleSourceRejection, RuleTestRequest, RuleUpdateRequest, RuleValue, RuleVersion,
+  RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -360,13 +364,172 @@ fn run_badge_class(status: &str) -> &'static str {
   }
 }
 
-/// The heading of a test's summary, naming the version it tested.
+/// The heading of a test's result, naming the version it tested.
 fn test_summary_title(version: i32) -> String {
   let label = version_label(version);
-  let mut title = String::with_capacity(14 + label.len());
-  title.push_str("Test summary, ");
+  let mut title = String::with_capacity(8 + label.len());
+  title.push_str("Test of ");
   title.push_str(&label);
   title
+}
+
+/// The badge a synthetic case's name sits in.
+fn case_badge(passed: bool) -> &'static str {
+  if passed {
+    "badge badge-success badge-sm me-2"
+  } else {
+    "badge badge-error badge-sm me-2"
+  }
+}
+
+/// A list of mails with their times, as the dry run would have sent them.
+#[component]
+fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
+  rsx! {
+    div { class: "flex flex-col gap-1 min-w-0",
+      h4 { class: "text-sm font-semibold", "{title}" }
+      ul { class: "text-xs flex flex-col gap-1 max-h-64 overflow-y-auto",
+        for mail in mails {
+          li { class: "break-words",
+            span { class: "font-mono text-base-content/60 me-2 whitespace-nowrap",
+              "{display_utc(mail.at)}"
+            }
+            "{mail_text(&mail)}"
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One version's replay: its mails and runs, with its errors grouped.
+#[component]
+fn DryRunVersion(title: String, replayed: RuleReplayed) -> Element {
+  rsx! {
+    div { class: "flex flex-col gap-1 min-w-0",
+      h4 { class: "text-sm font-semibold", "{title}" }
+      p { class: "text-sm", "{mails_text(&replayed)}" }
+      p { class: "text-sm text-base-content/70", "{runs_text(&replayed)}" }
+      if let Some(at) = replayed.stopped_at {
+        p { class: "text-sm",
+          "A run ran out of time at {display_utc(at)}, which stopped the replay there."
+        }
+      }
+      if let Some(at) = replayed.diverged_at {
+        p { class: "text-xs text-base-content/70",
+          "From {display_utc(at)} on, a refused result had still changed the state later "
+          "runs saw, so those runs may differ from live."
+        }
+      }
+      if !replayed.errors.is_empty() {
+        ul { class: "text-xs flex flex-col gap-1",
+          for group in replayed.errors.iter() {
+            li { class: "break-words",
+              span { class: "badge badge-error badge-xs me-2", "{group.count}" }
+              span { class: "font-mono", "{group.message}" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A dry run in the rule's words: the window, what each version would have mailed, the change
+/// between them, the synthetic cases and the CPU check, which warns but never blocks a deploy.
+#[component]
+fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDryRun) -> Element {
+  let (cpu, cpu_warns) = cpu_text(&summary.cpu);
+  let deployed_version = summary.deployed.as_ref().map(|d| d.version);
+  let seeded = summary
+    .seeded
+    .as_ref()
+    .map(|s| seeded_text(&summary.candidate, s));
+  rsx! {
+    div { class: "flex flex-col gap-4 bg-base-100 border border-base-content/10 rounded-box p-4",
+      div { class: "flex flex-wrap items-baseline justify-between gap-2",
+        h3 { class: "font-bold", "{test_summary_title(version)}" }
+        if let Some(at) = tested_at {
+          span { class: "text-xs text-base-content/60", "{display_utc(at)}" }
+        }
+      }
+      p { class: "text-sm", "{window_text(&summary.window)}" }
+      if cpu_warns {
+        div { role: "alert", class: "alert alert-warning alert-soft text-sm break-words",
+          "{cpu} You can still deploy."
+        }
+      }
+      div { class: "grid gap-4 md:grid-cols-2",
+        DryRunVersion {
+          title: version_label(version),
+          replayed: summary.candidate.clone(),
+        }
+        if let Some(deployed) = summary.deployed.clone() {
+          DryRunVersion {
+            title: ["Live ", &version_label(deployed.version)].concat(),
+            replayed: deployed,
+          }
+        }
+      }
+      p { class: "text-sm", "{change_text(&summary.mails, deployed_version)}" }
+      div { class: "grid gap-4 md:grid-cols-2",
+        if deployed_version.is_some() {
+          if !summary.mails.new.is_empty() {
+            DryRunMails { title: "New mails", mails: summary.mails.new.clone() }
+          }
+          if !summary.mails.gone.is_empty() {
+            DryRunMails { title: "Mails it no longer sends", mails: summary.mails.gone.clone() }
+          }
+        } else if !summary.candidate.mails.is_empty() {
+          DryRunMails {
+            title: "What it would have mailed",
+            mails: summary.candidate.mails.clone(),
+          }
+        }
+      }
+      match seeded {
+          Some((text, true)) => rsx! {
+            div {
+              role: "alert",
+              class: "alert alert-warning alert-soft text-sm break-words",
+              "{text}"
+            }
+          },
+          Some((text, false)) => rsx! {
+            p { class: "text-sm text-base-content/70", "{text}" }
+          },
+          None => rsx! {},
+      }
+      if !summary.cases.is_empty() {
+        div { class: "flex flex-col gap-1",
+          h4 { class: "text-sm font-semibold", "Test cases" }
+          ul { class: "text-sm flex flex-col gap-1",
+            for case in summary.cases.iter() {
+              li { class: "break-words",
+                span { class: case_badge(case.passed), "{case.name}" }
+                "{case_text(case)}"
+              }
+            }
+          }
+        }
+      }
+      if !cpu_warns {
+        p { class: "text-xs text-base-content/60", "{cpu}" }
+      }
+      if !summary.candidate.logs.is_empty() {
+        details { class: "text-xs",
+          summary { class: "cursor-pointer", "Its first log lines" }
+          pre { class: "font-mono overflow-x-auto bg-base-200/50 rounded p-2 mt-1",
+            "{summary.candidate.logs.join(\"\\n\")}"
+          }
+        }
+      }
+      p { class: "text-xs text-base-content/60",
+        "Nothing was applied: no mail was sent and no state or value stored. Pigeons that forward "
+        "telemetry to their own endpoint keep no history here, so they are not replayed."
+      }
+    }
+  }
 }
 
 /// Saves `source` as `rule.js`.
@@ -391,7 +554,9 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   let mut target = use_signal(|| None::<i32>);
   let mut reset_state = use_signal(|| false);
   let mut action_note = use_signal(|| None::<Result<String, String>>);
+  // The target version's last dry run, read with it or answered by a test.
   let mut tested = use_signal(|| None::<RuleVersion>);
+  let mut testing = use_signal(|| false);
   // Up to two versions open side by side.
   let mut open_versions = use_signal(Vec::<RuleVersion>::new);
   let versions_note = use_signal(|| None::<String>);
@@ -414,6 +579,9 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
       Some(version) => match api::rules::version(flock_id, rule_id, version).await {
         Ok(stored) => {
           source.set(stored.source.clone().unwrap_or_default());
+          if stored.test_summary.is_some() {
+            tested.set(Some(stored.clone()));
+          }
           base.set(Some(stored));
         }
         Err(err) => save_note.set(Some(Err(err))),
@@ -719,9 +887,17 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             select {
               class: "select select-bordered select-sm",
               "aria-label": "Version to test or deploy",
-              onchange: move |evt| {
-                  target.set(evt.value().parse().ok());
+              onchange: move |evt| async move {
+                  let picked = evt.value().parse().ok();
+                  target.set(picked);
                   tested.set(None);
+                  if let Some(version) = picked
+                      && let Ok(stored) = api::rules::version(flock_id, rule_id, version).await
+                      && stored.test_summary.is_some()
+                      && target() == Some(version)
+                  {
+                      tested.set(Some(stored));
+                  }
               },
               for v in versions.iter() {
                 option {
@@ -739,7 +915,10 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                   onclick: move |_| async move {
                       action_note.set(None);
                       busy.set(true);
-                      let answer = api::rules::test(flock_id, rule_id, version).await;
+                      testing.set(true);
+                      let req = RuleTestRequest::default();
+                      let answer = api::rules::test(flock_id, rule_id, version, &req).await;
+                      testing.set(false);
                       busy.set(false);
                       match answer {
                           Ok(found) => {
@@ -758,7 +937,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                           Err(err) => action_note.set(Some(Err(err))),
                       }
                   },
-                  "Test"
+                  "Run test"
                 }
                 label { class: "flex items-center gap-2 text-sm",
                   input {
@@ -779,6 +958,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             }
           }
         }
+        if testing() {
+          p { class: "flex items-center gap-2 text-sm text-base-content/70",
+            span { class: "loading loading-spinner loading-sm" }
+            "Testing: the replay covers up to 7 days of telemetry and can take a minute."
+          }
+        }
         match action_note() {
             Some(Ok(note)) => rsx! { p { class: "text-success text-sm", "{note}" } },
             Some(Err(err)) => rsx! {
@@ -787,12 +972,8 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             None => rsx! {},
         }
         if let Some(found) = tested() {
-          if let Some(json) = found
-              .test_summary
-              .and_then(|summary| serde_json::to_string(&summary).ok())
-              .and_then(|text| capsules::JsonString::new(text).ok())
-          {
-            JsonViewer { json, title: test_summary_title(found.version) }
+          if let Some(summary) = found.test_summary {
+            DryRunResult { version: found.version, tested_at: found.tested_at, summary }
           }
         }
       }

@@ -7,8 +7,8 @@
 use crate::api::fetch_json_any_status;
 use crate::api::orgs::{error_text, parse, to_body};
 use capsules::{
-  Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail, RuleRun, RuleUpdateRequest, RuleValue,
-  RuleVersion, RuleVersionCreateRequest,
+  Rule, RuleCreateRequest, RuleDeployRequest, RuleDetail, RuleRun, RuleTestRequest,
+  RuleUpdateRequest, RuleValue, RuleVersion, RuleVersionCreateRequest,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -122,10 +122,16 @@ pub async fn version(flock_id: Uuid, rule_id: Uuid, version: i32) -> Result<Rule
   call("GET", &path, None::<&()>).await
 }
 
-/// `POST .../versions/:version/test`: the version with its new test record and summary.
-pub async fn test(flock_id: Uuid, rule_id: Uuid, version: i32) -> Result<RuleVersion, String> {
+/// `POST .../versions/:version/test`: the version with its new test record and summary. A
+/// refusal's text is the server's: a version that does not load, a replay that did not finish.
+pub async fn test(
+  flock_id: Uuid,
+  rule_id: Uuid,
+  version: i32,
+  req: &RuleTestRequest,
+) -> Result<RuleVersion, String> {
   let path = rule_path(flock_id, Some(rule_id), &version_tail(version, "/test"));
-  call("POST", &path, None::<&()>).await
+  call("POST", &path, Some(req)).await
 }
 
 /// `POST .../versions/:version/deploy`: the rule as the deploy left it. A refusal's text is the

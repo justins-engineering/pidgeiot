@@ -29,6 +29,7 @@ pub use connector_badge::ConnectorBadge;
 
 mod stat_tiles;
 pub use stat_tiles::TelemetryStatTiles;
+pub(crate) use stat_tiles::group_thousands;
 
 mod gauge_strip;
 pub use gauge_strip::{GaugeReading, GaugeStrip};

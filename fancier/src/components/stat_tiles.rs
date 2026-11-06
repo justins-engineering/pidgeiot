@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 /// Groups the integer part of an already-formatted number, so a tile reads
 /// 3,300 rather than 3300. Hand-rolled because the alternative is a
 /// locale/format crate for one line of thousands separators.
-fn group_thousands(text: &str) -> String {
+pub(crate) fn group_thousands(text: &str) -> String {
   let (sign, rest) = match text.strip_prefix('-') {
     Some(rest) => ("-", rest),
     None => ("", text),
