@@ -1,7 +1,7 @@
 //! The dashboard's rule routes: the bodies they accept, the models they answer with, and the
 //! checks fancier and dovecote both apply to a rule's name and source.
 
-use crate::RuleDryRun;
+use crate::{RULE_BUILDER_IMPORT, RuleDryRun};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -107,7 +107,7 @@ pub enum RuleSourceRejection {
   Empty,
   /// Over [`MAX_RULE_SOURCE_BYTES`].
   TooLarge,
-  /// A static import of anything but [`RULE_HELPERS_IMPORT`].
+  /// A static import of anything but [`RULE_HELPERS_IMPORT`] and [`RULE_BUILDER_IMPORT`].
   Import,
 }
 
@@ -117,13 +117,16 @@ impl RuleSourceRejection {
     match self {
       RuleSourceRejection::Empty => "Bad Request: 'source' cannot be empty",
       RuleSourceRejection::TooLarge => "Payload Too Large: a rule's source is at most 64 KiB",
-      RuleSourceRejection::Import => "Bad Request: a rule may import only ./pidgeiot.js",
+      RuleSourceRejection::Import => {
+        "Bad Request: a rule may import only ./pidgeiot.js and ./builder.js"
+      }
     }
   }
 }
 
 /// Checks a rule's source before it is stored: not blank, at most [`MAX_RULE_SOURCE_BYTES`], and
-/// no static import but [`RULE_HELPERS_IMPORT`] ([`first_refused_import`]).
+/// no static import but [`RULE_HELPERS_IMPORT`] and [`RULE_BUILDER_IMPORT`]
+/// ([`first_refused_import`]).
 pub fn check_rule_source(source: &str) -> Result<(), RuleSourceRejection> {
   if source.trim().is_empty() {
     return Err(RuleSourceRejection::Empty);
@@ -137,8 +140,9 @@ pub fn check_rule_source(source: &str) -> Result<(), RuleSourceRejection> {
   }
 }
 
-/// The first static import specifier in `source` other than [`RULE_HELPERS_IMPORT`]: a string
-/// literal following `from` or `import`, outside comments, strings and templates.
+/// The first static import specifier in `source` other than [`RULE_HELPERS_IMPORT`] and
+/// [`RULE_BUILDER_IMPORT`]: a string literal following `from` or `import`, outside comments,
+/// strings and templates.
 ///
 /// A screen, not a parser. It keeps a rule from naming the harness or a sibling module by
 /// accident; it reads no regular expression literal and leaves `import()` alone, because the
@@ -167,7 +171,7 @@ pub fn first_refused_import(source: &str) -> Option<&str> {
       let end = end.min(bytes.len());
       if b != b'`'
         && matches!(after, "from" | "import")
-        && &source[start..end] != RULE_HELPERS_IMPORT
+        && ![RULE_HELPERS_IMPORT, RULE_BUILDER_IMPORT].contains(&&source[start..end])
       {
         return Some(&source[start..end]);
       }
@@ -535,6 +539,7 @@ mod tests {
       "import * as p from './pidgeiot.js';",
       "import './pidgeiot.js';",
       "export { num } from \"./pidgeiot.js\";",
+      "import { run } from \"./builder.js\";",
     ] {
       assert_eq!(first_refused_import(ok), None, "{ok}");
       assert_eq!(check_rule_source(ok), Ok(()), "{ok}");
@@ -550,6 +555,7 @@ mod tests {
         "node:fs",
       ),
       ("import x from \"./pidgeiot.js?x\"", "./pidgeiot.js?x"),
+      ("import x from \"./builder.mjs\"", "./builder.mjs"),
     ] {
       assert_eq!(first_refused_import(bad), Some(spec), "{bad}");
       assert_eq!(
