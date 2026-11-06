@@ -1,0 +1,125 @@
+[
+  {
+    "events": [
+      {
+        "batch_id": "fa1763e9fb1b82be0554f3bea1fc0cfb4114d895c2f2e4d4ef7d843163ba5152",
+        "contract": 1,
+        "degraded": false,
+        "flock": {
+          "id": "f1",
+          "name": "Bench signs"
+        },
+        "hook": "telemetry",
+        "pigeon": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "Pigeon a"
+        },
+        "readings": [
+          {
+            "at": 1793380000,
+            "metrics": {
+              "temp_c": "41"
+            },
+            "previous": {}
+          }
+        ],
+        "received_at": 1793380000
+      },
+      {
+        "batch_id": "585e676781276c2b67be1d55d5b855c530e85f36e6b68d2b0e030c023d7e74bf",
+        "contract": 1,
+        "degraded": false,
+        "flock": {
+          "id": "f1",
+          "name": "Bench signs"
+        },
+        "hook": "telemetry",
+        "pigeon": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "Pigeon a"
+        },
+        "readings": [
+          {
+            "at": 1793380300,
+            "metrics": {
+              "temp_c": "41"
+            },
+            "previous": {
+              "temp_c": {
+                "at": 1793380000,
+                "value": "41"
+              }
+            }
+          }
+        ],
+        "received_at": 1793380300
+      }
+    ],
+    "expect": [
+      {
+        "key": "then-0",
+        "kind": "fire"
+      }
+    ],
+    "name": "When the conditions are met"
+  },
+  {
+    "events": [
+      {
+        "batch_id": "8569317007413823944b8fb696db1470108246f589609e25de9b0c97844faade",
+        "contract": 1,
+        "degraded": false,
+        "flock": {
+          "id": "f1",
+          "name": "Bench signs"
+        },
+        "hook": "telemetry",
+        "pigeon": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "Pigeon a"
+        },
+        "readings": [
+          {
+            "at": 1793380000,
+            "metrics": {
+              "temp_c": "40"
+            },
+            "previous": {}
+          }
+        ],
+        "received_at": 1793380000
+      },
+      {
+        "batch_id": "a9fd39c2c5b969cfaeff6a27225b87aca0e9b620526c060ea37ae20e1b9e63c2",
+        "contract": 1,
+        "degraded": false,
+        "flock": {
+          "id": "f1",
+          "name": "Bench signs"
+        },
+        "hook": "telemetry",
+        "pigeon": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "Pigeon a"
+        },
+        "readings": [
+          {
+            "at": 1793380300,
+            "metrics": {
+              "temp_c": "40"
+            },
+            "previous": {
+              "temp_c": {
+                "at": 1793380000,
+                "value": "40"
+              }
+            }
+          }
+        ],
+        "received_at": 1793380300
+      }
+    ],
+    "expect": [],
+    "name": "When they are not met"
+  }
+]
