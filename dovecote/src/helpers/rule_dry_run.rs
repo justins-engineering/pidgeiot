@@ -277,7 +277,7 @@ impl ErrorTally {
 
   /// The most frequent first, ties in the order first seen, at most [`MAX_DRY_RUN_ERRORS`].
   fn top(mut self) -> Vec<RuleErrorGroup> {
-    self.0.sort_by(|a, b| b.count.cmp(&a.count));
+    self.0.sort_by_key(|g| std::cmp::Reverse(g.count));
     self.0.truncate(MAX_DRY_RUN_ERRORS);
     self.0
   }
@@ -526,7 +526,7 @@ pub fn cpu_verdict(classified: &Classified) -> Option<RuleCpuResult> {
 /// The indexes of the replay's busiest batches, most readings first, ties oldest first.
 pub fn busiest(events: &[CommonEvent], n: usize) -> Vec<usize> {
   let mut order: Vec<usize> = (0..events.len()).collect();
-  order.sort_by(|&a, &b| events[b].readings.len().cmp(&events[a].readings.len()));
+  order.sort_by_key(|&i| std::cmp::Reverse(events[i].readings.len()));
   order.truncate(n);
   order
 }
