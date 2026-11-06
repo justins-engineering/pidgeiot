@@ -23,6 +23,7 @@ use capsules::{
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{LdArrowLeft, LdX};
+use std::collections::HashMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -586,6 +587,9 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   let mut action_note = use_signal(|| None::<Result<String, String>>);
   // The target version's last dry run, read with it or answered by a test.
   let mut tested = use_signal(|| None::<RuleVersion>);
+  // Each test's own answer by version: the stored row can be read from before the test for a
+  // minute after it.
+  let mut test_answers = use_signal(HashMap::<i32, RuleVersion>::new);
   let mut testing = use_signal(|| false);
   // Up to two versions open side by side.
   let mut open_versions = use_signal(Vec::<RuleVersion>::new);
@@ -918,10 +922,13 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
               class: "select select-bordered select-sm",
               "aria-label": "Version to test or deploy",
               onchange: move |evt| async move {
-                  let picked = evt.value().parse().ok();
+                  let picked: Option<i32> = evt.value().parse().ok();
                   target.set(picked);
-                  tested.set(None);
-                  if let Some(version) = picked
+                  let answered = picked.and_then(|v| test_answers.peek().get(&v).cloned());
+                  let known = answered.is_some();
+                  tested.set(answered);
+                  if !known
+                      && let Some(version) = picked
                       && let Ok(stored) = api::rules::version(flock_id, rule_id, version).await
                       && stored.test_summary.is_some()
                       && target() == Some(version)
@@ -962,6 +969,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                                   slot.tested_at = found.tested_at;
                               }
                               action_note.set(Some(Ok("Test finished.".to_string())));
+                              test_answers.write().insert(version, found.clone());
                               tested.set(Some(found));
                           }
                           Err(err) => action_note.set(Some(Err(err))),
