@@ -85,6 +85,8 @@ pub use usage::ensure_billing_usage_tables;
 pub use usage::raise_message_allowance_floor;
 pub use usage::report_billing_meters;
 
+pub mod flock_config;
+
 mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
@@ -177,6 +179,7 @@ pub use greptime::write_telemetry_default_batch;
 
 mod firmware;
 pub use firmware::FlockAccess;
+pub use firmware::ensure_flock_firmware_table;
 pub use firmware::get_firmware_board;
 pub use firmware::list_flock_firmware;
 pub use firmware::sha256_hex;
