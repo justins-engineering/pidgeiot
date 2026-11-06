@@ -129,6 +129,7 @@ async function live(input) {
     });
     const r = await runOne(rule.run, event, expired);
     if (r.status === "timeout") late = true;
+    if (r.status === "ok") screen(r, want.state.pigeon, want.state.flock);
     results.push({ id: want.id, ...r });
   }
   stop();
@@ -137,8 +138,8 @@ async function live(input) {
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
-// What dovecote refuses whole before any field cap, mirrored only so a replay threads no state
-// from a result live would apply nothing of. dovecote's validator stays the authority.
+// What dovecote refuses whole before any field cap, mirrored so a replay threads no state from a
+// result live would apply nothing of. dovecote's validator stays the authority.
 function refusal(out) {
   if (Object.keys(out).some((k) => k !== "alerts" && k !== "values" && k !== "state")) {
     return "result has a field other than alerts, values and state";
@@ -161,7 +162,8 @@ function refusal(out) {
   return null;
 }
 
-// The two state caps are mirrored so a replay threads state as live would. A null-prototype
+// The two state caps are mirrored so a replay threads state as live would, and a live run is
+// refused for them in the same words. A null-prototype
 // document takes a key named __proto__ as a key, as dovecote's merge does. Concurrent writers
 // can leave a stored document over its cap, so only growth past the cap is refused.
 function merge(doc, patch, cap) {
@@ -173,6 +175,26 @@ function merge(doc, patch, cap) {
   }
   const size = bytes(P.stringify(next));
   return size > cap && size > bytes(P.stringify(doc)) ? { bad: true } : { doc: next };
+}
+
+// Refuses an `ok` run in place, as `bad_output`, when dovecote would refuse it whole or its state
+// would grow past a cap, so a live run and a replay of it answer alike. The documents the result
+// leaves, or null when refused.
+function screen(r, pigeonDoc, flockDoc) {
+  const out = P.parse(r.out_json);
+  let error = refusal(out);
+  let p;
+  let f;
+  if (error === null) {
+    p = merge(pigeonDoc, out.state?.pigeon, PIGEON_STATE_BYTES);
+    f = merge(flockDoc, out.state?.flock, FLOCK_STATE_BYTES);
+    if (p.bad || f.bad) error = "state over its cap";
+  }
+  if (error === null) return { pigeon: p.doc, flock: f.doc };
+  r.status = "bad_output";
+  r.error = error;
+  delete r.out_json;
+  return null;
 }
 
 async function replay(input) {
@@ -201,22 +223,10 @@ async function replay(input) {
       stop();
       if (r.status === "timeout") stopped = { at: i, status: "timeout" };
       if (r.status === "ok") {
-        const out = P.parse(r.out_json);
-        let error = refusal(out);
-        if (error === null) {
-          const p = merge(pigeons[pid] ?? {}, out.state?.pigeon, PIGEON_STATE_BYTES);
-          const f = merge(flock, out.state?.flock, FLOCK_STATE_BYTES);
-          if (p.bad || f.bad) {
-            error = "state over its cap";
-          } else {
-            pigeons[pid] = p.doc;
-            flock = f.doc;
-          }
-        }
-        if (error !== null) {
-          r.status = "bad_output";
-          r.error = error;
-          delete r.out_json;
+        const docs = screen(r, pigeons[pid] ?? {}, flock);
+        if (docs !== null) {
+          pigeons[pid] = docs.pigeon;
+          flock = docs.flock;
         }
       }
       // dovecote validates every run that returned anything, so only an empty one is left out.

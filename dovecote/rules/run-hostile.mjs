@@ -81,6 +81,11 @@ try {
     rules: [{ id: "wide", version: 1 }] });
   check("state is capped in UTF-8 bytes, not UTF-16 units",
     wide.rules[0].runs[0].status === "bad_output");
+  const [wideLive] = (await call({ mode: "live", wall_ms: 250, common,
+    rules: [{ id: "wide", version: 1, state }] })).results;
+  check("a live run over a state cap is refused in the replay's words",
+    wideLive.status === "bad_output" && wideLive.error === wide.rules[0].runs[0].error &&
+    !("out_json" in wideLive));
 
   const over = { s: "x".repeat(5000), n: 1 };
   const seeded = await call({ mode: "replay", wall_ms: 250, events: [common], rules: [
