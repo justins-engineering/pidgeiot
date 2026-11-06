@@ -231,7 +231,7 @@ pub struct RuleCaseOutcome {
   pub expected: Vec<RuleCaseMail>,
   /// What the candidate would have mailed.
   pub got: Vec<RuleCaseMail>,
-  /// The first failed run's error, or why the case could not run.
+  /// The error its failed runs gave most often.
   pub error: Option<String>,
 }
 
