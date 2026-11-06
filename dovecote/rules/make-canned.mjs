@@ -1,5 +1,6 @@
-// Writes canned/*.json: real harness responses that dovecote's tests classify or summarize, so the Rust side
-// is tested against what main.js answers under workerd rather than a hand copy or Bun's text.
+// Writes canned/*.json: real harness responses that dovecote's tests classify or summarize, so the
+// Rust side is tested against what main.js answers under workerd rather than a hand copy or Bun's
+// text.
 // `bun run-workerd.mjs --canned`, which serves each manifest and runs this once per manifest
 // (`worked` or `hostile`) with RULES_URL set.
 import { writeFileSync } from "node:fs";
