@@ -787,8 +787,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
             None => rsx! {},
         }
         if let Some(found) = tested() {
-          if let Some(summary) = found.test_summary {
-            JsonViewer { json: summary, title: test_summary_title(found.version) }
+          if let Some(json) = found
+              .test_summary
+              .and_then(|summary| serde_json::to_string(&summary).ok())
+              .and_then(|text| capsules::JsonString::new(text).ok())
+          {
+            JsonViewer { json, title: test_summary_title(found.version) }
           }
         }
       }

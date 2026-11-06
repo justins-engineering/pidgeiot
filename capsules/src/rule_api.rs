@@ -1,7 +1,7 @@
 //! The dashboard's rule routes: the bodies they accept, the models they answer with, and the
 //! checks fancier and dovecote both apply to a rule's name and source.
 
-use crate::JsonString;
+use crate::RuleDryRun;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -335,10 +335,11 @@ impl From<RuleVersionRow> for RuleVersion {
       prompt: row.prompt,
       tested_contract: row.tested_contract.filter(|_| tested),
       tested_at: row.tested_at.filter(|_| tested),
+      // A summary from before the dry run's shape existed reads as none; the record stands.
       test_summary: row
         .test_summary
         .filter(|_| tested)
-        .and_then(|s| JsonString::new(s).ok()),
+        .and_then(|s| serde_json::from_str(&s).ok()),
       created_by: row.created_by,
       created_at: row.created_at,
       source: row.source,
@@ -367,8 +368,9 @@ pub struct RuleVersion {
   pub tested_contract: Option<i32>,
   #[serde(with = "time::serde::rfc3339::option")]
   pub tested_at: Option<OffsetDateTime>,
+  /// What the dry run of these bytes found.
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub test_summary: Option<JsonString>,
+  pub test_summary: Option<RuleDryRun>,
   pub created_by: Uuid,
   #[serde(with = "time::serde::rfc3339")]
   pub created_at: OffsetDateTime,
@@ -601,7 +603,17 @@ mod tests {
   #[test]
   fn a_test_record_counts_only_for_the_bytes_it_ran() {
     let now = OffsetDateTime::UNIX_EPOCH;
-    let row = |tested: Option<&str>| RuleVersionRow {
+    let summary = serde_json::to_string(&crate::RuleDryRun {
+      window: Default::default(),
+      candidate: Default::default(),
+      deployed: None,
+      seeded: None,
+      mails: Default::default(),
+      cases: vec![],
+      cpu: Default::default(),
+    })
+    .expect("summary serializes");
+    let row = |tested: Option<&str>, summary: &str| RuleVersionRow {
       rule_id: Uuid::nil(),
       version: 3,
       sha256: "aa".into(),
@@ -613,21 +625,24 @@ mod tests {
       tested_sha256: tested.map(str::to_string),
       tested_contract: Some(1),
       tested_at: Some(now),
-      test_summary: Some("{\"cases\":[]}".into()),
+      test_summary: Some(summary.into()),
       created_by: Uuid::nil(),
       created_at: now,
       source: None,
     };
-    let tested = RuleVersion::from(row(Some("aa")));
+    let tested = RuleVersion::from(row(Some("aa"), &summary));
     assert_eq!(tested.tested_contract, Some(1));
     assert!(tested.test_summary.is_some());
     assert_eq!(tested.origin, RuleOrigin::AssistantEdited);
-    let stale = RuleVersion::from(row(Some("bb")));
+    let stale = RuleVersion::from(row(Some("bb"), &summary));
     assert_eq!(stale.tested_contract, None);
     assert_eq!(stale.tested_at, None);
     assert_eq!(stale.test_summary, None);
     let json = serde_json::to_value(&stale).expect("version serializes");
     assert!(json.get("source").is_none() && json.get("test_summary").is_none());
+    let seeded_by_hand = RuleVersion::from(row(Some("aa"), "{\"cases\":[]}"));
+    assert_eq!(seeded_by_hand.tested_contract, Some(1), "the record stands");
+    assert_eq!(seeded_by_hand.test_summary, None);
   }
 
   #[test]

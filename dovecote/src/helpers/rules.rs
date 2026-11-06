@@ -18,9 +18,10 @@ use crate::helpers::{ResolvedReading, sha256_hex};
 use capsules::{
   MAX_RULE_ERROR_BYTES, MAX_RULE_LOG_LINE_BYTES, MAX_RULE_LOG_LINES, MAX_RULE_STATE_TOTAL_BYTES,
   MAX_TELEMETRY_BATCH_READINGS, MAX_TELEMETRY_KEY_BYTES, MAX_TELEMETRY_KEYS,
-  MAX_TELEMETRY_VALUE_BYTES, RULE_CONTRACT, RuleAlert, RuleAlertKind, RuleAlertScope, RuleHook,
-  RuleNamedRef, RulePrevious, RuleReading, RuleResult, RuleSeverity, RuleState,
-  TelemetryHistoryPoint, merge_state, state_doc_bytes, validate_result,
+  MAX_TELEMETRY_VALUE_BYTES, RULE_CONTRACT, RuleAlert, RuleAlertKind, RuleAlertScope,
+  RuleCaseMetric, RuleCasePigeon, RuleCaseReading, RuleHook, RuleNamedRef, RulePrevious,
+  RuleReading, RuleResult, RuleSeverity, RuleState, RuleTestCase, TelemetryHistoryPoint,
+  merge_state, state_doc_bytes, validate_result,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -100,7 +101,7 @@ pub const REPLAY_MAX_READINGS: usize = 4_000;
 /// `wrangler.toml` to it.
 pub const RULES_COMPATIBILITY_DATE: &str = "2026-10-26";
 
-/// Bounds on the assistant's synthetic test cases, which structured outputs do not enforce.
+/// Bounds on a dry run's synthetic test cases, which a model's structured output does not enforce.
 pub const MIN_TEST_CASES: usize = 2;
 /// See [`MIN_TEST_CASES`].
 pub const MAX_TEST_CASES: usize = 5;
@@ -1705,70 +1706,6 @@ fn synthetic_event(
   }
 }
 
-/// One of the assistant's synthetic test cases, as its structured output gives it.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TestCase {
-  /// Shown beside the case's outcome.
-  pub name: String,
-  /// Batches in the order they arrive.
-  pub events: Vec<CaseEvent>,
-  /// The mails the platform should send over the whole case.
-  pub expect: Vec<ExpectedMail>,
-}
-
-/// One batch of a test case.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CaseEvent {
-  /// Which of the three abstract pigeons sent it.
-  pub pigeon: CasePigeon,
-  /// Its readings, in any order.
-  pub readings: Vec<CaseReading>,
-}
-
-/// The three abstract pigeons a case may name; the model never sees a real id.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum CasePigeon {
-  /// Pigeon "a".
-  A,
-  /// Pigeon "b".
-  B,
-  /// Pigeon "c".
-  C,
-}
-
-/// One reading of a test case.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CaseReading {
-  /// Seconds after the case's start.
-  pub after_secs: i64,
-  /// Key and value pairs, since a schema with a map-shaped object is refused.
-  pub metrics: Vec<CaseMetric>,
-}
-
-/// One metric of a case reading.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CaseMetric {
-  /// The telemetry key.
-  pub key: String,
-  /// Its value, a string like every telemetry value.
-  pub value: String,
-}
-
-/// A mail a case expects.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ExpectedMail {
-  /// The alert key.
-  pub key: String,
-  /// Its kind.
-  pub kind: RuleAlertKind,
-}
-
 /// Why a test case was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseError {
@@ -1825,7 +1762,7 @@ pub fn check_case_count(cases: usize) -> Result<(), CaseError> {
 /// abstract pigeon a synthetic id, each offset a time, `previous` rebuilt per key from the case's
 /// earlier readings of that pigeon, `degraded` false.
 pub fn expand_case(
-  case: &TestCase,
+  case: &RuleTestCase,
   flock: &RuleNamedRef,
   start: i64,
 ) -> Result<Vec<CommonEvent>, CaseError> {
@@ -1844,7 +1781,7 @@ pub fn expand_case(
     if event.readings.len() > MAX_TELEMETRY_BATCH_READINGS {
       return Err(CaseError::TooManyReadings);
     }
-    let mut sorted: Vec<&CaseReading> = event.readings.iter().collect();
+    let mut sorted: Vec<&RuleCaseReading> = event.readings.iter().collect();
     sorted.sort_by_key(|r| r.after_secs);
     let (slot, id, name) = case_pigeon(event.pigeon);
     let mut readings = Vec::with_capacity(sorted.len());
@@ -1864,15 +1801,15 @@ pub fn expand_case(
   Ok(events)
 }
 
-fn case_pigeon(pigeon: CasePigeon) -> (usize, String, &'static str) {
+fn case_pigeon(pigeon: RuleCasePigeon) -> (usize, String, &'static str) {
   match pigeon {
-    CasePigeon::A => (0, "a".repeat(64), "Pigeon a"),
-    CasePigeon::B => (1, "b".repeat(64), "Pigeon b"),
-    CasePigeon::C => (2, "c".repeat(64), "Pigeon c"),
+    RuleCasePigeon::A => (0, "a".repeat(64), "Pigeon a"),
+    RuleCasePigeon::B => (1, "b".repeat(64), "Pigeon b"),
+    RuleCasePigeon::C => (2, "c".repeat(64), "Pigeon c"),
   }
 }
 
-fn case_metrics(pairs: &[CaseMetric]) -> Result<BTreeMap<String, String>, CaseError> {
+fn case_metrics(pairs: &[RuleCaseMetric]) -> Result<BTreeMap<String, String>, CaseError> {
   if pairs.len() > MAX_TELEMETRY_KEYS {
     return Err(CaseError::TooManyKeys);
   }
@@ -3414,7 +3351,7 @@ mod tests {
     }
   }
 
-  fn case(json: Value) -> TestCase {
+  fn case(json: Value) -> RuleTestCase {
     serde_json::from_value(json).expect("case shape")
   }
 
@@ -3506,7 +3443,7 @@ mod tests {
       Err(CaseError::TooManyReadings)
     );
     assert!(
-      serde_json::from_value::<TestCase>(json!({
+      serde_json::from_value::<RuleTestCase>(json!({
     "name": "x", "events": [{ "pigeon": "d", "readings": [] }], "expect": [] }))
       .is_err()
     );
