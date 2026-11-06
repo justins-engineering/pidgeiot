@@ -24,7 +24,7 @@ fn format_bytes(len: i64) -> String {
 /// set yet" (the common case for any pigeon that predates FOTA or has
 /// never been assigned an image). Pure and synchronous so it's
 /// unit-testable without a wasm target, same rationale as
-/// `parse_shadow_upload` in views/pigeon.rs.
+/// `parse_config_upload` in helpers/config_layers.rs.
 fn extract_firmware_target(config: &JsonString) -> Option<FirmwareTarget> {
   let value: serde_json::Value = serde_json::from_str(&config.to_string()).ok()?;
   let firmware = value.get("firmware")?.clone();
