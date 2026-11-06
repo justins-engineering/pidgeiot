@@ -208,12 +208,15 @@ pub struct ApplyInput<'a> {
   pub current_target: &'a str,
 }
 
+/// What [`decide_apply`] tells the pigeon's object to do.
 #[derive(Debug, PartialEq)]
 pub enum ApplyDecision {
   /// Nothing to do and nothing recorded: a field pigeon, or a stale or repeated message.
   Drop(&'static str),
   /// The layer cannot apply here; the reason is recorded and the old layer kept.
   Refuse(&'static str),
+  /// Take the layer: store `pigeon_layer` (less any adopted keys) and, when `changed`, write
+  /// `effective` as the shadow's `target_config`.
   Apply {
     pigeon_layer: Map<String, Value>,
     effective: String,
@@ -221,8 +224,11 @@ pub enum ApplyDecision {
   },
 }
 
+/// Recorded as `flock_apply_error` when this pigeon's own layer is not a JSON object.
 pub const REFUSED_NOT_AN_OBJECT: &str = "this pigeon's own config is not a JSON object";
+/// Recorded when the flock's image is untagged or built for another board than this pigeon's.
 pub const REFUSED_BOARD: &str = "the flock's firmware is not built for this pigeon's board";
+/// Recorded when a Nidd pigeon's merged config would not fit one `SHADOW` frame.
 pub const REFUSED_NIDD_CAP: &str = "the merged config is too large for one NIDD downlink frame";
 
 /// Decides one apply. A pigeon layer that names its own `firmware`, or opts out with `null`, is

@@ -107,8 +107,11 @@ pub fn key_sources(
 /// Why a flock layer was refused at the write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlockLayerRejection {
+  /// The layer is not a JSON object.
   NotAnObject,
+  /// The layer serializes to more than [`MAX_FLOCK_CONFIG_BYTES`].
   TooLarge,
+  /// The layer carries one of [`FLOCK_REFUSED_KEYS`], named here.
   RefusedKey(&'static str),
   /// A flock key cannot be `null`: a flock removes a key by leaving it out.
   NullValue,
