@@ -30,6 +30,9 @@ pub const FLOCK_CONFIG_QUEUE_PREFIX: &str = "pidgeiot-flock-config";
 const SEND_BATCH_MESSAGES: usize = 100;
 const SEND_BATCH_BYTES: usize = 200 * 1024;
 
+/// Added to each message's measured length, for whatever the queue counts beyond its body.
+const MESSAGE_MARGIN_BYTES: usize = 128;
+
 /// One member's apply, both the queue message and the body of the pigeon object's internal
 /// `/pigeon/shadow/flock` route; the move route sends it to `/pigeon/flock/update` too.
 ///
@@ -157,6 +160,20 @@ pub fn send_batch_size(message_bytes: usize) -> usize {
   (SEND_BATCH_BYTES / message_bytes.max(1)).clamp(1, SEND_BATCH_MESSAGES)
 }
 
+/// The longest of `applies` as the queue carries it, JSON with the layer and the adopt list
+/// escaped as strings, plus a margin. Every message of one write differs only in its pigeon id,
+/// so one is serialized and the longest id swapped in.
+pub fn apply_message_bytes(applies: &[FlockConfigApply]) -> usize {
+  let Some(first) = applies.first() else {
+    return 0;
+  };
+  let Ok(text) = serde_json::to_string(first) else {
+    return SEND_BATCH_BYTES;
+  };
+  let longest_id = applies.iter().map(|a| a.pigeon_id.len()).max().unwrap_or(0);
+  text.len() - first.pigeon_id.len() + longest_id + MESSAGE_MARGIN_BYTES
+}
+
 /// Enqueues `applies` in as few `sendBatch` calls as the limits allow. An error means some may
 /// not have been sent; a second write of the same layer re-sends them all.
 pub async fn enqueue_flock_applies(env: &Env, applies: Vec<FlockConfigApply>) -> Result<()> {
@@ -164,7 +181,7 @@ pub async fn enqueue_flock_applies(env: &Env, applies: Vec<FlockConfigApply>) ->
     return Ok(());
   }
   let queue = env.queue(FLOCK_CONFIG_QUEUE)?;
-  let size = send_batch_size(applies[0].config_json.len() + 512);
+  let size = send_batch_size(apply_message_bytes(&applies));
   let mut applies = applies.into_iter().peekable();
   while applies.peek().is_some() {
     let batch: Vec<FlockConfigApply> = applies.by_ref().take(size).collect();
@@ -613,6 +630,43 @@ mod tests {
     assert_eq!(send_batch_size(4096 + 512), 44);
     assert_eq!(send_batch_size(usize::MAX), 1);
     assert_eq!(send_batch_size(0), 100);
+  }
+
+  #[test]
+  fn the_worst_layer_to_a_large_flock_fits_every_send_batch() {
+    // Quote-dense values double in the layer's own text and again as the message's string,
+    // and adopting every key repeats the key names.
+    let mut layer = Map::new();
+    for i in 0..40 {
+      layer.insert(format!("k{i:02}"), Value::from("\"".repeat(40)));
+    }
+    let value = Value::Object(layer);
+    let adopt: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+    let (_, config_json) = capsules::validate_flock_layer(&value, &adopt).expect("valid layer");
+    assert!(config_json.len() > 3500, "layer near the cap");
+
+    let ids: Vec<String> = (0..1000).map(|i| format!("{i:064x}")).collect();
+    let applies = apply_messages(&Uuid::nil(), 1, &config_json, Some(BOARD), &adopt, &ids);
+    let size = send_batch_size(apply_message_bytes(&applies));
+    for batch in applies.chunks(size) {
+      let bytes: usize = batch
+        .iter()
+        .map(|a| serde_json::to_string(a).unwrap().len())
+        .sum();
+      assert!(bytes <= 256 * 1024, "{bytes} bytes in one sendBatch");
+    }
+  }
+
+  #[test]
+  fn the_measured_length_covers_the_longest_id() {
+    let ids = ["short".to_string(), "a".repeat(64)];
+    let applies = apply_messages(&Uuid::nil(), 1, "{}", None, &[], &ids);
+    let longest = serde_json::to_string(&applies[1]).unwrap().len();
+    assert_eq!(
+      apply_message_bytes(&applies),
+      longest + MESSAGE_MARGIN_BYTES
+    );
+    assert_eq!(apply_message_bytes(&[]), 0);
   }
 
   #[test]
