@@ -1,8 +1,8 @@
 use crate::helpers::cf_api::busy_response;
 use crate::helpers::flock_config::{
   FLOCK_CONFIG_QUEUE, FlockConfigApply, FlockLayer, FlockMoveAnswer, apply_messages,
-  check_flock_write, enqueue_flock_applies, layer_firmware_sha, mirror_flock_apply_pg_db,
-  read_flock_config, read_flock_layer, write_flock_config,
+  check_flock_write, enqueue_flock_applies, is_field_pigeon, layer_firmware_sha,
+  mirror_flock_apply_pg_db, read_flock_config, read_flock_layer, write_flock_config,
 };
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::rule_admin::{
@@ -2852,6 +2852,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
       if let Err(e) = update_pigeon_pg_db(&client, &moved.pigeon, None).await {
         console_error!("External DB Sync Error for pigeon {}: {e}", moved.pigeon.id);
+      }
+
+      // A production sign moves without a layer, so it has no layer to mirror or catch up on.
+      if is_field_pigeon(&moved.pigeon.id) {
+        return Response::from_json(&moved.pigeon)?.with_cors(&cors);
       }
 
       // After the flock_id mirror: a flock write either listed this pigeon or committed a version
