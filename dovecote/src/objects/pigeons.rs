@@ -3322,6 +3322,14 @@ fn apply_flock_layer(
     } => (pigeon_layer, effective, changed),
   };
 
+  // The version taken is recorded last: a failure before it leaves the message newer than the
+  // stored version, so its retry merges again rather than being dropped as stale.
+  if changed {
+    pigeons.sql.exec(
+      "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
+      vec![effective.into()],
+    )?;
+  }
   if moving {
     pigeons.sql.exec(
       "UPDATE pigeons SET flock_id = ? WHERE id = ?;",
@@ -3334,12 +3342,6 @@ fn apply_flock_layer(
     &apply.config_json,
     apply.flock_version,
   )?;
-  if changed {
-    pigeons.sql.exec(
-      "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
-      vec![effective.into()],
-    )?;
-  }
 
   let view = read_shadow_view(pigeons)?;
   if changed {
