@@ -1311,6 +1311,61 @@ pub fn rule_mail_message(
   (subject, text)
 }
 
+const PAUSED_PREFIX: &str = "PidgeIoT rule paused: ";
+
+/// The mail to a rule's author when failing runs paused it: the status that paused it and the
+/// pausing run's error, which is the rule's own text, then how to start it again.
+pub fn rule_paused_message(
+  rule: &str,
+  flock: &str,
+  reason: &str,
+  error: Option<&str>,
+) -> (String, String) {
+  let mut subject = String::with_capacity(PAUSED_PREFIX.len() + rule.len());
+  subject.push_str(PAUSED_PREFIX);
+  subject.push_str(rule);
+  let status = reason.strip_prefix("auto:").unwrap_or(reason);
+  let runs = AUTO_PAUSE_RUNS.to_string();
+  const HEAD: &str = "This rule failed ";
+  const RUNS: &str = " runs in a row, the last as ";
+  const PAUSED: &str = ", and is paused: it runs on no batch until it is enabled again.";
+  const ERROR: &str = "\n\nIts last error:\n";
+  const RULE: &str = "\n\n--\nRule: ";
+  const FLOCK: &str = "\nFlock: ";
+  const STOP: &str = "\n\nA flock owner or admin can test and deploy a fixed version, or enable \
+                      the rule again, on the flock's Rules page.\n";
+  let error = error.unwrap_or("");
+  let mut text = String::with_capacity(
+    HEAD.len()
+      + runs.len()
+      + RUNS.len()
+      + status.len()
+      + PAUSED.len()
+      + ERROR.len()
+      + error.len()
+      + RULE.len()
+      + rule.len()
+      + FLOCK.len()
+      + flock.len()
+      + STOP.len(),
+  );
+  text.push_str(HEAD);
+  text.push_str(&runs);
+  text.push_str(RUNS);
+  text.push_str(status);
+  text.push_str(PAUSED);
+  if !error.is_empty() {
+    text.push_str(ERROR);
+    text.push_str(error);
+  }
+  text.push_str(RULE);
+  text.push_str(rule);
+  text.push_str(FLOCK);
+  text.push_str(flock);
+  text.push_str(STOP);
+  (subject, text)
+}
+
 /// Which script a name is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptKind {
@@ -3266,6 +3321,18 @@ mod tests {
       script_name(ScriptKind::Test, RULE_A),
       "it replaces the dry run's own script, so one delete removes either"
     );
+  }
+
+  #[test]
+  fn a_paused_rule_mails_its_author_the_status_and_error() {
+    let (subject, text) = rule_paused_message("Boots", "Bench", "auto:threw", Some("TypeError: x"));
+    assert_eq!(subject, "PidgeIoT rule paused: Boots");
+    assert!(
+      text.starts_with("This rule failed 20 runs in a row, the last as threw, and is paused")
+    );
+    assert!(text.contains("\n\nIts last error:\nTypeError: x\n\n--\nRule: Boots\nFlock: Bench"));
+    let (_, quiet) = rule_paused_message("Boots", "Bench", "auto:dispatch_failed", None);
+    assert!(quiet.contains("the last as dispatch_failed") && !quiet.contains("Its last error"));
   }
 
   #[test]

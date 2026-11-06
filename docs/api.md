@@ -2476,7 +2476,9 @@ The models are `capsules::Rule`, `RuleDetail`, `RuleVersion`, `RuleRun` and `Rul
 rule reports `blocked: true` when the platform has stopped it, which only the platform can lift,
 and `paused_reason` is `"owner"` after a person disables it or `"auto:<status>"` after 20 failing
 runs in a row did. A `dispatch_failed` streak, which the platform's own outages can also cause,
-pauses only once it is also an hour old. A mutation answers with the updated body, so a client
+pauses only once it is also an hour old. An automatic pause mails the rule's author once, naming
+the status and the last run's error, or the flock's owner address once the author has left the
+organization. A mutation answers with the updated body, so a client
 builds its state from that rather than reading the rule again.
 
 #### `GET /flocks/:flock_id/rules`

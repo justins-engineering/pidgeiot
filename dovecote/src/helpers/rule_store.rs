@@ -607,8 +607,22 @@ const RUN_SQL: &str = "INSERT INTO rule_runs (rule_id, version, pigeon_id, batch
 pub struct RuleMail {
   /// The rule that decided it.
   pub rule_id: Uuid,
-  /// Its words, scope and key.
-  pub alert: RuleAlert,
+  /// What the mail is.
+  pub kind: RuleMailKind,
+}
+
+/// What a committed run mails.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleMailKind {
+  /// One of the rule's own alerts, to its recipients.
+  Alert(RuleAlert),
+  /// The run that paused the rule, to its author once: `auto:<status>` and the run's error.
+  Paused {
+    /// The `paused_reason` written.
+    reason: String,
+    /// The pausing run's error, the rule's own text.
+    error: Option<String>,
+  },
 }
 
 /// Records every plan that writes, one transaction per rule, and returns the mails the committed
@@ -728,7 +742,7 @@ async fn record_run(
           sent += 1;
           mails.push(RuleMail {
             rule_id: id,
-            alert: alert.clone(),
+            kind: RuleMailKind::Alert(alert.clone()),
           });
         } else {
           suppressed += 1;
@@ -762,7 +776,16 @@ async fn record_run(
       StreakWrite::Keep => (None, None),
       StreakWrite::Reset => (Some(FailStreak::default()), None),
       StreakWrite::Set(next) => (Some(next), None),
-      StreakWrite::Pause { streak, reason } => (Some(streak), Some(reason)),
+      StreakWrite::Pause { streak, reason } => {
+        mails.push(RuleMail {
+          rule_id: id,
+          kind: RuleMailKind::Paused {
+            reason: reason.clone(),
+            error: plan.error.clone(),
+          },
+        });
+        (Some(streak), Some(reason))
+      }
     };
     if let Some(next) = next {
       tx.query_typed(
@@ -786,7 +809,9 @@ async fn record_run(
 /// the addresses the account holds, as alert mail rechecks them at send.
 const MAIL_TARGETS_SQL: &str = "SELECT r.id, r.name, r.recipients::text, f.owner_email,
     (SELECT string_agg(DISTINCT m.email, ',') FROM organization_members m
-      WHERE m.org_id = f.org_id AND m.email IS NOT NULL)
+      WHERE m.org_id = f.org_id AND m.email IS NOT NULL),
+    (SELECT m.email FROM organization_members m
+      WHERE m.org_id = f.org_id AND m.user_id = r.created_by)
   FROM rules r JOIN flocks f ON f.id = r.flock_id WHERE r.id = ANY($1)";
 
 /// One rule's [`MAIL_TARGETS_SQL`] row.
@@ -802,6 +827,8 @@ pub struct MailTarget {
   pub owner_email: Option<String>,
   /// The owning organization's member addresses, comma-separated.
   pub member_emails: Option<String>,
+  /// The rule's author's address, while the author is a member of the owning organization.
+  pub author_email: Option<String>,
 }
 
 /// [`MailTarget`]s of `rules`.
@@ -821,6 +848,7 @@ pub async fn mail_targets(
         recipients: serde_json::from_str(row.get(2)).unwrap_or_default(),
         owner_email: row.get(3),
         member_emails: row.get(4),
+        author_email: row.get(5),
       })
       .collect(),
   )
@@ -2372,6 +2400,20 @@ pub(crate) mod pg {
         .collect();
       members.sort_unstable();
       assert_eq!(members, ["b@x.io", "ops@x.io"]);
+      assert_eq!(
+        target.author_email, None,
+        "an author outside the org is mailed nothing"
+      );
+      client
+        .execute(
+          "INSERT INTO organization_members (org_id, user_id, role, email)
+           SELECT $1, created_by, 'admin', 'author@x.io' FROM rules WHERE id = $2",
+          &[&org, &rule],
+        )
+        .await
+        .expect("author joins");
+      let targets = mail_targets(&client, &[rule]).await.expect("read");
+      assert_eq!(targets[0].author_email.as_deref(), Some("author@x.io"));
       let lone = mail_targets(&client, &[other]).await.expect("read");
       assert_eq!(
         (lone[0].owner_email.clone(), lone[0].member_emails.clone()),
@@ -2405,10 +2447,10 @@ pub(crate) mod pg {
       let plans = plan_record(&found, &work.readings, &answered(rule, "ok", out));
       let mails = recorded(record_runs(&mut client, &found, &work, &plans, 42).await);
       assert_eq!(mails.len(), 1);
-      assert_eq!(
-        (mails[0].rule_id, mails[0].alert.key.as_str()),
-        (rule, "down")
-      );
+      let RuleMailKind::Alert(alert) = &mails[0].kind else {
+        panic!("an alert mail");
+      };
+      assert_eq!((mails[0].rule_id, alert.key.as_str()), (rule, "down"));
       assert_eq!(
         doc(&client, rule, "p1").await,
         serde_json::json!({ "n": 1 })
@@ -2445,16 +2487,26 @@ pub(crate) mod pg {
         .get(0);
       assert_eq!(runs, 1);
 
-      // Twenty throws in a row pause the rule, each read under the row's lock.
+      // Twenty throws in a row pause the rule, each read under the row's lock, and the run that
+      // paused it owes its author one mail.
+      let mut paused = Vec::new();
       for i in 1..=AUTO_PAUSE_RUNS {
         let work = one_reading(at + i64::from(i));
         let plans = plan_record(&found, &work.readings, &answered(rule, "threw", ""));
-        recorded(record_runs(&mut client, &found, &work, &plans, 1).await);
+        paused.extend(recorded(
+          record_runs(&mut client, &found, &work, &plans, 1).await,
+        ));
       }
       assert_eq!(
         rule_row(&client, rule).await,
         (false, AUTO_PAUSE_RUNS, Some("auto:threw".to_string()))
       );
+      assert_eq!(paused.len(), 1);
+      assert!(matches!(
+        &paused[0].kind,
+        RuleMailKind::Paused { reason, error }
+          if reason == "auto:threw" && error.as_deref() == Some("e")
+      ));
 
       // A quiet success after a failure writes the reset alone.
       client
@@ -2667,7 +2719,7 @@ pub(crate) mod pg {
       .await
       .expect("a lock wait ends in an error, not a hang");
       assert_eq!(mails.len(), 1, "a committed before b failed");
-      assert_eq!(mails[0].alert.key, "up");
+      assert!(matches!(&mails[0].kind, RuleMailKind::Alert(a) if a.key == "up"));
       assert_eq!(
         failed.and_then(|e| e.code().cloned()),
         Some(SqlState::LOCK_NOT_AVAILABLE)

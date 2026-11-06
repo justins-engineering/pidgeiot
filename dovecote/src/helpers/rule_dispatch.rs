@@ -22,12 +22,12 @@ use crate::helpers::alerts::send_rule_email;
 use crate::helpers::get_db_client;
 use crate::helpers::rule_admin::rules_org_allowed;
 use crate::helpers::rule_store::{
-  RuleMail, ensure_rule_tables, fresh_read, mail_targets, record_runs, rules_gate,
+  RuleMail, RuleMailKind, ensure_rule_tables, fresh_read, mail_targets, record_runs, rules_gate,
 };
 use crate::helpers::rules::{
   Classified, DispatchOutcome, Lookup, PassLedger, PassVars, PreGate, RulePlan, RuleWork,
   RunStatus, ScriptKind, Skip, build_event, classify, deliverable_recipients, live_input,
-  plan_record, read_cap, rule_mail_message, script_name, uuid_str,
+  plan_record, read_cap, rule_mail_message, rule_paused_message, script_name, uuid_str,
 };
 #[cfg(test)]
 use crate::helpers::{ResolvedReading, rules::pass_vars};
@@ -344,20 +344,33 @@ async fn send_rule_mails(env: &Env, client: &Client, lookup: &Lookup, mails: &[R
       continue;
     };
     let rule = uuid_str(mail.rule_id);
-    let (to, refused) = deliverable_recipients(
-      &target.recipients,
-      target.owner_email.as_deref(),
-      target.member_emails.as_deref(),
-    );
-    if refused > 0 {
-      console_error!("rules: rule {rule} dropped {refused} recipient(s) not tied to its account");
-    }
-    let (subject, text) = rule_mail_message(
-      &mail.alert,
-      &target.name,
-      &lookup.flock.name,
-      &lookup.pigeon.name,
-    );
+    let (to, (subject, text)) = match &mail.kind {
+      RuleMailKind::Alert(alert) => {
+        let (to, refused) = deliverable_recipients(
+          &target.recipients,
+          target.owner_email.as_deref(),
+          target.member_emails.as_deref(),
+        );
+        if refused > 0 {
+          console_error!(
+            "rules: rule {rule} dropped {refused} recipient(s) not tied to its account"
+          );
+        }
+        let message =
+          rule_mail_message(alert, &target.name, &lookup.flock.name, &lookup.pigeon.name);
+        (to, message)
+      }
+      // The author's address only while they are a member; the flock owner's once they leave.
+      RuleMailKind::Paused { reason, error } => {
+        let to = target
+          .author_email
+          .clone()
+          .or_else(|| target.owner_email.clone());
+        let message =
+          rule_paused_message(&target.name, &lookup.flock.name, reason, error.as_deref());
+        (to.into_iter().collect(), message)
+      }
+    };
     for address in &to {
       if send_rule_email(env, address, &subject, &text, &rule)
         .await
