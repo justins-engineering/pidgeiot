@@ -13,7 +13,7 @@ use crate::models::AlertVariant;
 use crate::{Route, api};
 use capsules::{
   Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon,
-  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
+  PigeonAcl, PigeonDetail, PigeonShadowUpdateRequest, PigeonShadowView, PigeonUpdateRequest,
   TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
@@ -227,7 +227,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   ShadowInfo {
                     pigeon_id: pigeon_id.clone(),
                     shadow: pd.shadow.clone(),
-                    on_repushed: move |new_shadow: PigeonShadow| {
+                    on_repushed: move |new_shadow: PigeonShadowView| {
                         if let Some(detail) = pigeon_detail.write().as_mut() {
                             detail.shadow = new_shadow;
                         }
@@ -274,7 +274,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     pigeon_board: pd.pigeon.board.clone(),
                     shadow: pd.shadow.clone(),
                     on_close: move |_| show_firmware_modal.set(false),
-                    on_assigned: move |new_shadow: PigeonShadow| {
+                    on_assigned: move |new_shadow: PigeonShadowView| {
                         if let Some(detail) = pigeon_detail.write().as_mut() {
                             detail.shadow = new_shadow;
                         }
@@ -1213,8 +1213,8 @@ fn TelemetryEndpointInfo(
   }
 }
 
-/// The shadow pair, plus the two ways to move `target_config`: edit it, or
-/// re-push the firmware target already in it.
+/// The shadow pair, plus the two ways to move `target_config`: edit this
+/// pigeon's own layer, or re-push the firmware target already in it.
 ///
 /// Re-push exists because a device bounds its FOTA retries on the shadow's
 /// `target_version`, and that version only advances when `target_config`
@@ -1224,11 +1224,12 @@ fn TelemetryEndpointInfo(
 #[component]
 fn ShadowInfo(
   pigeon_id: String,
-  shadow: PigeonShadow,
-  on_repushed: EventHandler<PigeonShadow>,
+  shadow: PigeonShadowView,
+  on_repushed: EventHandler<PigeonShadowView>,
 ) -> Element {
   let can_repush = firmware_repush::has_firmware_target(&shadow.target_config);
-  let base_target_config = shadow.target_config.clone();
+  let effective = shadow.target_config.clone();
+  let pigeon_layer = shadow.pigeon_config.clone();
   let mut is_repushing = use_signal(|| false);
   let mut repush_error: Signal<Option<String>> = use_signal(|| None);
   let mut repushed_version: Signal<Option<i32>> = use_signal(|| None);
@@ -1245,12 +1246,13 @@ fn ShadowInfo(
                 disabled: is_repushing(),
                 onclick: move |_| {
                     let pigeon_id = pigeon_id.clone();
-                    let base_target_config = base_target_config.clone();
+                    let effective = effective.clone();
+                    let pigeon_layer = pigeon_layer.clone();
                     async move {
                         is_repushing.set(true);
                         repush_error.set(None);
                         repushed_version.set(None);
-                        match firmware_repush::repush_target_config(&base_target_config) {
+                        match firmware_repush::repush_pigeon_layer(&effective, &pigeon_layer) {
                             Ok(target_config) => {
                                 let req = PigeonShadowUpdateRequest {
                                     target_config,
@@ -1568,9 +1570,11 @@ mod shadow_upload_tests {
   }
 }
 
-/// Edits the shadow's `target_config`, typed or loaded from a file. For a
-/// NIDD pigeon it counts the bytes against the one downlink frame the
-/// whole config has to fit; the server's 413 stays the authority.
+/// Edits this pigeon's own config layer, typed or loaded from a file, never
+/// the merged `target_config`: saving that back would copy every flock key
+/// into the pigeon's layer and pin it there. For a NIDD pigeon it counts the
+/// bytes against the one downlink frame the whole config has to fit; the
+/// server's 413 stays the authority.
 #[component]
 pub fn EditShadowModal(
   pigeon_id: String,
@@ -1578,7 +1582,7 @@ pub fn EditShadowModal(
 ) -> Element {
   let mut json_input = use_signal(|| {
     if let Some(detail) = pigeon_detail.read().as_ref() {
-      detail.shadow.target_config.to_pretty()
+      detail.shadow.pigeon_config.to_pretty()
     } else {
       "{}".to_string()
     }

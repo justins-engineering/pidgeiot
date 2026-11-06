@@ -64,6 +64,8 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`PUT /pigeons/:pigeon_id/shadow`](#put-pigeonspigeon_idshadow) | member | Set a new target config; also assigns firmware |
 | [`POST /flocks/:flock_id/firmware`](#post-flocksflock_idfirmware) | flock: manage | Upload an image into the flock's firmware catalog |
 | [`GET /flocks/:flock_id/firmware`](#get-flocksflock_idfirmware) | flock: view | List the flock's firmware catalog |
+| [`GET /flocks/:flock_id/config`](#get-flocksflock_idconfig) | flock: view | Read the config layer every member inherits |
+| [`PUT /flocks/:flock_id/config`](#put-flocksflock_idconfig) | flock: manage | Replace the flock's config layer and send it to every member |
 | [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry) | member | Read the latest value per telemetry key |
 | [`GET /pigeons/:pigeon_id/telemetry/history`](#get-pigeonspigeon_idtelemetryhistory) | member | Query one pigeon's telemetry history |
 | [`GET /flocks/:flock_id/telemetry/history`](#get-flocksflock_idtelemetryhistory) | flock: view | Query telemetry history across a whole flock |
@@ -298,6 +300,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `GET /device/pigeons/:id/ws` — max WebSocket frame size | 16 KiB | `objects/ws.rs::MAX_WS_FRAME_BYTES`, connection closed (`4002`) over the cap |
 | `GET /device/pigeons/:id/ws` — frame rate | 50 frames / rolling 10s window, per socket | `objects/ws.rs`, connection closed (`4008`) over the cap |
 | NIDD frame, either direction | 1358 bytes (`capsules::NIDD_MAX_FRAME_BYTES`), counted before base64 | The downlink is held to it by the `target_config` cap below; an uplink frame is accepted up to it, and the device library caps its own at the 1273 bytes the bench modem accepts; see [NIDD sizes and cadence](#nidd-sizes-and-cadence) |
+| `PUT /flocks/:id/config` — bytes per layer | 4096 serialized (`capsules::MAX_FLOCK_CONFIG_BYTES`); 1319 when any member is a `Nidd` pigeon | `lib.rs`, `413` over the cap, nothing written |
 | `PUT /pigeons/:id/shadow`, a `Nidd` pigeon's `target_config` | 1319 bytes serialized at worst (`capsules::NIDD_MAX_TARGET_CONFIG_BYTES`); exactly, what one `SHADOW` frame carries at the version the write creates, up to 1337 | `objects/pigeons.rs::update_shadow`, `413` over the cap, nothing written |
 | `POST /internal/thingspace/nidd`, bytes per body | 8 KiB | `lib.rs`, `413` over the cap |
 | NIDD downlink delivery window | 30 s (ThingSpace's `maximumDeliveryTime`) | `helpers/nidd.rs::NIDD_MT_DELIVERY_SECS`; a push that misses the device rides its next uplink's reply |
@@ -1303,7 +1306,9 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id> \
 **Auth:** member
 
 Same as above plus `acl` (**only the caller's own ACL row**, not the full list — use
-`GET /pigeons/:pigeon_id/acl` for that) and `shadow`. Returns `capsules::PigeonDetail`.
+`GET /pigeons/:pigeon_id/acl` for that) and `shadow`, with its config layers as
+[`GET /pigeons/:pigeon_id/shadow`](#get-pigeonspigeon_idshadow) answers them. Returns
+`capsules::PigeonDetail`.
 
 #### `PUT /pigeons/:pigeon_id`
 
@@ -1350,11 +1355,14 @@ learns nothing about which flock it is in. An unknown destination flock is the d
 `403` (missing and forbidden are indistinguishable there too); `404` is reserved for a pigeon
 with no Postgres mirror row to compare owners against.
 
-The move is **invisible to the device**: its id, bearer token, connector endpoint and Durable
-Object are all untouched, and it needs no reboot or re-provisioning. What changes is which
-flock lists it, and therefore which flock-scoped firmware catalog and alerts apply to it. The
-Durable Object is written first and the Postgres mirror synced best-effort after, per the usual
-convention.
+The move leaves the device's id, bearer token, connector endpoint and Durable Object untouched,
+and it needs no reboot or re-provisioning. What changes is which flock lists it, and therefore
+which flock-scoped firmware catalog, alerts and [config layer](#flock-config) apply to it. The
+destination's layer is installed in the same step, so the device sees at most one new
+`target_version`; a layer that cannot apply to this pigeon (its firmware is for another board, or
+a `Nidd` pigeon's merged config is over one frame) refuses the move with `409`, nothing written.
+The Durable Object is written first and the Postgres mirror synced best-effort after, per the
+usual convention.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/flock \
@@ -1585,19 +1593,35 @@ curl -s https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
   "current_version": 0,
   "target_config": "{\"telemetry_interval\":60}",
   "current_config": "{}",
-  "updated_at": 1784302765
+  "updated_at": 1784302765,
+  "pigeon_config": "{\"stop_id\":\"414\"}",
+  "flock_config": "{\"telemetry_interval\":60}",
+  "flock_version": 2
 }
 ```
 
 (`updated_at` is intentionally a raw unix-seconds integer here, not RFC 3339 — it's parsed by
 device-side Zephyr firmware, where a minimal wire size matters.)
 
+`target_config` is the effective config the device is sent. Beside it, `capsules::PigeonShadowView`
+adds the two [config layers](#flock-config) it is merged from: `pigeon_config`, this pigeon's own
+layer with its `null` removals kept, `flock_config`, the flock layer this pigeon last took,
+`flock_version`, that layer's version, and `flock_apply_error`, present only while the newest flock
+layer could not apply here. The device routes answer the bare shadow without them.
+
 #### `PUT /pigeons/:pigeon_id/shadow`
 
 **Auth:** member
 
-Sets a new `target_config`, bumping `target_version`. Body: `capsules::PigeonShadowUpdateRequest`
-(`{ target_config: <any JSON object> }`).
+Sets this pigeon's own config layer, bumping `target_version` when the effective config changes.
+Body: `capsules::PigeonShadowUpdateRequest` (`{ target_config: <JSON object> }`). The body is the
+**pigeon layer**: the stored `target_config` becomes its merge with the flock's layer (see
+[Flock config](#flock-config)), and a top-level `null` removes that key, flock's or not. With no
+flock layer the effective config is the body less its `null` keys, as it always was. Answers the
+shadow with its layers, as the `GET` above.
+
+Do not write back the `target_config` you just read: it is the effective config, so sending it
+copies every flock key into this pigeon's layer and pins it there. Start from `pigeon_config`.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
@@ -1606,8 +1630,10 @@ curl -s -X PUT https://api.pidgeiot.com/pigeons/<pigeon_id>/shadow \
   -d '{"target_config":{"telemetry_interval":60}}'
 ```
 
+- `400` for a `target_config` that is not a JSON object.
 - `413` "Payload Too Large: this NIDD pigeon's target_config must serialize to at most <n>
-  bytes", for a `Nidd` pigeon, checked before anything is written. One downlink frame carries
+  bytes", for a `Nidd` pigeon, counted on the merged config and checked before anything is
+  written. One downlink frame carries
   the whole `target_config`, and a config the device could never receive must not become its
   target. `<n>` is never below 1319; see [NIDD sizes and cadence](#nidd-sizes-and-cadence).
 
@@ -1660,10 +1686,13 @@ parse rather than degrading.
 
 The dashboard does this for you: the pigeon detail page's **Re-push firmware** button (next to
 Shadow → Edit, shown only when `target_config` already carries a `firmware` key) sends exactly
-this `PUT` and reports the new `target_version`.
+this `PUT` and reports the new `target_version`. It advances the counter in the pigeon's own layer
+and leaves the rest of that layer as it was, so a `firmware` the pigeon inherits from its flock
+stays inherited. A flock layer may not carry `firmware_repush`, which is what keeps a pigeon's
+counter from shadowing a flock's; a flock re-pushes with `flock_firmware_repush`.
 
 **Board/geometry compatibility check (task #20, phase 1) — fail-closed.** Whenever this PUT's
-`target_config` contains a `firmware` key, dovecote looks up the target image's `board` (matched
+`target_config` contains a non-null `firmware` key, dovecote looks up the target image's `board` (matched
 by `sha256` against this pigeon's flock's firmware catalog, see [Firmware](#firmware) below) and
 compares it against this pigeon's own `board` (`capsules::Pigeon::board`, set at provisioning or
 via `PUT /pigeons/:pigeon_id`). The write is rejected with `400` **unless both are set and
@@ -1741,6 +1770,113 @@ Lists every firmware image uploaded for this flock, newest first. Same per-item 
 curl -s https://api.pidgeiot.com/flocks/<flock_id>/firmware \
   -H 'Cookie: ory_kratos_session=<session_token>'
 ```
+
+### Flock config
+
+A flock can carry one JSON object, its **flock layer**, that every pigeon in it inherits. Each
+pigeon keeps its own object, its **pigeon layer** (what `PUT /pigeons/:pigeon_id/shadow` writes).
+What the device is sent is the **effective config**: the flock layer with the pigeon layer laid
+over it, one top-level key at a time.
+
+- A pigeon key replaces the flock key **whole**. Values are never merged below the top level, so a
+  `firmware` object or a `displays` array always comes from one layer.
+- A pigeon key set to `null` **removes** that key for that pigeon. No `null` ever reaches a
+  device: Zephyr's JSON decoder fails the whole parse on a type mismatch, so the effective config
+  drops every `null`. That holds with no flock layer too: a top-level `null` in a shadow `PUT`
+  means "no such key".
+- Removing a key from a layer does not reset a device to its default. A device that drops a key
+  from its config keeps what it last applied (the departure board does), so set the value you want
+  rather than deleting it.
+
+The device contract does not change: one `target_config`, one `target_version`, delivered by the
+same poll, WebSocket push, MQTT retained topic and NIDD `SHADOW` frame as before. A flock write
+moves `target_version` only on members whose effective text changes, so a pigeon that overrides
+the key the flock changed sees nothing. The dashboard routes answer the layers beside the shadow
+([`GET /pigeons/:pigeon_id/shadow`](#get-pigeonspigeon_idshadow)); the device routes never do.
+
+**Pigeons that predate a flock layer keep every key they hold.** Until a pigeon has a layer of its
+own, its whole `target_config` is taken as its pigeon layer, so a first flock layer changes
+nothing on an existing pigeon whose config already names the same keys. To make members take the
+flock's value for a key, name it in `adopt` on the flock write below, or remove it from one
+pigeon's layer with a shadow `PUT`.
+
+A flock write reaches its members through a queue, one message per pigeon, retried on failure.
+Each pigeon's Durable Object takes a message only when it names the pigeon's current flock and a
+newer `config_version` than the one it holds, so retries and out-of-order delivery are harmless.
+A member that cannot take the layer keeps the one it had and records why in `flock_apply_error`:
+its own config is not a JSON object, the flock's `firmware` is not built for its board, or (a
+`Nidd` pigeon) the merged config is over what one downlink frame carries. Writing the same layer
+again is a **resync**: it moves `config_version` and re-sends to every member, and members already
+on it compute the same text and see no new `target_version`.
+
+A pigeon created into a configured flock takes its layer the same way, through the queue. A move
+([`PUT /pigeons/:pigeon_id/flock`](#put-pigeonspigeon_idflock)) installs the destination's layer
+in the same step, so the device sees one new version at most.
+
+The three production signs' pigeons never take a flock layer: a flock write over a flock that
+holds one is refused, and an apply to one is dropped.
+
+#### `GET /flocks/:flock_id/config`
+
+**Auth:** flock: view
+
+Returns `capsules::FlockConfig`: the layer (`target_config`, a `JsonString` like the shadow's),
+its `config_version`, the flock's `members`, and `members_on_version`, how many members took that
+version according to the Postgres mirror. The counts come from a cached read and may lag about a
+minute. A flock that never had a layer answers `{}` at version `0`.
+
+```sh
+curl -s https://api.pidgeiot.com/flocks/<flock_id>/config \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+```json
+{
+  "flock_id": "0192b7a4-6d1e-7c55-9a0f-2f4b8e6c1d20",
+  "target_config": "{\"telemetry_interval\":60}",
+  "config_version": 3,
+  "members": 12,
+  "members_on_version": 11
+}
+```
+
+#### `PUT /flocks/:flock_id/config`
+
+**Auth:** flock: manage
+
+Replaces the flock layer and sends it to every member. Body: `capsules::FlockConfigUpdateRequest`
+(`{ target_config: <JSON object>, adopt?: [<key>, ...] }`); `{}` clears the layer. `adopt` names
+keys of the new layer to delete from every member's pigeon layer in the same apply, so those
+members take the flock's value. Answers `capsules::FlockConfig` with `queued`, the messages sent,
+and `members_on_version` at `0`: build the dashboard's state from this answer, not from a re-read.
+
+```sh
+curl -s -X PUT https://api.pidgeiot.com/flocks/<flock_id>/config \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"target_config":{"telemetry_interval":60},"adopt":["telemetry_interval"]}'
+```
+
+Refused with nothing written:
+
+- `400` for a `target_config` that is not an object, a `null` value (a flock removes a key by
+  leaving it out), an `adopt` key the new layer does not carry, or a malformed `firmware` object.
+- `400` for a top-level `reboot`: in a flock layer it would reboot every member on every later
+  change to any member's config. Reboot pigeons one at a time.
+- `400` for a top-level `firmware_repush`, the pigeon layer's own re-push counter. A flock
+  re-pushes its firmware by advancing `flock_firmware_repush` instead, which no pigeon layer
+  overrides.
+- `400` for a `firmware` key unless the image and **every** member are tagged with one board, the
+  same fail-closed rule as a pigeon's own assignment. A flock that mixes boards assigns firmware
+  per pigeon. A pigeon opts out of the flock's image with `"firmware": null` in its layer, or pins
+  another with its own `firmware` key, which is how to canary a rollout.
+- `409` when the flock holds a production sign's pigeon.
+- `413` over 4096 bytes serialized (`capsules::MAX_FLOCK_CONFIG_BYTES`, the top of
+  `CONFIG_PIGEON_SHADOW_CONFIG_MAX`'s range), or over 1319 bytes when any member is a `Nidd`
+  pigeon. The device's own compiled cap (320 bytes by default) is not known here; the dashboard
+  warns over it.
+
+A `503` means the layer was saved but not sent to every member; write it again.
 
 ### Telemetry
 

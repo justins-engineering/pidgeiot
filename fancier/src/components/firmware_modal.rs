@@ -1,7 +1,7 @@
 use crate::api;
 use crate::components::{BOARD_DATALIST_ID, BoardDatalist};
 use capsules::{
-  FirmwareImage, FirmwareTarget, JsonString, PigeonShadow, PigeonShadowUpdateRequest,
+  FirmwareImage, FirmwareTarget, JsonString, PigeonShadowUpdateRequest, PigeonShadowView,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -48,7 +48,7 @@ fn boards_compatible(pigeon_board: Option<&str>, image_board: Option<&str>) -> b
   }
 }
 
-/// Merges a `firmware` key into an existing `target_config` -- firmware
+/// Merges a `firmware` key into a pigeon's own config layer -- firmware
 /// assignment reuses the shadow PUT route rather than a dedicated endpoint
 /// (docs/api.md's "Shadow" section). dovecote's `PUT /pigeons/:id/shadow`
 /// replaces `target_config` wholesale
@@ -98,13 +98,15 @@ pub fn FirmwareModal(
   flock_id: Uuid,
   pigeon_id: String,
   pigeon_board: Option<String>,
-  shadow: PigeonShadow,
+  shadow: PigeonShadowView,
   on_close: EventHandler<()>,
-  on_assigned: EventHandler<PigeonShadow>,
+  on_assigned: EventHandler<PigeonShadowView>,
 ) -> Element {
   let current_target = extract_firmware_target(&shadow.current_config);
   let target_target = extract_firmware_target(&shadow.target_config);
-  let base_target_config = shadow.target_config.clone();
+  // The assignment goes into this pigeon's own layer: merging into the
+  // effective `target_config` would pin every key it inherits from its flock.
+  let base_target_config = shadow.pigeon_config.clone();
 
   let mut images: Signal<Option<Vec<FirmwareImage>>> = use_signal(|| None);
   let mut images_error = use_signal(|| false);

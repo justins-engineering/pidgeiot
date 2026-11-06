@@ -1,3 +1,7 @@
+use crate::helpers::flock_config::{
+  ApplyDecision, ApplyInput, FlockApplyAnswer, FlockConfigApply, FlockMoveAnswer, decide_apply,
+  is_field_pigeon,
+};
 use crate::helpers::nidd::{
   NIDD_CLAIM_KEY_BYTES, NIDD_FOTA_CHUNK_BYTES, NIDD_FOTA_READ_LIMIT, NIDD_FOTA_SHA_CHARS,
   NIDD_PAUSED_HOLD_SECS, NiddInFlight, NiddRow, NiddSqlRow, STATUS_FOTA_NONE, STATUS_PAUSED,
@@ -17,10 +21,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
   CoapConfig, Connector, FirmwareTarget, HttpsConfig, MAX_FIRMWARE_BYTES, MAX_LOG_CHUNK_BYTES,
   MQTT_TLS_PORT, MqttConfig, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, NiddConfig, Pigeon, PigeonAcl,
-  PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonFlockUpdateRequest,
-  PigeonLogChunk, PigeonLogChunkRow, PigeonRow, PigeonShadow, PigeonShadowReportRequest,
-  PigeonShadowRow, PigeonShadowUpdateRequest, PigeonSuspensionRequest, PigeonUpdateRequest,
-  TelemetryEndpoint, unwrap_or_return_response,
+  PigeonAclUpdateRequest, PigeonCreateRequest, PigeonDetail, PigeonLogChunk, PigeonLogChunkRow,
+  PigeonRow, PigeonShadow, PigeonShadowReportRequest, PigeonShadowRow, PigeonShadowUpdateRequest,
+  PigeonShadowView, PigeonShadowViewRow, PigeonSuspensionRequest, PigeonUpdateRequest,
+  TelemetryEndpoint, parse_layer, unwrap_or_return_response,
 };
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -530,6 +534,24 @@ impl DurableObject for Pigeons {
       )
       .expect("created pigeon_seen table");
 
+    // The two config layers whose merge is the shadow's `target_config`, in their own row so an
+    // apply that changes no text writes no shadow row: `set_shadow_updated_at` would restamp the
+    // `updated_at` the dashboard's connection badge reads. No row until the first layer write;
+    // until then the pigeon layer is `target_config` itself. No foreign key to `pigeons`, so
+    // `delete` wipes it explicitly.
+    sql
+      .exec(
+        "CREATE TABLE IF NOT EXISTS pigeon_layers (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          pigeon_config TEXT,
+          flock_config TEXT NOT NULL DEFAULT '{}',
+          flock_version INTEGER NOT NULL DEFAULT 0,
+          flock_apply_error TEXT
+        );",
+        None,
+      )
+      .expect("created pigeon_layers table");
+
     let pigeons = Pigeons {
       sql,
       state,
@@ -572,6 +594,8 @@ impl DurableObject for Pigeons {
       "/pigeon/device/logs" => report_logs_device(self, req).await,
       "/pigeon/logs/get" => get_logs(self, req).await,
       "/pigeon/shadow/update" => update_shadow(self, req).await,
+      // Trusted-internal like `/pigeon/acl/grant`: only the flock-config queue consumer calls it.
+      "/pigeon/shadow/flock" => apply_flock_config(self, req).await,
       "/pigeon/token/refresh" => refresh_token(self, req).await,
       "/pigeon/internal/psk" => get_device_psk_internal(self, req).await,
       "/pigeon/delete" => delete(self, req).await,
@@ -902,17 +926,8 @@ async fn get_detail(pigeons: &Pigeons, req: Request) -> Result<Response> {
 
   strip_secrets(&mut pigeon);
 
-  let shadow = match pigeons.sql.exec(
-    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
-    None,
-  ) {
-    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
-      Ok(s) => PigeonShadow::from(s),
-      Err(e) => {
-        console_error!("PigeonShadow deserialization error: {e}");
-        return Response::error("Internal Server Error", 500);
-      }
-    },
+  let shadow = match read_shadow_view(pigeons) {
+    Ok(view) => view,
     Err(e) => {
       console_error!("PigeonShadow READ error: {e}");
       return Response::error("Internal Server Error", 500);
@@ -1148,7 +1163,7 @@ async fn create(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
       entity_id: user_uuid,
       role: "owner".to_string(),
     },
-    shadow,
+    shadow: shadow.into(),
   };
 
   let mut location = String::with_capacity(72);
@@ -1430,6 +1445,13 @@ async fn delete(pigeons: &Pigeons, req: Request) -> Result<Response> {
   }
 
   // A Nidd pigeon recreated under the same IMEI reuses this object, and must not inherit the
+  // old pigeon's layers either.
+  if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_layers;", None) {
+    console_error!("Pigeon layers delete execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  // A Nidd pigeon recreated under the same IMEI reuses this object, and must not inherit the
   // old device's contact.
   if let Err(e) = pigeons.sql.exec("DELETE FROM pigeon_seen;", None) {
     console_error!("Pigeon contact stamp delete execution error: {e}");
@@ -1495,15 +1517,17 @@ async fn update(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   }
 }
 
-/// Moves this pigeon into another flock. The gateway has already checked the
-/// caller manages the destination flock and that it answers to the same
-/// owner as the current one, so only the pigeon's own ACL applies here.
-/// Nothing the device sees changes: its id, token, endpoint and Durable
-/// Object are all untouched.
+/// Moves this pigeon into another flock and installs that flock's layer in the same step, so the
+/// device sees one new version at most. The gateway has already checked the caller manages the
+/// destination flock and that it answers to the same owner as the current one, so only the
+/// pigeon's own ACL applies here; the body is the destination's [`FlockConfigApply`], built by
+/// the gateway. A layer that cannot apply here refuses the move with 409, nothing written. A
+/// production sign moves without taking any layer. The device's id, token, endpoint and Durable
+/// Object are untouched.
 async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_owner(pigeons, &req));
 
-  let row = match req.json::<PigeonFlockUpdateRequest>().await {
+  let apply = match req.json::<FlockConfigApply>().await {
     Ok(data) => data,
     Err(e) => {
       console_error!("Pigeon flock update json parse error: {e}");
@@ -1511,16 +1535,52 @@ async fn update_flock(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
     }
   };
 
-  match pigeons.sql.exec(
-    "UPDATE pigeons SET flock_id = ? WHERE id = ?;",
-    vec![
-      row.flock_id.to_string().into(),
-      pigeons.state.id().to_string().into(),
-    ],
-  ) {
-    Ok(_) => read_back_pigeon(pigeons),
+  let do_id = pigeons.state.id().to_string();
+  if is_field_pigeon(&do_id) {
+    if let Err(e) = pigeons.sql.exec(
+      "UPDATE pigeons SET flock_id = ? WHERE id = ?;",
+      vec![apply.flock_id.clone().into(), do_id.into()],
+    ) {
+      console_error!("Pigeon flock update execution error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+    return answer_flock_move(pigeons);
+  }
+
+  match apply_flock_layer(pigeons, &apply, true) {
+    Ok(FlockApplied::Written { .. }) => answer_flock_move(pigeons),
+    Ok(FlockApplied::Refused(reason)) => {
+      let lead = "Conflict: the destination flock's config cannot apply to this pigeon: ";
+      let mut message = String::with_capacity(lead.len() + reason.len());
+      message.push_str(lead);
+      message.push_str(reason);
+      Response::error(message, 409)
+    }
+    Ok(FlockApplied::Dropped(outcome)) => {
+      console_error!("Pigeon flock update: destination layer dropped ({outcome})");
+      Response::error("Internal Server Error", 500)
+    }
     Err(e) => {
       console_error!("Pigeon flock update execution error: {e}");
+      Response::error("Internal Server Error", 500)
+    }
+  }
+}
+
+/// The move's answer: the pigeon as `read_back_pigeon` reads it, and the shadow the gateway
+/// mirrors.
+fn answer_flock_move(pigeons: &Pigeons) -> Result<Response> {
+  let pigeon = match read_pigeon_stripped(pigeons) {
+    Ok(pigeon) => pigeon,
+    Err(e) => {
+      console_error!("Pigeons READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  match read_shadow_view(pigeons) {
+    Ok(shadow) => Response::from_json(&FlockMoveAnswer { pigeon, shadow }),
+    Err(e) => {
+      console_error!("PigeonShadow READ error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
@@ -1565,26 +1625,24 @@ async fn update_suspension(pigeons: &Pigeons, mut req: Request) -> Result<Respon
 /// route: neither of these routes can change a credential, so neither has
 /// any reason to hand one back.
 fn read_back_pigeon(pigeons: &Pigeons) -> Result<Response> {
-  match pigeons.sql.exec(
-    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
-    None,
-  ) {
-    Ok(cursor) => match one_row::<PigeonRow>(&cursor) {
-      Ok(p) => {
-        let mut pigeon = Pigeon::from(p);
-        strip_secrets(&mut pigeon);
-        Response::from_json(&pigeon)
-      }
-      Err(e) => {
-        console_error!("Pigeon deserialization error: {e}");
-        Response::error("Internal Server Error", 500)
-      }
-    },
+  match read_pigeon_stripped(pigeons) {
+    Ok(pigeon) => Response::from_json(&pigeon),
     Err(e) => {
       console_error!("Pigeons READ error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
+}
+
+/// This pigeon with its contact stamp, its secrets stripped.
+fn read_pigeon_stripped(pigeons: &Pigeons) -> Result<Pigeon> {
+  let cursor = pigeons.sql.exec(
+    &format!("SELECT {PIGEON_COLUMNS}, {CONTACT_COLUMNS} FROM pigeons LIMIT 1;"),
+    None,
+  )?;
+  let mut pigeon = Pigeon::from(one_row::<PigeonRow>(&cursor)?);
+  strip_secrets(&mut pigeon);
+  Ok(pigeon)
 }
 
 async fn get_acl(pigeons: &Pigeons, req: Request) -> Result<Response> {
@@ -1696,20 +1754,12 @@ async fn list_acl(pigeons: &Pigeons, req: Request) -> Result<Response> {
   }
 }
 
+/// The dashboard's shadow read: the device shadow with both config layers beside it.
 async fn get_shadow(pigeons: &Pigeons, req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
-  match pigeons.sql.exec(
-    "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
-    None,
-  ) {
-    Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
-      Ok(s) => Response::from_json(&PigeonShadow::from(s)),
-      Err(e) => {
-        console_error!("PigeonShadow deserialization error: {e}");
-        Response::error("Internal Server Error", 500)
-      }
-    },
+  match read_shadow_view(pigeons) {
+    Ok(view) => Response::from_json(&view),
     Err(e) => {
       console_error!("PigeonShadow READ error: {e}");
       Response::error("Internal Server Error", 500)
@@ -1881,6 +1931,18 @@ fn read_shadow(pigeons: &Pigeons) -> Result<PigeonShadow> {
     None,
   )?;
   one_row::<PigeonShadowRow>(&cursor).map(PigeonShadow::from)
+}
+
+/// The shadow with its layer row beside it, for the dashboard routes only: a device is always
+/// sent the bare [`PigeonShadow`] `read_shadow` reads.
+fn read_shadow_view(pigeons: &Pigeons) -> Result<PigeonShadowView> {
+  let cursor = pigeons.sql.exec(
+    "SELECT s.target_version, s.current_version, s.target_config, s.current_config, s.updated_at,
+       l.pigeon_config, l.flock_config, l.flock_version, l.flock_apply_error
+     FROM pigeon_shadow s LEFT JOIN pigeon_layers l ON l.id = 1 LIMIT 1;",
+    None,
+  )?;
+  one_row::<PigeonShadowViewRow>(&cursor).map(PigeonShadowView::from)
 }
 
 /// Device WebSocket upgrade -- the real-time channel for non-cellular
@@ -3008,31 +3070,41 @@ async fn check_firmware_board_compat(
   }
 }
 
-/// The dashboard's shadow write. For a Nidd pigeon it also refuses a `target_config` one
-/// downlink frame cannot carry, and may push the new target (`plan_nidd_push`) without waiting
-/// on ThingSpace or failing because of it.
+/// The dashboard's shadow write. The body's `target_config` is this pigeon's own layer, `null`
+/// values kept, since a `null` is how a pigeon removes a flock key; the shadow takes its merge
+/// with the stored flock layer. For a Nidd pigeon it also refuses a merged config one downlink
+/// frame cannot carry, and may push the new target (`plan_nidd_push`) without waiting on
+/// ThingSpace or failing because of it.
 async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
   unwrap_or_return_response!(is_authorized(pigeons, &req));
 
-  let shadow = match req.json::<PigeonShadowUpdateRequest>().await {
+  let body = match req.json::<PigeonShadowUpdateRequest>().await {
     Ok(data) => data,
     Err(e) => {
       console_error!("Shadow UPDATE json parse error: {e}");
       return Response::error("Bad Request: Invalid JSON", 400);
     }
   };
+  let serde_json::Value::Object(pigeon_layer) = &body.target_config else {
+    return Response::error("Bad Request: target_config must be a JSON object", 400);
+  };
 
-  // Only when this PUT's target_config actually carries a `firmware` key;
-  // every other shadow write (telemetry_interval, log, reboot, ...) is
-  // unaffected.
-  if let Some(firmware_value) = shadow.target_config.get("firmware") {
+  // Only when this pigeon's own layer names an image: a `null` opts out of the flock's, and a
+  // flock's image was checked against every member when the flock wrote it.
+  if let Some(firmware_value) = pigeon_layer.get("firmware").filter(|v| !v.is_null()) {
     unwrap_or_return_response!(check_firmware_board_compat(pigeons, firmware_value).await);
   }
 
-  let config_str = serde_json::to_string(&shadow.target_config).map_err(|e| {
-    console_error!("Shadow config serialization error: {e}");
-    worker::Error::RustError("Internal Server Error".into())
-  })?;
+  // No await from here to the write: a flock apply that ran during the board check's await is
+  // in the layer read below, and none can land between that read and the write.
+  let layers = match read_layers(&pigeons.sql) {
+    Ok(layers) => layers,
+    Err(e) => {
+      console_error!("Shadow UPDATE: layers READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  let effective = capsules::effective_text(&layers.flock_layer(), pigeon_layer);
 
   // One downlink frame carries the whole target, so a config the device could never receive
   // must not become its target.
@@ -3045,7 +3117,7 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
   };
   if nidd.is_some() {
     let cap = nidd_config_cap(pigeons);
-    if config_str.len() > cap {
+    if effective.len() > cap {
       let cap = cap.to_string();
       let mut message = String::with_capacity(84 + cap.len());
       message
@@ -3056,40 +3128,263 @@ async fn update_shadow(pigeons: &Pigeons, mut req: Request) -> Result<Response> 
     }
   }
 
-  match pigeons.sql.exec(
+  if let Err(e) = write_pigeon_layer(&pigeons.sql, &body.target_config.to_string()) {
+    console_error!("Shadow UPDATE: pigeon layer WRITE error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+  if let Err(e) = pigeons.sql.exec(
     "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
-    vec![config_str.into()],
+    vec![effective.into()],
   ) {
-    Ok(_) => {
-      match pigeons.sql.exec(
-        "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
-        None,
-      ) {
-        Ok(cursor) => match one_row::<PigeonShadowRow>(&cursor) {
-          Ok(s) => {
-            let shadow = PigeonShadow::from(s);
-            broadcast_shadow_update(pigeons, &shadow);
-            if let Some(identity) = nidd {
-              plan_nidd_push(pigeons, identity, &shadow);
-            }
-            Response::from_json(&shadow)
-          }
-          Err(e) => {
-            console_error!("PigeonShadow deserialization error: {e}");
-            Response::error("Internal Server Error", 500)
-          }
-        },
-        Err(e) => {
-          console_error!("PigeonShadow READ error: {e}");
-          Response::error("Internal Server Error", 500)
-        }
+    console_error!("Shadow UPDATE execution error: {e}");
+    return Response::error("Internal Server Error", 500);
+  }
+
+  match read_shadow_view(pigeons) {
+    Ok(view) => {
+      broadcast_shadow_update(pigeons, &view.shadow);
+      if let Some(identity) = nidd {
+        plan_nidd_push(pigeons, identity, &view.shadow);
       }
+      Response::from_json(&view)
     }
     Err(e) => {
-      console_error!("Shadow UPDATE execution error: {e}");
+      console_error!("PigeonShadow READ error: {e}");
       Response::error("Internal Server Error", 500)
     }
   }
+}
+
+/// This pigeon's `pigeon_layers` row; every column `None` before its first layer write.
+#[derive(serde::Deserialize, Default)]
+struct LayersRow {
+  pigeon_config: Option<String>,
+  flock_config: Option<String>,
+  flock_version: Option<i32>,
+}
+
+impl LayersRow {
+  /// The flock layer this pigeon last took, empty when it has taken none.
+  fn flock_layer(&self) -> serde_json::Map<String, serde_json::Value> {
+    self
+      .flock_config
+      .as_deref()
+      .and_then(parse_layer)
+      .unwrap_or_default()
+  }
+}
+
+fn read_layers(sql: &SqlStorage) -> Result<LayersRow> {
+  let cursor = sql.exec(
+    "SELECT pigeon_config, flock_config, flock_version FROM pigeon_layers WHERE id = 1;",
+    None,
+  )?;
+  Ok(
+    cursor
+      .to_array::<LayersRow>()?
+      .into_iter()
+      .next()
+      .unwrap_or_default(),
+  )
+}
+
+fn write_pigeon_layer(sql: &SqlStorage, pigeon_config: &str) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_layers (id, pigeon_config) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET pigeon_config = excluded.pigeon_config;",
+    vec![pigeon_config.into()],
+  )?;
+  Ok(())
+}
+
+/// Records a flock layer taken, with the pigeon layer it was merged under, in one upsert.
+fn write_taken_layers(
+  sql: &SqlStorage,
+  pigeon_config: &str,
+  flock_config: &str,
+  flock_version: i32,
+) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_layers (id, pigeon_config, flock_config, flock_version, flock_apply_error)
+     VALUES (1, ?, ?, ?, NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       pigeon_config = excluded.pigeon_config,
+       flock_config = excluded.flock_config,
+       flock_version = excluded.flock_version,
+       flock_apply_error = NULL;",
+    vec![
+      pigeon_config.into(),
+      flock_config.into(),
+      flock_version.into(),
+    ],
+  )?;
+  Ok(())
+}
+
+fn write_apply_error(sql: &SqlStorage, reason: &str) -> Result<()> {
+  sql.exec(
+    "INSERT INTO pigeon_layers (id, flock_apply_error) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET flock_apply_error = excluded.flock_apply_error;",
+    vec![reason.into()],
+  )?;
+  Ok(())
+}
+
+/// What [`apply_flock_layer`] did.
+enum FlockApplied {
+  /// Nothing written: a production sign, a stale or repeated message, or no pigeon here.
+  Dropped(&'static str),
+  /// Recorded as this pigeon's apply error, its layers unchanged.
+  Refused(&'static str),
+  /// The layer was taken; `moved` when the shadow's text, and so its version, moved.
+  Written { moved: bool, view: PigeonShadowView },
+}
+
+/// Takes a flock layer: merges it under this pigeon's layer and, when the merged text differs,
+/// writes it to the shadow, whose trigger moves `target_version`, and pushes it as a dashboard
+/// write does. `moving` is the move route installing its destination's layer, which also writes
+/// the new `flock_id` and skips the stale checks. All synchronous, so nothing interleaves.
+///
+/// A pigeon with no layer row yet takes its whole `target_config` as its own layer, so every key
+/// it already held keeps overriding the flock until someone clears it.
+fn apply_flock_layer(
+  pigeons: &Pigeons,
+  apply: &FlockConfigApply,
+  moving: bool,
+) -> Result<FlockApplied> {
+  let do_id = pigeons.state.id().to_string();
+  if is_field_pigeon(&do_id) {
+    return Ok(FlockApplied::Dropped("field"));
+  }
+  let Some(row) = pigeons
+    .sql
+    .exec("SELECT flock_id, board FROM pigeons LIMIT 1;", None)?
+    .to_array::<PigeonBoardFlockRow>()?
+    .into_iter()
+    .next()
+  else {
+    return Ok(FlockApplied::Dropped("gone"));
+  };
+  let Some(flock_layer) = parse_layer(&apply.config_json) else {
+    return Ok(FlockApplied::Dropped("malformed"));
+  };
+  let adopt: Vec<String> = apply
+    .adopt_json
+    .as_deref()
+    .and_then(|text| serde_json::from_str(text).ok())
+    .unwrap_or_default();
+
+  let layers = read_layers(&pigeons.sql)?;
+  let shadow = read_shadow(pigeons)?;
+  let current = shadow.target_config.to_string();
+  let pigeon_text = layers
+    .pigeon_config
+    .clone()
+    .unwrap_or_else(|| current.clone());
+  let nidd = match read_nidd_identity(pigeons) {
+    Ok(identity) => identity,
+    Err(e) => {
+      console_error!("Flock apply: connector READ error: {e}");
+      None
+    }
+  };
+  let nidd_cap = nidd.as_ref().map(|_| {
+    let next = shadow.target_version.saturating_add(1);
+    shadow_config_cap(next, shadow.current_version.max(next))
+  });
+
+  let decision = decide_apply(ApplyInput {
+    pigeon_id: &do_id,
+    flock_matches: moving || row.flock_id == apply.flock_id,
+    newer: moving || apply.flock_version > layers.flock_version.unwrap_or(0),
+    flock_layer: &flock_layer,
+    pigeon_layer: parse_layer(&pigeon_text),
+    adopt: &adopt,
+    pigeon_board: row.board.as_deref(),
+    firmware_board: apply.firmware_board.as_deref(),
+    nidd_cap,
+    current_target: &current,
+  });
+
+  let (pigeon_layer, effective, changed) = match decision {
+    ApplyDecision::Drop(outcome) => return Ok(FlockApplied::Dropped(outcome)),
+    ApplyDecision::Refuse(reason) => {
+      // A refused move writes nothing at all; the route answers the reason instead.
+      if !moving {
+        write_apply_error(&pigeons.sql, reason)?;
+      }
+      return Ok(FlockApplied::Refused(reason));
+    }
+    ApplyDecision::Apply {
+      pigeon_layer,
+      effective,
+      changed,
+    } => (pigeon_layer, effective, changed),
+  };
+
+  if moving {
+    pigeons.sql.exec(
+      "UPDATE pigeons SET flock_id = ? WHERE id = ?;",
+      vec![apply.flock_id.clone().into(), do_id.into()],
+    )?;
+  }
+  write_taken_layers(
+    &pigeons.sql,
+    &serde_json::Value::Object(pigeon_layer).to_string(),
+    &apply.config_json,
+    apply.flock_version,
+  )?;
+  if changed {
+    pigeons.sql.exec(
+      "UPDATE pigeon_shadow SET target_config = ? WHERE id = (SELECT id FROM pigeons LIMIT 1);",
+      vec![effective.into()],
+    )?;
+  }
+
+  let view = read_shadow_view(pigeons)?;
+  if changed {
+    broadcast_shadow_update(pigeons, &view.shadow);
+    if let Some(identity) = nidd {
+      plan_nidd_push(pigeons, identity, &view.shadow);
+    }
+  }
+  Ok(FlockApplied::Written {
+    moved: changed,
+    view,
+  })
+}
+
+/// One flock layer from the flock-config queue consumer. Answers 200 for every outcome, since
+/// none changes on a retry, with the shadow to mirror when the layer was taken; 5xx only when
+/// storage failed, which the consumer retries.
+async fn apply_flock_config(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
+  let apply = match req.json::<FlockConfigApply>().await {
+    Ok(data) => data,
+    Err(e) => {
+      console_error!("Flock apply json parse error: {e}");
+      return Response::error("Bad Request: Invalid JSON", 400);
+    }
+  };
+  let (outcome, shadow) = match apply_flock_layer(pigeons, &apply, false) {
+    Ok(FlockApplied::Dropped(outcome)) => (outcome, None),
+    Ok(FlockApplied::Refused(_)) => ("refused", None),
+    Ok(FlockApplied::Written { moved, view }) => (
+      if moved { "applied" } else { "unchanged" },
+      Some(view.shadow),
+    ),
+    Err(e) => {
+      console_error!(
+        "Flock apply execution error for pigeon {}: {e}",
+        pigeons.state.id()
+      );
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  Response::from_json(&FlockApplyAnswer {
+    outcome: outcome.to_string(),
+    shadow,
+    flock_version: apply.flock_version,
+  })
 }
 
 /// Pushes the new shadow to this pigeon's connected device WebSocket, if

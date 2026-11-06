@@ -435,7 +435,7 @@ pub struct PigeonCreateRequest {
 pub struct PigeonDetail {
   pub pigeon: Pigeon,
   pub acl: PigeonAcl,
-  pub shadow: PigeonShadow,
+  pub shadow: PigeonShadowView,
 }
 
 /// Partial update of a pigeon's own fields. Two things are deliberately

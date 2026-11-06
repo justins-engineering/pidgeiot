@@ -358,6 +358,20 @@ binding = "TELEMETRY_QUEUE"
 [[queues.consumers]]
 queue = "pidgeiot-telemetry"
 
+# Flock-config fan-out: one message per member pigeon on each flock config write
+# (helpers/flock_config.rs). A queue of its own so a large flock's fan-out never sits in front of
+# live telemetry; the Worker's one queue handler routes on the queue name. Each environment needs
+# its own, made with `wrangler queues create <name>` before the first deploy that binds it, and a
+# plain `wrangler deploy` registers the consumer. A lost apply leaves a sign on an old config, so
+# it retries more than the default three times.
+[[queues.producers]]
+queue = "pidgeiot-flock-config"
+binding = "FLOCK_CONFIG_QUEUE"
+
+[[queues.consumers]]
+queue = "pidgeiot-flock-config"
+max_retries = 10
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Pigeons"]
@@ -542,6 +556,15 @@ binding = "TELEMETRY_QUEUE"
 [[env.staging.queues.consumers]]
 queue = "pidgeiot-telemetry-staging"
 
+# Staging flock-config fan-out -- see the production block above.
+[[env.staging.queues.producers]]
+queue = "pidgeiot-flock-config-staging"
+binding = "FLOCK_CONFIG_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "pidgeiot-flock-config-staging"
+max_retries = 10
+
 # Same sweep as prod/staging. `wrangler dev` doesn't fire this on a real
 # timer, but it can be exercised on demand via
 # `curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`
@@ -638,6 +661,17 @@ simple = { limit = 400, period = 10 }
 name = "DEVICE_AUTH_FAIL_LIMITER"
 namespace_id = "1015"
 simple = { limit = 10, period = 60 }
+
+# Dev flock-config fan-out -- see the production block above. `wrangler dev` runs it locally, so
+# no queue has to exist; the one-second batch window only makes a local write land quickly.
+[[env.dev.queues.producers]]
+queue = "pidgeiot-flock-config-dev"
+binding = "FLOCK_CONFIG_QUEUE"
+
+[[env.dev.queues.consumers]]
+queue = "pidgeiot-flock-config-dev"
+max_retries = 10
+max_batch_timeout = 1
 
 [[env.dev.hyperdrive]]
 binding = "YugabyteDB"

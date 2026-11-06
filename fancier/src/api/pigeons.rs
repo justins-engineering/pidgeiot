@@ -2,7 +2,7 @@ use crate::api::orgs::{error_text, parse, to_body};
 use crate::api::{fetch_bytes, fetch_json, fetch_json_any_status};
 use capsules::{
   Connector, LogDictionaryInfo, Pigeon, PigeonCreateRequest, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonShadow, PigeonShadowUpdateRequest,
+  PigeonFlockUpdateRequest, PigeonLogChunk, PigeonShadowUpdateRequest, PigeonShadowView,
   PigeonSuspensionRequest, PigeonTelemetryEndpointUpdateRequest, PigeonUpdateRequest,
   TelemetryEndpoint,
 };
@@ -268,13 +268,14 @@ pub async fn refresh_token(pigeon_id: &str) -> Option<Connector> {
   Some(connector)
 }
 
-/// Replaces the pigeon's `target_config`. `Err` carries the server's
-/// message, which names the refusal: a firmware board mismatch, or a NIDD
-/// pigeon's config too large for one downlink frame (413).
+/// Replaces the pigeon's own config layer; the answer carries the merged
+/// `target_config` beside both layers. `Err` carries the server's message,
+/// which names the refusal: a firmware board mismatch, or a NIDD pigeon's
+/// merged config too large for one downlink frame (413).
 pub async fn update_shadow(
   pigeon_id: &str,
   psur: &PigeonShadowUpdateRequest,
-) -> Result<PigeonShadow, String> {
+) -> Result<PigeonShadowView, String> {
   let mut path = String::with_capacity(80);
   path.push_str("/pigeons/");
   path.push_str(pigeon_id);
@@ -289,7 +290,7 @@ pub async fn update_shadow(
   if !response.ok() {
     return Err(error_text(&response).await);
   }
-  parse::<PigeonShadow>(response)
+  parse::<PigeonShadowView>(response)
     .await
     .ok_or_else(|| "Failed to parse response".to_string())
 }

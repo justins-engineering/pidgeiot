@@ -26,8 +26,11 @@ pub fn has_firmware_target(config: &JsonString) -> bool {
     .is_some_and(|firmware| !firmware.is_null())
 }
 
-/// Returns `target_config` with the re-push counter advanced, leaving every
-/// other key -- the `firmware` object above all -- byte for byte as it was.
+/// Returns this pigeon's own layer with the re-push counter advanced, leaving
+/// every other key as it was. `effective` is the shadow's merged
+/// `target_config`, which is what has to name an image: a pigeon whose
+/// firmware comes from its flock has none in its own layer, and copying the
+/// flock's in would pin it there for good.
 ///
 /// The platform advances a shadow's `target_version` when `target_config`
 /// *changes*, not on every write (`increment_pigeon_target_version`, the
@@ -37,21 +40,24 @@ pub fn has_firmware_target(config: &JsonString) -> bool {
 /// the firmware version string, precisely so an operator can say "try
 /// again" without republishing unchanged bytes under a new label. This
 /// counter is the smallest thing that says it: the config differs, so the
-/// version moves, while what the device actually applies does not.
+/// version moves, while what the device actually applies does not. A flock
+/// layer may not carry this key, so the pigeon's counter never hides behind
+/// one.
 ///
 /// Pure and synchronous so it can be tested off a wasm target, same
 /// rationale as `merge_firmware_target` in `components/firmware_modal.rs`.
-pub fn repush_target_config(config: &JsonString) -> Result<Value, String> {
-  let mut value: Value = serde_json::from_str(&config.to_string())
-    .map_err(|err| format!("Shadow target_config isn't valid JSON, can't re-push: {err}"))?;
-  let obj = value
-    .as_object_mut()
-    .ok_or_else(|| "Shadow target_config isn't a JSON object.".to_string())?;
-
-  let names_firmware = obj.get("firmware").is_some_and(|f| !f.is_null());
-  if !names_firmware {
+pub fn repush_pigeon_layer(
+  effective: &JsonString,
+  pigeon_layer: &JsonString,
+) -> Result<Value, String> {
+  if !has_firmware_target(effective) {
     return Err("This pigeon's shadow has no firmware target to re-push.".to_string());
   }
+  let mut value: Value = serde_json::from_str(&pigeon_layer.to_string())
+    .map_err(|err| format!("This pigeon's config isn't valid JSON, can't re-push: {err}"))?;
+  let obj = value
+    .as_object_mut()
+    .ok_or_else(|| "This pigeon's config isn't a JSON object.".to_string())?;
 
   let next = match obj.get(REPUSH_KEY).and_then(Value::as_u64) {
     // Wrap instead of saturating: only the change is meaningful, and a
@@ -68,7 +74,7 @@ pub fn repush_target_config(config: &JsonString) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-  use super::{REPUSH_KEY, has_firmware_target, repush_target_config};
+  use super::{REPUSH_KEY, has_firmware_target, repush_pigeon_layer};
   use capsules::JsonString;
   use serde_json::{Value, json};
 
@@ -83,10 +89,15 @@ mod tests {
 
   const WITH_FIRMWARE: &str = r#"{"firmware":{"version":"0.1.0+0","size":393802,"sha256":"aa"},"telemetry_interval":60,"log":true}"#;
 
+  /// A pigeon with no flock layer: its own layer is its whole config.
+  fn repush(raw: &JsonString) -> Result<Value, String> {
+    repush_pigeon_layer(raw, raw)
+  }
+
   #[test]
   fn counter_starts_at_one_and_leaves_everything_else_alone() {
     let before = config(WITH_FIRMWARE);
-    let after = repush_target_config(&before).expect("a firmware target must be re-pushable");
+    let after = repush(&before).expect("a firmware target must be re-pushable");
 
     assert_eq!(after.get(REPUSH_KEY), Some(&json!(1)));
     assert_eq!(
@@ -102,7 +113,7 @@ mod tests {
   fn counter_advances_on_every_re_push() {
     let mut current = config(WITH_FIRMWARE);
     for expected in 1..=3u64 {
-      let next = repush_target_config(&current).expect("re-push must stay available");
+      let next = repush(&current).expect("re-push must stay available");
       assert_eq!(next.get(REPUSH_KEY), Some(&json!(expected)));
       current = config(&serde_json::to_string(&next).unwrap());
     }
@@ -111,23 +122,42 @@ mod tests {
   #[test]
   fn a_counter_at_its_maximum_still_changes() {
     let raw = format!(r#"{{"firmware":{{"size":1}},"{REPUSH_KEY}":{}}}"#, u64::MAX);
-    let after = repush_target_config(&config(&raw)).expect("re-push must stay available");
+    let after = repush(&config(&raw)).expect("re-push must stay available");
     assert_eq!(after.get(REPUSH_KEY), Some(&json!(0)));
   }
 
   #[test]
   fn a_non_counter_value_restarts_the_count() {
     let raw = format!(r#"{{"firmware":{{"size":1}},"{REPUSH_KEY}":"x"}}"#);
-    let after = repush_target_config(&config(&raw)).expect("re-push must stay available");
+    let after = repush(&config(&raw)).expect("re-push must stay available");
     assert_eq!(after.get(REPUSH_KEY), Some(&json!(1)));
   }
 
   #[test]
   fn a_shadow_without_a_firmware_target_is_refused() {
     let no_firmware = config(r#"{"telemetry_interval":60}"#);
-    assert!(repush_target_config(&no_firmware).is_err());
-    assert!(repush_target_config(&config(r#"{"firmware":null}"#)).is_err());
-    assert!(repush_target_config(&config("[]")).is_err());
+    assert!(repush(&no_firmware).is_err());
+    assert!(repush(&config(r#"{"firmware":null}"#)).is_err());
+    assert!(repush(&config("[]")).is_err());
+  }
+
+  #[test]
+  fn an_inherited_firmware_target_advances_only_the_pigeons_own_counter() {
+    let effective = config(WITH_FIRMWARE);
+    let layer = config(r#"{"stop_id":"414"}"#);
+    let after = repush_pigeon_layer(&effective, &layer).expect("inherited firmware re-pushes");
+    assert_eq!(after, json!({"stop_id": "414", REPUSH_KEY: 1}));
+    assert!(
+      after.get("firmware").is_none(),
+      "the flock's image must not be pinned here"
+    );
+  }
+
+  #[test]
+  fn a_pigeon_that_opted_out_of_the_flocks_image_has_nothing_to_re_push() {
+    let effective = config(r#"{"stop_id":"414"}"#);
+    let layer = config(r#"{"firmware":null,"stop_id":"414"}"#);
+    assert!(repush_pigeon_layer(&effective, &layer).is_err());
   }
 
   #[test]

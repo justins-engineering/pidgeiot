@@ -1,4 +1,9 @@
 use crate::helpers::cf_api::busy_response;
+use crate::helpers::flock_config::{
+  FLOCK_CONFIG_QUEUE, FlockConfigApply, FlockMoveAnswer, apply_messages, check_flock_write,
+  enqueue_flock_applies, layer_firmware_board, layer_firmware_sha, mirror_flock_apply_pg_db,
+  read_flock_config, read_flock_layer, write_flock_config,
+};
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::rule_admin::{
   DeleteOutcome, RULES_ORG_REFUSED, SaveOutcome, UpdateOutcome, bundle_uploaded, create_rule,
@@ -53,13 +58,14 @@ use capsules::consent::{ConsentSource, TermsAssentStatus};
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, OrgRole,
-  OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
-  OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
-  OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
+  FlockConfigUpdateRequest, FlockCreateRequest, JsonString, MAX_DASHBOARD_STATE_BYTES,
+  MAX_TELEMETRY_BATCH_BYTES, OrgRole, OrganizationBusinessDetailsRequest,
+  OrganizationCreateRequest, OrganizationDetail, OrganizationInviteAcceptRequest,
+  OrganizationInviteCreateRequest, OrganizationInviteCreated, OrganizationMemberRoleUpdateRequest,
+  OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail, PigeonFlockUpdateRequest,
+  PigeonShadow, PigeonShadowView, PigeonSuspensionRequest, TELEMETRY_HISTORY_TRUNCATED_HEADER,
+  TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket, TelemetryHistoryQuery,
+  TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use capsules::{
   RuleCreateRequest, RuleDeployRequest, RuleOrigin, RuleSourceRejection, RuleUpdateRequest,
@@ -541,6 +547,47 @@ async fn parse_do_response<T: serde::de::DeserializeOwned>(
     console_error!("Failed to parse DO response: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })
+}
+
+/// A bodied request for `proxy_to_pigeon_do`, which takes the method and body and builds the
+/// internal URL itself.
+fn internal_json_request<T: serde::Serialize>(method: Method, body: &T) -> worker::Result<Request> {
+  let mut init = RequestInit::default();
+  init.with_method(method);
+  init.with_body(Some(serde_json::to_string(body)?.into()));
+  Request::new_with_init("https://internal/", &init)
+}
+
+/// Queues one pigeon's apply of its flock's layer, looking up the board the layer's firmware
+/// names. Best-effort and logged: the flock page shows a member left behind, and writing the
+/// layer again repairs it.
+async fn enqueue_one_apply(
+  env: &Env,
+  client: &tokio_postgres::Client,
+  pigeon_id: &str,
+  flock_id: &uuid::Uuid,
+  config_json: &str,
+  version: i32,
+) {
+  let firmware_board = match layer_firmware_board(client, flock_id, config_json).await {
+    Ok(board) => board,
+    Err(e) => {
+      console_error!("Flock layer apply for {pigeon_id}: board lookup failed: {e}");
+      return;
+    }
+  };
+  let ids = [pigeon_id.to_string()];
+  let applies = apply_messages(
+    flock_id,
+    version,
+    config_json,
+    firmware_board.as_deref(),
+    &[],
+    &ids,
+  );
+  if let Err(e) = enqueue_flock_applies(env, applies).await {
+    console_error!("Flock layer apply for {pigeon_id} not queued: {e}");
+  }
 }
 
 /// Parses a standard HTTP `Range` header (`bytes=<start>-<end>`,
@@ -1336,7 +1383,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         Ok(client) => {
           // The connector this response carries is the one just minted, so
           // the mirror takes it too.
-          if let Err(e) = update_pigeon_pg_db(client, &pigeon, Some(&pigeon.connector)).await {
+          if let Err(e) = update_pigeon_pg_db(&client, &pigeon, Some(&pigeon.connector)).await {
             console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
           }
         }
@@ -2257,9 +2304,13 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         None => None,
       };
 
+      let mut flock_layer = None;
       let mirrored = match get_db_client(&ctx.env).await {
         Ok(client) => match insert_pigeon_pg_db(client, &pcr).await {
-          Ok(()) => true,
+          Ok(layer) => {
+            flock_layer = layer;
+            true
+          }
           Err(e) => {
             console_error!("External DB Sync Error for pigeon {}: {e}", pcr.pigeon.id);
             false
@@ -2288,6 +2339,17 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         && let Err(e) = upsert_acl_pg_db(&client, &pcr.pigeon.id, acl).await
       {
         console_error!("External DB Sync Error for org ACL {}: {e}", pcr.pigeon.id);
+      }
+
+      // A pigeon created into a configured flock takes the flock's layer like any member, through
+      // the queue. One whose mirror insert failed is missing from the flock's member list too,
+      // and misses the layer the same way.
+      if let Some((config_json, version)) = flock_layer
+        && version > 0
+      {
+        let pigeon_id = &pcr.pigeon.id;
+        enqueue_one_apply(&ctx.env, &client, pigeon_id, &payload.flock_id, &config_json, version)
+          .await;
       }
 
       let headers = Headers::new();
@@ -2444,6 +2506,181 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         Response::from_json(&transferred)?.with_cors(&cors)
       },
     )
+    // --- Flock config ---
+    // One JSON object every member inherits, merged under each pigeon's own layer one top-level
+    // key at a time (capsules::flock_config). The layer lives on the flocks row; each member's
+    // object holds the copy it last took, delivered through the flock-config queue.
+    .get_async(
+      "/flocks/:flock_id/config",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(flock_id) = ctx
+          .param("flock_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+
+        let Ok(access) =
+          authorize_flock(&client, &flock_id.to_string(), &principal, FlockAction::View).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if access.is_none() {
+          return Response::error("Forbidden: You do not have access to this flock", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        match read_flock_config(&client, &flock_id).await {
+          Ok(Some(config)) => Response::from_json(&config)?.with_cors(&cors),
+          Ok(None) => Response::error("Forbidden: You do not have access to this flock", 403)
+            .unwrap()
+            .with_cors(&cors),
+          Err(_) => Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors),
+        }
+      },
+    )
+    .put_async(
+      "/flocks/:flock_id/config",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(flock_id) = ctx
+          .param("flock_id")
+          .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(body) = req.json::<FlockConfigUpdateRequest>().await else {
+          return Response::error("Bad Request: Invalid JSON", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let (layer, config_json) =
+          match capsules::validate_flock_layer(&body.target_config, &body.adopt) {
+            Ok(valid) => valid,
+            Err(rejection) => {
+              return Response::error(rejection.message(), rejection.status())
+                .unwrap()
+                .with_cors(&cors);
+            }
+          };
+        let Ok(firmware_sha) = layer_firmware_sha(&layer) else {
+          return Response::error("Bad Request: Malformed firmware target", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        // Checked before anything is written, so a missing binding never stores a layer that no
+        // member will take.
+        if ctx.env.queue(FLOCK_CONFIG_QUEUE).is_err() {
+          console_error!("Flock config: the {FLOCK_CONFIG_QUEUE} binding is missing");
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        get_db!(ctx.env, client, &cors);
+        let mut client = client;
+
+        let Ok(access) =
+          authorize_flock(&client, &flock_id.to_string(), &principal, FlockAction::Manage).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if access.is_none() {
+          return Response::error("Forbidden: You do not manage this flock", 403)
+            .unwrap()
+            .with_cors(&cors);
+        }
+
+        let layer_bytes = config_json.len();
+        let written = match write_flock_config(
+          &mut client,
+          &flock_id,
+          &config_json,
+          firmware_sha.as_deref(),
+          |members, image_board| check_flock_write(members, layer_bytes, image_board),
+        )
+        .await
+        {
+          Ok(Ok(Some(written))) => written,
+          Ok(Ok(None)) => {
+            return Response::error("Forbidden: You do not manage this flock", 403)
+              .unwrap()
+              .with_cors(&cors);
+          }
+          Ok(Err((status, message))) => {
+            return Response::error(message, status).unwrap().with_cors(&cors);
+          }
+          Err(_) => {
+            return Response::error("Internal Server Error", 500)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+
+        let member_ids: Vec<String> = written.members.iter().map(|m| m.id.clone()).collect();
+        let applies = apply_messages(
+          &flock_id,
+          written.config_version,
+          &config_json,
+          written.image_board.as_deref(),
+          &body.adopt,
+          &member_ids,
+        );
+        let queued = applies.len() as i64;
+        if let Err(e) = enqueue_flock_applies(&ctx.env, applies).await {
+          let version = written.config_version;
+          console_error!("Flock config {flock_id} v{version}: fan-out failed: {e}");
+          return Response::error(
+            "Service Unavailable: the flock config was saved but not sent to every pigeon; \
+             save it again",
+            503,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        }
+
+        let Ok(target_config) = JsonString::new(config_json) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        Response::from_json(&capsules::FlockConfig {
+          flock_id,
+          target_config,
+          config_version: written.config_version,
+          members: queued,
+          members_on_version: 0,
+          queued: Some(queued),
+        })?
+        .with_cors(&cors)
+      },
+    )
     .get_async(
       "/pigeons/:pigeon_id",
       |req, ctx: RouteContext<()>| async move {
@@ -2492,7 +2729,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
       match get_db_client(&ctx.env).await {
         Ok(client) => {
-          if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
+          if let Err(e) = update_pigeon_pg_db(&client, &pigeon, None).await {
             console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
           }
         }
@@ -2594,18 +2831,75 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         Some(true) => {}
       }
 
-      let do_response = proxy_to_pigeon_do(req, &principal.user_id, principal.org_roles_header(), &obj_id, "/flock/update").await?;
+      // The destination's layer goes in with the move, so the device sees one new version. A
+      // stale cached read here is caught after the mirror below.
+      let Ok(Some((config_json, flock_version))) =
+        read_flock_layer(&client, &payload.flock_id).await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(firmware_board) =
+        layer_firmware_board(&client, &payload.flock_id, &config_json).await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let apply = FlockConfigApply {
+        pigeon_id: pigeon_id.clone(),
+        flock_id: payload.flock_id.to_string(),
+        flock_version,
+        config_json,
+        firmware_board,
+        adopt_json: None,
+      };
+      let Ok(move_req) = internal_json_request(Method::Put, &apply) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let do_response = proxy_to_pigeon_do(
+        move_req,
+        &principal.user_id,
+        principal.org_roles_header(),
+        &obj_id,
+        "/flock/update",
+      )
+      .await?;
       if do_response.status_code() >= 400 {
         return do_response.with_cors(&cors);
       }
 
-      let pigeon = parse_do_response::<Pigeon>(do_response).await?;
+      let moved = parse_do_response::<FlockMoveAnswer>(do_response).await?;
 
-      if let Err(e) = update_pigeon_pg_db(client, &pigeon, None).await {
-        console_error!("External DB Sync Error for pigeon {}: {e}", pigeon.id);
+      if let Err(e) = update_pigeon_pg_db(&client, &moved.pigeon, None).await {
+        console_error!("External DB Sync Error for pigeon {}: {e}", moved.pigeon.id);
       }
 
-      Response::from_json(&pigeon)?.with_cors(&cors)
+      // After the flock_id mirror: a flock write either listed this pigeon or committed a version
+      // this statement sees, so a newer one than the move installed is applied now.
+      match mirror_flock_apply_pg_db(
+        &client,
+        &moved.pigeon.id,
+        &payload.flock_id,
+        &moved.shadow.shadow,
+        moved.shadow.flock_version,
+      )
+      .await
+      {
+        Ok(Some((config_json, version))) if version > moved.shadow.flock_version => {
+          let pigeon_id = &moved.pigeon.id;
+          enqueue_one_apply(&ctx.env, &client, pigeon_id, &payload.flock_id, &config_json, version)
+            .await;
+        }
+        Ok(_) => {}
+        Err(e) => console_error!("External DB Sync Error for shadow {}: {e}", moved.pigeon.id),
+      }
+
+      Response::from_json(&moved.pigeon)?.with_cors(&cors)
     })
     .put_async("/pigeons/:pigeon_id/suspension", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
@@ -2761,11 +3055,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         return do_response.with_cors(&cors);
       }
 
-      let shadow = parse_do_response::<PigeonShadow>(do_response).await?;
+      let shadow = parse_do_response::<PigeonShadowView>(do_response).await?;
 
       match get_db_client(&ctx.env).await {
         Ok(client) => {
-          if let Err(e) = update_shadow_pg_db(client, &pigeon_id, &shadow).await {
+          if let Err(e) = update_shadow_pg_db(client, &pigeon_id, &shadow.shadow).await {
             console_error!("External DB Sync Error for shadow {}: {e}", pigeon_id);
           }
         }

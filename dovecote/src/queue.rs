@@ -5,11 +5,14 @@ use worker::{
 };
 
 use crate::helpers::ResolvedReading;
+use crate::helpers::flock_config::{
+  FLOCK_CONFIG_QUEUE_PREFIX, FlockApplyAnswer, FlockConfigApply, mirror_flock_apply_pg_db,
+};
 use crate::helpers::rule_dispatch::{LivePass, PassCounts, run_pass};
 use crate::helpers::rules::{RuleWork, pass_vars};
 use crate::helpers::write_telemetry_default_batch;
 use crate::helpers::{
-  build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages,
+  build_line_protocol_batch, check_telemetry_alerts_batch, count_billable_messages, get_db_client,
   post_line_protocol, stamp_forwarded_report, stamp_last_seen, url_encode_component,
 };
 use crate::objects::pigeons::{
@@ -124,12 +127,20 @@ impl TelemetryMessage {
 ///
 /// Rules run in a second pass after every message is handled, so a slow rule never delays the
 /// next message's history and alerts, which may be another tenant's.
+///
+/// The flock-config queue shares this one handler (a Worker has one), so its batches are routed
+/// by queue name before anything decodes them as telemetry.
 #[event(queue)]
 pub async fn queue_consumer(
   message_batch: MessageBatch<TelemetryMessage>,
   env: Env,
   _ctx: Context,
 ) -> Result<()> {
+  if message_batch.queue().starts_with(FLOCK_CONFIG_QUEUE_PREFIX) {
+    consume_flock_config(&message_batch, &env).await;
+    return Ok(());
+  }
+
   let Ok(namespace) = env.durable_object("PIGEONS") else {
     console_error!("Telemetry consumer: failed to bind PIGEONS namespace");
     message_batch.retry_all();
@@ -405,6 +416,128 @@ async fn run_rules(env: &Env, work: Vec<RuleWork>) {
       counts.account,
       if counts.down { ", Postgres down" } else { "" }
     );
+  }
+}
+
+/// The flock-config queue: each message is one member's apply, delivered to that pigeon's object
+/// and mirrored to Postgres with the flock version it took. Acked on every answer the object
+/// gives, since none changes on a retry; retried when the object or its storage failed. The
+/// mirror is best-effort like every other.
+async fn consume_flock_config<T>(batch: &MessageBatch<T>, env: &Env) {
+  let Ok(namespace) = env.durable_object("PIGEONS") else {
+    console_error!("Flock config consumer: failed to bind PIGEONS namespace");
+    batch.retry_all();
+    return;
+  };
+  let mut client = None;
+
+  for raw in batch.raw_iter() {
+    let apply = match serde_wasm_bindgen::from_value::<FlockConfigApply>(raw.body()) {
+      Ok(apply) => apply,
+      Err(e) => {
+        console_error!("Flock config consumer: undecodable message, dropping: {e}");
+        raw.ack();
+        continue;
+      }
+    };
+    let Ok(obj_id) = namespace.id_from_string(&apply.pigeon_id) else {
+      console_error!(
+        "Flock config consumer: malformed pigeon_id '{}'",
+        apply.pigeon_id
+      );
+      raw.ack();
+      continue;
+    };
+    let Ok(stub) = obj_id.get_stub() else {
+      raw.retry();
+      continue;
+    };
+
+    let Ok(body) = serde_json::to_string(&apply) else {
+      raw.ack();
+      continue;
+    };
+    let mut init = RequestInit::default();
+    init.with_method(Method::Post);
+    init.body = Some(body.into());
+    let Ok(do_req) = Request::new_with_init("https://internal/pigeon/shadow/flock", &init) else {
+      raw.retry();
+      continue;
+    };
+
+    let answer = match stub.fetch_with_request(do_req).await {
+      Ok(mut resp) if resp.status_code() < 300 => resp.json::<FlockApplyAnswer>().await,
+      Ok(resp) if resp.status_code() < 500 => {
+        console_error!(
+          "Flock config consumer: '{}' answered {}, dropping",
+          apply.pigeon_id,
+          resp.status_code()
+        );
+        raw.ack();
+        continue;
+      }
+      Ok(resp) => {
+        console_error!(
+          "Flock config consumer: '{}' answered {}",
+          apply.pigeon_id,
+          resp.status_code()
+        );
+        raw.retry();
+        continue;
+      }
+      Err(e) => {
+        console_error!(
+          "Flock config consumer: fetch failed for '{}': {e}",
+          apply.pigeon_id
+        );
+        raw.retry();
+        continue;
+      }
+    };
+    raw.ack();
+
+    let answer = match answer {
+      Ok(answer) => answer,
+      Err(e) => {
+        console_error!(
+          "Flock config consumer: unparsable answer for '{}': {e}",
+          apply.pigeon_id
+        );
+        continue;
+      }
+    };
+    console_log!(
+      "Flock config consumer: {} for '{}' at flock version {}",
+      answer.outcome,
+      apply.pigeon_id,
+      answer.flock_version
+    );
+
+    let (Some(shadow), Ok(flock_id)) = (answer.shadow, uuid::Uuid::parse_str(&apply.flock_id))
+    else {
+      continue;
+    };
+    if client.is_none() {
+      client = get_db_client(env).await.ok();
+    }
+    let Some(client) = client.as_ref() else {
+      console_error!("Flock config consumer: mirror skipped, Hyperdrive connection failed");
+      continue;
+    };
+    if let Err(e) = mirror_flock_apply_pg_db(
+      client,
+      &apply.pigeon_id,
+      &flock_id,
+      &shadow,
+      answer.flock_version,
+    )
+    .await
+    {
+      console_error!(
+        "Flock config consumer: mirror failed for '{}': {e}",
+        apply.pigeon_id
+      );
+    }
   }
 }
 
