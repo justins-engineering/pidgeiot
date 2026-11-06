@@ -1845,16 +1845,18 @@ curl -s https://api.pidgeiot.com/flocks/<flock_id>/config \
 **Auth:** flock: manage
 
 Replaces the flock layer and sends it to every member. Body: `capsules::FlockConfigUpdateRequest`
-(`{ target_config: <JSON object>, adopt?: [<key>, ...] }`); `{}` clears the layer. `adopt` names
-keys of the new layer to delete from every member's pigeon layer in the same apply, so those
-members take the flock's value. Answers `capsules::FlockConfig` with `queued`, the messages sent,
-and `members_on_version` at `0`: build the dashboard's state from this answer, not from a re-read.
+(`{ target_config: <JSON object>, adopt?: [<key>, ...], config_version: <int> }`); `{}` clears the
+layer. `adopt` names keys of the new layer to delete from every member's pigeon layer in the same
+apply, so those members take the flock's value. `config_version` is the version the layer was
+edited from, as the `GET` or the last write answered it. Answers `capsules::FlockConfig` with
+`queued`, the messages sent, and `members_on_version` at `0`: build the dashboard's state from this
+answer, not from a re-read, which can answer the previous layer for about a minute.
 
 ```sh
 curl -s -X PUT https://api.pidgeiot.com/flocks/<flock_id>/config \
   -H 'Cookie: ory_kratos_session=<session_token>' \
   -H 'Content-Type: application/json' \
-  -d '{"target_config":{"telemetry_interval":60},"adopt":["telemetry_interval"]}'
+  -d '{"target_config":{"telemetry_interval":60},"adopt":["telemetry_interval"],"config_version":3}'
 ```
 
 Refused with nothing written:
@@ -1871,6 +1873,9 @@ Refused with nothing written:
   per pigeon. A pigeon opts out of the flock's image with `"firmware": null` in its layer, or pins
   another with its own `firmware` key, which is how to canary a rollout.
 - `409` when the flock holds a production sign's pigeon.
+- `409` when `config_version` is not the stored version: the layer changed since the caller read
+  it. A stale editor never replaces a newer layer; read it again (after about a minute, since the
+  `GET` may be answered from cache) and edit that.
 - `413` over 4096 bytes serialized (`capsules::MAX_FLOCK_CONFIG_BYTES`, the top of
   `CONFIG_PIGEON_SHADOW_CONFIG_MAX`'s range), or over 1319 bytes when any member is a `Nidd`
   pigeon. The device's own compiled cap (320 bytes by default) is not known here; the dashboard

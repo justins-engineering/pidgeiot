@@ -345,16 +345,24 @@ pub struct FlockWrite {
   pub image_board: Option<String>,
 }
 
+/// The refusal of a write edited from a version other than the stored one.
+pub const STALE_VERSION: (u16, &str) = (
+  409,
+  "Conflict: this flock's config changed since it was read; wait a minute, reload and edit it again",
+);
+
 /// Writes a flock layer after `check` passes against the members, in one transaction:
 /// the flock row is locked first, which waits out any pigeon create or move into the flock (both
 /// take a key-share lock on it through their foreign key), so every member is listed and none
 /// joins unlisted before the commit. The member list and the image's board come back from the
-/// write statement itself, never from a cached read. `Ok(Err(..))` is a refusal, nothing written;
-/// `Ok(Ok(None))` an unknown flock.
+/// write statement itself, never from a cached read, and the statement writes only over
+/// `expected_version`, which a cached read cannot fake. `Ok(Err(..))` is a refusal, nothing
+/// written; `Ok(Ok(None))` an unknown flock.
 pub async fn write_flock_config<F>(
   client: &mut Client,
   flock_id: &Uuid,
   config_json: &str,
+  expected_version: i32,
   firmware_sha: Option<&str>,
   check: F,
 ) -> Result<std::result::Result<Option<FlockWrite>, (u16, &'static str)>>
@@ -369,17 +377,21 @@ where
     .await
     .map_err(|e| db_error("Flock config transaction error", e))?;
 
-  tx.query_typed(
-    "SELECT id FROM flocks WHERE id = $1 FOR UPDATE;",
-    &[(flock_id, Type::UUID)],
-  )
-  .await
-  .map_err(|e| db_error("Flock config lock error", e))?;
+  let locked = tx
+    .query_typed(
+      "SELECT id FROM flocks WHERE id = $1 FOR UPDATE;",
+      &[(flock_id, Type::UUID)],
+    )
+    .await
+    .map_err(|e| db_error("Flock config lock error", e))?;
+  if locked.is_empty() {
+    return Ok(Ok(None));
+  }
 
   let rows = tx
     .query_typed(
       "UPDATE flocks SET target_config = $2::jsonb, config_version = config_version + 1
-       WHERE id = $1
+       WHERE id = $1 AND config_version = $4
        RETURNING config_version,
          (SELECT COALESCE(json_agg(json_build_object(
              'id', p.id,
@@ -392,13 +404,14 @@ where
         (flock_id, Type::UUID),
         (&config_json, Type::TEXT),
         (&firmware_sha, Type::TEXT),
+        (&expected_version, Type::INT4),
       ],
     )
     .await
     .map_err(|e| db_error("Flock config write error", e))?;
 
   let Some(row) = rows.into_iter().next() else {
-    return Ok(Ok(None));
+    return Ok(Err(STALE_VERSION));
   };
   let members_text: String = row.get("members");
   let members: Vec<FlockMember> =
@@ -791,5 +804,53 @@ mod tests {
       decide_apply(input(&flock, json!([1]), "[1]")),
       ApplyDecision::Refuse(REFUSED_NOT_AN_OBJECT)
     );
+  }
+}
+
+/// The flock write against the dev Postgres, as [`super::rule_store`]'s `pg` tests run them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pg {
+  use super::*;
+  use crate::helpers::rule_store::pg::{Scratch, new_flock, run};
+
+  fn pass(
+    _: &[FlockMember],
+    _: Option<Option<&str>>,
+  ) -> std::result::Result<(), (u16, &'static str)> {
+    Ok(())
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_write_edited_from_an_older_version_is_refused_and_writes_nothing() {
+    run(async {
+      let db = Scratch::new("flock_config_version").await;
+      let mut client = db.client().await;
+      let flock = new_flock(&client, None).await;
+
+      let first = write_flock_config(&mut client, &flock, r#"{"a":1}"#, 0, None, pass)
+        .await
+        .expect("write")
+        .expect("not refused")
+        .expect("flock found");
+      assert_eq!(first.config_version, 1);
+
+      let stale = write_flock_config(&mut client, &flock, r#"{"a":2}"#, 0, None, pass)
+        .await
+        .expect("write");
+      assert_eq!(stale.err(), Some(STALE_VERSION));
+      let (text, version) = read_flock_layer(&client, &flock)
+        .await
+        .expect("read")
+        .expect("flock found");
+      assert_eq!((text.as_str(), version), (r#"{"a": 1}"#, 1));
+
+      let unknown = write_flock_config(&mut client, &Uuid::nil(), "{}", 0, None, pass)
+        .await
+        .expect("write");
+      assert!(matches!(unknown, Ok(None)));
+      drop(client);
+      db.drop().await;
+    });
   }
 }

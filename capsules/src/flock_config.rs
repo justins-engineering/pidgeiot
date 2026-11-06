@@ -205,6 +205,9 @@ pub struct FlockConfigUpdateRequest {
   pub target_config: Value,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub adopt: Vec<String>,
+  /// The `config_version` the layer was edited from. A write over any other is refused, so an
+  /// editor opened on a stale read never replaces a newer layer.
+  pub config_version: i32,
 }
 
 /// The dashboard's view of a pigeon's shadow: the device's [`PigeonShadow`] plus both layers.
@@ -548,12 +551,16 @@ mod tests {
     let body = FlockConfigUpdateRequest {
       target_config: json!({}),
       adopt: Vec::new(),
+      config_version: 3,
     };
-    assert_eq!(
-      serde_json::to_string(&body).unwrap(),
-      r#"{"target_config":{}}"#
-    );
-    let read: FlockConfigUpdateRequest = serde_json::from_str(r#"{"target_config":{}}"#).unwrap();
+    let text = r#"{"target_config":{},"config_version":3}"#;
+    assert_eq!(serde_json::to_string(&body).unwrap(), text);
+    let read: FlockConfigUpdateRequest = serde_json::from_str(text).unwrap();
     assert!(read.adopt.is_empty());
+  }
+
+  #[test]
+  fn the_update_request_needs_the_version_it_was_edited_from() {
+    assert!(serde_json::from_str::<FlockConfigUpdateRequest>(r#"{"target_config":{}}"#).is_err());
   }
 }

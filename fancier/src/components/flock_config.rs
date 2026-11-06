@@ -30,12 +30,13 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
     .is_some_and(|c| config_layers::flock_has_firmware(&c.target_config));
 
   // Resync and re-push both re-send the layer; only what is sent differs.
-  let send = move |target_config: serde_json::Value| async move {
+  let send = move |target_config: serde_json::Value, config_version: i32| async move {
     busy.set(true);
     action_error.set(None);
     let body = FlockConfigUpdateRequest {
       target_config,
       adopt: Vec::new(),
+      config_version,
     };
     match api::flocks::put_config(flock_id, &body).await {
       Ok(written) => config.set(Some(Ok(written))),
@@ -64,11 +65,12 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
                   title: "Re-sends the flock's firmware under a new target version on every pigeon that takes it",
                   onclick: {
                       let layer = current.target_config.clone();
+                      let version = current.config_version;
                       move |_| {
                           let layer = layer.clone();
                           async move {
                               match config_layers::repush_flock_layer(&layer) {
-                                  Ok(value) => send(value).await,
+                                  Ok(value) => send(value, version).await,
                                   Err(err) => action_error.set(Some(err)),
                               }
                           }
@@ -83,11 +85,12 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
                 title: "Sends this same config to every pigeon again, for one that missed it",
                 onclick: {
                     let layer = current.target_config.clone();
+                    let version = current.config_version;
                     move |_| {
                         let layer = layer.clone();
                         async move {
                             match serde_json::from_str(&layer.to_string()) {
-                                Ok(value) => send(value).await,
+                                Ok(value) => send(value, version).await,
                                 Err(err) => action_error.set(Some(format!("Invalid JSON: {err}"))),
                             }
                         }
@@ -122,7 +125,7 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
             }
             p { class: "text-sm text-base-content/70 md:px-4",
               if let Some(queued) = current.queued {
-                "Sent to {queued} pigeon(s). Each takes it within seconds; reload the page to see the count."
+                "Sent to {queued} pigeon(s). Each takes it within seconds."
               } else {
                 "{current.members_on_version} of {current.members} pigeon(s) on version {current.config_version}."
               }
@@ -158,6 +161,7 @@ fn EditFlockConfigModal(
   on_close: EventHandler<()>,
   on_saved: EventHandler<FlockConfig>,
 ) -> Element {
+  let edited_from = current.config_version;
   let mut text = use_signal(|| current.target_config.to_pretty());
   let mut adopt: Signal<Vec<String>> = use_signal(Vec::new);
   let mut file_error = use_signal(|| Option::<String>::None);
@@ -330,6 +334,7 @@ fn EditFlockConfigModal(
                         let body = FlockConfigUpdateRequest {
                             target_config,
                             adopt: selected,
+                            config_version: edited_from,
                         };
                         match api::flocks::put_config(flock_id, &body).await {
                             Ok(written) => on_saved.call(written),

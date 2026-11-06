@@ -2622,6 +2622,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           &mut client,
           &flock_id,
           &config_json,
+          body.config_version,
           firmware_sha.as_deref(),
           |members, image_board| check_flock_write(members, layer_bytes, image_board),
         )
