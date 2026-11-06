@@ -4,8 +4,8 @@
 
 use crate::components::group_thousands;
 use capsules::{
-  RuleAlertKind, RuleCaseMail, RuleCaseOutcome, RuleCpuCheck, RuleCpuResult, RuleDryMail,
-  RuleMailChange, RuleReplayWindow, RuleReplayed,
+  MAX_DRY_RUN_MAILS, RuleAlertKind, RuleCaseMail, RuleCaseOutcome, RuleCpuCheck, RuleCpuResult,
+  RuleDryMail, RuleMailChange, RuleReplayWindow, RuleReplayed,
 };
 
 /// `n` with thousands grouped.
@@ -72,12 +72,19 @@ pub fn mails_text(replayed: &RuleReplayed) -> String {
     1 => "Would have mailed once".to_string(),
     n => ["Would have mailed ", &count(n), " times"].concat(),
   };
+  // Only the listed mails say whether they were held back.
   let held = replayed.mails.iter().filter(|m| !m.sent).count();
   if held > 0 {
-    let held = u32::try_from(held).unwrap_or(u32::MAX);
+    let n = |len: usize| u32::try_from(len).unwrap_or(u32::MAX);
     text.push_str(", ");
-    text.push_str(&count(held));
-    text.push_str(" of them held back by the mail caps");
+    text.push_str(&count(n(held)));
+    if n(replayed.mails.len()) < replayed.mails_total {
+      text.push_str(" of the first ");
+      text.push_str(&count(n(replayed.mails.len())));
+    } else {
+      text.push_str(" of them");
+    }
+    text.push_str(" held back by the mail caps");
   }
   text.push('.');
   text
@@ -119,18 +126,32 @@ pub fn change_text(change: &RuleMailChange, deployed: Option<i32>) -> String {
   if change.new.is_empty() && change.gone.is_empty() {
     return ["The same mails as ", &version, "."].concat();
   }
-  let n = |len: usize| u32::try_from(len).unwrap_or(u32::MAX);
-  [
-    &counted(n(change.new.len()), "new mail", "new mails"),
-    " and ",
-    &count(n(change.gone.len())),
-    " gone against ",
-    &version,
-    "; ",
-    &count(change.unchanged),
-    " the same.",
-  ]
-  .concat()
+  let mut text = listed(change.new.len());
+  if let Some(first) = text.get_mut(..1) {
+    first.make_ascii_uppercase();
+  }
+  text.push_str(if change.new.len() == 1 {
+    " new mail and "
+  } else {
+    " new mails and "
+  });
+  text.push_str(&listed(change.gone.len()));
+  text.push_str(" gone against ");
+  text.push_str(&version);
+  text.push_str("; ");
+  text.push_str(&count(change.unchanged));
+  text.push_str(" the same.");
+  text
+}
+
+/// A mail list's length, "at least" when dovecote's cap may have cut it.
+fn listed(len: usize) -> String {
+  let n = count(u32::try_from(len).unwrap_or(u32::MAX));
+  if len >= MAX_DRY_RUN_MAILS {
+    ["at least ", &n].concat()
+  } else {
+    n
+  }
 }
 
 /// What a mail's kind does, as the timeline says it.
@@ -326,10 +347,15 @@ mod tests {
     replayed.mails_total = 1;
     assert_eq!(mails_text(&replayed), "Would have mailed once.");
     replayed.mails = vec![mail(true), mail(false), mail(false)];
+    replayed.mails_total = 3;
+    assert_eq!(
+      mails_text(&replayed),
+      "Would have mailed 3 times, 2 of them held back by the mail caps."
+    );
     replayed.mails_total = 1_200;
     assert_eq!(
       mails_text(&replayed),
-      "Would have mailed 1,200 times, 2 of them held back by the mail caps."
+      "Would have mailed 1,200 times, 2 of the first 3 held back by the mail caps."
     );
   }
 
@@ -366,6 +392,15 @@ mod tests {
     };
     assert_eq!(change_text(&same, Some(2)), "The same mails as v2.");
     assert!(change_text(&change, None).starts_with("No other version is deployed"));
+    let capped = RuleMailChange {
+      new: vec![mail(true); MAX_DRY_RUN_MAILS],
+      gone: vec![mail(true); 2],
+      unchanged: 0,
+    };
+    assert_eq!(
+      change_text(&capped, Some(2)),
+      "At least 100 new mails and 2 gone against v2; 0 the same."
+    );
   }
 
   #[test]
