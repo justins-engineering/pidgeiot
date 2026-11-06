@@ -97,6 +97,17 @@ pub use errors::{
   is_valid_build, normalize_message, normalize_route, truncate_bytes,
 };
 
+// Flock-level config: the per-key merge of a flock's layer under each pigeon's own, the write
+// checks, and the dashboard's view of both layers. Shared so dovecote's apply and the dashboard's
+// preview cannot disagree on what a device will be sent.
+pub mod flock_config;
+pub use flock_config::{
+  FLOCK_FIRMWARE_REPUSH_KEY, FLOCK_REFUSED_KEYS, FlockConfig, FlockConfigUpdateRequest,
+  FlockLayerRejection, KeySource, MAX_FLOCK_CONFIG_BYTES, PigeonShadowView, PigeonShadowViewRow,
+  effective_config, effective_text, firmware_from_flock, flock_firmware_allowed, key_sources,
+  parse_layer, validate_flock_layer,
+};
+
 // Opaque per-account dashboard preferences, keyed by scope. Shared so the
 // dashboard and the route storing its documents agree on what a key and a
 // document may be.
