@@ -1,6 +1,6 @@
 use crate::components::{
   BOARD_DATALIST_ID, BoardDatalist, ConfirmModal, ConnectionBadge, ConnectorBadge, DangerAction,
-  DangerZone, FlockAlerts, FlockGraphs,
+  DangerZone, FlockAlerts, FlockConfigCard, FlockGraphs,
 };
 use crate::helpers::{connection_state, device_credentials};
 use crate::{Route, api};
@@ -327,6 +327,10 @@ pub fn Pigeons(flock_id: uuid::Uuid) -> Element {
 
         section { id: "flockAlerts", class: "mt-10",
           FlockAlerts { flock_id }
+        }
+
+        section { id: "flock-config", class: "mt-10",
+          FlockConfigCard { flock_id, can_manage }
         }
 
         if org_flock {

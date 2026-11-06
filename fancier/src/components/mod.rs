@@ -61,6 +61,9 @@ pub use log_viewer::LogViewer;
 mod firmware_modal;
 pub use firmware_modal::FirmwareModal;
 
+mod flock_config;
+pub use flock_config::FlockConfigCard;
+
 mod connection_badge;
 pub use connection_badge::ConnectionBadge;
 
