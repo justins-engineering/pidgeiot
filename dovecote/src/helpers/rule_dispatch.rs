@@ -26,8 +26,8 @@ use crate::helpers::rule_store::{
 };
 use crate::helpers::rules::{
   Classified, DispatchOutcome, Lookup, PassLedger, PassVars, PreGate, RulePlan, RuleWork,
-  ScriptKind, Skip, build_event, classify, deliverable_recipients, live_input, plan_record,
-  read_cap, rule_mail_message, script_name, uuid_str,
+  RunStatus, ScriptKind, Skip, build_event, classify, deliverable_recipients, live_input,
+  plan_record, read_cap, rule_mail_message, script_name, uuid_str,
 };
 #[cfg(test)]
 use crate::helpers::{ResolvedReading, rules::pass_vars};
@@ -38,6 +38,10 @@ pub const DISPATCH_WALL_MS: u64 = 2_000;
 
 /// Where the harness listens. The binding routes the request; the host is never resolved.
 const RUN_URL: &str = "https://rules/run";
+
+/// Most batches skipped for the budget whose watched rules a pass still records as `skipped`,
+/// which bounds the writes past [`crate::helpers::rules::PASS_BUDGET_MS`].
+pub const SKIPPED_RECORDS_PER_PASS: usize = 4;
 
 /// Postgres failed, so the rest of the pass is skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +88,8 @@ pub(crate) struct PassCounts {
   pub platform: usize,
   /// Batches skipped for [`crate::helpers::rules::PASS_BUDGET_MS`].
   pub budget: usize,
+  /// Of those, the batches recorded as `skipped` on their watched rules.
+  pub budget_recorded: usize,
   /// Batches skipped once the breaker tripped.
   pub breaker: usize,
   /// Batches skipped because their account's dispatch already failed or answered slowly.
@@ -95,6 +101,10 @@ pub(crate) struct PassCounts {
 /// Runs each batch's rules: the field-pigeon gate and the breaker and budget before any
 /// statement, then the gate, the fresh read, the organization allowlist, one dispatch and its
 /// record.
+///
+/// A batch the budget skips reads nothing more, but when the pass already read its pigeon it
+/// leaves a `skipped` run on each watched rule, for up to [`SKIPPED_RECORDS_PER_PASS`] batches,
+/// so a watch shows the batch the rules never saw.
 pub(crate) async fn run_pass<I: PassIo>(
   io: &mut I,
   vars: &PassVars,
@@ -102,6 +112,7 @@ pub(crate) async fn run_pass<I: PassIo>(
 ) -> PassCounts {
   let mut ledger = PassLedger::new(io.now_ms());
   let mut counts = PassCounts::default();
+  let mut read: Vec<(&str, Lookup)> = Vec::new();
   for item in work {
     if vars.gate(&item.pigeon_id) != PreGate::Lookup {
       continue;
@@ -112,6 +123,18 @@ pub(crate) async fn run_pass<I: PassIo>(
     }
     if ledger.budget_spent(io.now_ms()) {
       counts.budget += 1;
+      let earlier = read
+        .iter()
+        .find(|(pigeon, _)| *pigeon == item.pigeon_id)
+        .map(|(_, lookup)| lookup.clone());
+      if let Some(lookup) = earlier
+        && record_skipped(io, &lookup, item, &mut counts)
+          .await
+          .is_err()
+      {
+        counts.down = true;
+        break;
+      }
       continue;
     }
     let found = match io.gate(&item.pigeon_id).await {
@@ -148,8 +171,18 @@ pub(crate) async fn run_pass<I: PassIo>(
       }
       Err(Skip::Budget) => {
         counts.budget += 1;
+        if record_skipped(io, &lookup, item, &mut counts)
+          .await
+          .is_err()
+        {
+          counts.down = true;
+          break;
+        }
         continue;
       }
+    }
+    if !read.iter().any(|(pigeon, _)| *pigeon == item.pigeon_id) {
+      read.push((&item.pigeon_id, lookup.clone()));
     }
     let sent = lookup.dispatch_rules();
     let common = build_event(
@@ -188,6 +221,27 @@ pub(crate) async fn run_pass<I: PassIo>(
     counts.dispatched += 1;
   }
   counts
+}
+
+/// Records a batch the budget skipped as `skipped` on its watched rules; the plan writes nothing
+/// for a rule that is not watched, and nothing past [`SKIPPED_RECORDS_PER_PASS`] batches.
+async fn record_skipped<I: PassIo>(
+  io: &mut I,
+  lookup: &Lookup,
+  item: &RuleWork,
+  counts: &mut PassCounts,
+) -> Result<(), Down> {
+  if counts.budget_recorded >= SKIPPED_RECORDS_PER_PASS || !lookup.rules.iter().any(|r| r.watched) {
+    return Ok(());
+  }
+  let plans = plan_record(
+    lookup,
+    &item.readings,
+    &Classified::Flock(RunStatus::Skipped),
+  );
+  io.record(lookup, item, &plans, 0).await?;
+  counts.budget_recorded += 1;
+  Ok(())
 }
 
 /// The pass against the Worker's own bindings, opening Postgres at the first batch that needs it.
@@ -442,7 +496,7 @@ pub(crate) fn take_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::helpers::rules::{FIELD_PIGEONS, LiveRule, PASS_BUDGET_MS, RunStatus, uuid_str};
+  use crate::helpers::rules::{FIELD_PIGEONS, LiveRule, PASS_BUDGET_MS, uuid_str};
   use capsules::{RuleNamedRef, RuleState};
   use serde_json::{Value, json};
   use std::collections::HashMap;
@@ -790,6 +844,65 @@ mod tests {
     assert_eq!(
       fake.recorded[0].2,
       i32::try_from(PASS_BUDGET_MS / 2).expect("small")
+    );
+  }
+
+  #[test]
+  fn a_batch_the_budget_skips_is_recorded_skipped_on_watched_rules_without_another_read() {
+    let mut fake = Fake {
+      dispatch_ms: PASS_BUDGET_MS,
+      ..Fake::default()
+    };
+    let mut watched = found(1, 1, 2);
+    watched.rules[1].watched = true;
+    fake.lookups.insert("p1".into(), watched);
+    fake.lookups.insert("p2".into(), found(2, 2, 1));
+    let counts = run(&mut fake, &["p1", "p1", "p2"]);
+    assert_eq!(fake.gated, ["p1"], "nothing past the budget reads");
+    assert_eq!(
+      (counts.dispatched, counts.budget, counts.budget_recorded),
+      (1, 2, 1)
+    );
+    let (_, statuses, wall) = &fake.recorded[1];
+    assert_eq!(
+      statuses,
+      &[
+        (Uuid::from_u128(100), RunStatus::Skipped),
+        (Uuid::from_u128(101), RunStatus::Skipped)
+      ]
+    );
+    assert_eq!(*wall, 0);
+    assert_eq!(
+      fake.recorded.len(),
+      2,
+      "p2 was never read, so it records nothing"
+    );
+
+    let mut fake = Fake {
+      dispatch_ms: PASS_BUDGET_MS,
+      ..Fake::default()
+    };
+    fake.lookups.insert("p1".into(), found(1, 1, 1));
+    let counts = run(&mut fake, &["p1", "p1"]);
+    assert_eq!(
+      (counts.budget, counts.budget_recorded),
+      (1, 0),
+      "no watched rule, no write"
+    );
+    assert_eq!(fake.recorded.len(), 1);
+
+    let mut fake = Fake {
+      dispatch_ms: PASS_BUDGET_MS,
+      ..Fake::default()
+    };
+    let mut watched = found(1, 1, 1);
+    watched.rules[0].watched = true;
+    fake.lookups.insert("p1".into(), watched);
+    let batches = vec!["p1"; 2 + SKIPPED_RECORDS_PER_PASS];
+    let counts = run(&mut fake, &batches);
+    assert_eq!(
+      counts.budget_recorded, SKIPPED_RECORDS_PER_PASS,
+      "bounded past the budget"
     );
   }
 

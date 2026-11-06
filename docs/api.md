@@ -2665,7 +2665,8 @@ curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versi
 
 The rule's newest 200 run records, as `Vec<capsules::RuleRun>`. A failed run is recorded, but a
 `skipped` one only while the rule is watched and a `version_mismatch` only once it has lasted ten
-minutes, longer than a deploy takes. A quiet successful run is recorded only while the rule is
+minutes, longer than a deploy takes. A run is `skipped` when an earlier rule of the flock spent
+the batch's time, or when the platform ran out of time for the batch altogether. A quiet successful run is recorded only while the rule is
 watched: for 24 hours after each deploy, and for an hour after a
 [watch](#post-flocksflock_idrulesrule_idwatch). `status` is one of `ok`, `threw`, `timeout`,
 `skipped`, `bad_output`, `oversize`, `version_mismatch` and `dispatch_failed`; `error`
