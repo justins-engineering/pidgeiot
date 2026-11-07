@@ -115,6 +115,75 @@ pub async fn check_pigeon_authz(
   }))
 }
 
+/// GETs `do_path` on each pigeon's Durable Object in parallel as the caller, for the batch
+/// routes. A pigeon the caller cannot reach, or whose object fails, is left out and logged: the
+/// batch routes answer with what came back and the client treats the difference as unavailable.
+pub async fn fan_out_to_pigeons(
+  namespace: &worker::ObjectNamespace,
+  ids: Vec<String>,
+  user_id: &str,
+  org_roles_json: Option<&str>,
+  do_path: &str,
+) -> Vec<(String, Response)> {
+  let mut url = String::with_capacity(16 + do_path.len());
+  url.push_str("https://internal");
+  url.push_str(do_path);
+  let url = url.as_str();
+
+  let tasks = ids.into_iter().map(|id| async move {
+    let object_id = match namespace.id_from_string(&id) {
+      Ok(object_id) => object_id,
+      Err(e) => {
+        console_error!("Batch: {id} is not an id in this PIGEONS namespace: {e}");
+        return None;
+      }
+    };
+    let stub = match object_id.get_stub() {
+      Ok(stub) => stub,
+      Err(e) => {
+        console_error!("Batch: no stub for {id}: {e}");
+        return None;
+      }
+    };
+
+    let build_req = || {
+      let headers = Headers::new();
+      headers.append("X-User-Id", user_id)?;
+      if let Some(org_json) = org_roles_json {
+        headers.append("X-Org-Roles", org_json)?;
+      }
+      let mut do_req_init = RequestInit::default();
+      do_req_init.with_headers(headers);
+      Request::new_with_init(url, &do_req_init)
+    };
+    let do_req = match build_req() {
+      Ok(do_req) => do_req,
+      Err(e) => {
+        console_error!("Batch: could not build DO request for {id}: {e}");
+        return None;
+      }
+    };
+
+    match stub.fetch_with_request(do_req).await {
+      Ok(resp) if resp.status_code() < 400 => Some((id, resp)),
+      Ok(resp) => {
+        console_error!("Batch: DO answered {} for {id}", resp.status_code());
+        None
+      }
+      Err(e) => {
+        console_error!("Batch: DO fetch failed for {id}: {e}");
+        None
+      }
+    }
+  });
+
+  futures::future::join_all(tasks)
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 /// `org_roles_json` is the caller's org-membership set as compact JSON
 /// (`Principal::org_roles_header`, `helpers/orgs.rs`), forwarded as the
 /// internal `X-Org-Roles` header so the DO's centralized ACL check

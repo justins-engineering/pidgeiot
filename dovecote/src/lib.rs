@@ -14,8 +14,9 @@ use crate::helpers::{
   delete_dashboard, delete_dashboard_state, delete_flock_if_empty, delete_log_dictionary,
   delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
   ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
-  fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
-  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  fan_out_to_pigeons, fetch_subscription, flock_shadow_versions, get_db_client,
+  get_flock_with_pigeons, get_hyperdrive_conn, get_organization, get_user_flocks,
+  grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
   is_allowed_coap_service_ip, is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev,
   list_dashboards, list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts,
   list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
@@ -30,7 +31,7 @@ use crate::helpers::{
   record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
   resolve_checkout_prices, resolve_dashboard_access, revoke_invite, root_url, seen_header_value,
   seen_of, send_feedback_email, send_invite_email, send_ops_email, set_seen, sha256_hex,
-  stamp_last_seen, store_contact_submission, store_dashboard_state, stored_layout,
+  shadow_key_list, stamp_last_seen, store_contact_submission, store_dashboard_state, stored_layout,
   stripe_configured, sync_customer_tax_identity, update_alert_definition, update_dashboard,
   update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
@@ -43,19 +44,18 @@ use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
   BillingPlanChangeRequest, BillingSessionUrl, Dashboard, DashboardCreateRequest,
   DashboardUpdateRequest, FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest,
-  MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, OrgRole,
+  MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, MAX_TELEMETRY_BATCH_PIGEONS, OrgRole,
   OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
-  PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
-  TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody, normalize_dashboard_name, tax_id_log_label,
-  valid_scope_key,
+  PigeonFlockUpdateRequest, PigeonLatestTelemetry, PigeonShadow, PigeonSuspensionRequest,
+  PigeonTelemetryBatchRequest, TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION,
+  TelemetryEndpoint, TelemetryHistoryBucket, TelemetryHistoryQuery, TelemetryReportBody,
+  normalize_dashboard_name, tax_id_log_label, valid_scope_key,
 };
-use futures::future::join_all;
 use worker::{
-  Context, Date, Env, Headers, Method, Range, Request, RequestInit, Response, ResponseBuilder,
-  RouteContext, Router, console_error, console_log, event,
+  Context, Date, Env, Headers, Method, Range, Request, Response, ResponseBuilder, RouteContext,
+  Router, console_error, console_log, event,
 };
 
 mod helpers;
@@ -1910,68 +1910,19 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           .with_cors(&cors);
       };
 
-      let org_roles_json = principal.org_roles_header().map(|s| s.to_string());
-      let fetch_tasks = pigeon_ids.into_iter().map(|id| {
-        let namespace_clone = pigeon_namespace.clone();
-        let u_id = principal.user_id.clone();
-        let org_json = org_roles_json.clone();
-
-        // An id the caller cannot reach is simply absent from the
-        // response (docs/api.md) -- the client renders the difference as
-        // unavailable, so the reason only ever exists in this log.
-        async move {
-          let object_id = match namespace_clone.id_from_string(&id) {
-            Ok(object_id) => object_id,
-            Err(e) => {
-              console_error!("Batch: {id} is not an id in this PIGEONS namespace: {e}");
-              return None;
-            }
-          };
-          let stub = match object_id.get_stub() {
-            Ok(stub) => stub,
-            Err(e) => {
-              console_error!("Batch: no stub for {id}: {e}");
-              return None;
-            }
-          };
-
-          let build_req = || {
-            let headers = worker::Headers::new();
-            headers.append("X-User-Id", &u_id)?;
-            if let Some(org_json) = &org_json {
-              headers.append("X-Org-Roles", org_json)?;
-            }
-            let mut do_req_init = RequestInit::default();
-            do_req_init.with_headers(headers);
-            Request::new_with_init("https://internal/pigeon/get", &do_req_init)
-          };
-          let do_req = match build_req() {
-            Ok(do_req) => do_req,
-            Err(e) => {
-              console_error!("Batch: could not build DO request for {id}: {e}");
-              return None;
-            }
-          };
-
-          match stub.fetch_with_request(do_req).await {
-            Ok(resp) => Some((id, resp)),
-            Err(e) => {
-              console_error!("Batch: DO fetch failed for {id}: {e}");
-              None
-            }
-          }
-        }
-      });
-
-      let responses = join_all(fetch_tasks).await;
+      // An id the caller cannot reach is simply absent from the response (docs/api.md) -- the
+      // client renders the difference as unavailable, so the reason only ever exists in the log.
+      let responses = fan_out_to_pigeons(
+        &pigeon_namespace,
+        pigeon_ids,
+        &principal.user_id,
+        principal.org_roles_header(),
+        "/pigeon/get",
+      )
+      .await;
       let mut pigeons: Vec<Pigeon> = Vec::with_capacity(responses.len());
 
-      for (id, mut resp) in responses.into_iter().flatten() {
-        let status = resp.status_code();
-        if status >= 400 {
-          console_error!("Batch: DO answered {status} for {id}");
-          continue;
-        }
+      for (id, mut resp) in responses {
         match resp.json::<Pigeon>().await {
           Ok(pigeon) => pigeons.push(pigeon),
           Err(e) => console_error!("Batch: unparsable DO response for {id}: {e}"),
@@ -1979,6 +1930,60 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       }
 
       Response::from_json(&pigeons)?.with_cors(&cors)
+    })
+    .post_async("/pigeons/batch/telemetry", |mut req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(request) = req.json::<PigeonTelemetryBatchRequest>().await else {
+        return Response::error("Bad Request: Invalid JSON", 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if request.ids.len() > MAX_TELEMETRY_BATCH_PIGEONS {
+        return Response::error("Batch size exceeds subrequest limits", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+      if request.keys.len() > capsules::MAX_TELEMETRY_KEYS {
+        return Response::error("Bad Request: too many keys", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+      let Ok(pigeon_namespace) = ctx.durable_object("PIGEONS") else {
+        return Response::error("Failed to bind to PIGEONS namespace", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+
+      let responses = fan_out_to_pigeons(
+        &pigeon_namespace,
+        request.ids,
+        &principal.user_id,
+        principal.org_roles_header(),
+        "/pigeon/telemetry/get",
+      )
+      .await;
+      let mut answer: Vec<PigeonLatestTelemetry> = Vec::with_capacity(responses.len());
+      for (pigeon_id, mut resp) in responses {
+        match resp.json::<Vec<capsules::TelemetryLatest>>().await {
+          Ok(mut telemetry) => {
+            if !request.keys.is_empty() {
+              telemetry.retain(|t| request.keys.contains(&t.key));
+            }
+            answer.push(PigeonLatestTelemetry {
+              pigeon_id,
+              telemetry,
+            });
+          }
+          Err(e) => console_error!("Batch: unparsable DO telemetry for {pigeon_id}: {e}"),
+        }
+      }
+
+      Response::from_json(&answer)?.with_cors(&cors)
     })
     .post_async("/flock/pigeons", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
@@ -2697,6 +2702,70 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
 
       Response::from_json(&shadow)?.with_cors(&cors)
     })
+    .get_async(
+      "/flocks/:flock_id/shadow/versions",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(flock_id) = ctx.param("flock_id").cloned() else {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if uuid::Uuid::parse_str(&flock_id).is_err() {
+          return Response::error("Flock ID cannot be empty or invalid", 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        let Ok(url) = req.url() else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let raw_keys = url
+          .query_pairs()
+          .find(|(name, _)| name == "keys")
+          .map(|(_, value)| value.into_owned());
+        let Some(keys) = shadow_key_list(raw_keys.as_deref()) else {
+          return Response::error(
+            "Bad Request: keys is a comma list of at most 8 config keys",
+            400,
+          )
+          .unwrap()
+          .with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(access) = crate::helpers::authorize_flock(
+          &client,
+          &flock_id,
+          &principal,
+          crate::helpers::FlockAction::View,
+        )
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(access) = access else {
+          return Response::error("Forbidden: You do not have access to this flock", 403)
+            .unwrap()
+            .with_cors(&cors);
+        };
+
+        let Ok(versions) = flock_shadow_versions(&client, &access, &keys).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        Response::from_json(&versions)?.with_cors(&cors)
+      },
+    )
     // --- ACL Routes ---
     .get_async("/pigeons/:pigeon_id/acl", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);

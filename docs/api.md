@@ -56,12 +56,14 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`PUT /pigeons/:pigeon_id/suspension`](#put-pigeonspigeon_idsuspension) | owner | Suspend or resume a pigeon's alert evaluation |
 | [`DELETE /pigeons/:pigeon_id`](#delete-pigeonspigeon_id) | owner | Deprovision a pigeon and wipe its storage |
 | [`POST /pigeons/batch`](#post-pigeonsbatch) | member (per pigeon) | Fetch up to 48 pigeons by id in one request |
+| [`POST /pigeons/batch/telemetry`](#post-pigeonsbatchtelemetry) | member (per pigeon) | Latest telemetry for up to 48 pigeons in one request |
 | [`POST /pigeons/:pigeon_id/token/refresh`](#post-pigeonspigeon_idtokenrefresh) | owner | Mint a new keypair, revoking the current token |
 | [`POST /pigeons/:pigeon_id/shell`](#post-pigeonspigeon_idshell) | owner | Run one diagnostic command on a connected device |
 | [`GET /pigeons/:pigeon_id/acl`](#get-pigeonspigeon_idacl) | owner | List every ACL entry on a pigeon |
 | [`POST /pigeons/:pigeon_id/acl`](#post-pigeonspigeon_idacl) | owner | Grant or change one ACL entry |
 | [`GET /pigeons/:pigeon_id/shadow`](#get-pigeonspigeon_idshadow) | member | Read the desired/reported config pair |
 | [`PUT /pigeons/:pigeon_id/shadow`](#put-pigeonspigeon_idshadow) | member | Set a new target config; also assigns firmware |
+| [`GET /flocks/:flock_id/shadow/versions`](#get-flocksflock_idshadowversions) | flock: view | Shadow versions, and chosen config keys, for every pigeon in a flock |
 | [`POST /flocks/:flock_id/firmware`](#post-flocksflock_idfirmware) | flock: manage | Upload an image into the flock's firmware catalog |
 | [`GET /flocks/:flock_id/firmware`](#get-flocksflock_idfirmware) | flock: view | List the flock's firmware catalog |
 | [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry) | member | Read the latest value per telemetry key |
@@ -1451,6 +1453,30 @@ curl -s -X POST https://api.pidgeiot.com/pigeons/batch \
 
 Returns `Vec<capsules::Pigeon>`.
 
+#### `POST /pigeons/batch/telemetry`
+
+**Auth:** member (per pigeon)
+
+The latest value per telemetry key, as [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry)
+returns it, for up to 48 pigeons in one request: the flock-wide latest read a status table polls.
+Body: `capsules::PigeonTelemetryBatchRequest`, `{ "ids": [...], "keys": [...] }`; an empty or
+absent `keys` returns every key, otherwise only the named ones (at most 128). `400` past 48 ids.
+
+Read from each pigeon's Durable Object, not from the Postgres history, so a pigeon that forwards
+its telemetry to an endpoint of its own still answers. The same absence rule as
+[`POST /pigeons/batch`](#post-pigeonsbatch) holds: a pigeon the caller cannot reach, or whose
+object failed, is missing from the response, never an empty entry, so an id absent from the
+answer is a per-pigeon failure.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/pigeons/batch/telemetry \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"ids":["<pigeon_id_1>","<pigeon_id_2>"],"keys":["temp_c"]}'
+```
+
+Returns `Vec<capsules::PigeonLatestTelemetry>`, `{ pigeon_id, telemetry: [TelemetryLatest] }`.
+
 #### `POST /pigeons/:pigeon_id/token/refresh`
 
 **Auth:** owner
@@ -1668,6 +1694,28 @@ design doc for the full incident writeup and why the MCUboot image header itself
 this information for this fleet's swap-mode builds. **Every pigeon and every firmware image must
 be explicitly tagged with a matching `board` before an assignment will succeed** — there's no
 grandfather exemption for pre-existing untagged rows.
+
+#### `GET /flocks/:flock_id/shadow/versions`
+
+**Auth:** flock: view
+
+Every pigeon in the flock with its `target_version` and `current_version` (behind when
+`current_version < target_version`), plus, with `?keys=a,b`, those top-level keys of its
+`target_config` and `current_config`. At most 8 keys of 1–128 bytes each; `400` otherwise.
+
+Read from the Postgres mirror in one query, so it can lag the pigeon's own shadow: by up to a
+minute through Hyperdrive's cache, and further when a mirror write failed, since that sync is
+best-effort. A pigeon page reads the Durable Object and can disagree with this list; the page is
+right. A pigeon with no shadow row reads as versions `0` and `updated_at: null`.
+
+```sh
+curl -s 'https://api.pidgeiot.com/flocks/<flock_id>/shadow/versions?keys=layout' \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+Returns `capsules::FlockShadowVersions`, `{ pigeons: [{ pigeon_id, target_version,
+current_version, updated_at, target, current }], truncated }`: the first 1,000 pigeons by id,
+with `truncated` set when the flock holds more.
 
 ### Firmware
 

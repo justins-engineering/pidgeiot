@@ -76,8 +76,10 @@ mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
 pub use flocks::delete_flock_if_empty;
+pub use flocks::flock_shadow_versions;
 pub use flocks::get_user_flocks;
 pub use flocks::pigeon_move_shares_owner;
+pub use flocks::shadow_key_list;
 
 mod pigeons;
 pub use pigeons::PIGEON_CREATED_AT_HEADER;
@@ -87,6 +89,7 @@ pub use pigeons::check_pigeon_authz;
 pub use pigeons::connector_without_secrets;
 pub use pigeons::delete_log_dictionary;
 pub use pigeons::delete_pigeon_pg_db;
+pub use pigeons::fan_out_to_pigeons;
 pub use pigeons::grant_org_acl_via_do;
 pub use pigeons::insert_pigeon_pg_db;
 pub use pigeons::nidd_uplink_via_do;
