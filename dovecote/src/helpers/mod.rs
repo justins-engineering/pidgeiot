@@ -199,6 +199,19 @@ pub use dashboard_state::delete_dashboard_state;
 pub use dashboard_state::load_dashboard_state;
 pub use dashboard_state::store_dashboard_state;
 
+mod dashboards;
+pub use dashboards::DashboardAccess;
+pub use dashboards::DashboardOwner;
+pub use dashboards::copy_name;
+pub use dashboards::create_dashboard;
+pub use dashboards::dashboard_access;
+pub use dashboards::delete_dashboard;
+pub use dashboards::list_dashboards;
+pub use dashboards::load_dashboard;
+pub use dashboards::resolve_dashboard_access;
+pub use dashboards::stored_layout;
+pub use dashboards::update_dashboard;
+
 mod orgs;
 pub use orgs::FlockAction;
 pub use orgs::Principal;

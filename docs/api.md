@@ -87,6 +87,12 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /dashboard-state/:scope_key`](#get-dashboard-statescope_key) | session | Read the caller's saved document for one scope |
 | [`PUT /dashboard-state/:scope_key`](#put-dashboard-statescope_key) | session | Replace the caller's document for one scope |
 | [`DELETE /dashboard-state/:scope_key`](#delete-dashboard-statescope_key) | session | Drop the caller's document for one scope |
+| [`GET /dashboards`](#get-dashboards) | session | List the caller's dashboards and those of every org they belong to |
+| [`POST /dashboards`](#post-dashboards) | session; with `org_id`, org owner/admin | Create a personal or organization dashboard |
+| [`GET /dashboards/:dashboard_id`](#get-dashboardsdashboard_id) | owner, or any member of its org | Read one dashboard with its layout |
+| [`PUT /dashboards/:dashboard_id`](#put-dashboardsdashboard_id) | owner, or org owner/admin | Replace a dashboard's name and layout at a revision |
+| [`DELETE /dashboards/:dashboard_id`](#delete-dashboardsdashboard_id) | owner, or org owner/admin | Delete a dashboard |
+| [`POST /dashboards/:dashboard_id/copy`](#post-dashboardsdashboard_idcopy) | owner, or any member of its org | Copy a dashboard into a personal one |
 | [`GET /account/terms`](#get-accountterms) | session | Which Terms version the account has accepted |
 | [`POST /account/terms`](#post-accountterms) | session | Record assent to the published Terms |
 | [`GET /demo/pigeons/:pigeon_id/telemetry`](#get-demopigeonspigeon_idtelemetry) | none | Latest values for the public demo pigeon |
@@ -2672,6 +2678,127 @@ work with what it has.
 Drops the document and frees its key against the cap. **204**, and deleting a scope that was
 never stored is not an error. Account-deletion erasure removes every row for an identity
 directly (`infra/migrations/2026-08-31-dashboard-state.sql`).
+
+---
+
+### Dashboards
+
+A dashboard is a named page of widgets, in order. It belongs to exactly one person or one
+organization, never both. A personal dashboard is its owner's alone. An organization's is read
+by every member, and edited, renamed and deleted by its owners and admins; a member who wants
+to change one copies it into a personal dashboard.
+
+**Sharing a dashboard never shares data.** A layout holds only references: flock ids, pigeon
+ids, telemetry keys, ranges. Each widget reads its data through the routes above with the
+viewer's own session, so a member who cannot view a flock sees that widget as unavailable and
+nothing else. No route here checks a widget's references, and none needs to.
+
+A dashboard the caller cannot see is a **404**, the same as one that does not exist, so an id
+cannot be probed. No route here answers 401 for anything but a lost session.
+
+**Both `GET`s are exempt from Hyperdrive's ~60s query cache**, the same device as
+[Dashboard state](#dashboard-state): without it a member would open an org dashboard and see
+the layout from a minute ago. The org role check beside them is cached like every other, so a
+removed member can still open an org dashboard for about 75 seconds. Every write answers the
+stored dashboard, so a client never re-reads to confirm its own save.
+
+The layout (`capsules::DashboardLayout`) is `{ "v": 1, "widgets": [ ... ] }`. Each widget
+carries an `id` unique in the layout (1–32 of `[A-Za-z0-9_-]`), a `size` (`small`, `half`,
+`full`: one grid column, two, or the whole row), an optional `title`, and a `kind` with its own
+fields:
+
+| `kind` | Fields | Shows |
+|---|---|---|
+| `time_series` | `scope` (`{"pigeon": id}` or `{"flock": uuid}`), `keys`, `range` (`Last1h` to `Last30d`), `chart` (`Line`, `Step`, `Area`, `Bar`, `Scatter`) | Keys over a range: 1–8 keys at pigeon scope, exactly 1 at flock scope |
+| `latest` | `pigeon`, `key`, `unit` | One key's newest value and its age |
+| `threshold` | `pigeon`, `key`, `unit`, `min`, `max` | One value against a declared range, coloured by that pigeon's threshold alerts on the key |
+| `status_table` | `flock`, `keys` (0–8) | Every pigeon in a flock: connection state, last seen, the chosen keys, config applied or behind |
+| `shadow_key` | `pigeon`, `key` | One top-level key of the target and reported config |
+| `alerts` | `flock` | A flock's alerts and which are firing |
+| `text` | `text` (at most 2,000 characters) | A note, rendered as plain text, never markup |
+
+```json
+{
+  "v": 1,
+  "widgets": [
+    { "id": "w1", "kind": "time_series", "size": "full", "title": "Brightness",
+      "scope": { "flock": "<flock_id>" }, "keys": ["brightness"], "range": "Last24h",
+      "chart": "Line" },
+    { "id": "w2", "kind": "text", "size": "half", "text": "Depot 3. Call Sam at ext 412." }
+  ]
+}
+```
+
+A layout holds at most `capsules::MAX_DASHBOARD_WIDGETS` (24) widgets and serializes to at most
+`capsules::MAX_DASHBOARD_LAYOUT_BYTES` (32 KiB, `413` past it); an owner holds at most
+`capsules::MAX_DASHBOARDS_PER_OWNER` (50) dashboards, and one past that is refused `400`. A name
+is 1–80 characters after trimming. A widget of a `kind` this server does not know reads back as
+`{"kind": "unknown"}`, and a write carrying one is refused `400`, so a stale tab cannot save
+over a widget it cannot read.
+
+`capsules::Dashboard` is `{ id, user_id, org_id, created_by, name, layout, revision,
+created_at, updated_at, can_edit }`: exactly one of `user_id` and `org_id` is set,
+`created_by` is provenance only (`null` once that account is erased), and `can_edit` says
+whether this caller may save it.
+
+#### `GET /dashboards`
+
+**Auth:** session
+
+The caller's personal dashboards and every dashboard of every organization they belong to,
+most recently saved first, as `Vec<capsules::DashboardSummary>`: `{ id, user_id, org_id, name,
+widget_count, revision, updated_at, can_edit }`, no layout.
+
+```sh
+curl -s https://api.pidgeiot.com/dashboards \
+  -H 'Cookie: ory_kratos_session=<session_token>'
+```
+
+#### `POST /dashboards`
+
+**Auth:** session; with `org_id`, org owner/admin
+
+Body: `capsules::DashboardCreateRequest`, `{ "name": "...", "org_id": "<uuid>" | null,
+"layout": { ... } | null }`. Without `org_id` the dashboard is the caller's own; with it, the
+organization's, and only that org's owners and admins may create one (`403` otherwise). A
+missing `layout` starts the page empty. **201** with the stored `Dashboard` and a `Location`.
+
+```sh
+curl -s -X POST https://api.pidgeiot.com/dashboards \
+  -H 'Cookie: ory_kratos_session=<session_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Depot 3"}'
+```
+
+#### `GET /dashboards/:dashboard_id`
+
+**Auth:** owner, or any member of its org
+
+Returns the `Dashboard` with its layout. **404** when it does not exist or the caller cannot
+see it.
+
+#### `PUT /dashboards/:dashboard_id`
+
+**Auth:** owner, or org owner/admin
+
+Body: `capsules::DashboardUpdateRequest`, `{ "name": "...", "layout": { ... }, "revision": n }`,
+where `revision` is the one the client loaded. Replaces name and layout wholesale, bumps
+`revision` and answers the stored `Dashboard`. **409** when another save landed first: the body
+is then the dashboard as now stored, so the page can show it instead of writing over it. `403`
+for a member of the org who may view but not edit; `404` as for the `GET`.
+
+#### `DELETE /dashboards/:dashboard_id`
+
+**Auth:** owner, or org owner/admin
+
+**204**. An organization's dashboards also go when the organization is deleted.
+
+#### `POST /dashboards/:dashboard_id/copy`
+
+**Auth:** owner, or any member of its org
+
+Copies the layout into a new personal dashboard of the caller's, named after the source with
+" (copy)". No body. **201** with the new `Dashboard`; `400` when the caller already holds 50.
 
 ---
 

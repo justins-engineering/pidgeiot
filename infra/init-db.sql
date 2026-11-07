@@ -563,6 +563,23 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
   PRIMARY KEY (user_id, scope_key)
 );
 
+-- Custom dashboards, a person's or an organization's, never both. Column-by-column reasoning
+-- lives in infra/migrations/2026-11-07-dashboards.sql.
+CREATE TABLE IF NOT EXISTS dashboards (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID,
+  org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  created_by UUID,
+  name TEXT NOT NULL,
+  layout JSONB NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((user_id IS NULL) <> (org_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_dashboards_user ON dashboards(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dashboards_org ON dashboards(org_id) WHERE org_id IS NOT NULL;
+
 -- Last known health per external service, so the ops probe mails only on a
 -- change (dovecote's helpers/ops_probe.rs).
 CREATE TABLE IF NOT EXISTS ops_health_state (

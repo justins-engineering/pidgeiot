@@ -1,53 +1,56 @@
 use crate::helpers::nidd::{nidd_object_name, nidd_org_allowed};
 use crate::helpers::{
-  DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DeviceAuthGuard, EntitlementCap,
-  INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal, SEEN_HEADER,
-  STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent,
-  TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite,
-  allowed_alert_recipients, apply_subscription, attach_stripe_customer, authenticate_browser,
-  backfill_owner_email, build_invite_url, canonical_timezone, change_member_role, check_device_cap,
-  check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
-  check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq,
-  count_billable_messages, create_checkout_session, create_customer, create_flock_alert,
-  create_invite, create_organization, create_pigeon_alert, create_portal_session,
-  create_user_flock, delete_alert_definition, delete_dashboard_state, delete_flock_if_empty,
-  delete_log_dictionary, delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit,
-  ensure_billing_tables, ensure_billing_usage_tables, ensure_business_details_columns,
-  erase_user_error_reports, fetch_subscription, get_db_client, get_flock_with_pigeons,
-  get_hyperdrive_conn, get_organization, get_user_flocks, grant_org_acl_via_do,
-  ingest_error_report, insert_pigeon_pg_db, is_alert_owner, is_allowed_coap_service_ip,
-  is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev, list_demo_pigeon_alerts,
-  list_flock_alert_state, list_flock_alerts, list_flock_firmware, list_org_invites,
-  list_org_members, list_pigeon_alert_state, list_pigeon_alerts, list_user_organizations,
-  load_business_details, load_dashboard_state, load_org_billing_overview, load_org_billing_state,
-  load_org_roles, load_terms_assent, mark_webhook_event_processed, mint_invite_token,
-  nidd_uplink_via_do, notify_contact_submission, org_role_of, parse_seen_header,
-  pigeon_move_shares_owner, plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
+  DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DashboardAccess, DashboardOwner, DeviceAuthGuard,
+  EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
+  SEEN_HEADER, STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow,
+  StripeWebhookEvent, TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim,
+  accept_invite, allowed_alert_recipients, apply_subscription, attach_stripe_customer,
+  authenticate_browser, backfill_owner_email, build_invite_url, canonical_timezone,
+  change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
+  check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
+  constant_time_eq, copy_name, count_billable_messages, create_checkout_session, create_customer,
+  create_dashboard, create_flock_alert, create_invite, create_organization, create_pigeon_alert,
+  create_portal_session, create_user_flock, dashboard_access, delete_alert_definition,
+  delete_dashboard, delete_dashboard_state, delete_flock_if_empty, delete_log_dictionary,
+  delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
+  ensure_billing_usage_tables, ensure_business_details_columns, erase_user_error_reports,
+  fetch_subscription, get_db_client, get_flock_with_pigeons, get_hyperdrive_conn, get_organization,
+  get_user_flocks, grant_org_acl_via_do, ingest_error_report, insert_pigeon_pg_db, is_alert_owner,
+  is_allowed_coap_service_ip, is_allowed_thingspace_ip, is_demo_pigeon, is_local_dev,
+  list_dashboards, list_demo_pigeon_alerts, list_flock_alert_state, list_flock_alerts,
+  list_flock_firmware, list_org_invites, list_org_members, list_pigeon_alert_state,
+  list_pigeon_alerts, list_user_organizations, load_business_details, load_dashboard,
+  load_dashboard_state, load_org_billing_overview, load_org_billing_state, load_org_roles,
+  load_terms_assent, mark_webhook_event_processed, mint_invite_token, nidd_uplink_via_do,
+  notify_contact_submission, org_role_of, parse_seen_header, pigeon_move_shares_owner,
+  plan_business_details, proxy_binary_to_pigeon_do, proxy_to_pigeon_do,
   proxy_websocket_to_pigeon_do, psk_lookup_via_do, query_telemetry_history_buckets_for_flock,
   query_telemetry_history_buckets_for_pigeon, query_telemetry_history_for_flock,
   query_telemetry_history_for_pigeon, raise_message_allowance_floor, readings_from_body,
   record_consent_event, record_terms_assent, remove_member, reset_pigeon_alert_state,
-  resolve_checkout_prices, revoke_invite, root_url, seen_header_value, seen_of,
-  send_feedback_email, send_invite_email, send_ops_email, set_seen, sha256_hex, stamp_last_seen,
-  store_contact_submission, store_dashboard_state, stripe_configured, sync_customer_tax_identity,
-  update_alert_definition, update_organization, update_pigeon_pg_db,
-  update_pigeon_suspension_pg_db, update_shadow_pg_db, update_subscription_tier,
-  update_telemetry_endpoint_pg_db, upsert_acl_pg_db, upsert_flock_firmware, verify_cf_access,
-  verify_device_via_do, verify_turnstile, verify_webhook_signature, webhook_action,
-  write_business_details,
+  resolve_checkout_prices, resolve_dashboard_access, revoke_invite, root_url, seen_header_value,
+  seen_of, send_feedback_email, send_invite_email, send_ops_email, set_seen, sha256_hex,
+  stamp_last_seen, store_contact_submission, store_dashboard_state, stored_layout,
+  stripe_configured, sync_customer_tax_identity, update_alert_definition, update_dashboard,
+  update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
+  update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
+  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
+  verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::queue::TelemetryMessage;
 use capsules::consent::{ConsentSource, TermsAssentStatus};
 use capsules::{
   AlertDefinitionCreateRequest, AlertDefinitionUpdateRequest, BillingCheckoutRequest, BillingPlan,
-  BillingPlanChangeRequest, BillingSessionUrl, FirmwareTarget, FirmwareUploadQuery,
-  FlockCreateRequest, MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, OrgRole,
+  BillingPlanChangeRequest, BillingSessionUrl, Dashboard, DashboardCreateRequest,
+  DashboardUpdateRequest, FirmwareTarget, FirmwareUploadQuery, FlockCreateRequest,
+  MAX_DASHBOARD_STATE_BYTES, MAX_TELEMETRY_BATCH_BYTES, OrgRole,
   OrganizationBusinessDetailsRequest, OrganizationCreateRequest, OrganizationDetail,
   OrganizationInviteAcceptRequest, OrganizationInviteCreateRequest, OrganizationInviteCreated,
   OrganizationMemberRoleUpdateRequest, OrganizationUpdateRequest, Pigeon, PigeonAcl, PigeonDetail,
   PigeonFlockUpdateRequest, PigeonShadow, PigeonSuspensionRequest,
   TELEMETRY_HISTORY_TRUNCATED_HEADER, TERMS_VERSION, TelemetryEndpoint, TelemetryHistoryBucket,
-  TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
+  TelemetryHistoryQuery, TelemetryReportBody, normalize_dashboard_name, tax_id_log_label,
+  valid_scope_key,
 };
 use futures::future::join_all;
 use worker::{
@@ -378,6 +381,52 @@ pub async fn require_principal(req: &Request, env: &Env) -> worker::Result<Princ
     auth.verified_emails,
     org_roles,
   ))
+}
+
+/// The 400 body when an owner already holds `capsules::MAX_DASHBOARDS_PER_OWNER` dashboards.
+const DASHBOARD_CAP_MESSAGE: &str = "Bad Request: an owner holds at most 50 dashboards";
+
+/// Raw bytes a dashboard write may carry: the layout cap plus room for a name and a revision.
+const MAX_DASHBOARD_BODY_BYTES: usize = capsules::MAX_DASHBOARD_LAYOUT_BYTES + 1024;
+
+/// Reads and parses a dashboard write's body, or the message and status that refuse it.
+async fn dashboard_body<T: serde::de::DeserializeOwned>(
+  req: &mut Request,
+) -> std::result::Result<T, (&'static str, u16)> {
+  let Ok(body) = req.text().await else {
+    return Err(("Bad Request: unreadable body", 400));
+  };
+  if body.len() > MAX_DASHBOARD_BODY_BYTES {
+    return Err((
+      "Payload Too Large: a dashboard layout is at most 32 KiB",
+      413,
+    ));
+  }
+  serde_json::from_str(&body).map_err(|_| ("Bad Request: Invalid JSON", 400))
+}
+
+/// The 201 for a dashboard just stored, with its `Location`.
+fn dashboard_created(
+  principal: &Principal,
+  caller: &uuid::Uuid,
+  created: Dashboard,
+  cors: &worker::Cors,
+) -> worker::Result<Response> {
+  let (dashboard, _) = resolve_dashboard_access(principal, caller, created);
+  let mut location = String::with_capacity(48);
+  location.push_str("/dashboards/");
+  location.push_str(&dashboard.id.to_string());
+  let headers = Headers::new();
+  if headers.set("Location", &location).is_err() {
+    console_error!(
+      "Failed to set Location header for dashboard {}",
+      dashboard.id
+    );
+  }
+  Response::from_json(&dashboard)?
+    .with_status(201)
+    .with_headers(headers)
+    .with_cors(cors)
 }
 
 // --- MACROS & HELPERS ---
@@ -4516,6 +4565,335 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         }
 
         Response::empty()?.with_status(204).with_cors(&cors)
+      },
+    )
+    // --- Dashboards ---
+    // Named pages of widgets, personal or an organization's. A layout holds only references,
+    // so these routes guard the layout and nothing else: every widget reads its data through
+    // the routes above with the viewer's own session. A dashboard the caller cannot see is a
+    // 404, never a 401, which would sign the tab out.
+    .get_async("/dashboards", |req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let org_ids: Vec<uuid::Uuid> = principal.org_roles.iter().map(|e| e.id).collect();
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(mut summaries) = list_dashboards(&client, &caller, &org_ids).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      for summary in &mut summaries {
+        let role = summary.org_id.and_then(|org| principal.org_role(&org));
+        summary.can_edit = matches!(
+          dashboard_access(summary.user_id, summary.org_id, &caller, role),
+          DashboardAccess::Edit
+        );
+      }
+
+      Response::from_json(&summaries)?.with_cors(&cors)
+    })
+    .post_async("/dashboards", |mut req, ctx: RouteContext<()>| async move {
+      let cors = build_cors(&ctx.env, &req);
+      let Ok(principal) = require_principal(&req, &ctx.env).await else {
+        return Response::error("Unauthorized", 401)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let payload = match dashboard_body::<DashboardCreateRequest>(&mut req).await {
+        Ok(payload) => payload,
+        Err((message, status)) => {
+          return Response::error(message, status).unwrap().with_cors(&cors);
+        }
+      };
+      let name = match normalize_dashboard_name(&payload.name) {
+        Ok(name) => name,
+        Err(rejection) => {
+          return Response::error(rejection.message(), 400)
+            .unwrap()
+            .with_cors(&cors);
+        }
+      };
+      let owner = match payload.org_id {
+        None => DashboardOwner::Personal(caller),
+        Some(org) => {
+          if !principal.org_role(&org).is_some_and(|role| role.is_manager()) {
+            return Response::error(
+              "Forbidden: only an organization's owners and admins create its dashboards",
+              403,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          DashboardOwner::Org(org)
+        }
+      };
+      let layout_json = match stored_layout(&payload.layout.unwrap_or_default()) {
+        Ok(json) => json,
+        Err((message, status)) => {
+          return Response::error(message, status).unwrap().with_cors(&cors);
+        }
+      };
+
+      get_db!(ctx.env, client, &cors);
+      let Ok(created) = create_dashboard(&client, owner, &caller, &name, &layout_json).await else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      let Some(created) = created else {
+        return Response::error(DASHBOARD_CAP_MESSAGE, 400)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      dashboard_created(&principal, &caller, created, &cors)
+    })
+    .get_async(
+      "/dashboards/:dashboard_id",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(id) = ctx
+          .param("dashboard_id")
+          .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(stored) = load_dashboard(&client, &id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some((dashboard, DashboardAccess::View | DashboardAccess::Edit)) =
+          stored.map(|d| resolve_dashboard_access(&principal, &caller, d))
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        Response::from_json(&dashboard)?.with_cors(&cors)
+      },
+    )
+    .put_async(
+      "/dashboards/:dashboard_id",
+      |mut req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(id) = ctx
+          .param("dashboard_id")
+          .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+        let payload = match dashboard_body::<DashboardUpdateRequest>(&mut req).await {
+          Ok(payload) => payload,
+          Err((message, status)) => {
+            return Response::error(message, status).unwrap().with_cors(&cors);
+          }
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(stored) = load_dashboard(&client, &id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        match stored.map(|d| resolve_dashboard_access(&principal, &caller, d)) {
+          Some((_, DashboardAccess::Edit)) => {}
+          Some((_, DashboardAccess::View)) => {
+            return Response::error(
+              "Forbidden: only an organization's owners and admins edit its dashboards",
+              403,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          _ => return Response::error("Not Found", 404).unwrap().with_cors(&cors),
+        }
+
+        let name = match normalize_dashboard_name(&payload.name) {
+          Ok(name) => name,
+          Err(rejection) => {
+            return Response::error(rejection.message(), 400)
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
+        let layout_json = match stored_layout(&payload.layout) {
+          Ok(json) => json,
+          Err((message, status)) => {
+            return Response::error(message, status).unwrap().with_cors(&cors);
+          }
+        };
+
+        let Ok(updated) =
+          update_dashboard(&client, &id, payload.revision, &name, &layout_json).await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        if let Some(updated) = updated {
+          let (dashboard, _) = resolve_dashboard_access(&principal, &caller, updated);
+          return Response::from_json(&dashboard)?.with_cors(&cors);
+        }
+
+        // Someone saved since this tab loaded: answer what is stored, so the page can show it
+        // rather than write over it.
+        let Ok(current) = load_dashboard(&client, &id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(current) = current else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+        let (dashboard, _) = resolve_dashboard_access(&principal, &caller, current);
+        Response::from_json(&dashboard)?
+          .with_status(409)
+          .with_cors(&cors)
+      },
+    )
+    .delete_async(
+      "/dashboards/:dashboard_id",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(id) = ctx
+          .param("dashboard_id")
+          .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(stored) = load_dashboard(&client, &id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        match stored.map(|d| resolve_dashboard_access(&principal, &caller, d)) {
+          Some((_, DashboardAccess::Edit)) => {}
+          Some((_, DashboardAccess::View)) => {
+            return Response::error(
+              "Forbidden: only an organization's owners and admins delete its dashboards",
+              403,
+            )
+            .unwrap()
+            .with_cors(&cors);
+          }
+          _ => return Response::error("Not Found", 404).unwrap().with_cors(&cors),
+        }
+
+        if delete_dashboard(&client, &id).await.is_err() {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        }
+        Response::empty()?.with_status(204).with_cors(&cors)
+      },
+    )
+    .post_async(
+      "/dashboards/:dashboard_id/copy",
+      |req, ctx: RouteContext<()>| async move {
+        let cors = build_cors(&ctx.env, &req);
+        let Ok(principal) = require_principal(&req, &ctx.env).await else {
+          return Response::error("Unauthorized", 401)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Ok(caller) = uuid::Uuid::parse_str(&principal.user_id) else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(id) = ctx
+          .param("dashboard_id")
+          .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        get_db!(ctx.env, client, &cors);
+        let Ok(stored) = load_dashboard(&client, &id).await else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some((source, DashboardAccess::View | DashboardAccess::Edit)) =
+          stored.map(|d| resolve_dashboard_access(&principal, &caller, d))
+        else {
+          return Response::error("Not Found", 404).unwrap().with_cors(&cors);
+        };
+
+        let layout_json = match stored_layout(&source.layout) {
+          Ok(json) => json,
+          Err((message, status)) => {
+            return Response::error(message, status).unwrap().with_cors(&cors);
+          }
+        };
+        let name = copy_name(&source.name);
+        let Ok(created) = create_dashboard(
+          &client,
+          DashboardOwner::Personal(caller),
+          &caller,
+          &name,
+          &layout_json,
+        )
+        .await
+        else {
+          return Response::error("Internal Server Error", 500)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        let Some(created) = created else {
+          return Response::error(DASHBOARD_CAP_MESSAGE, 400)
+            .unwrap()
+            .with_cors(&cors);
+        };
+        dashboard_created(&principal, &caller, created, &cors)
       },
     )
     // --- Terms assent ---
