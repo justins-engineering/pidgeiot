@@ -85,9 +85,20 @@ fn Loading() -> Element {
   }
 }
 
-/// The body of one widget.
+/// The body of one widget, remounted whenever what it reads changes: each widget's poll keeps the
+/// props it mounted with, so an edited target must start a new poll rather than reuse the old one.
 #[component]
 pub fn WidgetContent(body: WidgetBody) -> Element {
+  let reads = serde_json::to_string(&body).unwrap_or_default();
+  rsx! {
+    for body in std::iter::once(body) {
+      WidgetBodyView { key: "{reads}", body }
+    }
+  }
+}
+
+#[component]
+fn WidgetBodyView(body: WidgetBody) -> Element {
   match body {
     WidgetBody::TimeSeries {
       scope,
@@ -399,19 +410,35 @@ struct StatusData {
 #[component]
 fn StatusTableWidget(flock: Uuid, keys: Vec<String>) -> Element {
   let local = use_context::<LocalSession>();
-  let pigeon_ids: Option<Vec<String>> = local
+  let Some(ids) = local
     .flocks
     .read()
     .get(&flock)
-    .map(|f| f.pigeon_ids.clone());
+    .map(|f| f.pigeon_ids.clone())
+  else {
+    return rsx! {
+      Unavailable { what: "this flock".to_string() }
+    };
+  };
+  // Remounted when the flock's pigeons arrive or change, for the same reason as `WidgetContent`.
+  let members = ids.join(",");
+  rsx! {
+    for ids in std::iter::once(ids) {
+      StatusTableRows { key: "{members}", flock, keys: keys.clone(), ids }
+    }
+  }
+}
+
+#[component]
+fn StatusTableRows(flock: Uuid, keys: Vec<String>, ids: Vec<String>) -> Element {
+  let local = use_context::<LocalSession>();
   let read = {
     let keys = keys.clone();
-    let pigeon_ids = pigeon_ids.clone();
+    let ids = ids.clone();
     use_poll(move || {
       let keys = keys.clone();
-      let pigeon_ids = pigeon_ids.clone();
+      let ids = ids.clone();
       async move {
-        let ids = pigeon_ids?;
         let missing = if ids.is_empty() {
           Vec::new()
         } else {
@@ -442,11 +469,6 @@ fn StatusTableWidget(flock: Uuid, keys: Vec<String>) -> Element {
     })
   };
 
-  let Some(ids) = pigeon_ids else {
-    return rsx! {
-      Unavailable { what: "this flock".to_string() }
-    };
-  };
   match read() {
     Read::Loading => rsx! {
       Loading {}
