@@ -8,6 +8,7 @@
 // instead (see `SeriesOutcome`).
 use crate::LocalSession;
 use crate::api::{alerts, telemetry};
+use crate::components::AddToDashboard;
 use crate::components::telemetry_chart::format_duration;
 use crate::components::telemetry_export::TelemetryExport;
 use crate::components::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
@@ -892,6 +893,7 @@ fn GraphCard(
               option { value: "{r.label()}", selected: r == def.range, "{r.label()}" }
             }
           }
+          AddToDashboard { def: def.clone(), source: source.clone() }
           button {
             class: "btn btn-ghost btn-sm",
             r#type: "button",

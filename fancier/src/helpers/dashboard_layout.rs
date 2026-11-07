@@ -1,8 +1,10 @@
 //! Pure edits to a custom dashboard's layout, kept apart from the view so the order, the ids and
 //! the grid spans are tested without a browser.
 
-use crate::components::{ChartKind, TimeRange};
-use capsules::{DashboardLayout, Widget, WidgetBody, WidgetChart, WidgetRange, WidgetSize};
+use crate::components::{ChartKind, GraphDef, TimeRange};
+use capsules::{
+  DashboardLayout, Widget, WidgetBody, WidgetChart, WidgetRange, WidgetScope, WidgetSize,
+};
 
 /// Moves the widget at `index` one place up or down. `false` when it is already at that end.
 pub fn move_widget(layout: &mut DashboardLayout, index: usize, up: bool) -> bool {
@@ -109,6 +111,16 @@ pub fn chart_kind(chart: WidgetChart) -> ChartKind {
   }
 }
 
+pub fn widget_chart(kind: ChartKind) -> WidgetChart {
+  match kind {
+    ChartKind::Line => WidgetChart::Line,
+    ChartKind::Step => WidgetChart::Step,
+    ChartKind::Area => WidgetChart::Area,
+    ChartKind::Bar => WidgetChart::Bar,
+    ChartKind::Scatter => WidgetChart::Scatter,
+  }
+}
+
 pub fn time_range(range: WidgetRange) -> TimeRange {
   match range {
     WidgetRange::Last1h => TimeRange::Last1h,
@@ -126,6 +138,21 @@ pub fn widget_range(range: TimeRange) -> WidgetRange {
     TimeRange::Last24h => WidgetRange::Last24h,
     TimeRange::Last7d => WidgetRange::Last7d,
     TimeRange::Last30d => WidgetRange::Last30d,
+  }
+}
+
+/// A saved graph as a time series widget: the same keys, range and chart, full width.
+pub fn widget_from_graph(def: &GraphDef, scope: WidgetScope, id: String) -> Widget {
+  Widget {
+    id,
+    size: WidgetSize::Full,
+    title: def.title.clone(),
+    body: WidgetBody::TimeSeries {
+      scope,
+      keys: def.keys.clone(),
+      range: widget_range(def.range),
+      chart: widget_chart(def.kind),
+    },
   }
 }
 
@@ -206,6 +233,30 @@ mod tests {
       let widget: Widget = serde_json::from_str(&json).unwrap();
       assert_eq!(kind_of(&widget.body), tag);
     }
+  }
+
+  #[test]
+  fn a_saved_graph_becomes_the_same_time_series() {
+    let def = GraphDef {
+      id: "g".into(),
+      title: "Battery".into(),
+      keys: vec!["battery_mv".into()],
+      range: TimeRange::Last7d,
+      kind: ChartKind::Step,
+    };
+    let widget = widget_from_graph(&def, WidgetScope::Pigeon("p".into()), "w4".into());
+    assert_eq!(widget.title, "Battery");
+    assert_eq!(
+      widget.body,
+      WidgetBody::TimeSeries {
+        scope: WidgetScope::Pigeon("p".into()),
+        keys: vec!["battery_mv".into()],
+        range: WidgetRange::Last7d,
+        chart: WidgetChart::Step,
+      }
+    );
+    assert_eq!(time_range(WidgetRange::Last7d), TimeRange::Last7d);
+    assert_eq!(chart_kind(WidgetChart::Step), ChartKind::Step);
   }
 
   #[test]

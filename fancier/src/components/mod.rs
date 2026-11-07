@@ -50,6 +50,9 @@ pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs, TimeRange};
 mod dashboard_widgets;
 pub use dashboard_widgets::WidgetContent;
 
+mod add_to_dashboard;
+pub use add_to_dashboard::AddToDashboard;
+
 mod telemetry_export;
 
 mod track_widget;
