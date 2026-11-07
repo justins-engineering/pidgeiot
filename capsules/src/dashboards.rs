@@ -120,8 +120,8 @@ pub enum WidgetBody {
     #[serde(default)]
     unit: String,
   },
-  /// One value against a declared range, coloured by the pigeon's own
-  /// threshold alerts on that key.
+  /// One value against a declared range, coloured by the threshold alerts on
+  /// that key that apply to the pigeon, its own or its flock's.
   Threshold {
     pigeon: String,
     key: String,

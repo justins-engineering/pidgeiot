@@ -74,6 +74,8 @@ pub mod svg_hover;
 
 pub mod graph_store;
 
+pub mod dashboard_layout;
+
 pub mod telemetry_export;
 
 mod page_meta;

@@ -4,8 +4,9 @@ use crate::{Route, Session};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::ld_icons::{
-  LdBird, LdBookOpen, LdBuilding2, LdLayoutGrid, LdLightbulb, LdLogIn, LdMenu, LdMessageSquare,
-  LdNewspaper, LdRadio, LdRocket, LdRoute, LdSettings, LdSparkles, LdTag, LdUser, LdX,
+  LdBird, LdBookOpen, LdBuilding2, LdLayoutDashboard, LdLayoutGrid, LdLightbulb, LdLogIn, LdMenu,
+  LdMessageSquare, LdNewspaper, LdRadio, LdRocket, LdRoute, LdSettings, LdSparkles, LdTag, LdUser,
+  LdX,
 };
 
 #[component]
@@ -128,6 +129,13 @@ pub fn Navbar() -> Element {
                       to: Route::Dashboard {},
                       class: "justify-between",
                       "Dashboard"
+                    }
+                  }
+                  li {
+                    Link {
+                      to: Route::DashboardList {},
+                      class: "justify-between",
+                      "My dashboards"
                     }
                   }
                   li {
@@ -329,6 +337,17 @@ pub fn Navbar() -> Element {
                   onclick: move |_| is_menu_open.set(false),
                   Icon { icon: LdUser, class: "size-5 mr-2" }
                   "Dashboard"
+                }
+              }
+              li {
+                Link {
+                  to: Route::DashboardList {},
+                  onclick: move |_| is_menu_open.set(false),
+                  Icon {
+                    icon: LdLayoutDashboard,
+                    class: "size-5 mr-2 opacity-70",
+                  }
+                  "My dashboards"
                 }
               }
               li {

@@ -132,10 +132,10 @@ fn recommended_kind(interval_secs: Option<i64>) -> Option<(ChartKind, String)> {
 /// worse than leaving them off.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThresholdAlert {
-  key: String,
-  value: f64,
-  label: String,
-  firing: bool,
+  pub(crate) key: String,
+  pub(crate) value: f64,
+  pub(crate) label: String,
+  pub(crate) firing: bool,
 }
 
 fn comparator_symbol(comparator: Comparator) -> &'static str {
@@ -152,7 +152,7 @@ fn comparator_symbol(comparator: Comparator) -> &'static str {
 /// chart can draw. An alert with no state row has simply never fired (see
 /// `api::alerts::state_pigeon`), so a missing row reads as not firing
 /// rather than as unknown.
-fn thresholds_from_alerts(
+pub(crate) fn thresholds_from_alerts(
   definitions: &[capsules::AlertDefinition],
   states: &[capsules::AlertState],
 ) -> Vec<ThresholdAlert> {
@@ -290,7 +290,10 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
 /// ignored — filtering by key alone is enough. A bucket with no numeric
 /// samples (`mean: None`) contributes no point, same as a non-numeric
 /// reading.
-fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> Vec<ChartSeries> {
+pub(crate) fn series_from_history(
+  keys: &[String],
+  buckets: &[TelemetryHistoryBucket],
+) -> Vec<ChartSeries> {
   keys
     .iter()
     .map(|k| {
@@ -308,7 +311,7 @@ fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> V
     .collect()
 }
 
-fn series_from_flock_history(
+pub(crate) fn series_from_flock_history(
   keys: &[String],
   buckets: &[TelemetryHistoryBucket],
 ) -> Vec<ChartSeries> {

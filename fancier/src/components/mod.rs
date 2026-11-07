@@ -45,7 +45,10 @@ mod telemetry_chart;
 pub use telemetry_chart::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
 
 mod graph_widget;
-pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs};
+pub use graph_widget::{FlockGraphs, GraphDef, PigeonGraphs, TimeRange};
+
+mod dashboard_widgets;
+pub use dashboard_widgets::WidgetContent;
 
 mod telemetry_export;
 

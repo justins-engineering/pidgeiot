@@ -58,6 +58,8 @@ static META: LazyLock<PageMeta> = LazyLock::new(|| {
 pub fn page_title(route: &Route) -> String {
   let app_page = match route {
     Route::Dashboard {} => Some("Dashboard"),
+    Route::DashboardList {} => Some("Dashboards"),
+    Route::DashboardView { .. } => Some("Dashboard"),
     Route::Flocks {} => Some("Flocks"),
     Route::Pigeons { .. } => Some("Pigeons"),
     Route::PigeonView { .. } => Some("Pigeon"),

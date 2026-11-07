@@ -2759,7 +2759,7 @@ fields:
 |---|---|---|
 | `time_series` | `scope` (`{"pigeon": id}` or `{"flock": uuid}`), `keys`, `range` (`Last1h` to `Last30d`), `chart` (`Line`, `Step`, `Area`, `Bar`, `Scatter`) | Keys over a range: 1–8 keys at pigeon scope, exactly 1 at flock scope |
 | `latest` | `pigeon`, `key`, `unit` | One key's newest value and its age |
-| `threshold` | `pigeon`, `key`, `unit`, `min`, `max` | One value against a declared range, coloured by that pigeon's threshold alerts on the key |
+| `threshold` | `pigeon`, `key`, `unit`, `min`, `max` | One value against a declared range, coloured by the threshold alerts on the key that apply to that pigeon, its own or its flock's |
 | `status_table` | `flock`, `keys` (0–8) | Every pigeon in a flock: connection state, last seen, the chosen keys, config applied or behind |
 | `shadow_key` | `pigeon`, `key` | One top-level key of the target and reported config |
 | `alerts` | `flock` | A flock's alerts and which are firing |
