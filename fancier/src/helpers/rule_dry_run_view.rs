@@ -4,8 +4,9 @@
 
 use crate::components::group_thousands;
 use capsules::{
-  MAX_DRY_RUN_MAILS, RuleAlertKind, RuleCaseMail, RuleCaseOutcome, RuleCpuCheck, RuleCpuResult,
-  RuleDryMail, RuleMailChange, RuleReplayWindow, RuleReplayed,
+  MAX_DRY_RUN_MAILS, RuleAction, RuleAlertKind, RuleBranch, RuleCaseMail, RuleCaseOutcome,
+  RuleCpuCheck, RuleCpuResult, RuleDryMail, RuleMailChange, RuleModel, RuleReplayWindow,
+  RuleReplayed, mail_action_for_key,
 };
 
 /// `n` with thousands grouped.
@@ -163,15 +164,147 @@ pub fn kind_text(kind: RuleAlertKind) -> &'static str {
   }
 }
 
-/// One timeline line after its time: the pigeon, the rule's own subject, its key and kind.
-pub fn mail_text(mail: &RuleDryMail) -> String {
-  let pigeon = if mail.pigeon_name.is_empty() {
+/// When a builder mail went out, in the rule's own terms rather than its alert key and kind.
+fn builder_when(branch: RuleBranch, kind: RuleAlertKind) -> &'static str {
+  match (branch, kind) {
+    (RuleBranch::Then, RuleAlertKind::Clear) => "when its conditions stopped being met",
+    (RuleBranch::Then, _) => "when its conditions were met",
+    (RuleBranch::Otherwise, RuleAlertKind::Clear) => "when its conditions were met again",
+    (RuleBranch::Otherwise, _) => "when its conditions stopped being met",
+  }
+}
+
+/// A builder mail's subject as the model writes it, and when it is sent; `None` for a key that
+/// is none of the model's mails.
+fn builder_mail(model: &RuleModel, key: &str, kind: RuleAlertKind) -> Option<String> {
+  let (branch, RuleAction::Mail { subject, .. }) = mail_action_for_key(model, key)? else {
+    return None;
+  };
+  Some(
+    [
+      "\u{201c}",
+      subject.as_str(),
+      "\u{201d} ",
+      builder_when(branch, kind),
+    ]
+    .concat(),
+  )
+}
+
+/// A timeline line for a builder rule: the pigeon, the subject as sent, and when it went out.
+/// Falls back to [`mail_text`] for a key the model does not name.
+pub fn builder_mail_text(model: &RuleModel, mail: &RuleDryMail) -> String {
+  let Some((branch, _)) = mail_action_for_key(model, &mail.key) else {
+    return mail_text(mail);
+  };
+  let mut text = [
+    pigeon_label(mail),
+    ": \u{201c}",
+    &mail.subject,
+    "\u{201d}, sent ",
+    builder_when(branch, mail.kind),
+  ]
+  .concat();
+  if !mail.sent {
+    text.push_str(", held back by the mail caps");
+  }
+  text
+}
+
+/// Per mail action of a builder rule, how often the replay sent it, such as "\u{201c}Running
+/// hot\u{201d} would have gone out 3 times". Counted from the listed mails, so "at least" when
+/// the list was cut.
+pub fn builder_mail_counts(model: &RuleModel, replayed: &RuleReplayed) -> Vec<String> {
+  let cut = replayed.mails.len() < replayed.mails_total as usize;
+  let mut lines = Vec::new();
+  for (branch, actions) in [
+    (RuleBranch::Then, &model.then),
+    (RuleBranch::Otherwise, &model.otherwise),
+  ] {
+    for (i, action) in actions.iter().enumerate() {
+      let RuleAction::Mail { subject, .. } = action else {
+        continue;
+      };
+      let key = capsules::mail_alert_key(branch, i);
+      let mine = |m: &&RuleDryMail| {
+        m.key == key
+          || m
+            .key
+            .strip_prefix(key.as_str())
+            .is_some_and(|rest| rest.starts_with('-'))
+      };
+      let sent = replayed
+        .mails
+        .iter()
+        .filter(mine)
+        .filter(|m| m.kind != RuleAlertKind::Clear)
+        .count();
+      let n = u32::try_from(sent).unwrap_or(u32::MAX);
+      let mut line = [
+        branch.label(),
+        ": \u{201c}",
+        subject,
+        "\u{201d} would have gone out ",
+      ]
+      .concat();
+      if cut && n > 0 {
+        line.push_str("at least ");
+      }
+      line.push_str(&match n {
+        0 => "no times".to_string(),
+        1 => "once".to_string(),
+        n => [count(n).as_str(), " times"].concat(),
+      });
+      line.push('.');
+      lines.push(line);
+    }
+  }
+  lines
+}
+
+/// A builder rule's case outcome in its own words.
+pub fn builder_case_text(model: &RuleModel, case: &RuleCaseOutcome) -> String {
+  let words = |mails: &[RuleCaseMail]| {
+    let parts: Vec<String> = mails
+      .iter()
+      .map(|m| builder_mail(model, &m.key, m.kind).unwrap_or_else(|| m.key.clone()))
+      .collect();
+    if parts.is_empty() {
+      "no mail".to_string()
+    } else {
+      parts.join(", ")
+    }
+  };
+  if case.passed {
+    return ["Passed: ", &words(&case.got), "."].concat();
+  }
+  let mut text = [
+    "Failed: expected ",
+    &words(&case.expected),
+    ", got ",
+    &words(&case.got),
+  ]
+  .concat();
+  if let Some(error) = &case.error {
+    text.push_str(". First error: ");
+    text.push_str(error);
+  }
+  text.push('.');
+  text
+}
+
+fn pigeon_label(mail: &RuleDryMail) -> &str {
+  if mail.pigeon_name.is_empty() {
     mail.pigeon_id.get(..8).unwrap_or(&mail.pigeon_id)
   } else {
     &mail.pigeon_name
-  };
+  }
+}
+
+/// One timeline line after its time: the pigeon, the rule's own subject, its key and kind.
+pub fn mail_text(mail: &RuleDryMail) -> String {
   let mut text = [
-    pigeon,
+    pigeon_label(mail),
     ": \u{201c}",
     &mail.subject,
     "\u{201d} (",
@@ -304,6 +437,100 @@ mod tests {
       subject: "Running hot".into(),
       sent,
     }
+  }
+
+  fn hot() -> RuleModel {
+    serde_json::from_str(
+      r#"{"v": 1, "when": {"telemetry": {"key": "temp_c"}},
+        "only_if": [{"is": "compare", "key": "temp_c", "op": "above", "to": {"number": 40}}],
+        "then": [{"do": "mail", "severity": "warning", "subject": "Running hot"}],
+        "otherwise": [{"do": "mail", "severity": "info", "subject": "Cool", "repeat": "once"}]}"#,
+    )
+    .expect("a model")
+  }
+
+  fn keyed(key: &str, kind: RuleAlertKind) -> RuleDryMail {
+    RuleDryMail {
+      key: key.into(),
+      kind,
+      ..mail(true)
+    }
+  }
+
+  #[test]
+  fn a_builder_mail_says_when_it_went_out_not_its_key() {
+    let model = hot();
+    assert_eq!(
+      builder_mail_text(&model, &keyed("then-0", RuleAlertKind::Fire)),
+      "abcdef01: \u{201c}Running hot\u{201d}, sent when its conditions were met"
+    );
+    assert_eq!(
+      builder_mail_text(&model, &keyed("then-0", RuleAlertKind::Clear)),
+      "abcdef01: \u{201c}Running hot\u{201d}, sent when its conditions stopped being met"
+    );
+    assert_eq!(
+      builder_mail_text(&model, &keyed("else-0-2", RuleAlertKind::Notify)),
+      "abcdef01: \u{201c}Running hot\u{201d}, sent when its conditions stopped being met"
+    );
+    assert_eq!(
+      builder_mail_text(&model, &keyed("too-hot", RuleAlertKind::Fire)),
+      mail_text(&keyed("too-hot", RuleAlertKind::Fire)),
+      "a key the model does not name keeps the code wording"
+    );
+  }
+
+  #[test]
+  fn builder_mail_counts_go_by_action_and_say_at_least_when_cut() {
+    let model = hot();
+    let mut replayed = RuleReplayed {
+      mails: vec![
+        keyed("then-0", RuleAlertKind::Fire),
+        keyed("then-0", RuleAlertKind::Clear),
+        keyed("then-0", RuleAlertKind::Fire),
+        keyed("else-0-1", RuleAlertKind::Notify),
+        keyed("then-01", RuleAlertKind::Fire),
+      ],
+      mails_total: 5,
+      ..Default::default()
+    };
+    assert_eq!(
+      builder_mail_counts(&model, &replayed),
+      [
+        "Then: \u{201c}Running hot\u{201d} would have gone out 2 times.",
+        "Otherwise: \u{201c}Cool\u{201d} would have gone out once.",
+      ]
+    );
+    replayed.mails_total = 500;
+    assert!(builder_mail_counts(&model, &replayed)[0].contains("at least 2 times"));
+  }
+
+  #[test]
+  fn a_builder_case_reads_in_the_rules_words() {
+    let model = hot();
+    let fire = RuleCaseMail {
+      key: "then-0".into(),
+      kind: RuleAlertKind::Fire,
+    };
+    let passed = RuleCaseOutcome {
+      name: "When the conditions are met".into(),
+      passed: true,
+      expected: vec![fire.clone()],
+      got: vec![fire.clone()],
+      error: None,
+    };
+    assert_eq!(
+      builder_case_text(&model, &passed),
+      "Passed: \u{201c}Running hot\u{201d} when its conditions were met."
+    );
+    let failed = RuleCaseOutcome {
+      passed: false,
+      got: vec![],
+      ..passed
+    };
+    assert_eq!(
+      builder_case_text(&model, &failed),
+      "Failed: expected \u{201c}Running hot\u{201d} when its conditions were met, got no mail."
+    );
   }
 
   #[test]

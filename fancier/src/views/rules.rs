@@ -7,7 +7,8 @@ use crate::components::{ConfirmModal, DangerAction, DangerZone, RuleBuilder};
 use crate::helpers::can_manage_flock;
 use crate::helpers::rule_builder_form::{keys_from_history, starter_model};
 use crate::helpers::rule_dry_run_view::{
-  case_text, change_text, cpu_text, mail_text, mails_text, runs_text, seeded_text, window_text,
+  builder_case_text, builder_mail_counts, builder_mail_text, case_text, change_text, cpu_text,
+  mail_text, mails_text, runs_text, seeded_text, window_text,
 };
 use crate::helpers::rule_view::{
   Badge, bar_hours, deploy_outcome, failure_groups, hourly_bars, hours_ago, origin_label,
@@ -21,7 +22,7 @@ use capsules::{
   RuleDeployRequest, RuleDetail, RuleDryMail, RuleDryRun, RuleModel, RuleOrigin, RuleReplayed,
   RuleRun, RuleSourceRejection, RuleTestRequest, RuleUpdateRequest, RuleValue, RuleVersion,
   RuleVersionCreateRequest, check_rule_source, compile_rule_model, normalize_rule_name,
-  rule_model_sentence, validate_rule_model,
+  rule_model_sentence, rule_model_test_cases, validate_rule_model,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -428,9 +429,10 @@ fn case_badge(passed: bool) -> &'static str {
   }
 }
 
-/// A list of mails with their times, as the dry run would have sent them.
+/// A list of mails with their times, as the dry run would have sent them, in a builder rule's own
+/// words when `model` is its model.
 #[component]
-fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
+fn DryRunMails(title: String, mails: Vec<RuleDryMail>, model: Option<RuleModel>) -> Element {
   rsx! {
     div { class: "flex flex-col gap-1 min-w-0",
       h4 { class: "text-sm font-semibold", "{title}" }
@@ -440,7 +442,10 @@ fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
             span { class: "font-mono text-base-content/60 me-2 whitespace-nowrap",
               "{display_utc(mail.at)}"
             }
-            "{mail_text(&mail)}"
+            match model.as_ref() {
+                Some(m) => rsx! { "{builder_mail_text(m, &mail)}" },
+                None => rsx! { "{mail_text(&mail)}" },
+            }
           }
         }
       }
@@ -448,13 +453,25 @@ fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
   }
 }
 
-/// One version's replay: its mails and runs, with its errors grouped.
+/// One version's replay: its mails and runs, with its errors grouped, and per mail action of a
+/// builder rule how often it went out.
 #[component]
-fn DryRunVersion(title: String, replayed: RuleReplayed) -> Element {
+fn DryRunVersion(title: String, replayed: RuleReplayed, model: Option<RuleModel>) -> Element {
+  let per_action = model
+    .as_ref()
+    .map(|m| builder_mail_counts(m, &replayed))
+    .unwrap_or_default();
   rsx! {
     div { class: "flex flex-col gap-1 min-w-0",
       h4 { class: "text-sm font-semibold", "{title}" }
       p { class: "text-sm", "{mails_text(&replayed)}" }
+      if !per_action.is_empty() {
+        ul { class: "text-sm list-disc ps-5",
+          for line in per_action {
+            li { "{line}" }
+          }
+        }
+      }
       p { class: "text-sm text-base-content/70", "{runs_text(&replayed)}" }
       if let Some(at) = replayed.stopped_at {
         p { class: "text-sm",
@@ -483,8 +500,14 @@ fn DryRunVersion(title: String, replayed: RuleReplayed) -> Element {
 
 /// A dry run in the rule's words: the window, what each version would have mailed, the change
 /// between them, the synthetic cases and the CPU check, which warns but never blocks a deploy.
+/// `model` is a builder version's model, which names its mails by what they are for.
 #[component]
-fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDryRun) -> Element {
+fn DryRunResult(
+  version: i32,
+  tested_at: Option<OffsetDateTime>,
+  summary: RuleDryRun,
+  model: Option<RuleModel>,
+) -> Element {
   let (cpu, cpu_warns) = cpu_text(&summary.cpu);
   let deployed_version = summary.deployed.as_ref().map(|d| d.version);
   let seeded = summary
@@ -509,11 +532,13 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
         DryRunVersion {
           title: version_label(version),
           replayed: summary.candidate.clone(),
+          model: model.clone(),
         }
         if let Some(deployed) = summary.deployed.clone() {
           DryRunVersion {
             title: ["Live ", &version_label(deployed.version)].concat(),
             replayed: deployed,
+            model: None,
           }
         }
       }
@@ -521,15 +546,24 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
       div { class: "grid gap-4 md:grid-cols-2",
         if deployed_version.is_some() {
           if !summary.mails.new.is_empty() {
-            DryRunMails { title: "New mails", mails: summary.mails.new.clone() }
+            DryRunMails {
+              title: "New mails",
+              mails: summary.mails.new.clone(),
+              model: model.clone(),
+            }
           }
           if !summary.mails.gone.is_empty() {
-            DryRunMails { title: "Mails it no longer sends", mails: summary.mails.gone.clone() }
+            DryRunMails {
+              title: "Mails it no longer sends",
+              mails: summary.mails.gone.clone(),
+              model: None,
+            }
           }
         } else if !summary.candidate.mails.is_empty() {
           DryRunMails {
             title: "What it would have mailed",
             mails: summary.candidate.mails.clone(),
+            model: model.clone(),
           }
         }
       }
@@ -549,11 +583,19 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
       if !summary.cases.is_empty() {
         div { class: "flex flex-col gap-1",
           h4 { class: "text-sm font-semibold", "Test cases" }
+          if model.is_some() {
+            p { class: "text-xs text-base-content/60",
+              "Made from the rule's own conditions: one report just inside them, one just outside."
+            }
+          }
           ul { class: "text-sm flex flex-col gap-1",
             for case in summary.cases.iter() {
               li { class: "break-words",
                 span { class: case_badge(case.passed), "{case.name}" }
-                "{case_text(case)}"
+                match model.as_ref() {
+                    Some(m) => rsx! { "{builder_case_text(m, case)}" },
+                    None => rsx! { "{case_text(case)}" },
+                }
               }
             }
           }
@@ -1127,7 +1169,22 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                       action_note.set(None);
                       busy.set(true);
                       testing.set(true);
-                      let req = RuleTestRequest::default();
+                      // A builder version brings its own test cases, made from its conditions.
+                      let known = base
+                          .peek()
+                          .as_ref()
+                          .filter(|b| b.version == version)
+                          .map(|b| b.builder_model.clone());
+                      let built = match known {
+                          Some(m) => m,
+                          None => api::rules::version(flock_id, rule_id, version)
+                              .await
+                              .ok()
+                              .and_then(|v| v.builder_model),
+                      };
+                      let req = RuleTestRequest {
+                          cases: built.as_ref().map(rule_model_test_cases).unwrap_or_default(),
+                      };
                       let answer = api::rules::test(flock_id, rule_id, version, &req).await;
                       testing.set(false);
                       busy.set(false);
@@ -1185,7 +1242,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         }
         if let Some(found) = tested() {
           if let Some(summary) = found.test_summary {
-            DryRunResult { version: found.version, tested_at: found.tested_at, summary }
+            DryRunResult {
+              version: found.version,
+              tested_at: found.tested_at,
+              summary,
+              model: found.builder_model.clone(),
+            }
           }
         }
       }

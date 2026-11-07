@@ -2617,6 +2617,10 @@ or two to five, each of at most eight batches from the abstract pigeons `"a"`, `
 each batch at most 64 readings `after_secs` 0 to 7 days from the case's start, with the mails it
 expects as `{ key, kind }`. A case that breaks those bounds answers `400` before anything runs,
 and a body over 1 MiB (`capsules::MAX_RULE_TEST_BODY_BYTES`) answers `413` before it is parsed.
+For a builder version the rule page sends the two cases `capsules::rule_model_test_cases` makes
+from its model, when every Only if row compares a key of its own with a number: one report just
+inside the conditions and one just outside, a second batch later by the longest wait, each
+expecting the mails the model's actions send.
 
 The dry run uploads a script of its own, `test-<rule>`, holding this version and the deployed
 version beside it, then replays, each from empty state: every case through this version, then the
