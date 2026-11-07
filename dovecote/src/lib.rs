@@ -4725,8 +4725,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         None => DashboardOwner::Personal(caller),
         Some(org) => {
           if !principal.org_role(&org).is_some_and(|role| role.is_manager()) {
+            // Roles come through Hyperdrive's cache, so a role or org made in the last minute
+            // can still be refused here.
             return Response::error(
-              "Forbidden: only an organization's owners and admins create its dashboards",
+              "Forbidden: only an organization's owners and admins create its dashboards. A \
+               role or organization made in the last minute can take that long to count.",
               403,
             )
             .unwrap()

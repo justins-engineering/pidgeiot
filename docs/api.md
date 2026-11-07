@@ -2747,9 +2747,12 @@ cannot be probed. No route here answers 401 for anything but a lost session.
 
 **Both `GET`s are exempt from Hyperdrive's ~60s query cache**, the same device as
 [Dashboard state](#dashboard-state): without it a member would open an org dashboard and see
-the layout from a minute ago. The org role check beside them is cached like every other, so a
-removed member can still open an org dashboard for about 75 seconds. Every write answers the
-stored dashboard, so a client never re-reads to confirm its own save.
+the layout from a minute ago. The org role check beside them is cached like every other, so for
+about 75 seconds after a membership changes the old answer stands: a removed member can still
+open an org dashboard, and a just-created organization, a new member or a just-promoted admin
+is refused (`POST /dashboards` answers `403`, `GET /dashboards` leaves that org's dashboards
+out) until the cache turns over. Every write answers the stored dashboard, so a client never
+re-reads to confirm its own save.
 
 The layout (`capsules::DashboardLayout`) is `{ "v": 1, "widgets": [ ... ] }`. Each widget
 carries an `id` unique in the layout (1–32 of `[A-Za-z0-9_-]`), a `size` (`small`, `half`,
