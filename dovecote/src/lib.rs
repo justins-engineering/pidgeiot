@@ -4447,10 +4447,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           &access,
           rule_id,
           author,
-          &version.source,
-          version.origin,
+          &version,
           payload.based_on,
-          version.builder_model.as_deref(),
         )
         .await
         else {

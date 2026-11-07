@@ -634,11 +634,11 @@ fn quoted(text: &str) -> String {
 
 /// A duration as a person says it: "5 minutes", "2 hours", "90 seconds".
 pub fn duration_words(secs: u32) -> String {
-  let (n, one, many) = if secs >= 86_400 && secs % 86_400 == 0 {
+  let (n, one, many) = if secs >= 86_400 && secs.is_multiple_of(86_400) {
     (secs / 86_400, " day", " days")
-  } else if secs >= 3_600 && secs % 3_600 == 0 {
+  } else if secs >= 3_600 && secs.is_multiple_of(3_600) {
     (secs / 3_600, " hour", " hours")
-  } else if secs >= 60 && secs % 60 == 0 {
+  } else if secs >= 60 && secs.is_multiple_of(60) {
     (secs / 60, " minute", " minutes")
   } else {
     (secs, " second", " seconds")

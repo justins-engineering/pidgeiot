@@ -8,7 +8,7 @@
 
 use capsules::{
   MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_VALUES_RETURNED, MAX_RULE_VERSIONS,
-  RULE_CONTRACT, Rule, RuleDetail, RuleOrigin, RuleRow, RuleRun, RuleRunRow, RuleValue,
+  PreparedRuleVersion, RULE_CONTRACT, Rule, RuleDetail, RuleRow, RuleRun, RuleRunRow, RuleValue,
   RuleValueRow, RuleVersion, RuleVersionRow,
 };
 use std::collections::HashMap;
@@ -471,31 +471,31 @@ pub async fn delete_unscripted_rule(
 #[derive(Debug)]
 pub enum SaveOutcome {
   /// The new version, with its source.
-  Saved(RuleVersion),
+  Saved(Box<RuleVersion>),
   /// The flock has no such rule.
   NotFound,
   /// `based_on` names no version of this rule.
   NoBase,
 }
 
-/// Stores `source` as the rule's next version, with the builder's model as JSON text when it made
-/// the version, then drops the oldest versions past [`MAX_RULE_VERSIONS`] that are neither
-/// deployed nor uploading. `source` and the model are already checked.
+/// Stores `version`, checked by `prepare_rule_version`, as the rule's next version, with the
+/// builder's model when it made the version, then drops the oldest versions past
+/// [`MAX_RULE_VERSIONS`] that are neither deployed nor uploading.
 pub async fn save_version(
   client: &mut Client,
   access: &FlockAccess,
   rule_id: Uuid,
   created_by: Uuid,
-  source: &str,
-  origin: RuleOrigin,
+  version: &PreparedRuleVersion,
   based_on: Option<i32>,
-  builder_model: Option<&str>,
 ) -> Result<SaveOutcome> {
   ensure_rule_tables(client).await?;
   let flock = flock_uuid(access)?;
+  let source = version.source.as_str();
+  let builder_model = version.builder_model.as_deref();
   let sha256 = sha256_hex(source.as_bytes());
   let contract = RULE_CONTRACT as i32;
-  let origin = origin.as_str();
+  let origin = version.origin.as_str();
   let tx = begin(client)
     .await
     .map_err(db_error("Rule save begin error"))?;
@@ -550,7 +550,9 @@ pub async fn save_version(
     )
     .await
     .map_err(db_error("Rule version prune error"))?;
-    Ok(SaveOutcome::Saved(RuleVersion::from(version_row(&row))))
+    Ok(SaveOutcome::Saved(Box::new(RuleVersion::from(
+      version_row(&row),
+    ))))
   }
   .await;
   end(tx, body, db_error("Rule save commit error")).await
@@ -1532,11 +1534,21 @@ mod pg {
   use crate::helpers::rule_store::pg::{
     Scratch, new_flock, new_rule, pid, pipeline_watched, run, wait_until_blocked,
   };
+  use capsules::RuleOrigin;
   use std::sync::atomic::Ordering;
   use time::OffsetDateTime;
 
   fn access(flock: Uuid) -> FlockAccess {
     FlockAccess::assert_checked(&flock.to_string(), None)
+  }
+
+  /// A code version as the route prepares one.
+  fn code(source: &str, origin: RuleOrigin) -> PreparedRuleVersion {
+    PreparedRuleVersion {
+      source: source.to_string(),
+      origin,
+      builder_model: None,
+    }
   }
 
   async fn deploy(client: &Client, rule: Uuid, version: i32) {
@@ -1634,9 +1646,7 @@ mod pg {
         &a,
         rule,
         author,
-        "export default () => ({});",
-        RuleOrigin::Hand,
-        None,
+        &code("export default () => ({});", RuleOrigin::Hand),
         None,
       )
       .await
@@ -1653,10 +1663,8 @@ mod pg {
           &a,
           rule,
           author,
-          "x",
-          RuleOrigin::Hand,
+          &code("x", RuleOrigin::Hand),
           Some(9),
-          None,
         )
         .await
         .expect("save"),
@@ -1669,9 +1677,7 @@ mod pg {
           &elsewhere,
           rule,
           author,
-          "x",
-          RuleOrigin::Hand,
-          None,
+          &code("x", RuleOrigin::Hand),
           None,
         )
         .await
@@ -1686,10 +1692,8 @@ mod pg {
           &a,
           rule,
           author,
-          "x",
-          RuleOrigin::AssistantEdited,
+          &code("x", RuleOrigin::AssistantEdited),
           Some(n - 1),
-          None,
         )
         .await
         .expect("save") else {
@@ -1752,18 +1756,11 @@ mod pg {
         ..Default::default()
       })
       .expect("accepted");
-      let SaveOutcome::Saved(saved) = save_version(
-        &mut client,
-        &a,
-        rule,
-        Uuid::from_u128(7),
-        &prepared.source,
-        prepared.origin,
-        None,
-        prepared.builder_model.as_deref(),
-      )
-      .await
-      .expect("save") else {
+      let SaveOutcome::Saved(saved) =
+        save_version(&mut client, &a, rule, Uuid::from_u128(7), &prepared, None)
+          .await
+          .expect("save")
+      else {
         panic!("save refused");
       };
       assert_eq!(saved.origin, RuleOrigin::Builder);
@@ -1926,9 +1923,7 @@ mod pg {
         &a,
         draft,
         Uuid::from_u128(7),
-        "x",
-        RuleOrigin::Hand,
-        None,
+        &code("x", RuleOrigin::Hand),
         None,
       )
       .await
@@ -1995,9 +1990,7 @@ mod pg {
         &a,
         rule,
         Uuid::from_u128(7),
-        "x",
-        RuleOrigin::Hand,
-        None,
+        &code("x", RuleOrigin::Hand),
         None,
       )
       .await
@@ -2740,9 +2733,7 @@ mod pg {
         &a,
         rule,
         author,
-        source,
-        RuleOrigin::Hand,
-        None,
+        &code(source, RuleOrigin::Hand),
         None,
       )
       .await
