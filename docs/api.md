@@ -2585,7 +2585,8 @@ reports of its key in batches without the trigger. An action is tagged by `do`:
 `{ if, value }` checked in order), written only when it changes. Caps: 16 rows, 8 actions in each
 branch, 4 mails, 4 `counted` rows, 16 table rows, 16 KiB of JSON (`capsules::MAX_MODEL_*`). A
 mail sends under the alert key `then-<n>` or `else-<n>`, with `-<start>` added for a `once` mail,
-so each start mails once. A key named `__proto__` is refused. A version converted to code is a
+so each start mails once. A row's hold and count are stored under the row itself, so a deployed
+edit restarts the rows it changed and keeps the rest. A key named `__proto__` is refused. A version converted to code is a
 `"hand"` version and keeps no model.
 
 ```sh

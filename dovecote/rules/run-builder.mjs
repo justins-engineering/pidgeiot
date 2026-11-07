@@ -73,6 +73,13 @@ const values = (runs) => runs.flatMap((r) => (outOf(r)?.values ?? []).map((v) =>
     mails((await replay("b_hot", broken)).runs, broken).every((m) => m.kind !== "fire"));
   check("a batch without the trigger key does nothing",
     (await live("b_hot", ev("a", T0, { lux: "3" }))).out_json === "{}");
+  const own = (await live("b_hot", t(T0, 41))).out_json;
+  const other = { pigeon: { t: false, h: { 0: T0, ffffffff: T0 } }, flock: {} };
+  const later = outOf(await live("b_hot", t(T0 + 300, 41), other));
+  check("a hold another row or version stored is not inherited",
+    later.alerts.every((a) => a.kind !== "fire") && Object.keys(later.state.pigeon.h).length === 1 &&
+    JSON.stringify(Object.keys(later.state.pigeon.h)) ===
+      JSON.stringify(Object.keys(JSON.parse(own).state.pigeon.h)));
   const batch = ev("a", T0, { temp_c: "41" });
   batch.readings.push({ at: T0 + 400, metrics: { temp_c: "41" }, previous: {} });
   const one = outOf(await live("b_hot", batch));
@@ -92,7 +99,7 @@ const values = (runs) => runs.flatMap((r) => (outOf(r)?.values ?? []).map((v) =>
     sent[0].body === "Sign a booted more than three times in a day.");
   check("it clears once the resets age out", sent[1]?.kind === "clear" && sent[1].i === 4);
   const late = [boot(T0 + 3000), boot(T0 + 1000), boot(T0 + 2000), boot(T0 + 4000)];
-  const kept = (await replay("b_reboots", late)).final.pigeons.a.c["0"];
+  const kept = Object.values((await replay("b_reboots", late)).final.pigeons.a.c)[0];
   check("a late batch keeps the newer times", kept.length === 4 && kept.at(-1) === T0 + 4000);
 }
 

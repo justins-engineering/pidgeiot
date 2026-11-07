@@ -19,7 +19,7 @@ const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
 function table(v, ok) {
   const out = Object.create(null);
   if (!isObject(v)) return out;
-  for (const [k, x] of Object.entries(v)) if (ok(x)) out[k] = x;
+  for (const [k, x] of Object.entries(v)) if (ok(x, k)) out[k] = x;
   return out;
 }
 
@@ -120,11 +120,17 @@ export function run(model, event) {
     e: Number.isInteger(saved.e) ? saved.e : 0,
     o: Number.isInteger(saved.o) ? saved.o : 0,
   };
-  const holds = table(saved.h, Number.isFinite);
-  const counts = table(saved.c, (x) => Array.isArray(x) && x.every(Number.isFinite));
-  const written = table(saved.v, (x) => typeof x === "string");
-  const valueKeys = [...new Set([...then, ...otherwise]
-    .filter((a) => a.do === "set_value").map((a) => a.key))].sort();
+  // Holds, counts and written values are filed under a digest of their row or value key, so a
+  // new version's edited or moved row never inherits another row's state, and what no row of
+  // this model names is dropped.
+  const rowIds = rows.map((c) => digest(JSON.stringify(c)));
+  const slotOf = (key) => digest(key);
+  const slots = new Set([...then, ...otherwise].filter((a) => a.do === "set_value")
+    .map((a) => slotOf(a.key)));
+  const holds = table(saved.h, (x, k) => rowIds.includes(k) && Number.isFinite(x));
+  const counts = table(saved.c,
+    (x, k) => rowIds.includes(k) && Array.isArray(x) && x.every(Number.isFinite));
+  const written = table(saved.v, (x, k) => slots.has(k) && typeof x === "string");
 
   let truth = before.t;
   let starts = before.e;
@@ -136,23 +142,27 @@ export function run(model, event) {
   const values = new Map();
   for (const reading of event.readings) {
     for (const [k, v] of Object.entries(reading.metrics)) latest[k] = v;
+    const counted = new Set(); // two identical rows share one count
     rows.forEach((c, i) => {
-      if (c.is !== "counted" || !own(reading.metrics, c.key)) return;
+      const id = rowIds[i];
+      if (c.is !== "counted" || !own(reading.metrics, c.key) || counted.has(id)) return;
+      counted.add(id);
       // Kept against the newest time seen, so a batch that arrives late drops nothing newer.
-      const times = [...(counts[i] ?? []), reading.at];
-      counts[i] = within(times, Math.max(...times), c.within_secs).slice(-KEEP_TIMES);
+      const times = [...(counts[id] ?? []), reading.at];
+      counts[id] = within(times, Math.max(...times), c.within_secs).slice(-KEEP_TIMES);
     });
     if (!own(reading.metrics, trigger)) continue;
     // Every row is decided, not short-circuited, so each hold keeps its own start.
     const results = rows.map((c, i) => {
+      const id = rowIds[i];
       if (c.is === "counted") {
-        return within(counts[i] ?? [], reading.at, c.within_secs).length > c.more_than;
+        return within(counts[id] ?? [], reading.at, c.within_secs).length > c.more_than;
       }
       const now = plain(c, reading, latest);
       if (!(c.for_secs > 0)) return now;
-      const h = held(own(holds, i) ? holds[i] : null, now, reading.at, c.for_secs);
-      if (h.since === null) delete holds[i];
-      else holds[i] = h.since;
+      const h = held(own(holds, id) ? holds[id] : null, now, reading.at, c.for_secs);
+      if (h.since === null) delete holds[id];
+      else holds[id] = h.since;
       return h.held;
     });
     const ok = rows.length === 0 || (any ? results.some(Boolean) : results.every(Boolean));
@@ -193,7 +203,7 @@ export function run(model, event) {
   const digests = Object.create(null);
   for (const [k, d] of Object.entries(written)) digests[k] = d;
   for (const [key, v] of values) {
-    const slot = String(valueKeys.indexOf(key));
+    const slot = slotOf(key);
     const d = digest(v.value);
     if (digests[slot] === d) continue;
     digests[slot] = d;
