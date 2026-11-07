@@ -802,15 +802,25 @@ impl Form {
   }
 }
 
+/// What a key picker's choices depend on: the kind, the chosen pigeon or the flock's pigeons.
+/// Kept apart from the rest of the form so typing a title or a unit refetches nothing.
+#[derive(Clone, PartialEq)]
+struct KeySource {
+  kind: &'static str,
+  wants_pigeon: bool,
+  pigeon: String,
+  flock_pigeons: Vec<String>,
+}
+
 /// The keys a picker offers: what the chosen pigeon has reported (or, at flock scope, any
 /// pigeon in the flock), or the top-level keys of its config for a config widget.
-async fn key_choices(form: &Form, flock_pigeons: Vec<String>) -> Vec<String> {
+async fn key_choices(source: KeySource) -> Vec<String> {
   let mut keys = BTreeSet::new();
-  if form.kind == "shadow_key" {
-    if form.pigeon.is_empty() {
+  if source.kind == "shadow_key" {
+    if source.pigeon.is_empty() {
       return Vec::new();
     }
-    if let Some(detail) = api::pigeons::get_detail(&form.pigeon).await {
+    if let Some(detail) = api::pigeons::get_detail(&source.pigeon).await {
       for config in [&detail.shadow.target_config, &detail.shadow.current_config] {
         if let Ok(serde_json::Value::Object(map)) =
           serde_json::from_str::<serde_json::Value>(&config.to_string())
@@ -819,15 +829,15 @@ async fn key_choices(form: &Form, flock_pigeons: Vec<String>) -> Vec<String> {
         }
       }
     }
-  } else if form.wants_pigeon() {
-    if form.pigeon.is_empty() {
+  } else if source.wants_pigeon {
+    if source.pigeon.is_empty() {
       return Vec::new();
     }
-    if let Some(latest) = telemetry::get_latest(&form.pigeon).await {
+    if let Some(latest) = telemetry::get_latest(&source.pigeon).await {
       keys.extend(latest.into_iter().map(|t| t.key));
     }
-  } else if !flock_pigeons.is_empty()
-    && let Some(batch) = api::dashboards::latest_telemetry(&flock_pigeons, &[]).await
+  } else if !source.flock_pigeons.is_empty()
+    && let Some(batch) = api::dashboards::latest_telemetry(&source.flock_pigeons, &[]).await
   {
     keys.extend(batch.into_iter().flat_map(|p| p.telemetry).map(|t| t.key));
   }
@@ -870,15 +880,20 @@ fn WidgetEditor(
   ));
   let _ = loaded;
 
-  // Reads the flock's pigeons inside the closure, so choosing a flock reruns it.
-  let choices = use_resource(move || {
+  // Reads the flock's pigeons inside the memo, so choosing a flock reruns it.
+  let key_source = use_memo(move || {
     let form = form();
-    let flock_pigeons: Vec<String> = form
-      .flock
-      .and_then(|f| local.flocks.read().get(&f).map(|f| f.pigeon_ids.clone()))
-      .unwrap_or_default();
-    async move { key_choices(&form, flock_pigeons).await }
+    KeySource {
+      kind: form.kind,
+      wants_pigeon: form.wants_pigeon(),
+      pigeon: form.pigeon.clone(),
+      flock_pigeons: form
+        .flock
+        .and_then(|f| local.flocks.read().get(&f).map(|f| f.pigeon_ids.clone()))
+        .unwrap_or_default(),
+    }
   });
+  let choices = use_resource(move || key_choices(key_source()));
 
   let f = form();
   let pigeon_options: Vec<(String, String)> = {
