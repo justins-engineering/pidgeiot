@@ -1460,7 +1460,8 @@ Returns `Vec<capsules::Pigeon>`.
 The latest value per telemetry key, as [`GET /pigeons/:pigeon_id/telemetry`](#get-pigeonspigeon_idtelemetry)
 returns it, for up to 48 pigeons in one request: the flock-wide latest read a status table polls.
 Body: `capsules::PigeonTelemetryBatchRequest`, `{ "ids": [...], "keys": [...] }`; an empty or
-absent `keys` returns every key, otherwise only the named ones (at most 128). `400` past 48 ids.
+absent `keys` returns every key, otherwise only the named ones (at most 128, each at most 128
+bytes). `400` past 48 ids, 128 keys or a longer key.
 
 Read from each pigeon's Durable Object, not from the Postgres history, so a pigeon that forwards
 its telemetry to an endpoint of its own still answers. The same absence rule as

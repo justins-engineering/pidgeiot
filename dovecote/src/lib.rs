@@ -389,18 +389,29 @@ const DASHBOARD_CAP_MESSAGE: &str = "Bad Request: an owner holds at most 50 dash
 /// Raw bytes a dashboard write may carry: the layout cap plus room for a name and a revision.
 const MAX_DASHBOARD_BODY_BYTES: usize = capsules::MAX_DASHBOARD_LAYOUT_BYTES + 1024;
 
-/// Reads and parses a dashboard write's body, or the message and status that refuse it.
+/// Reads and parses a dashboard write's body, or the message and status that refuse it. A
+/// declared length over the cap is refused unread; a body without one is measured once read.
 async fn dashboard_body<T: serde::de::DeserializeOwned>(
   req: &mut Request,
 ) -> std::result::Result<T, (&'static str, u16)> {
+  const TOO_LARGE: (&str, u16) = (
+    "Payload Too Large: a dashboard layout is at most 32 KiB",
+    413,
+  );
+  let declared = req
+    .headers()
+    .get("Content-Length")
+    .ok()
+    .flatten()
+    .and_then(|len| len.parse::<usize>().ok());
+  if declared.is_some_and(|len| len > MAX_DASHBOARD_BODY_BYTES) {
+    return Err(TOO_LARGE);
+  }
   let Ok(body) = req.text().await else {
     return Err(("Bad Request: unreadable body", 400));
   };
   if body.len() > MAX_DASHBOARD_BODY_BYTES {
-    return Err((
-      "Payload Too Large: a dashboard layout is at most 32 KiB",
-      413,
-    ));
+    return Err(TOO_LARGE);
   }
   serde_json::from_str(&body).map_err(|_| ("Bad Request: Invalid JSON", 400))
 }
@@ -1950,6 +1961,15 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       }
       if request.keys.len() > capsules::MAX_TELEMETRY_KEYS {
         return Response::error("Bad Request: too many keys", 400)
+          .unwrap()
+          .with_cors(&cors);
+      }
+      if request
+        .keys
+        .iter()
+        .any(|k| k.len() > capsules::MAX_TELEMETRY_KEY_BYTES)
+      {
+        return Response::error("Bad Request: a telemetry key is at most 128 bytes", 400)
           .unwrap()
           .with_cors(&cors);
       }
