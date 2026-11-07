@@ -89,8 +89,11 @@ pub enum RuleMatch {
 pub enum RuleCondition {
   /// `key` against a number, a text or another key.
   Compare {
+    /// The telemetry key compared.
     key: String,
+    /// How it is compared.
     op: RuleCompareOp,
+    /// What it is compared with.
     to: RuleOperand,
     /// Holds only once true this long without a break; 0 for at once.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -98,25 +101,44 @@ pub enum RuleCondition {
   },
   /// `key` from `low` to `high`, both included.
   Between {
+    /// The telemetry key, read as a number.
     key: String,
+    /// The low end.
     low: f64,
+    /// The high end, at or above `low`.
     high: f64,
     /// As for [`RuleCondition::Compare`].
     #[serde(default, skip_serializing_if = "is_zero")]
     for_secs: u32,
   },
   /// The reading carries `key` with a value other than the one it displaced.
-  Changed { key: String },
+  Changed {
+    /// The telemetry key.
+    key: String,
+  },
   /// The reading moved `key` by more than `more_than` from the value it displaced.
-  ChangedBy { key: String, more_than: f64 },
+  ChangedBy {
+    /// The telemetry key, read as a number.
+    key: String,
+    /// The least change that does not count, never negative.
+    more_than: f64,
+  },
   /// `key` is an integer with bit `bit` (0 to 30) set.
-  BitSet { key: String, bit: u8 },
+  BitSet {
+    /// The telemetry key.
+    key: String,
+    /// The bit, 0 for the lowest.
+    bit: u8,
+  },
   /// Readings carrying `key` within the last `within_secs` number more than `more_than`. Times
   /// are counted once each, so readings stamped the same second, or clamped to the 24-hour
   /// backdate boundary together, are one report.
   Counted {
+    /// The telemetry key whose reports are counted.
     key: String,
+    /// The count to exceed, up to [`MAX_MODEL_COUNT`].
     more_than: u32,
+    /// The window, a minute to [`MAX_MODEL_WINDOW_SECS`].
     within_secs: u32,
   },
 }
@@ -125,11 +147,17 @@ pub enum RuleCondition {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleCompareOp {
+  /// Greater than.
   Above,
+  /// Less than.
   Below,
+  /// Greater than or equal.
   AtLeast,
+  /// Less than or equal.
   AtMost,
+  /// Equal.
   Equals,
+  /// Not equal.
   NotEquals,
 }
 
@@ -152,18 +180,25 @@ pub enum RuleAction {
   /// A mail to the rule's recipients. `{pigeon}`, `{flock}` and `{<key>}` in the texts take the
   /// pigeon's name, the flock's name and the key's latest value in the batch.
   Mail {
+    /// The mail's severity.
     severity: RuleSeverity,
+    /// The subject, never blank.
     subject: String,
+    /// The body; empty for none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     body: String,
+    /// How often it mails.
     #[serde(default)]
     repeat: RuleMailRepeat,
   },
   /// A derived value: the first band whose condition holds gives it, else `value`. Written only
   /// when it changes. Placeholders as for mail.
   SetValue {
+    /// The derived value's key.
     key: String,
+    /// Its value when no band holds.
     value: String,
+    /// The table, checked in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     bands: Vec<RuleBand>,
   },
@@ -185,8 +220,10 @@ pub enum RuleMailRepeat {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RuleBand {
+  /// The row's condition, `if` on the wire.
   #[serde(rename = "if")]
   pub when: RuleCondition,
+  /// The value it gives when its condition holds.
   pub value: String,
 }
 
@@ -293,7 +330,9 @@ pub enum RuleModelProblem {
 /// The first problem in a model, as the form shows it and the route answers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuleModelError {
+  /// The section and row it is in.
   pub place: RuleModelPlace,
+  /// What is wrong there.
   pub problem: RuleModelProblem,
 }
 

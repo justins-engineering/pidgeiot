@@ -242,8 +242,11 @@ pub struct RuleVersionCreateRequest {
 /// builder did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRuleVersion {
+  /// The module to store: the body's own, or the one compiled from its model.
   pub source: String,
+  /// The origin to store.
   pub origin: RuleOrigin,
+  /// The model serialized for `rule_versions.builder_model`; `None` for a code version.
   pub builder_model: Option<String>,
 }
 
