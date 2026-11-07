@@ -58,7 +58,8 @@ Proving it afterwards would be reporting a problem one step too late to fix.
 5. **Delete through the product's own routes**, in this order, because each
    step is a precondition of the next: pigeons (the only thing that empties a
    Durable Object) → flocks, which must be empty → alerts → `DELETE /errors`
-   → one `DELETE /dashboard-state/:scope_key` per captured key → orgs. For an
+   → one `DELETE /dashboard-state/:scope_key` per captured key → one
+   `DELETE /dashboards/:dashboard_id` per personal dashboard → orgs. For an
    org the caller does not own, leave it with
    `DELETE /orgs/:org_id/members/:own_user_id`. For one they solely own,
    revoke its pending invites and delete it once it owns no flocks. An org
@@ -74,7 +75,9 @@ Proving it afterwards would be reporting a problem one step too late to fix.
    `organization_invites` rows on `user_id`/`email`/`invited_by`/`created_by`
    — `created_by` is `NOT NULL`, so a spent invite row is deleted rather than
    detached; `pigeon_acl` mirror rows; anything the API leg missed in
-   `error_events` and `dashboard_state`; and `flocks.owner_email`.
+   `error_events`, `dashboard_state` and personal `dashboards`;
+   `dashboards.created_by` set to NULL, because an organization's dashboard
+   outlives the person who made it; and `flocks.owner_email`.
 7. **Prove the rows are gone, before the identity.** Direct `psql` only —
    one `SELECT count(*)` per identity-keyed column the sweep or the routes
    were responsible for, plus the deleted orgs' own rows and the deleted
@@ -85,6 +88,10 @@ Proving it afterwards would be reporting a problem one step too late to fix.
 8. **Revoke sessions, delete the identity, confirm 404.**
 
 ## Running it
+
+The inventory and the proof read every table above, so a database must hold all of them first:
+apply `infra/migrations/2026-11-07-dashboards.sql` to a database before the first purge against
+it, even where the dovecote that creates the table on first use has not been deployed yet.
 
 ```sh
 scripts/purge-identities.py --env both --candidates-from identities.json      # read this

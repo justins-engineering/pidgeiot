@@ -31,6 +31,9 @@ argv. Recovery links reach the remote shell in a file it writes itself, so
 no token lands in either machine's argv. No connection string, cookie or
 token is printed or logged.
 
+Every table it reads must exist: apply infra/migrations/2026-11-07-dashboards.sql
+to a database before the first run against it.
+
 Docs: docs/infra/account-deletion.md is the procedure this implements and
 the DPA's Annex II G.3 refers to.
 """
