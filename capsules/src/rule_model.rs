@@ -111,7 +111,9 @@ pub enum RuleCondition {
   ChangedBy { key: String, more_than: f64 },
   /// `key` is an integer with bit `bit` (0 to 30) set.
   BitSet { key: String, bit: u8 },
-  /// Readings carrying `key` within the last `within_secs` number more than `more_than`.
+  /// Readings carrying `key` within the last `within_secs` number more than `more_than`. Times
+  /// are counted once each, so readings stamped the same second, or clamped to the 24-hour
+  /// backdate boundary together, are one report.
   Counted {
     key: String,
     more_than: u32,
