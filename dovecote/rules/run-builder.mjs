@@ -96,6 +96,19 @@ const values = (runs) => runs.flatMap((r) => (outOf(r)?.values ?? []).map((v) =>
   check("a late batch keeps the newer times", kept.length === 4 && kept.at(-1) === T0 + 4000);
 }
 
+// A count of another key than the trigger keeps the reports that arrive in their own batches.
+{
+  const boot = (at) => ev("a", at, { reset_cause: "1" });
+  const events = [boot(T0), boot(T0 + 60), boot(T0 + 120), ev("a", T0 + 600, { temp_c: "20" })];
+  const rule = await replay("b_counted", events);
+  check("a batch without the trigger keeps its counts and mails nothing",
+    rule.runs.filter((r) => r.i < 3).length === 3 &&
+    rule.runs.filter((r) => r.i < 3).every((r) => outOf(r).state && !outOf(r).alerts));
+  const sent = mails(rule.runs, events);
+  check("the trigger then mails on the counts kept",
+    sent.length === 1 && sent[0].kind === "fire" && sent[0].i === 3);
+}
+
 // A value table: rows checked top to bottom, the plain value otherwise.
 {
   const lux = (at, n) => ev("a", at, { lux: String(n) });

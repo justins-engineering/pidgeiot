@@ -2578,7 +2578,8 @@ of `above`, `below`, `at_least`, `at_most`, `equals`, `not_equals`, `to` one of 
 `{ text }` or `{ key }`, `for_secs`), `between` (`key`, `low`, `high`, `for_secs`), `changed`
 (`key`), `changed_by` (`key`, `more_than`), `bit_set` (`key`, `bit` 0 to 30) or `counted` (`key`,
 `more_than` up to 31, `within_secs` 60 to 7 days). Rows are decided at each reading that carries
-the trigger key, against each key's latest value in the batch. An action is tagged by `do`:
+the trigger key, against each key's latest value in the batch; a `counted` row still counts the
+reports of its key in batches without the trigger. An action is tagged by `do`:
 `mail` (`severity`, `subject`, `body`, `repeat` `start_stop` or `once`), whose texts take
 `{pigeon}`, `{flock}` and `{<key>}`, or `set_value` (`key`, `value`, optional `bands` of
 `{ if, value }` checked in order), written only when it changes. Caps: 16 rows, 8 actions in each

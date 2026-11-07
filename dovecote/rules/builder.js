@@ -167,8 +167,7 @@ export function run(model, event) {
         at: reading.at });
     }
   }
-  if (!decided) return {};
-
+  // A batch without the trigger decides nothing, but the counts it added are kept.
   const alerts = [];
   const mail = (actions, prefix, on, start) => actions.forEach((a, i) => {
     if (a.do !== "mail") return;
@@ -185,8 +184,10 @@ export function run(model, event) {
           subject: subjectOf("Back to normal: " + subject), body });
     }
   });
-  mail(then, "then-", truth, started);
-  mail(otherwise, "else-", !truth, stopped);
+  if (decided) {
+    mail(then, "then-", truth, started);
+    mail(otherwise, "else-", !truth, stopped);
+  }
 
   const out = [];
   const digests = Object.create(null);

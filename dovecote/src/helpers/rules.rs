@@ -3261,6 +3261,16 @@ mod tests {
           "otherwise": [{"do": "set_value", "key": "last_cause", "value": "{reset_cause}"}]
         })),
       ),
+      (
+        "b-counted.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "temp_c"}},
+          "only_if": [{"is": "counted", "key": "reset_cause", "more_than": 2,
+            "within_secs": 86400}],
+          "then": [{"do": "mail", "severity": "warning", "subject": "Rebooting: {pigeon}"}]
+        })),
+      ),
     ]
   }
 
