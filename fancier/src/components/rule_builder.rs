@@ -595,7 +595,7 @@ fn ActionRow(
                 }
                 generation += 1;
             },
-            "Add a row: use another value when a key is above or below a number"
+            "Add a row for another value"
           }
         }
       }
