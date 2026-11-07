@@ -809,9 +809,16 @@ pub fn rule_model_sentence(model: &RuleModel) -> String {
   text
 }
 
-/// The value one row needs to hold (`true`) or not, for the rows test cases can be made from.
+/// A step away from `n` that `n` cannot absorb: 1, or a billionth of `n` where 1 is below its
+/// precision.
+fn case_step(n: f64) -> f64 {
+  (n.abs() * 1e-9).max(1.0)
+}
+
+/// The value one row needs to hold (`true`) or not, for the rows test cases can be made from;
+/// none when that value would not be a finite number.
 fn case_value(c: &RuleCondition, holds: bool) -> Option<(&str, f64)> {
-  match c {
+  let (key, value) = match c {
     RuleCondition::Compare {
       key,
       op,
@@ -820,25 +827,26 @@ fn case_value(c: &RuleCondition, holds: bool) -> Option<(&str, f64)> {
     } => {
       let n = *n;
       let value = match (op, holds) {
-        (RuleCompareOp::Above, true) | (RuleCompareOp::AtMost, false) => n + 1.0,
-        (RuleCompareOp::Below, true) | (RuleCompareOp::AtLeast, false) => n - 1.0,
+        (RuleCompareOp::Above, true) | (RuleCompareOp::AtMost, false) => n + case_step(n),
+        (RuleCompareOp::Below, true) | (RuleCompareOp::AtLeast, false) => n - case_step(n),
         (RuleCompareOp::Above | RuleCompareOp::Below, false) => n,
         (RuleCompareOp::AtLeast | RuleCompareOp::AtMost | RuleCompareOp::Equals, true) => n,
         (RuleCompareOp::NotEquals, false) => n,
-        (RuleCompareOp::Equals, false) | (RuleCompareOp::NotEquals, true) => n + 1.0,
+        (RuleCompareOp::Equals, false) | (RuleCompareOp::NotEquals, true) => n + case_step(n),
       };
-      Some((key, value))
+      (key, value)
     }
-    RuleCondition::Between { key, low, high, .. } => Some((
+    RuleCondition::Between { key, low, high, .. } => (
       key,
       if holds {
-        (low + high) / 2.0
+        low / 2.0 + high / 2.0
       } else {
-        high + 1.0
+        high + case_step(*high)
       },
-    )),
-    _ => None,
-  }
+    ),
+    _ => return None,
+  };
+  value.is_finite().then_some((key.as_str(), value))
 }
 
 fn hold_secs(c: &RuleCondition) -> u32 {
@@ -916,7 +924,7 @@ pub fn rule_model_test_cases(model: &RuleModel) -> Vec<RuleTestCase> {
   }
   let mut keys: Vec<&str> = Vec::with_capacity(model.only_if.len());
   for c in &model.only_if {
-    let Some((key, _)) = case_value(c, true) else {
+    let (Some((key, _)), Some(_)) = (case_value(c, true), case_value(c, false)) else {
       return Vec::new();
     };
     if keys.contains(&key) {
@@ -1492,6 +1500,44 @@ mod tests {
     assert!(
       rule_model_test_cases(&model).is_empty(),
       "two rows on one key"
+    );
+  }
+
+  #[test]
+  fn case_values_stay_past_thresholds_beyond_integer_precision() {
+    let value = |case: &RuleTestCase| {
+      case.events[0].readings[0].metrics[0]
+        .value
+        .parse::<f64>()
+        .expect("a number")
+    };
+    let mut model = hot();
+    model.only_if = vec![RuleCondition::Compare {
+      key: "a".into(),
+      op: RuleCompareOp::Above,
+      to: RuleOperand::Number(1e17),
+      for_secs: 0,
+    }];
+    let cases = rule_model_test_cases(&model);
+    assert!(value(&cases[0]) > 1e17, "the met case is above");
+    assert_eq!(value(&cases[1]), 1e17);
+    model.only_if = vec![RuleCondition::Between {
+      key: "a".into(),
+      low: -1e300,
+      high: 1e300,
+      for_secs: 0,
+    }];
+    let cases = rule_model_test_cases(&model);
+    assert!(value(&cases[1]) > 1e300, "the unmet case is past high");
+    model.only_if = vec![RuleCondition::Compare {
+      key: "a".into(),
+      op: RuleCompareOp::Above,
+      to: RuleOperand::Number(f64::MAX),
+      for_secs: 0,
+    }];
+    assert!(
+      rule_model_test_cases(&model).is_empty(),
+      "no finite number is above it"
     );
   }
 }
