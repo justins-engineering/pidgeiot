@@ -640,6 +640,9 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   let mut model = use_signal(starter_model);
   let mut mode = use_signal(|| EditorMode::Build);
   let mut generation = use_signal(|| 0u32);
+  // The module Write code or Convert last wrote, so Write code replaces only code it wrote.
+  let mut compiled = use_signal(|| None::<String>);
+  let mut code_kept = use_signal(|| false);
   let mut keys = use_signal(Vec::<String>::new);
   let mut save_note = use_signal(|| None::<Result<String, String>>);
   let mut busy = use_signal(|| false);
@@ -897,8 +900,21 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
               if mode() == EditorMode::Code {
                   return;
               }
+              let text = source.peek().clone();
+              let base_text = base
+                  .peek()
+                  .as_ref()
+                  .and_then(|b| b.builder_model.as_ref().and(b.source.clone()));
+              let builders = compiled.peek().as_deref() == Some(text.as_str())
+                  || base_text.as_deref() == Some(text.as_str())
+                  || (base.peek().is_none() && text == STARTER_SOURCE);
               if validate_rule_model(&model.peek()).is_ok() {
-                  source.set(compile_rule_model(&model.peek()));
+                  let next = compile_rule_model(&model.peek());
+                  code_kept.set(!builders && next != text);
+                  if builders {
+                      compiled.set(Some(next.clone()));
+                      source.set(next);
+                  }
               }
               mode.set(EditorMode::Code);
           },
@@ -959,7 +975,10 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                   class: "btn btn-ghost btn-sm",
                   disabled: model_problem.is_some(),
                   onclick: move |_| {
-                      source.set(compile_rule_model(&model.peek()));
+                      let next = compile_rule_model(&model.peek());
+                      compiled.set(Some(next.clone()));
+                      source.set(next);
+                      code_kept.set(false);
                       mode.set(EditorMode::Code);
                   },
                   "Convert to code"
@@ -997,6 +1016,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                   (None, true) => rsx! { "No version saved yet: this is an example to start from" },
                   (None, false) => rsx! { "The saved code could not be loaded" },
               }
+            }
+          }
+          if code_kept() && manage {
+            div { role: "status", class: "alert alert-info alert-soft text-sm",
+              "This code was kept, so the rows changed under Build it are not in it. To replace "
+              "it with them, use Convert to code there."
             }
           }
           textarea {
