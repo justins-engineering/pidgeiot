@@ -208,8 +208,9 @@ async fn fetch_series(scope: &WidgetScope, keys: &[String], range: WidgetRange) 
       if uncached && !ids.is_empty() {
         pigeons::list(&ids).await;
       }
+      let cache = local.pigeons.read();
       Some(Series::Live(
-        series_from_flock_history(keys, &buckets),
+        series_from_flock_history(keys, &buckets, |id| pigeon_label(&cache, id)),
         Vec::new(),
       ))
     }
@@ -266,16 +267,7 @@ fn TimeSeriesWidget(
     Read::Ready(Series::Empty) => rsx! {
       TelemetryChart { series: Vec::new() }
     },
-    Read::Ready(Series::Live(mut series, thresholds)) => {
-      if matches!(scope, WidgetScope::Flock(_)) {
-        let cache = local.pigeons.read();
-        for s in series.iter_mut() {
-          let prefix = s.key.trim_end_matches('…');
-          if let Some(id) = cache.keys().find(|id| id.starts_with(prefix)) {
-            s.key = pigeon_label(&cache, id);
-          }
-        }
-      }
+    Read::Ready(Series::Live(series, thresholds)) => {
       let references: Vec<ChartReference> = thresholds
         .iter()
         .filter(|t| keys.contains(&t.key))

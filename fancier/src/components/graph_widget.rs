@@ -257,7 +257,9 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
     GraphScope::Flock(flock_id) => {
       match telemetry::get_flock_history_buckets(flock_id, since, until).await {
         Some(buckets) if !buckets.is_empty() => SeriesOutcome::Live {
-          series: series_from_flock_history(&def.keys, &buckets),
+          series: series_from_flock_history(&def.keys, &buckets, |pid| {
+            pid.chars().take(8).collect::<String>() + "…"
+          }),
         },
         Some(_) => SeriesOutcome::Empty,
         None => {
@@ -312,9 +314,11 @@ pub(crate) fn series_from_history(
     .collect()
 }
 
+/// One series per pigeon for the first of `keys`, each named by `label` from its pigeon id.
 pub(crate) fn series_from_flock_history(
   keys: &[String],
   buckets: &[TelemetryHistoryBucket],
+  label: impl Fn(&str) -> String,
 ) -> Vec<ChartSeries> {
   let Some(key) = keys.first() else {
     return Vec::new();
@@ -333,7 +337,7 @@ pub(crate) fn series_from_flock_history(
     .map(|(pid, mut pts)| {
       pts.sort_by_key(|p| p.0);
       ChartSeries {
-        key: pid.chars().take(8).collect::<String>() + "…",
+        key: label(&pid),
         points: pts,
       }
     })
