@@ -110,11 +110,13 @@ pub const MAX_CASE_EVENTS: usize = 8;
 /// Furthest a case reading may sit from the case's start: the notify window.
 pub const MAX_CASE_OFFSET_SECS: i64 = NOTIFY_REPEAT_SECS;
 
-/// The harness modules every bundle carries beside its rules.
-const HARNESS: [(&str, &str); 3] = [
+/// The harness modules every bundle carries beside its rules, the builder's interpreter among
+/// them so a builder rule costs its three lines and no more.
+const HARNESS: [(&str, &str); 4] = [
   ("main.js", include_str!("../../rules/main.js")),
   ("prelude.js", include_str!("../../rules/prelude.js")),
   ("pidgeiot.js", include_str!("../../rules/pidgeiot.js")),
+  ("builder.js", include_str!("../../rules/builder.js")),
 ];
 
 fn is_pigeon_id(s: &str) -> bool {
@@ -3328,10 +3330,19 @@ mod tests {
     let b = format!("r-{RULE_B}.js");
     assert_eq!(
       names,
-      ["main.js", "prelude.js", "pidgeiot.js", "rules.js", &a, &b]
+      [
+        "main.js",
+        "prelude.js",
+        "pidgeiot.js",
+        "builder.js",
+        "rules.js",
+        &a,
+        &b
+      ]
     );
     assert_eq!(modules[0].1, include_str!("../../rules/main.js"));
-    assert_eq!(modules[3].1, manifest);
+    assert_eq!(modules[3].1, include_str!("../../rules/builder.js"));
+    assert_eq!(modules[4].1, manifest);
 
     // A dry run carries two versions of one rule under distinct keys.
     let test_key = format!("{RULE_A}-v4");

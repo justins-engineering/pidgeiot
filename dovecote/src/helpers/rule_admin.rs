@@ -190,6 +190,7 @@ fn version_row(row: &Row) -> RuleVersionRow {
     created_by: row.get("created_by"),
     created_at: row.get("created_at"),
     source: row.try_get("source").ok().flatten(),
+    builder_model: row.try_get("builder_model").ok().flatten(),
   }
 }
 
@@ -477,8 +478,9 @@ pub enum SaveOutcome {
   NoBase,
 }
 
-/// Stores `source` as the rule's next version, then drops the oldest versions past
-/// [`MAX_RULE_VERSIONS`] that are neither deployed nor uploading. `source` is already checked.
+/// Stores `source` as the rule's next version, with the builder's model as JSON text when it made
+/// the version, then drops the oldest versions past [`MAX_RULE_VERSIONS`] that are neither
+/// deployed nor uploading. `source` and the model are already checked.
 pub async fn save_version(
   client: &mut Client,
   access: &FlockAccess,
@@ -487,6 +489,7 @@ pub async fn save_version(
   source: &str,
   origin: RuleOrigin,
   based_on: Option<i32>,
+  builder_model: Option<&str>,
 ) -> Result<SaveOutcome> {
   ensure_rule_tables(client).await?;
   let flock = flock_uuid(access)?;
@@ -504,13 +507,15 @@ pub async fn save_version(
       .query_typed_opt(
         concat!(
           "INSERT INTO rule_versions AS v
-             (rule_id, version, source, sha256, contract, origin, based_on, created_by)
-           SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5, $6, $7
+             (rule_id, version, source, sha256, contract, origin, based_on, created_by,
+              builder_model)
+           SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5, $6, $7, $8::jsonb
            FROM rule_versions WHERE rule_id = $1
            HAVING $6::integer IS NULL OR bool_or(version = $6)
            RETURNING ",
           version_columns!(),
-          ", v.test_summary::text AS test_summary, v.source"
+          ", v.test_summary::text AS test_summary, v.source,
+          v.builder_model::text AS builder_model"
         ),
         &[
           (&rule_id, Type::UUID),
@@ -520,6 +525,7 @@ pub async fn save_version(
           (&origin, Type::TEXT),
           (&based_on, Type::INT4),
           (&created_by, Type::UUID),
+          (&builder_model, Type::TEXT),
         ],
       )
       .await
@@ -563,7 +569,8 @@ pub async fn read_version(
       concat!(
         "SELECT ",
         version_columns!(),
-        ", v.test_summary::text AS test_summary, v.source
+        ", v.test_summary::text AS test_summary, v.source,
+           v.builder_model::text AS builder_model
          FROM rule_versions v JOIN rules r ON r.id = v.rule_id
          WHERE v.rule_id = $1 AND r.flock_id = $2 AND v.version = $3"
       ),
@@ -916,7 +923,8 @@ pub async fn record_test(
            AND v.sha256 = $6
          RETURNING ",
         version_columns!(),
-        ", v.test_summary::text AS test_summary, v.source"
+        ", v.test_summary::text AS test_summary, v.source,
+          v.builder_model::text AS builder_model"
       ),
       &[
         (&flock_uuid(access)?, Type::UUID),
@@ -1406,6 +1414,7 @@ mod tests {
       created_by: Uuid::nil(),
       created_at: now,
       source: None,
+      builder_model: None,
     }
   }
 
@@ -1628,6 +1637,7 @@ mod pg {
         "export default () => ({});",
         RuleOrigin::Hand,
         None,
+        None,
       )
       .await
       .expect("save") else {
@@ -1645,7 +1655,8 @@ mod pg {
           author,
           "x",
           RuleOrigin::Hand,
-          Some(9)
+          Some(9),
+          None,
         )
         .await
         .expect("save"),
@@ -1660,7 +1671,8 @@ mod pg {
           author,
           "x",
           RuleOrigin::Hand,
-          None
+          None,
+          None,
         )
         .await
         .expect("save"),
@@ -1677,6 +1689,7 @@ mod pg {
           "x",
           RuleOrigin::AssistantEdited,
           Some(n - 1),
+          None,
         )
         .await
         .expect("save") else {
@@ -1715,6 +1728,58 @@ mod pg {
         .expect("found");
       assert_eq!(detail.versions.first().map(|v| v.version), Some(60));
       assert!(detail.versions.iter().all(|v| v.source.is_none()));
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_admin_a_builder_version_keeps_its_model_beside_its_module() {
+    run(async {
+      let db = Scratch::new("admin_builder").await;
+      let mut client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      let rule = new_rule(&client, flock).await;
+      let a = access(flock);
+      let model: capsules::RuleModel = serde_json::from_str(
+        r#"{"v": 1, "when": {"telemetry": {"key": "temp_c"}},
+          "then": [{"do": "mail", "severity": "info", "subject": "Seen {temp_c}"}]}"#,
+      )
+      .expect("a model");
+      let prepared = capsules::prepare_rule_version(&capsules::RuleVersionCreateRequest {
+        builder_model: Some(model.clone()),
+        ..Default::default()
+      })
+      .expect("accepted");
+      let SaveOutcome::Saved(saved) = save_version(
+        &mut client,
+        &a,
+        rule,
+        Uuid::from_u128(7),
+        &prepared.source,
+        prepared.origin,
+        None,
+        prepared.builder_model.as_deref(),
+      )
+      .await
+      .expect("save") else {
+        panic!("save refused");
+      };
+      assert_eq!(saved.origin, RuleOrigin::Builder);
+      assert_eq!(saved.builder_model.as_ref(), Some(&model));
+      assert_eq!(saved.source.as_deref(), Some(prepared.source.as_str()));
+      let read = read_version(&client, &a, rule, saved.version)
+        .await
+        .expect("read")
+        .expect("found");
+      assert_eq!(read.builder_model, Some(model));
+      let detail = rule_detail(&client, &a, rule)
+        .await
+        .expect("detail")
+        .expect("found");
+      assert!(detail.versions.iter().all(|v| v.builder_model.is_none()));
+      assert_eq!(detail.versions[0].origin, RuleOrigin::Builder);
       drop(client);
       db.drop().await;
     });
@@ -1864,6 +1929,7 @@ mod pg {
         "x",
         RuleOrigin::Hand,
         None,
+        None,
       )
       .await
       .expect("save") else {
@@ -1931,6 +1997,7 @@ mod pg {
         Uuid::from_u128(7),
         "x",
         RuleOrigin::Hand,
+        None,
         None,
       )
       .await
@@ -2675,6 +2742,7 @@ mod pg {
         author,
         source,
         RuleOrigin::Hand,
+        None,
         None,
       )
       .await

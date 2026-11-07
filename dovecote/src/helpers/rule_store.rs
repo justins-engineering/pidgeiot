@@ -182,16 +182,29 @@ CREATE TABLE IF NOT EXISTS rule_usage (
 );
 "#;
 
+/// The rule builder's column and origin, verbatim in `infra/migrations/2026-11-07-rule-builder.sql`
+/// and `infra/init-db.sql`. Run after [`RULE_TABLES_DDL`], whose inline origin CHECK Postgres names
+/// `rule_versions_origin_check`; idempotent, and one implicit transaction as one batch.
+pub const RULE_BUILDER_DDL: &str =
+  "ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS builder_model JSONB;
+ALTER TABLE rule_versions DROP CONSTRAINT IF EXISTS rule_versions_origin_check;
+ALTER TABLE rule_versions ADD CONSTRAINT rule_versions_origin_check
+  CHECK (origin IN ('hand', 'assistant', 'assistant_edited', 'builder'));
+";
+
+/// The columns [`RULE_BUILDER_DDL`] adds to tables [`RULE_TABLES_DDL`] creates.
+const RULE_COLUMNS: [(&str, &str); 1] = [("rule_versions", "builder_model")];
+
 /// Set once this isolate has found every rule table and index.
 static TABLES_READY: AtomicBool = AtomicBool::new(false);
 
-/// Ensures, once per isolate, the rule tables and their indexes, logging anything missing first:
-/// the migration should already have created them.
+/// Ensures, once per isolate, the rule tables, their indexes and the builder's column, logging
+/// anything missing first: the migrations should already have created them.
 pub async fn ensure_rule_tables(client: &Client) -> Result<()> {
   if TABLES_READY.load(Ordering::Relaxed) {
     return Ok(());
   }
-  let missing = missing_schema_objects(client, &RULE_RELATIONS, &[]).await?;
+  let missing = missing_schema_objects(client, &RULE_RELATIONS, &RULE_COLUMNS).await?;
   if missing.is_empty() {
     TABLES_READY.store(true, Ordering::Relaxed);
     return Ok(());
@@ -200,11 +213,13 @@ pub async fn ensure_rule_tables(client: &Client) -> Result<()> {
     "ensure_rule_tables: creating missing {}",
     missing.join(", ")
   );
-  client.batch_execute(RULE_TABLES_DDL).await.map_err(|e| {
-    let code = e.code().map_or("none", |code| code.code());
-    console_error!("ensure_rule_tables failed, SQLSTATE {code}");
-    Error::RustError("Internal Server Error".into())
-  })?;
+  for ddl in [RULE_TABLES_DDL, RULE_BUILDER_DDL] {
+    client.batch_execute(ddl).await.map_err(|e| {
+      let code = e.code().map_or("none", |code| code.code());
+      console_error!("ensure_rule_tables failed, SQLSTATE {code}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+  }
   TABLES_READY.store(true, Ordering::Relaxed);
   Ok(())
 }
@@ -1072,12 +1087,25 @@ mod tests {
   use super::*;
 
   const MIGRATION: &str = include_str!("../../../infra/migrations/2026-11-03-rules.sql");
+  const BUILDER_MIGRATION: &str =
+    include_str!("../../../infra/migrations/2026-11-07-rule-builder.sql");
   const INIT_DB: &str = include_str!("../../../infra/init-db.sql");
 
   #[test]
   fn the_migration_and_init_db_carry_the_ensured_tables_verbatim() {
     assert!(MIGRATION.contains(RULE_TABLES_DDL));
     assert!(INIT_DB.contains(RULE_TABLES_DDL));
+    assert!(BUILDER_MIGRATION.contains(RULE_BUILDER_DDL));
+    let tables = INIT_DB
+      .find(RULE_TABLES_DDL)
+      .expect("tables in init-db.sql");
+    let builder = INIT_DB
+      .find(RULE_BUILDER_DDL)
+      .expect("builder in init-db.sql");
+    assert!(
+      builder > tables,
+      "the builder's ALTER runs after the tables exist"
+    );
   }
 
   #[test]
@@ -1491,6 +1519,72 @@ pub(crate) mod pg {
       db.drop().await;
     });
   }
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn rule_store_the_builder_migration_widens_a_schema_from_before_it() {
+    const BUILDER_MIGRATION: &str =
+      include_str!("../../../infra/migrations/2026-11-07-rule-builder.sql");
+    run(async {
+      let db = Scratch::new("builder_schema").await;
+      let client = db.client().await;
+      let rule = new_rule(&client, new_flock(&client, None).await).await;
+      let insert = "INSERT INTO rule_versions (rule_id, version, source, sha256, contract, origin,
+          created_by, builder_model)
+        VALUES ($1, $2, 'x', 'aa', 1, 'builder', $1, '{}'::jsonb)";
+      client
+        .execute(insert, &[&rule, &1i32])
+        .await
+        .expect("a fresh schema takes a builder version");
+      // The schema staging holds from before the builder: the narrow CHECK, no column.
+      client
+        .batch_execute(
+          "DELETE FROM rule_versions;
+           ALTER TABLE rule_versions DROP COLUMN builder_model;
+           ALTER TABLE rule_versions DROP CONSTRAINT rule_versions_origin_check;
+           ALTER TABLE rule_versions ADD CONSTRAINT rule_versions_origin_check
+             CHECK (origin IN ('hand', 'assistant', 'assistant_edited'));",
+        )
+        .await
+        .expect("narrowed");
+      assert_eq!(
+        missing_schema_objects(&client, &RULE_RELATIONS, &RULE_COLUMNS)
+          .await
+          .expect("catalog readable"),
+        ["rule_versions.builder_model"]
+      );
+      // What ensure runs on finding the column missing; it logs first, which needs workerd.
+      client
+        .batch_execute(RULE_BUILDER_DDL)
+        .await
+        .expect("the ensure DDL widens it");
+      assert!(
+        missing_schema_objects(&client, &RULE_RELATIONS, &RULE_COLUMNS)
+          .await
+          .expect("catalog readable")
+          .is_empty()
+      );
+      client
+        .execute(insert, &[&rule, &2i32])
+        .await
+        .expect("the widened schema takes a builder version");
+      let refused = client
+        .execute(&insert.replace("'builder'", "'robot'"), &[&rule, &3i32])
+        .await
+        .expect_err("an unknown origin is still refused");
+      assert_eq!(refused.code(), Some(&SqlState::CHECK_VIOLATION));
+      client
+        .batch_execute(BUILDER_MIGRATION)
+        .await
+        .expect("the migration reapplies");
+      client
+        .batch_execute(BUILDER_MIGRATION)
+        .await
+        .expect("and again");
+      drop(client);
+      db.drop().await;
+    });
+  }
+
   #[test]
   #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
   fn rule_store_a_deleted_pigeon_leaves_no_rule_rows_and_a_missing_table_is_quiet() {

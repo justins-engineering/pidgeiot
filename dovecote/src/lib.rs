@@ -63,8 +63,8 @@ use capsules::{
   TelemetryHistoryQuery, TelemetryReportBody, tax_id_log_label, valid_scope_key,
 };
 use capsules::{
-  RuleCreateRequest, RuleDeployRequest, RuleOrigin, RuleSourceRejection, RuleTestRequest,
-  RuleUpdateRequest, RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
+  RuleCreateRequest, RuleDeployRequest, RuleTestRequest, RuleUpdateRequest,
+  RuleVersionCreateRequest, normalize_rule_name, prepare_rule_version,
 };
 use futures::future::join_all;
 use worker::{
@@ -4413,20 +4413,14 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .unwrap()
             .with_cors(&cors);
         };
-        if let Err(rejection) = check_rule_source(&payload.source) {
-          let status = match rejection {
-            RuleSourceRejection::TooLarge => 413,
-            _ => 400,
-          };
-          return Response::error(rejection.message(), status)
-            .unwrap()
-            .with_cors(&cors);
-        }
-        if payload.origin == RuleOrigin::Assistant {
-          return Response::error("Bad Request: only the assistant saves 'assistant' versions", 400)
-            .unwrap()
-            .with_cors(&cors);
-        }
+        let version = match prepare_rule_version(&payload) {
+          Ok(version) => version,
+          Err(rejection) => {
+            return Response::error(rejection.message(), rejection.status())
+              .unwrap()
+              .with_cors(&cors);
+          }
+        };
         let Ok(author) = uuid::Uuid::parse_str(&principal.user_id) else {
           return Response::error("Internal Server Error", 500)
             .unwrap()
@@ -4453,9 +4447,10 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           &access,
           rule_id,
           author,
-          &payload.source,
-          payload.origin,
+          &version.source,
+          version.origin,
           payload.based_on,
+          version.builder_model.as_deref(),
         )
         .await
         else {

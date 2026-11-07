@@ -677,6 +677,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
       source: text,
       origin,
       based_on,
+      builder_model: None,
     };
     let answer = api::rules::save_version(flock_id, rule_id, &req).await;
     busy.set(false);

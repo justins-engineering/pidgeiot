@@ -276,11 +276,12 @@ pub fn origin_label(origin: RuleOrigin) -> &'static str {
     RuleOrigin::Hand => "By hand",
     RuleOrigin::Assistant => "Assistant",
     RuleOrigin::AssistantEdited => "Assistant, edited",
+    RuleOrigin::Builder => "Rule builder",
   }
 }
 
-/// The origin a save records: a person's change to an assistant's draft, or to an edit of one,
-/// stays marked as assistant work.
+/// The origin a code save records: a person's change to an assistant's draft, or to an edit of
+/// one, stays marked as assistant work, and code converted from a builder version is by hand.
 pub fn save_origin(base: Option<&RuleVersion>) -> RuleOrigin {
   match base.map(|v| v.origin) {
     Some(RuleOrigin::Assistant | RuleOrigin::AssistantEdited) => RuleOrigin::AssistantEdited,
@@ -348,6 +349,7 @@ mod tests {
       created_by: Uuid::nil(),
       created_at: NOW,
       source: None,
+      builder_model: None,
     }
   }
 
@@ -645,6 +647,12 @@ mod tests {
       origin_label(RuleOrigin::AssistantEdited),
       "Assistant, edited"
     );
+    assert_eq!(
+      save_origin(Some(&version(RuleOrigin::Builder, None))),
+      RuleOrigin::Hand,
+      "converting a builder version to code is a hand version"
+    );
+    assert_eq!(origin_label(RuleOrigin::Builder), "Rule builder");
   }
 
   #[test]

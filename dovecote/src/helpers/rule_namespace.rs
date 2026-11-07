@@ -1513,17 +1513,18 @@ mod tests {
         "main.js",
         "prelude.js",
         "pidgeiot.js",
+        "builder.js",
         "rules.js",
         &new,
         &old
       ]
     );
     assert_eq!(
-      (modules[4].1.as_str(), modules[5].1.as_str()),
+      (modules[5].1.as_str(), modules[6].1.as_str()),
       ("new", "old")
     );
     let alone = test_script_modules(rule, (1, "first"), None).expect("valid");
-    assert_eq!(alone.len(), 5);
+    assert_eq!(alone.len(), 6);
   }
 
   /// The staging integration run: `RULES_IT_DIR` holds requests.json, written here for the
