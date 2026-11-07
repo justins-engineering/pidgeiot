@@ -101,6 +101,7 @@ pub fn default_title(body: &WidgetBody) -> String {
   }
 }
 
+/// A widget's chart as the chart component draws it.
 pub fn chart_kind(chart: WidgetChart) -> ChartKind {
   match chart {
     WidgetChart::Line => ChartKind::Line,
@@ -111,6 +112,7 @@ pub fn chart_kind(chart: WidgetChart) -> ChartKind {
   }
 }
 
+/// The inverse of [`chart_kind`], for a saved graph becoming a widget.
 pub fn widget_chart(kind: ChartKind) -> WidgetChart {
   match kind {
     ChartKind::Line => WidgetChart::Line,
@@ -121,6 +123,7 @@ pub fn widget_chart(kind: ChartKind) -> WidgetChart {
   }
 }
 
+/// A widget's range as the range picker and the history reads spell it.
 pub fn time_range(range: WidgetRange) -> TimeRange {
   match range {
     WidgetRange::Last1h => TimeRange::Last1h,
@@ -131,6 +134,7 @@ pub fn time_range(range: WidgetRange) -> TimeRange {
   }
 }
 
+/// The inverse of [`time_range`].
 pub fn widget_range(range: TimeRange) -> WidgetRange {
   match range {
     TimeRange::Last1h => WidgetRange::Last1h,

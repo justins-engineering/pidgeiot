@@ -37,6 +37,7 @@ fn owner_label(local: &LocalSession, org_id: Option<Uuid>) -> String {
   }
 }
 
+/// `/dashboards`: every dashboard the viewer can open, and the form that makes one.
 #[component]
 pub fn DashboardList() -> Element {
   let local = use_context::<LocalSession>();
@@ -202,6 +203,7 @@ fn DashboardCard(summary: DashboardSummary, owner: String) -> Element {
   }
 }
 
+/// `/dashboards/:dashboard_id`: one dashboard's widgets, and its editor for those who may edit.
 #[component]
 pub fn DashboardView(dashboard_id: Uuid) -> Element {
   let local = use_context::<LocalSession>();

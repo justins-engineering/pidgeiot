@@ -37,15 +37,20 @@ pub const DASHBOARD_LAYOUT_VERSION: u32 = 1;
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WidgetSize {
+  /// One grid column.
   #[default]
   Small,
+  /// Two grid columns.
   Half,
+  /// The whole row.
   Full,
 }
 
 impl WidgetSize {
+  /// Every size, smallest first, as a size picker lists them.
   pub const ALL: [WidgetSize; 3] = [WidgetSize::Small, WidgetSize::Half, WidgetSize::Full];
 
+  /// The name a size picker shows, and matches its choice back against.
   pub fn label(self) -> &'static str {
     match self {
       WidgetSize::Small => "Small",
@@ -60,7 +65,9 @@ impl WidgetSize {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WidgetScope {
+  /// A pigeon id.
   Pigeon(String),
+  /// A flock id.
   Flock(Uuid),
 }
 
@@ -90,11 +97,14 @@ pub enum WidgetChart {
 /// One widget: its place in the grid plus what it shows.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Widget {
+  /// Unique within its layout: 1 to 32 of `[A-Za-z0-9_-]`.
   pub id: String,
   #[serde(default)]
   pub size: WidgetSize,
+  /// Shown over the widget; empty means the page names it from its body.
   #[serde(default)]
   pub title: String,
+  /// Flattened, so `kind` and its fields sit beside `id` on the wire.
   #[serde(flatten)]
   pub body: WidgetBody,
 }
@@ -156,8 +166,10 @@ pub enum WidgetBody {
 /// The stored page: an ordered list of widgets.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DashboardLayout {
+  /// [`DASHBOARD_LAYOUT_VERSION`]; any other is refused on write.
   #[serde(default = "layout_version")]
   pub v: u32,
+  /// In page order.
   #[serde(default)]
   pub widgets: Vec<Widget>,
 }
@@ -193,6 +205,7 @@ pub enum DashboardRejection {
 }
 
 impl DashboardRejection {
+  /// The 400 body, which a client may show as it stands.
   pub fn message(self) -> &'static str {
     match self {
       Self::Name => "Bad Request: a dashboard name is 1 to 80 characters",
@@ -375,9 +388,11 @@ pub struct Dashboard {
   pub id: Uuid,
   /// Set for a personal dashboard; exactly one of this and `org_id` is.
   pub user_id: Option<Uuid>,
+  /// Set for an organization's dashboard.
   pub org_id: Option<Uuid>,
   /// Who made it. Provenance only, and `None` once that account is erased.
   pub created_by: Option<Uuid>,
+  /// 1 to 80 characters, trimmed.
   pub name: String,
   pub layout: DashboardLayout,
   /// Bumped by every save; an update must send the revision it loaded.
@@ -400,13 +415,17 @@ pub struct Dashboard {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DashboardSummary {
   pub id: Uuid,
+  /// As [`Dashboard::user_id`]: exactly one of this and `org_id` is set.
   pub user_id: Option<Uuid>,
   pub org_id: Option<Uuid>,
   pub name: String,
+  /// Widgets in the stored layout, counted by the database.
   pub widget_count: i32,
+  /// As [`Dashboard::revision`]; a list read does not let a page save.
   pub revision: i32,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
+  /// Whether the caller may save, rename or delete it.
   #[serde(default)]
   pub can_edit: bool,
 }
@@ -438,6 +457,7 @@ pub const MAX_TELEMETRY_BATCH_PIGEONS: usize = 48;
 /// `POST /pigeons/batch/telemetry`. An empty `keys` returns every key.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PigeonTelemetryBatchRequest {
+  /// Pigeon ids, at most [`MAX_TELEMETRY_BATCH_PIGEONS`].
   pub ids: Vec<String>,
   #[serde(default)]
   pub keys: Vec<String>,
@@ -457,7 +477,9 @@ pub const MAX_FLOCK_SHADOW_ROWS: i64 = 1_000;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PigeonShadowSummary {
   pub pigeon_id: String,
+  /// Bumped by every change to `target_config`.
   pub target_version: i32,
+  /// The version the device last reported applying.
   pub current_version: i32,
   /// Unix seconds, as `PigeonShadow::updated_at`; `None` with no shadow row.
   pub updated_at: Option<i64>,
@@ -479,6 +501,7 @@ impl PigeonShadowSummary {
 /// `GET /flocks/:flock_id/shadow/versions`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct FlockShadowVersions {
+  /// Ordered by pigeon id.
   pub pigeons: Vec<PigeonShadowSummary>,
   /// More pigeons exist than [`MAX_FLOCK_SHADOW_ROWS`]; the first by id are
   /// here.
