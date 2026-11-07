@@ -4,7 +4,9 @@
 --
 -- Idempotent: safe to run against an already-migrated database. dovecote's runtime
 -- `ensure_rule_tables` runs the same statements when the column is missing, and a test holds this
--- file, init-db.sql and that function's text together. Run after 2026-11-03-rules.sql.
+-- file, init-db.sql and that function's text together. Run after 2026-11-03-rules.sql. Apply
+-- the whole file, never the column alone: the ensure keys on the column, so a database holding
+-- the column under the old CHECK refuses every builder save.
 --
 --   psql "$DOVECOTE_PSQL_CONNECTION" -f infra/migrations/2026-11-07-rule-builder.sql
 --
