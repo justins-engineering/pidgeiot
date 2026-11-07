@@ -31,8 +31,9 @@ enum Read<T> {
   Ready(T),
 }
 
-/// Polls `fetch` now and then at the fallback cadence, skipping while the tab is hidden.
-fn use_poll<T, F, Fut>(fetch: F) -> Signal<Read<T>>
+/// Polls `fetch` now and then every `every_secs` (the fallback cadence when `None`), skipping
+/// while the tab is hidden.
+fn use_poll<T, F, Fut>(every_secs: Option<i64>, fetch: F) -> Signal<Read<T>>
 where
   T: 'static,
   F: Fn() -> Fut + 'static,
@@ -43,7 +44,7 @@ where
   use_future(move || {
     let fetch = fetch.clone();
     async move {
-      let poll_ms = connection_state::poll_interval_ms(None);
+      let poll_ms = connection_state::poll_interval_ms(every_secs);
       loop {
         if !is_page_hidden() {
           match fetch().await {
@@ -215,6 +216,15 @@ async fn fetch_series(scope: &WidgetScope, keys: &[String], range: WidgetRange) 
   }
 }
 
+/// How often a time series rereads its history. A week or a month is drawn in buckets half an
+/// hour to two hours wide, so rereading it at the 30 s fallback mostly repeats the same answer.
+fn series_poll_secs(range: WidgetRange) -> Option<i64> {
+  match range {
+    WidgetRange::Last7d | WidgetRange::Last30d => Some(300),
+    _ => None,
+  }
+}
+
 #[component]
 fn TimeSeriesWidget(
   scope: WidgetScope,
@@ -226,7 +236,7 @@ fn TimeSeriesWidget(
   let read = {
     let scope = scope.clone();
     let keys = keys.clone();
-    use_poll(move || {
+    use_poll(series_poll_secs(range), move || {
       let scope = scope.clone();
       let keys = keys.clone();
       async move { fetch_series(&scope, &keys, range).await }
@@ -290,7 +300,7 @@ fn reading_of(latest: &[TelemetryLatest], key: &str) -> Option<TelemetryLatest> 
 fn LatestWidget(pigeon: String, metric: String, unit: String) -> Element {
   let read = {
     let pigeon = pigeon.clone();
-    use_poll(move || {
+    use_poll(None, move || {
       let pigeon = pigeon.clone();
       async move { telemetry::get_latest(&pigeon).await }
     })
@@ -328,7 +338,7 @@ fn LatestWidget(pigeon: String, metric: String, unit: String) -> Element {
 fn ThresholdWidget(pigeon: String, metric: String, unit: String, min: f64, max: f64) -> Element {
   let read = {
     let pigeon = pigeon.clone();
-    use_poll(move || {
+    use_poll(None, move || {
       let pigeon = pigeon.clone();
       async move {
         let latest = telemetry::get_latest(&pigeon).await?;
@@ -435,7 +445,7 @@ fn StatusTableRows(flock: Uuid, keys: Vec<String>, ids: Vec<String>) -> Element 
   let read = {
     let keys = keys.clone();
     let ids = ids.clone();
-    use_poll(move || {
+    use_poll(None, move || {
       let keys = keys.clone();
       let ids = ids.clone();
       async move {
@@ -592,7 +602,7 @@ fn config_value(config: &capsules::JsonString, key: &str) -> Option<String> {
 fn ShadowKeyWidget(pigeon: String, config_key: String) -> Element {
   let read = {
     let pigeon = pigeon.clone();
-    use_poll(move || {
+    use_poll(None, move || {
       let pigeon = pigeon.clone();
       async move { pigeons::get_detail(&pigeon).await.map(|d| d.shadow) }
     })
@@ -636,7 +646,7 @@ fn ShadowKeyWidget(pigeon: String, config_key: String) -> Element {
 
 #[component]
 fn AlertsWidget(flock: Uuid) -> Element {
-  let read = use_poll(move || async move {
+  let read = use_poll(None, move || async move {
     let definitions = alerts::list_flock(flock).await?;
     let states = alerts::state_flock(flock).await?;
     Some((definitions, states))
