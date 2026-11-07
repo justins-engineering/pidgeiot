@@ -141,7 +141,7 @@ fn WidgetBodyView(body: WidgetBody) -> Element {
     },
     WidgetBody::Unknown => rsx! {
       p { class: "text-sm text-base-content/60 py-6 text-center",
-        "This widget was added by a newer version of the dashboard. Reload the page to see it."
+        "This widget was added by a newer version of the dashboard and cannot be shown here yet."
       }
     },
   }

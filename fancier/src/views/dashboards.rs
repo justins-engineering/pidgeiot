@@ -332,7 +332,9 @@ pub fn DashboardView(dashboard_id: Uuid) -> Element {
           }
           div { class: "flex flex-wrap items-center gap-2 mt-1 text-xs",
             span { class: "badge badge-ghost badge-sm", {owner_label(&local, shown.org_id)} }
-            if !saved.can_edit {
+            if saved.unreadable {
+              span { class: "text-base-content/60", "Cannot be shown or changed here." }
+            } else if !saved.can_edit {
               span { class: "text-base-content/60", "View only. Copy it to make your own changes." }
             }
           }
@@ -381,11 +383,13 @@ pub fn DashboardView(dashboard_id: Uuid) -> Element {
                 "Edit"
               }
             }
-            button {
-              class: "btn btn-outline btn-sm",
-              disabled: busy(),
-              onclick: copy,
-              "Copy to my dashboards"
+            if !saved.unreadable {
+              button {
+                class: "btn btn-outline btn-sm",
+                disabled: busy(),
+                onclick: copy,
+                "Copy to my dashboards"
+              }
             }
             Link { class: "btn btn-ghost btn-sm", to: Route::DashboardList {}, "All dashboards" }
           }
@@ -432,7 +436,14 @@ pub fn DashboardView(dashboard_id: Uuid) -> Element {
     }
 
     section { id: "dashboard-widgets",
-      if widget_count == 0 {
+      if saved.unreadable {
+        div { class: "card bg-base-100 border border-base-content/10 p-10 text-center",
+          p { class: "font-semibold", "This dashboard could not be read" }
+          p { class: "text-sm text-base-content/60 mt-1",
+            "It was saved in a form this version of the dashboard does not know. Its widgets are kept as they are; reload later to see them."
+          }
+        }
+      } else if widget_count == 0 {
         div { class: "card bg-base-100 border border-base-content/10 p-10 text-center",
           p { class: "font-semibold", "No widgets yet" }
           p { class: "text-sm text-base-content/60 mt-1",

@@ -386,6 +386,10 @@ pub async fn require_principal(req: &Request, env: &Env) -> worker::Result<Princ
 /// The 400 body when an owner already holds `capsules::MAX_DASHBOARDS_PER_OWNER` dashboards.
 const DASHBOARD_CAP_MESSAGE: &str = "Bad Request: an owner holds at most 50 dashboards";
 
+/// The 500 body for a write or a copy of a dashboard whose stored layout this server cannot read.
+const DASHBOARD_UNREADABLE_MESSAGE: &str =
+  "Internal Server Error: this dashboard's stored layout cannot be read here, so it was left as is";
+
 /// Raw bytes a dashboard write may carry: the layout cap plus room for a name and a revision.
 const MAX_DASHBOARD_BODY_BYTES: usize = capsules::MAX_DASHBOARD_LAYOUT_BYTES + 1024;
 
@@ -4821,6 +4825,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             .with_cors(&cors);
         };
         match stored.map(|d| resolve_dashboard_access(&principal, &caller, d)) {
+          Some((stored, DashboardAccess::Edit)) if stored.unreadable => {
+            return Response::error(DASHBOARD_UNREADABLE_MESSAGE, 500)
+              .unwrap()
+              .with_cors(&cors);
+          }
           Some((_, DashboardAccess::Edit)) => {}
           Some((_, DashboardAccess::View)) => {
             return Response::error(
@@ -4957,10 +4966,14 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           return Response::error("Not Found", 404).unwrap().with_cors(&cors);
         };
 
+        // A stored layout passed validation when it was written, so one that fails it now, or
+        // does not parse, is this server's to fix, not the caller's.
         let layout_json = match stored_layout(&source.layout) {
-          Ok(json) => json,
-          Err((message, status)) => {
-            return Response::error(message, status).unwrap().with_cors(&cors);
+          Ok(json) if !source.unreadable => json,
+          _ => {
+            return Response::error(DASHBOARD_UNREADABLE_MESSAGE, 500)
+              .unwrap()
+              .with_cors(&cors);
           }
         };
         let name = copy_name(&source.name);

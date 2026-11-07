@@ -348,16 +348,18 @@ pub struct DashboardRow {
 
 impl From<DashboardRow> for Dashboard {
   fn from(row: DashboardRow) -> Self {
+    // A layout this build cannot parse (written by a later version, or by
+    // hand) reads as an empty page flagged `unreadable`, never as an empty
+    // page that a save would write over the stored widgets.
+    let parsed = serde_json::from_str(&row.layout);
     Self {
       id: row.id,
       user_id: row.user_id,
       org_id: row.org_id,
       created_by: row.created_by,
       name: row.name,
-      // A row only ever holds a layout that passed `validate_layout`; the
-      // fallback keeps a hand-edited one readable as an empty page rather
-      // than failing the response.
-      layout: serde_json::from_str(&row.layout).unwrap_or_default(),
+      unreadable: parsed.is_err(),
+      layout: parsed.unwrap_or_default(),
       revision: row.revision,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -384,9 +386,14 @@ pub struct Dashboard {
   pub created_at: OffsetDateTime,
   #[serde(with = "time::serde::rfc3339")]
   pub updated_at: OffsetDateTime,
-  /// Whether the caller may save, rename or delete it. Computed per request.
+  /// Whether the caller may save, rename or delete it. Computed per request,
+  /// and `false` while `unreadable`.
   #[serde(default)]
   pub can_edit: bool,
+  /// The stored layout could not be parsed, so `layout` is empty and nothing
+  /// may be saved over it or copied from it.
+  #[serde(default)]
+  pub unreadable: bool,
 }
 
 /// One row of `GET /dashboards`: everything but the layout.
@@ -687,7 +694,7 @@ mod tests {
   }
 
   #[test]
-  fn an_unreadable_stored_layout_reads_as_an_empty_page() {
+  fn an_unreadable_stored_layout_reads_as_an_empty_page_flagged_unreadable() {
     let row = DashboardRow {
       id: Uuid::nil(),
       user_id: Some(Uuid::nil()),
@@ -702,6 +709,7 @@ mod tests {
     let dashboard = Dashboard::from(row);
     assert!(dashboard.layout.widgets.is_empty());
     assert_eq!(dashboard.revision, 3);
+    assert!(dashboard.unreadable);
     assert!(!dashboard.can_edit);
   }
 

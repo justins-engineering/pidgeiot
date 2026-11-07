@@ -2786,9 +2786,12 @@ is 1–80 characters after trimming. A widget of a `kind` this server does not k
 over a widget it cannot read.
 
 `capsules::Dashboard` is `{ id, user_id, org_id, created_by, name, layout, revision,
-created_at, updated_at, can_edit }`: exactly one of `user_id` and `org_id` is set,
+created_at, updated_at, can_edit, unreadable }`: exactly one of `user_id` and `org_id` is set,
 `created_by` is provenance only (`null` once that account is erased), and `can_edit` says
-whether this caller may save it.
+whether this caller may save it. `unreadable` is `true` when the stored layout does not parse in
+this server (one written by a later version, say): `layout` is then empty, `can_edit` is
+`false`, and a save or copy of it answers `500` and changes nothing, so the stored widgets are
+never replaced by an empty page. It can still be deleted.
 
 #### `GET /dashboards`
 
@@ -2847,7 +2850,8 @@ for a member of the org who may view but not edit; `404` as for the `GET`.
 **Auth:** owner, or any member of its org
 
 Copies the layout into a new personal dashboard of the caller's, named after the source with
-" (copy)". No body. **201** with the new `Dashboard`; `400` when the caller already holds 50.
+" (copy)". No body. **201** with the new `Dashboard`; `400` when the caller already holds 50;
+`500` when the source's stored layout cannot be read or validated by this server.
 
 ---
 

@@ -111,7 +111,8 @@ pub fn dashboard_access(
   }
 }
 
-/// [`dashboard_access`] for the signed-in caller, with `can_edit` filled in on the way out.
+/// [`dashboard_access`] for the signed-in caller, with `can_edit` filled in on the way out. An
+/// unreadable layout keeps its access, so it can still be deleted, but never reads as editable.
 pub fn resolve_dashboard_access(
   principal: &Principal,
   caller: &Uuid,
@@ -119,7 +120,7 @@ pub fn resolve_dashboard_access(
 ) -> (Dashboard, DashboardAccess) {
   let role = dashboard.org_id.and_then(|org| principal.org_role(&org));
   let access = dashboard_access(dashboard.user_id, dashboard.org_id, caller, role);
-  dashboard.can_edit = access == DashboardAccess::Edit;
+  dashboard.can_edit = access == DashboardAccess::Edit && !dashboard.unreadable;
   (dashboard, access)
 }
 
@@ -389,6 +390,26 @@ mod tests {
       dashboard_access(None, org, &id(2), None),
       DashboardAccess::None
     );
+  }
+
+  #[test]
+  fn an_unreadable_layout_stays_its_owners_but_never_editable() {
+    let row = DashboardRow {
+      id: id(5),
+      user_id: Some(id(1)),
+      org_id: None,
+      created_by: Some(id(1)),
+      name: "Depot 3".into(),
+      layout: "{\"v\":1,\"widgets\":7}".into(),
+      revision: 4,
+      created_at: time::OffsetDateTime::UNIX_EPOCH,
+      updated_at: time::OffsetDateTime::UNIX_EPOCH,
+    };
+    let principal = Principal::new(id(1).to_string(), None, Vec::new(), Vec::new());
+    let (dashboard, access) = resolve_dashboard_access(&principal, &id(1), row.into());
+    assert_eq!(access, DashboardAccess::Edit);
+    assert!(dashboard.unreadable);
+    assert!(!dashboard.can_edit);
   }
 
   #[test]
