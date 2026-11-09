@@ -2628,9 +2628,9 @@ Refusals: `403` when the platform has blocked the rule; `404` when the rule has 
 `422` (`Unprocessable Content: this version did not load: ` and Cloudflare's own error) when its
 top level throws or overruns its startup CPU; `422` (`Unprocessable Content: the dry run did not
 finish: ` and why) when a replay was stopped, most likely past its CPU, or produced more than
-4 MiB; `409` when another test of the same rule replaced the script mid-run; and the `429` and
-`503` a deploy answers when the platform's budget of calls to Cloudflare is spent or the namespace
-refused or did not confirm the upload (see [Rules](#rules)). None of them records anything.
+4 MiB; and the `429` and `503` a deploy answers when the platform's budget of calls to Cloudflare
+is spent or the namespace refused or did not confirm the upload (see [Rules](#rules)). None of
+them records anything.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3/test \

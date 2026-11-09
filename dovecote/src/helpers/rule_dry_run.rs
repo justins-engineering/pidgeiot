@@ -182,10 +182,9 @@ pub enum ReplayFailure {
   Lost,
   /// Over [`REPLAY_READ_CAP`].
   Oversize,
-  /// Not the harness's answer, or the harness failed.
+  /// Not the harness's answer, or the harness failed. A `version_mismatch` is one too: no other
+  /// dry run shares the script's name, so nothing can have replaced it.
   NotHarness,
-  /// The script held other versions: another dry run of the rule replaced it.
-  Raced,
 }
 
 impl ReplayFailure {
@@ -196,7 +195,6 @@ impl ReplayFailure {
       ReplayFailure::Lost => "the replay was stopped, most likely for CPU or memory",
       ReplayFailure::Oversize => "the replay produced more than 4 MiB of output",
       ReplayFailure::NotHarness => "the replay's answer could not be read",
-      ReplayFailure::Raced => "another test of this rule ran at the same time",
     }
   }
 }
@@ -233,10 +231,8 @@ pub fn read_replay(
     if got.id != want.key {
       return Err(ReplayFailure::NotHarness);
     }
-    match got.status.as_str() {
-      "ok" => {}
-      "version_mismatch" => return Err(ReplayFailure::Raced),
-      _ => return Err(ReplayFailure::NotHarness),
+    if got.status != "ok" {
+      return Err(ReplayFailure::NotHarness);
     }
     let ordered = got.runs.windows(2).all(|w| w[0].i < w[1].i);
     let known = got.runs.iter().all(|r| {
@@ -931,10 +927,6 @@ fn refusal_of(refusal: DryRunRefusal) -> Refusal {
       Refusal::Status(422, text)
     }
     DryRunRefusal::Upload(answer) => Refusal::of(&answer),
-    DryRunRefusal::Unfinished(ReplayFailure::Raced) => Refusal::Status(
-      409,
-      "Conflict: another test of this rule ran at the same time; test again".to_string(),
-    ),
     DryRunRefusal::Unfinished(ReplayFailure::Platform) => Refusal::of(&CfAnswer::Refused {
       status: 0,
       codes: Vec::new(),
@@ -1211,8 +1203,8 @@ mod tests {
         "{runs}"
       );
     }
-    let raced = json!({ "contract": 1, "rules": [{ "id": "x", "status": "version_mismatch" }] });
-    assert_eq!(read(raced), Err(ReplayFailure::Raced));
+    let mismatch = json!({ "contract": 1, "rules": [{ "id": "x", "status": "version_mismatch" }] });
+    assert_eq!(read(mismatch), Err(ReplayFailure::NotHarness));
     assert_eq!(
       read_replay(DispatchOutcome::Failed, &sent, 1),
       Err(ReplayFailure::Lost)
