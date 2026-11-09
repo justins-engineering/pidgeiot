@@ -2596,7 +2596,7 @@ each batch at most 64 readings `after_secs` 0 to 7 days from the case's start, w
 expects as `{ key, kind }`. A case that breaks those bounds answers `400` before anything runs,
 and a body over 1 MiB (`capsules::MAX_RULE_TEST_BODY_BYTES`) answers `413` before it is parsed.
 
-The dry run uploads a script of its own, `test-<rule>`, holding this version and the deployed
+The dry run uploads a script of its own, under a new name, holding this version and the deployed
 version beside it, then replays, each from empty state: every case through this version, then the
 flock's last 7 days of telemetry history through both versions, the newest 4,000 readings
 regrouped per pigeon into batches of up to 64. Pigeons that forward telemetry to their own

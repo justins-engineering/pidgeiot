@@ -1371,7 +1371,7 @@ pub fn rule_paused_message(
 pub enum ScriptKind {
   /// A flock's live bundle, `flock-<flock uuid>`.
   Flock,
-  /// A rule's dry run, `test-<rule uuid>`.
+  /// A rule's dry run, `test-<uuid>` under a name of its own ([`test_script_name`]).
   Test,
   /// The same script uploaded again for the dry run's CPU check, at the live limit.
   CpuCheck,
@@ -1408,6 +1408,12 @@ pub fn script_name(kind: ScriptKind, uuid: &str) -> Option<String> {
   name.push_str(prefix);
   name.extend(uuid.chars().filter(|c| *c != '-'));
   Some(name)
+}
+
+/// A dry run's script name, `test-` and a fresh v7 uuid. Never a name used before: the namespace
+/// can refuse to dispatch a name it has deleted, even after that name is uploaded again.
+pub fn test_script_name() -> Option<String> {
+  script_name(ScriptKind::Test, &uuid_str(Uuid::now_v7()))
 }
 
 /// One rule module of a bundle.

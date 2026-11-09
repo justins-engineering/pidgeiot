@@ -1,10 +1,12 @@
 //! A rule's dry run: the version replayed over the flock's recent telemetry beside the deployed
 //! version, in the namespace the live rules run in, with nothing applied.
 //!
-//! The route uploads `test-<rule>` at [`TEST_RULE_CPU_MS`](super::rules::TEST_RULE_CPU_MS),
-//! replays the synthetic cases, the window from empty state and the window seeded with live
-//! state, then uploads the same name again at the live limit for the CPU check and deletes it. Two
-//! uploads because only the upload's metadata binds CPU. The CPU check is a warning, never a
+//! The route uploads a script named for this dry run alone
+//! ([`test_script_name`](super::rules::test_script_name)) at
+//! [`TEST_RULE_CPU_MS`](super::rules::TEST_RULE_CPU_MS), replays the synthetic cases, the window
+//! from empty state and the window seeded with live state, then uploads the same name again at the
+//! live limit for the CPU check and deletes it. Two uploads because only the upload's metadata
+//! binds CPU. The CPU check is a warning, never a
 //! refusal: a fresh script gets about 2 s of grace, so its pass proves little.
 //!
 //! Every replay answer is read as untrusted, like a live one: re-validated per run, with state
@@ -39,7 +41,7 @@ use crate::helpers::rules::{
   AlertFlags, BundleRule, CaseError, Classified, CommonEvent, DispatchOutcome, DispatchRule,
   HARNESS_WALL_MS, MailCounts, RuleMailCounters, RunStatus, ScriptKind, bundle_modules,
   check_case_count, classify, cut, decide_alerts, expand_case, live_input, read_cap,
-  regroup_history, script_name, uuid_str, without_nul,
+  regroup_history, test_script_name, uuid_str, without_nul,
 };
 use crate::helpers::{FlockAccess, TelemetryHistoryPage};
 
@@ -617,7 +619,7 @@ pub(crate) async fn run_dry_run<I: DryRunIo>(
   else {
     return Err(DryRunRefusal::Unbuildable);
   };
-  let Some(script) = script_name(ScriptKind::Test, &rule) else {
+  let Some(script) = test_script_name() else {
     return Err(DryRunRefusal::Unbuildable);
   };
   if !io.allowed().await {
@@ -1040,6 +1042,7 @@ pub async fn test_version(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::helpers::rule_namespace::is_script_name;
   use crate::helpers::rules::{RunRecord, regroup_history};
   use capsules::{
     RuleAlertKind, RuleCaseEvent, RuleCaseMetric, RuleCasePigeon, RuleCaseReading, RuleHook,
@@ -1456,7 +1459,8 @@ mod tests {
     assert_eq!(busiest(&events, 10).len(), events.len());
   }
 
-  /// A namespace that answers from a script of outcomes.
+  /// A namespace that answers from a script of outcomes. Like the platform, it will not dispatch
+  /// a name it has deleted, even after that name is uploaded again.
   #[derive(Default)]
   struct Fake {
     budget: usize,
@@ -1464,6 +1468,8 @@ mod tests {
     outcomes: VecDeque<DispatchOutcome>,
     calls: Vec<String>,
     bodies: Vec<Value>,
+    scripts: Vec<String>,
+    deleted: Vec<String>,
   }
 
   impl DryRunIo for Fake {
@@ -1476,10 +1482,11 @@ mod tests {
 
     async fn upload(
       &mut self,
-      _script: &str,
+      script: &str,
       kind: ScriptKind,
       modules: &[(String, String)],
     ) -> Result<(), CfAnswer> {
+      self.scripts.push(script.to_string());
       let names: Vec<&str> = modules.iter().map(|(n, _)| n.as_str()).collect();
       self
         .calls
@@ -1489,7 +1496,7 @@ mod tests {
 
     async fn dispatch(
       &mut self,
-      _script: &str,
+      script: &str,
       body: &str,
       cap: usize,
       wall_ms: u64,
@@ -1499,6 +1506,9 @@ mod tests {
         .calls
         .push(format!("dispatch {} {cap} {wall_ms}", request["mode"]));
       self.bodies.push(request.clone());
+      if self.deleted.iter().any(|d| d == script) {
+        return DispatchOutcome::Failed;
+      }
       if let Some(outcome) = self.outcomes.pop_front() {
         return outcome;
       }
@@ -1525,7 +1535,8 @@ mod tests {
       }
     }
 
-    async fn delete(&mut self, _script: &str) {
+    async fn delete(&mut self, script: &str) {
+      self.deleted.push(script.to_string());
       self.calls.push("delete".into());
     }
   }
@@ -1623,6 +1634,25 @@ mod tests {
     assert_eq!(result.cpu.candidate, RuleCpuResult::Pass);
     assert_eq!(result.cpu.bundle, RuleCpuResult::Pass);
     assert!(result.deployed.is_some() && result.seeded.is_none());
+  }
+
+  #[test]
+  fn a_second_dry_run_of_a_rule_never_dispatches_a_script_name_already_deleted() {
+    let i = inputs(true);
+    let mut fake = Fake {
+      budget: 9,
+      ..Fake::default()
+    };
+    let first = run(&mut fake, &plan(&i)).expect("the first finishes");
+    let second = run(&mut fake, &plan(&i)).expect("the second finishes too");
+    assert_eq!(first, second);
+    assert_eq!(fake.deleted.len(), 2);
+    assert_ne!(fake.deleted[0], fake.deleted[1]);
+    assert!(
+      fake.scripts.iter().all(|s| is_script_name(s)),
+      "{:?}",
+      fake.scripts
+    );
   }
 
   #[test]
