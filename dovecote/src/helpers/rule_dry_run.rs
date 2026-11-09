@@ -576,16 +576,23 @@ pub enum DryRunRefusal {
 pub(crate) trait DryRunIo {
   /// Spends one call of the platform's Cloudflare API budget; false when it is spent.
   async fn allowed(&mut self) -> bool;
-  /// Uploads `test-<rule>` as `kind` holding `modules`.
+  /// Uploads the test script `script` as `kind` holding `modules`.
   async fn upload(
     &mut self,
+    script: &str,
     kind: ScriptKind,
     modules: &[(String, String)],
   ) -> Result<(), CfAnswer>;
-  /// One dispatch of `test-<rule>`, its body read to at most `cap` + 1 bytes within `wall_ms`.
-  async fn dispatch(&mut self, body: &str, cap: usize, wall_ms: u64) -> DispatchOutcome;
-  /// Deletes `test-<rule>`; a failure is left to the daily sweep.
-  async fn delete(&mut self);
+  /// One dispatch of `script`, its body read to at most `cap` + 1 bytes within `wall_ms`.
+  async fn dispatch(
+    &mut self,
+    script: &str,
+    body: &str,
+    cap: usize,
+    wall_ms: u64,
+  ) -> DispatchOutcome;
+  /// Deletes `script`; a failure is left to the daily sweep.
+  async fn delete(&mut self, script: &str);
 }
 
 /// The wait told after the platform's own limiter refuses.
@@ -610,24 +617,27 @@ pub(crate) async fn run_dry_run<I: DryRunIo>(
   else {
     return Err(DryRunRefusal::Unbuildable);
   };
+  let Some(script) = script_name(ScriptKind::Test, &rule) else {
+    return Err(DryRunRefusal::Unbuildable);
+  };
   if !io.allowed().await {
     return Err(DryRunRefusal::Busy(BUSY_SECS));
   }
-  if let Err(answer) = io.upload(ScriptKind::Test, &modules).await {
+  if let Err(answer) = io.upload(&script, ScriptKind::Test, &modules).await {
     if answer.may_have_landed() {
-      io.delete().await;
+      io.delete(&script).await;
     }
     return Err(DryRunRefusal::Upload(answer));
   }
-  let result = replay_all(io, plan, &key, deployed_key.as_deref()).await;
+  let result = replay_all(io, plan, &script, &key, deployed_key.as_deref()).await;
   let result = match result {
     Ok(mut run) => {
-      run.cpu = cpu_check(io, plan).await;
+      run.cpu = cpu_check(io, plan, &script).await;
       Ok(run)
     }
     Err(failure) => Err(DryRunRefusal::Unfinished(failure)),
   };
-  io.delete().await;
+  io.delete(&script).await;
   result
 }
 
@@ -645,13 +655,16 @@ fn check_cases(plan: &DryRunPlan) -> Result<(), CaseError> {
 /// One replay dispatch, read.
 async fn replay<I: DryRunIo>(
   io: &mut I,
+  script: &str,
   events: &[CommonEvent],
   rules: &[ReplayRule<'_>],
 ) -> Result<Vec<WireReplayRule>, ReplayFailure> {
   let Some(body) = replay_input(events, rules) else {
     return Err(ReplayFailure::NotHarness);
   };
-  let outcome = io.dispatch(&body, REPLAY_READ_CAP, REPLAY_WALL_MS).await;
+  let outcome = io
+    .dispatch(script, &body, REPLAY_READ_CAP, REPLAY_WALL_MS)
+    .await;
   read_replay(outcome, rules, events.len())
 }
 
@@ -659,6 +672,7 @@ async fn replay<I: DryRunIo>(
 async fn replay_all<I: DryRunIo>(
   io: &mut I,
   plan: &DryRunPlan<'_>,
+  script: &str,
   key: &str,
   deployed_key: Option<&str>,
 ) -> Result<RuleDryRun, ReplayFailure> {
@@ -674,7 +688,7 @@ async fn replay_all<I: DryRunIo>(
     let Ok(events) = expand_case(case, &plan.flock, plan.now) else {
       return Err(ReplayFailure::NotHarness);
     };
-    let answer = replay(io, &events, &[fresh]).await?;
+    let answer = replay(io, script, &events, &[fresh]).await?;
     let (replayed, mails) = summarize(version, &events, &answer[0], None);
     cases.push(case_outcome(case, &replayed, &mails));
   }
@@ -696,7 +710,7 @@ async fn replay_all<I: DryRunIo>(
         seed: None,
       });
     }
-    let answer = replay(io, plan.events, &wants).await?;
+    let answer = replay(io, script, plan.events, &wants).await?;
     let (candidate, new_mails) = summarize(version, plan.events, &answer[0], None);
     match (deployed, answer.get(1)) {
       (Some(((v, _), _)), Some(entry)) => {
@@ -718,7 +732,7 @@ async fn replay_all<I: DryRunIo>(
         seed: Some(seed),
         ..fresh
       };
-      let answer = replay(io, plan.events, &[want]).await?;
+      let answer = replay(io, script, plan.events, &[want]).await?;
       Some(summarize(version, plan.events, &answer[0], Some(seed)).0)
     }
     _ => None,
@@ -738,7 +752,7 @@ async fn replay_all<I: DryRunIo>(
 /// The CPU check: the would-be bundle uploaded at the live limit under the test script's name,
 /// then the candidate alone and the bundle as live dispatches over the busiest batches, each side
 /// stopping at its first batch over the limit. Never a refusal.
-async fn cpu_check<I: DryRunIo>(io: &mut I, plan: &DryRunPlan<'_>) -> RuleCpuCheck {
+async fn cpu_check<I: DryRunIo>(io: &mut I, plan: &DryRunPlan<'_>, script: &str) -> RuleCpuCheck {
   let mut check = RuleCpuCheck::default();
   if plan.events.is_empty() || !io.allowed().await {
     return check;
@@ -757,7 +771,7 @@ async fn cpu_check<I: DryRunIo>(io: &mut I, plan: &DryRunPlan<'_>) -> RuleCpuChe
   let Some(modules) = bundle_modules(&rules) else {
     return check;
   };
-  match io.upload(ScriptKind::CpuCheck, &modules).await {
+  match io.upload(script, ScriptKind::CpuCheck, &modules).await {
     Ok(()) => {}
     Err(CfAnswer::Invalid(message)) => {
       check.candidate = RuleCpuResult::DidNotLoad;
@@ -799,7 +813,7 @@ async fn cpu_check<I: DryRunIo>(io: &mut I, plan: &DryRunPlan<'_>) -> RuleCpuChe
         break;
       };
       let outcome = io
-        .dispatch(&body, read_cap(sent.len()), DISPATCH_WALL_MS)
+        .dispatch(script, &body, read_cap(sent.len()), DISPATCH_WALL_MS)
         .await;
       match cpu_verdict(&classify(&sent, outcome)) {
         Some(RuleCpuResult::Pass) => {}
@@ -828,7 +842,6 @@ struct LiveDryRun<'a> {
   ns: &'a Namespace,
   rule: Uuid,
   account: Uuid,
-  script: String,
   flock_id: &'a str,
 }
 
@@ -839,23 +852,36 @@ impl DryRunIo for LiveDryRun<'_> {
 
   async fn upload(
     &mut self,
+    script: &str,
     kind: ScriptKind,
     modules: &[(String, String)],
   ) -> Result<(), CfAnswer> {
-    put_test_script(self.env, self.ns, self.rule, self.account, kind, modules).await
+    put_test_script(
+      self.env,
+      self.ns,
+      script,
+      self.rule,
+      self.account,
+      kind,
+      modules,
+    )
+    .await
   }
 
-  async fn dispatch(&mut self, body: &str, cap: usize, wall_ms: u64) -> DispatchOutcome {
-    dispatch(self.env, &self.script, self.flock_id, body, cap, wall_ms).await
+  async fn dispatch(
+    &mut self,
+    script: &str,
+    body: &str,
+    cap: usize,
+    wall_ms: u64,
+  ) -> DispatchOutcome {
+    dispatch(self.env, script, self.flock_id, body, cap, wall_ms).await
   }
 
-  async fn delete(&mut self) {
+  async fn delete(&mut self, script: &str) {
     // The cleanup spends a call whatever the limiter says, so nothing is orphaned.
     let _ = cf_api_allowed(self.env).await;
-    if delete_test_script(self.env, self.ns, self.rule)
-      .await
-      .is_err()
-    {
+    if delete_test_script(self.env, self.ns, script).await.is_err() {
       console_error!("rules: a dry run's script was not deleted; the sweep will");
     }
   }
@@ -984,15 +1010,11 @@ pub async fn test_version(
     seeds: &sources.seeds,
     now: now.unix_timestamp(),
   };
-  let Some(script) = script_name(ScriptKind::Test, &uuid_str(rule_id)) else {
-    return Err(Refusal::internal());
-  };
   let mut io = LiveDryRun {
     env,
     ns,
     rule: rule_id,
     account,
-    script,
     flock_id: access.flock_id(),
   };
   let result = run_dry_run(&mut io, &plan).await.map_err(refusal_of)?;
@@ -1454,6 +1476,7 @@ mod tests {
 
     async fn upload(
       &mut self,
+      _script: &str,
       kind: ScriptKind,
       modules: &[(String, String)],
     ) -> Result<(), CfAnswer> {
@@ -1464,7 +1487,13 @@ mod tests {
       self.upload_answers.pop_front().unwrap_or(Ok(()))
     }
 
-    async fn dispatch(&mut self, body: &str, cap: usize, wall_ms: u64) -> DispatchOutcome {
+    async fn dispatch(
+      &mut self,
+      _script: &str,
+      body: &str,
+      cap: usize,
+      wall_ms: u64,
+    ) -> DispatchOutcome {
       let request: Value = serde_json::from_str(body).expect("json");
       self
         .calls
@@ -1496,7 +1525,7 @@ mod tests {
       }
     }
 
-    async fn delete(&mut self) {
+    async fn delete(&mut self, _script: &str) {
       self.calls.push("delete".into());
     }
   }

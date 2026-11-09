@@ -656,21 +656,19 @@ pub fn test_script_modules(
   bundle_modules(&rules)
 }
 
-/// Uploads `rule`'s dry-run script, `test-<rule>`, tagged `test`, at the CPU limit `kind` gives:
-/// the dry run's for the replays, the live one for the CPU check.
+/// Uploads `rule`'s dry-run script `name`, tagged `test`, at the CPU limit `kind` gives: the dry
+/// run's for the replays, the live one for the CPU check.
 pub async fn put_test_script(
   env: &Env,
   ns: &Namespace,
+  name: &str,
   rule: Uuid,
   account: Uuid,
   kind: ScriptKind,
   modules: &[(String, String)],
 ) -> Result<(), CfAnswer> {
-  let rule_id = uuid_str(rule);
-  let req = script_name(kind, &rule_id).and_then(|name| {
-    let metadata = upload_metadata(kind, &uuid_str(account), &rule_id, ns.env())?;
-    upload_request(ns, &name, &boundary()?, &metadata, modules)
-  });
+  let metadata = upload_metadata(kind, &uuid_str(account), &uuid_str(rule), ns.env());
+  let req = metadata.and_then(|m| upload_request(ns, name, &boundary()?, &m, modules));
   let Some(req) = req else {
     return Err(unbuildable());
   };
@@ -680,12 +678,10 @@ pub async fn put_test_script(
   }
 }
 
-/// Deletes `rule`'s dry-run script; one already gone counts as deleted. A failure is left to the
-/// daily sweep, which deletes test scripts older than [`TEST_SCRIPT_MAX_AGE_SECS`].
-pub async fn delete_test_script(env: &Env, ns: &Namespace, rule: Uuid) -> Result<(), CfAnswer> {
-  let Some(req) =
-    script_name(ScriptKind::Test, &uuid_str(rule)).and_then(|name| delete_request(ns, &name))
-  else {
+/// Deletes the dry-run script `name`; one already gone counts as deleted. A failure is left to
+/// the daily sweep, which deletes test scripts older than [`TEST_SCRIPT_MAX_AGE_SECS`].
+pub async fn delete_test_script(env: &Env, ns: &Namespace, name: &str) -> Result<(), CfAnswer> {
+  let Some(req) = delete_request(ns, name) else {
     return Err(unbuildable());
   };
   match send(env, &req).await {
