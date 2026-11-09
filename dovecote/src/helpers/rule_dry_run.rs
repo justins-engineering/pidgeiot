@@ -1,13 +1,12 @@
 //! A rule's dry run: the version replayed over the flock's recent telemetry beside the deployed
 //! version, in the namespace the live rules run in, with nothing applied.
 //!
-//! The route uploads a script named for this dry run alone
-//! ([`test_script_name`](super::rules::test_script_name)) at
+//! The route uploads a script named for this dry run alone ([`test_script_name`]) at
 //! [`TEST_RULE_CPU_MS`](super::rules::TEST_RULE_CPU_MS), replays the synthetic cases, the window
 //! from empty state and the window seeded with live state, then uploads the same name again at the
 //! live limit for the CPU check and deletes it. Two uploads because only the upload's metadata
-//! binds CPU. The CPU check is a warning, never a
-//! refusal: a fresh script gets about 2 s of grace, so its pass proves little.
+//! binds CPU. The CPU check is a warning, never a refusal: a fresh script gets about 2 s of grace,
+//! so its pass proves little.
 //!
 //! Every replay answer is read as untrusted, like a live one: re-validated per run, with state
 //! threaded here from what dovecote accepts rather than from what the harness threaded.
@@ -1451,8 +1450,9 @@ mod tests {
     assert_eq!(busiest(&events, 10).len(), events.len());
   }
 
-  /// A namespace that answers from a script of outcomes. Like the platform, it will not dispatch
-  /// a name it has deleted, even after that name is uploaded again.
+  /// A namespace that answers from a script of outcomes. It never dispatches a name it has
+  /// deleted, even once uploaded again: the worst the platform has been seen to do with a reused
+  /// name, not what it always does.
   #[derive(Default)]
   struct Fake {
     budget: usize,
