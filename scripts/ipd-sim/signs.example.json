@@ -6,11 +6,12 @@
       "slug": "sign-a",
       "name": "Lot A entrance",
       "port": 8901,
-      "data_items": ["target_version", "target_config"],
+      "data_items": ["lot.name", "lot.status", "lot.capacity", "notice", "rate.hourly"],
       "poll": {
-        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_A/shadow",
-        "format": "json",
-        "every_secs": 10,
+        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_A/values",
+        "params": "format=xml",
+        "format": "xml",
+        "every_secs": 60,
         "user_agent": "sign-sim/1.0",
         "auth": "bearer",
         "token_file": "/home/YOU/.config/pidgeiot/ipd-sim/sign-a.token"
@@ -20,10 +21,14 @@
       "slug": "sign-b",
       "name": "Lot B entrance",
       "port": 8902,
-      "data_items": ["target_version", "target_config"],
+      "data_items": ["lot.name", "lot.status", "lot.capacity", "notice", "rate.hourly"],
       "poll": {
-        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_B/shadow",
-        "every_secs": 10,
+        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_B/values",
+        "params": "format=xml",
+        "format": "xml",
+        "every_secs": 60,
+        "auth": "basic",
+        "username": "sign",
         "token_file": "/home/YOU/.config/pidgeiot/ipd-sim/sign-b.token"
       }
     },
@@ -31,10 +36,12 @@
       "slug": "sign-c",
       "name": "Garage level 1",
       "port": 8903,
-      "data_items": ["target_version", "target_config"],
+      "data_items": ["lot.name", "lot.status", "lot.capacity", "notice", "rate.hourly"],
       "poll": {
-        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_C/shadow",
-        "every_secs": 10,
+        "url": "http://127.0.0.1:8787/device/pigeons/PIGEON_ID_C/values",
+        "params": "format=xml",
+        "format": "xml",
+        "every_secs": 60,
         "token_env": "IPD_SIM_TOKEN_C"
       }
     }

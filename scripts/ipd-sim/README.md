@@ -57,7 +57,10 @@ The tests open sockets on `127.0.0.1` only, on ports the kernel picks.
    token file readable by group or others, and refuses a config that holds a token itself.
 4. Copy `signs.example.json` outside the repo, for example to
    `~/.config/pidgeiot/ipd-sim/signs.json`. Put each pigeon's id in its URL and each token
-   file's path in `token_file`. The state directory is created beside the config.
+   file's path in `token_file`. The state directory is created beside the config. Each sign polls
+   `GET /device/pigeons/<id>/values?format=xml` every 60 seconds, the cadence the route's
+   per-pigeon limit of 4 a minute is sized around. Sign B sends its token as a Basic password
+   under the user name `sign`; the other two send it as a Bearer token.
 5. Start the signs and open the control page:
 
    ```sh
@@ -65,16 +68,18 @@ The tests open sockets on `127.0.0.1` only, on ports the kernel picks.
    # control page: http://127.0.0.1:8900/   signs: http://127.0.0.1:8901/ to :8903/
    ```
 
-6. Change the flock's config in the dashboard. Within one poll, each sign's page shows the new
-   `target_version`, highlighted, with the time it changed.
+6. Give the flock data items in the dashboard: each `item.<name>` key of the flock's config is
+   the data item `<name>`, so `{"item.lot.status": "OPEN"}` sets `lot.status`. A pigeon's own
+   `item.` key overrides the flock's for that sign only. Within one poll, each sign's page shows
+   the new values, highlighted, with the time each changed.
 7. Stop one sign on the control page. Its port closes and its polls stop, so the dashboard shows
-   it Stale after about 5 minutes and Offline after about 30.
+   it Stale about 6 minutes after its last poll and Offline about 31 minutes after.
 
-The example config polls the device shadow route because it exists today. It shows the gap
-build-list item 2 closes: the shadow carries `target_config` as one JSON string, so a sign reads
-it as a single data item. Once item 2's values route lands, point `url` at it and list the
-profile's data item names in `data_items`. Set `"format": "xml"` if that route answers
-`<DataItems>`.
+The example config asks for `<DataItems>` XML (`"params": "format=xml"` and `"format": "xml"`),
+the shape the manual names and the one to use for a sign: an XML name is a plain string, where
+the sign's JSON reader takes the dot in `lot.status` as a path step. List in `data_items`
+the names the sign defines; a served name it does not define is ignored, as on a real sign.
+`docs/api.md` documents the route.
 
 ## Config
 
