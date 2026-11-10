@@ -149,6 +149,7 @@ pub use device_limits::device_surface_limit;
 mod device_values;
 pub use device_values::ValuesFormat;
 pub use device_values::bill_values_poll;
+pub use device_values::values_limit_key;
 pub use device_values::values_request;
 
 mod environment;

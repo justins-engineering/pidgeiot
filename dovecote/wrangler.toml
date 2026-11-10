@@ -260,6 +260,9 @@ simple = { limit = 120, period = 60 }
 
 # Per-pigeon throttle on a sign's values poll (GET /device/pigeons/:id/values),
 # a surface that is neither billed nor counted, like the shadow poll above.
+# Keyed by pigeon and source address: the count runs before the token is
+# checked, and a limit this low on the pigeon alone would let anyone who knows
+# its id spend it and freeze the sign's values.
 #
 # SIZING. A sign polls on whatever cadence someone typed into its web UI, and
 # the setup guide recommends 60s. 4/60s is twice what a 30s sign sends, so a

@@ -53,8 +53,8 @@ use crate::helpers::{
   stripe_configured, sync_customer_tax_identity, update_alert_definition, update_dashboard,
   update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, values_request, verify_cf_access, verify_device_via_do, verify_turnstile,
-  verify_webhook_signature, webhook_action, write_business_details,
+  upsert_flock_firmware, values_limit_key, values_request, verify_cf_access, verify_device_via_do,
+  verify_turnstile, verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::helpers::{FlockAccess, FlockAction, authorize_flock, check_rule_cap};
 use crate::queue::TelemetryMessage;
@@ -1493,8 +1493,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       };
 
       // A sign polls on whatever cadence its web UI was given, and nothing else bounds it.
+      let limit_key = values_limit_key(&pigeon_id, auth_guard.address());
       if let Some(limited) =
-        device_surface_limit(&ctx.env, &DEVICE_VALUES_LIMITER, &pigeon_id, &cors).await
+        device_surface_limit(&ctx.env, &DEVICE_VALUES_LIMITER, &limit_key, &cors).await
       {
         return limited;
       }

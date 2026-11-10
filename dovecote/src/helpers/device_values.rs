@@ -48,6 +48,24 @@ pub fn values_request(url: &Url, local_dev: bool) -> Result<ValuesFormat, &'stat
   Ok(format)
 }
 
+/// The values limiter's key: the pigeon, and the address polling it when there is one.
+///
+/// The limiter counts before the pigeon object checks the token, so keyed on the pigeon alone
+/// anyone who knows its id could spend a sign's few polls a minute with junk tokens and freeze its
+/// values, while staying under the failed-auth budget. With the address, an outsider spends only
+/// their own bucket and a misconfigured sign, one address, stays bounded. A request with no
+/// address to count (the CoAP terminator, which already holds a per-pigeon key) uses the pigeon.
+pub fn values_limit_key(pigeon_id: &str, address: Option<&str>) -> String {
+  let Some(address) = address else {
+    return pigeon_id.to_string();
+  };
+  let mut key = String::with_capacity(pigeon_id.len() + 1 + address.len());
+  key.push_str(pigeon_id);
+  key.push(' ');
+  key.push_str(address);
+  key
+}
+
 /// The one place a values poll would count toward billing, and today it counts for nothing: a
 /// poll is neither a billable message nor connected activity, as a shadow poll is not. Counting
 /// polls as connected activity means stamping `last_billable_activity` here for an answer that
@@ -122,6 +140,20 @@ mod tests {
     assert_eq!(read(http, false), Err(VALUES_NOT_HTTPS));
     let dev = "http://127.0.0.1:8787/device/pigeons/abc/values?format=xml";
     assert_eq!(read(dev, true), Ok(ValuesFormat::Xml));
+  }
+
+  #[test]
+  fn the_limit_key_separates_addresses_and_pigeons() {
+    let sign = values_limit_key("abc", Some("203.0.113.7"));
+    assert_eq!(sign, "abc 203.0.113.7");
+    assert_ne!(sign, values_limit_key("abc", Some("198.51.100.9")));
+    assert_ne!(sign, values_limit_key("abd", Some("203.0.113.7")));
+    assert_ne!(sign, values_limit_key("abc", None));
+  }
+
+  #[test]
+  fn with_no_address_the_limit_key_is_the_pigeon() {
+    assert_eq!(values_limit_key("abc", None), "abc");
   }
 
   #[test]

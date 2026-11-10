@@ -21,8 +21,9 @@ pub const DEVICE_SHADOW_LIMITER: DeviceLimiter = DeviceLimiter {
   window_secs: 60,
 };
 
-/// Per-pigeon throttle on `GET /device/pigeons/:id/values`. Sizing lives beside the binding in
-/// `wrangler.toml`.
+/// Per-pigeon, per-address throttle on `GET /device/pigeons/:id/values`, keyed by
+/// [`values_limit_key`](super::device_values::values_limit_key). Sizing lives beside the binding
+/// in `wrangler.toml`.
 pub const DEVICE_VALUES_LIMITER: DeviceLimiter = DeviceLimiter {
   binding: "DEVICE_VALUES_LIMITER",
   window_secs: 60,
@@ -81,7 +82,9 @@ thread_local! {
 /// device's address is neither stable (carrier NAT) nor unique (the CoAP
 /// terminator fronts a whole fleet from one egress address). Requests
 /// proxied by the terminator carry the pigeon id in their path exactly as
-/// direct HTTPS requests do, so they are covered on the same key.
+/// direct HTTPS requests do, so they are covered on the same key. `key` is
+/// that pigeon id, except on the values route, whose low limit also needs
+/// the address (see [`values_limit_key`](super::device_values::values_limit_key)).
 ///
 /// Fails open. Counters are approximate and roughly per-colo, which
 /// devices being colo-sticky makes acceptable, and which makes this a
@@ -91,7 +94,7 @@ thread_local! {
 pub async fn device_surface_limit(
   env: &Env,
   limiter: &DeviceLimiter,
-  pigeon_id: &str,
+  key: &str,
   cors: &Cors,
 ) -> Option<worker::Result<Response>> {
   let binding = limiter.binding;
@@ -103,7 +106,7 @@ pub async fn device_surface_limit(
     }
   };
 
-  match handle.limit(pigeon_id.to_string()).await {
+  match handle.limit(key.to_string()).await {
     Ok(outcome) if !outcome.success => Some(rate_limited_response(
       cors,
       limiter.window_secs,
@@ -154,6 +157,11 @@ impl DeviceAuthGuard {
     DeviceAuthGuard {
       address: req.headers().get("CF-Connecting-IP").ok().flatten(),
     }
+  }
+
+  /// The address this request is counted against, `None` when it is exempt or has none.
+  pub fn address(&self) -> Option<&str> {
+    self.address.as_deref()
   }
 
   /// Whether this address is already known to be over its budget, and so

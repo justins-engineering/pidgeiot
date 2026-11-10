@@ -291,9 +291,9 @@ There is no general-purpose rate limiting in `dovecote` today (beyond whatever C
 applies at the platform level). The routes that carry a real limiter carry it individually,
 through Cloudflare's rate-limiter binding: the two public unauthenticated forms (`POST /errors`,
 `POST /contact`, keyed per IP) and the device surfaces that are neither billed nor counted
-(shadow polls, values polls and FOTA chunk downloads, keyed per pigeon, plus a per-IP budget on
-requests that fail device authentication). Every one of them shares the same properties, and
-they are worth stating once rather than in each row: the counters are approximate and roughly
+(shadow polls and FOTA chunk downloads keyed per pigeon, values polls per pigeon and source
+address, plus a per-IP budget on requests that fail device authentication). Every one of them
+shares the same properties, and they are worth stating once rather than in each row: the counters are approximate and roughly
 per-colo, so a limit bounds runaway volume rather than gating precisely; over the limit answers
 `429` with `Retry-After` and **never** `401`, which the dashboard treats as a sign-out signal;
 and each check fails **open** on a binding fault, because a limiter outage taking a fleet offline
@@ -340,7 +340,7 @@ would be worse than a window of unthrottled traffic. The limits that do exist ar
 | `POST /contact` — minimum time on the form | 2s (`capsules::MIN_CONTACT_FILL_MS`) | `capsules::contact::validate`, `400` under the floor |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
 | `GET /device/pigeons/:id/shadow` — requests per pigeon | 120 / 60s | `wrangler.toml` `DEVICE_SHADOW_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice the 60/min a 1s `telemetry_interval` produces, which is the fastest poll cadence the platform can express |
-| `GET /device/pigeons/:id/values` — requests per pigeon | 4 / 60s | `wrangler.toml` `DEVICE_VALUES_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice what a sign polling every 30s sends; 60s is the recommended cadence |
+| `GET /device/pigeons/:id/values` — requests per pigeon and source address | 4 / 60s | `wrangler.toml` `DEVICE_VALUES_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice what a sign polling every 30s sends; 60s is the recommended cadence |
 | `GET /device/pigeons/:id/firmware` — Range requests per pigeon | 400 / 10s (2400/min sustained) | `wrangler.toml` `DEVICE_FIRMWARE_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Set well above any real download rate on purpose: a device aborts the whole transfer on its first chunk error. The short window is load-bearing, not cosmetic — see the note below |
 | `/device/pigeons/:id/*` — **failed** device authentications per IP | 10 / 60s | `wrangler.toml` `DEVICE_AUTH_FAIL_LIMITER` + `helpers/device_limits.rs::DeviceAuthGuard`, `429` over the limit. Only `401`s are counted, so a healthy device never touches it; the CoAP terminator's own address is exempt (see below) |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
@@ -3660,7 +3660,7 @@ which version reached a sign.
 | `200` | The data items, as above |
 | `400` | `format` other than `json` or `xml`; a malformed pigeon id; a plain `http://` URL (refused rather than serving a token sent in clear; local `wrangler dev` excepted) |
 | `401` | No credential, a malformed one, an expired token, another pigeon's token, a deleted pigeon |
-| `429` | Over 4 polls a minute for this pigeon, or this address over its failed-auth budget; carries `Retry-After` |
+| `429` | Over 4 polls a minute for this pigeon from this address, or this address over its failed-auth budget; carries `Retry-After` |
 | `500` | The pigeon's stored shadow could not be read |
 
 A poll is device contact: it stamps `last_seen_at`, and nothing else. It does not mark
