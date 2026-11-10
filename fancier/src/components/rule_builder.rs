@@ -794,12 +794,18 @@ mod tests {
 
   thread_local! {
     static PAGE: RefCell<Option<(Signal<RuleModel>, Signal<u32>)>> = const { RefCell::new(None) };
+    static START: RefCell<Option<RuleModel>> = const { RefCell::new(None) };
   }
 
-  /// The rule page's part: it mounts the form on the starter and owns the signals a load writes.
+  /// The rule page's part: it mounts the form on the starter, or on `START` when a test set one,
+  /// and owns the signals a load writes.
   #[component]
   fn Page() -> Element {
-    let model = use_signal(starter_model);
+    let model = use_signal(|| {
+      START
+        .with(|s| s.borrow_mut().take())
+        .unwrap_or_else(starter_model)
+    });
     let generation = use_signal(|| 0u32);
     use_hook(|| PAGE.with(|p| *p.borrow_mut() = Some((model, generation))));
     rsx! {
@@ -848,5 +854,33 @@ mod tests {
     });
     dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
     assert_eq!(values_labelled(&dom, "Minutes it must last"), [""]);
+  }
+
+  fn held(key: &str, for_secs: u32) -> RuleCondition {
+    RuleCondition::Compare {
+      key: key.to_string(),
+      op: RuleCompareOp::Above,
+      to: RuleOperand::Number(40.0),
+      for_secs,
+    }
+  }
+
+  #[test]
+  fn removing_a_condition_leaves_the_next_one_its_own_hold() {
+    let mut start = starter_model();
+    start.only_if = vec![held("temp_c", 120), held("rh", 600)];
+    START.with(|s| *s.borrow_mut() = Some(start));
+    let mut dom = VirtualDom::new(Page);
+    dom.rebuild_in_place();
+    assert_eq!(values_labelled(&dom, "Minutes it must last"), ["2", "10"]);
+
+    // What "Remove this condition" does on the first row.
+    dom.in_runtime(|| {
+      let (mut model, mut generation) = PAGE.with(|p| p.borrow().expect("page mounted"));
+      model.write().only_if.remove(0);
+      generation += 1;
+    });
+    dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+    assert_eq!(values_labelled(&dom, "Minutes it must last"), ["10"]);
   }
 }
