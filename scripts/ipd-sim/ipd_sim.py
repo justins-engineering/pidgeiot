@@ -11,18 +11,31 @@ what the published documents say a sign does, and no more:
 - reads and writes SOAP 1.1 under the names of the 2007 WSDL and the 2013 .NET client
   (rpc/encoded, SOAPAction http://tempuri.org/action/SignSvr.<name>);
 - keeps a sign's layouts, messages and data items as XML files in the manual's chapter 21
-  shape, with the 2015 reference's add-or-update, persist and reload rules.
+  shape, with the 2015 reference's add-or-update, persist and reload rules;
+- serves, on its own port, those SOAP actions at POST /Soap1.wsdl (AddUpdateLayout,
+  AddUpdateMessage, UpdateDataItemValues, SendCommand 119 and 106, GetSignInfo), a status page
+  at / and its state at /state.json.
 
+One process plays every sign in a config; a control page stops and starts each one. Every port
+binds 127.0.0.1 unless --bind says otherwise.
+
+  python3 scripts/ipd-sim/ipd_sim.py --config signs.json
   python3 -m unittest discover -s scripts/ipd-sim
 
 Standard library only.
 """
 
+import argparse
 import base64
+import hashlib
+import html
 import http.client
+import http.server
 import json
 import os
+import signal
 import ssl
+import sys
 import threading
 import time
 import urllib.parse
@@ -604,3 +617,345 @@ def load_config(path):
              where + ": data_items must be names")
     check_poll(sign.get("poll"), where)
   return config
+
+
+DEFAULT_BIND = "127.0.0.1"
+MAX_SOAP_BYTES = 4 << 20
+FRESH_SECS = 10
+SOAP_PATH = "/Soap1.wsdl"  # the 2013 client's config posts to http://<sign>/Soap1.wsdl
+
+
+def log(text):
+  print(time.strftime("%H:%M:%SZ", time.gmtime()) + " " + text, file=sys.stderr, flush=True)
+
+
+def utc(seconds):
+  return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(seconds)) if seconds else "never"
+
+
+class Sign:
+  """One simulated sign: its own port (SOAP, page, state.json) and its poller.
+
+  start() reads the state directory back as a sign reads its files at boot, so a stop and start
+  loses unpersisted layouts and messages and keeps data item values.
+  """
+
+  def __init__(self, config, state_root, bind, token):
+    self.config = config
+    self.slug = config["slug"]
+    self.dir = os.path.join(state_root, self.slug)
+    self.bind = bind
+    self.token = token
+    self.mac = "02" + hashlib.sha256(self.slug.encode("utf-8")).hexdigest()[:10]
+    self.port = config["port"]
+    self.state = None
+    self.server = None
+    self._lock = threading.Lock()
+    self._stop = threading.Event()
+    self._threads = []
+
+  @property
+  def running(self):
+    return self.server is not None
+
+  def start(self):
+    with self._lock:
+      if self.server:
+        return
+      self.state = SignState(self.dir, self.config["data_items"])
+      server = http.server.ThreadingHTTPServer((self.bind, self.config["port"]), SignHandler)
+      server.sign = self
+      self.port = server.server_address[1]
+      self._stop = threading.Event()
+      self._threads = [threading.Thread(target=server.serve_forever, daemon=True),
+                       threading.Thread(target=self._poll_loop, args=(self._stop, self.state),
+                                        daemon=True)]
+      self.server = server
+      for thread in self._threads:
+        thread.start()
+      log(self.slug + ": started on " + self.bind + ":" + str(self.port))
+
+  def stop(self):
+    with self._lock:
+      if not self.server:
+        return
+      self._stop.set()
+      self.server.shutdown()
+      self.server.server_close()
+      for thread in self._threads:
+        thread.join(timeout=15)
+      self.server = None
+      log(self.slug + ": stopped")
+
+  def _poll_loop(self, stop, state):
+    poll = self.config["poll"]
+    while not stop.is_set():
+      status = poll_once(poll, self.token, state)
+      if not status["ok"]:
+        log(self.slug + ": poll kept last values: " + status["error"])
+      stop.wait(poll["every_secs"])
+
+  def call(self, method, parts):
+    """The SOAP answer for one call, or SoapError for one this simulator does not carry."""
+    state, now = self.state, time.time()
+    if method == "GetSignInfo":
+      info = sign_info_xml(self.config["name"], self.config["height"], self.config["width"],
+                           self.mac, self.bind, now)
+      return soap_response(method, [("Result", "int", 1), ("signInfoXml", "string", info)])
+    if method == "AddUpdateLayout":
+      result = state.add_update_layout(parts.get("layoutXml", ""))
+    elif method == "AddUpdateMessage":
+      result = state.add_update_message(parts.get("messageXml", ""))
+    elif method == "UpdateDataItemValues":
+      result = state.update_data_item_values(parts.get("dataItemValuesXml", ""), now)
+    elif method == "SendCommand":
+      try:
+        command_id = int(parts.get("commandID", ""))
+      except ValueError:
+        raise SoapError("commandID is not an integer") from None
+      result = state.send_command(command_id)
+    else:
+      raise SoapError("not simulated: " + method)
+    log(self.slug + ": " + method + " answered " + str(result))
+    return soap_response(method, [("Result", "int", result)])
+
+  def status(self):
+    """The sign's state for /state.json and the control page. Never carries the token."""
+    url = urllib.parse.urlsplit(self.config["poll"]["url"])
+    status = {"slug": self.slug, "name": self.config["name"], "label": LABEL,
+              "running": self.running, "port": self.port,
+              "polls": url.scheme + "://" + url.netloc + url.path,
+              "every_secs": self.config["poll"]["every_secs"]}
+    if self.state:
+      status.update(self.state.snapshot())
+    return status
+
+  def page(self, now):
+    """The sign's status page: plain HTML that reloads itself every two seconds."""
+    s = self.status()
+    e = html.escape
+    poll = s.get("last_poll")
+    if not poll:
+      poll_line = "No poll yet."
+    elif poll["ok"]:
+      poll_line = ("OK at " + utc(poll["at"]) + ", HTTP " + str(poll["http"]) + ", "
+                   + str(poll["updated"]) + " data items read")
+      if poll["ignored_count"]:
+        poll_line += (", " + str(poll["ignored_count"]) + " names ignored (no such data item: "
+                      + ", ".join(poll["ignored"]) + ")")
+      poll_line += "."
+    else:
+      poll_line = ("Failed at " + utc(poll["at"]) + ": " + poll["error"]
+                   + ". Showing the last values.")
+    rows = []
+    for item in s.get("data_items", []):
+      fresh = item["changed_at"] and now - item["changed_at"] < FRESH_SECS
+      rows.append('<tr' + (' class="fresh"' if fresh else '') + '><td>' + e(item["name"])
+                  + '</td><td class="value">' + e(item["value"]) + '</td><td>'
+                  + e(utc(item["changed_at"])) + '</td></tr>')
+    layouts = "".join('<li>' + e(l["name"] or "") + ' (recID ' + e(l["recID"] or "") + ', target '
+                      + e(l["targetID"] or "") + ', ' + str(l["zones"]) + ' zones)</li>'
+                      for l in s.get("layouts", []))
+    messages = "".join('<li>target ' + e(m["targetid"] or "") + ' order ' + e(m["order"] or "")
+                       + ': ' + e(m["text"]) + '</li>' for m in s.get("messages", []))
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<meta http-equiv="refresh" content="2"><title>' + e(s["name"]) + ' (simulated)'
+            '</title><style>' + PAGE_CSS + '</style></head><body>'
+            '<p class="label">Simulated, from your 2015 reference</p>'
+            '<h1>' + e(s["name"]) + '</h1>'
+            '<p>Polls ' + e(s["polls"]) + ' every ' + e(str(s["every_secs"])) + ' s.</p>'
+            '<p class="poll' + ('' if poll and poll["ok"] else ' bad') + '">Last poll: '
+            + e(poll_line) + '</p><p>Last good poll: ' + e(utc(s.get("last_ok_at"))) + '</p>'
+            '<h2>Data items</h2><table><thead><tr><th>Name</th><th>Value</th>'
+            '<th>Last changed (UTC)</th></tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+            '<h2>Layouts</h2><ul>' + (layouts or '<li>none</li>') + '</ul>'
+            '<h2>Messages</h2><ul>' + (messages or '<li>none</li>') + '</ul>'
+            '<p>' + ('Unsaved layout or message edits: SendCommand 119 (Persist All) keeps them.'
+                     if s.get("unsaved") else 'Layouts and messages match the saved files.')
+            + '</p><p class="foot">PidgeIoT test harness, ' + e(LABEL) + '. Not any maker&#39;s'
+            ' software.</p></body></html>')
+
+
+PAGE_CSS = ("body{font:18px/1.4 system-ui,sans-serif;margin:16px;background:#fff;color:#111}"
+            ".label{display:inline-block;background:#ffe08a;color:#111;font-weight:700;"
+            "padding:4px 10px;border-radius:4px}"
+            "table{border-collapse:collapse;width:100%;max-width:900px}"
+            "th,td{border-bottom:1px solid #ccc;padding:6px 8px;text-align:left}"
+            ".value{font:700 28px/1.2 ui-monospace,monospace}"
+            "tr.fresh{background:#c8f7c5;transition:background 1s}"
+            ".poll.bad{color:#a00000;font-weight:700}.foot{color:#555;font-size:14px}"
+            "button{font:inherit;padding:2px 10px}")
+
+
+class QuietHandler(http.server.BaseHTTPRequestHandler):
+  """Request handling shared by the sign and control ports, without per-request log lines."""
+
+  server_version = "ipd-sim"
+
+  def send(self, code, content_type, body, extra=()):
+    self.send_response(code)
+    self.send_header("Content-Type", content_type)
+    self.send_header("Content-Length", str(len(body)))
+    self.send_header("Cache-Control", "no-store")
+    for name, value in extra:
+      self.send_header(name, value)
+    self.end_headers()
+    self.wfile.write(body)
+
+  def send_text(self, code, text):
+    self.send(code, "text/plain; charset=utf-8", (text + "\n").encode("utf-8"))
+
+  def log_message(self, *args):
+    pass
+
+
+class SignHandler(QuietHandler):
+  def do_GET(self):
+    sign = self.server.sign
+    if self.path in ("/", "/index.html"):
+      self.send(200, "text/html; charset=utf-8", sign.page(time.time()).encode("utf-8"))
+    elif self.path == "/state.json":
+      self.send(200, "application/json", json.dumps(sign.status()).encode("utf-8"))
+    else:
+      self.send_text(404, "not found")
+
+  def do_POST(self):
+    if self.path != SOAP_PATH:
+      self.send_text(404, "not found")
+      return
+    try:
+      length = int(self.headers.get("Content-Length", ""))
+    except ValueError:
+      self.send_text(411, "Content-Length required")
+      return
+    if not 0 <= length <= MAX_SOAP_BYTES:
+      self.send_text(413, "body too large")
+      return
+    body = self.rfile.read(length)
+    try:
+      method, parts = parse_soap(body, self.headers.get("SOAPAction"))
+      reply = self.server.sign.call(method, parts)
+    except SoapError as e:
+      self.send(500, "text/xml; charset=utf-8", soap_fault("Client", str(e)))
+      return
+    self.send(200, "text/xml; charset=utf-8", reply)
+
+
+class Fleet:
+  """N signs plus a control port whose page stops and starts each one."""
+
+  def __init__(self, config, bind, tokens):
+    self.bind = bind
+    self.control_port = config["control_port"]
+    self.signs = {s["slug"]: Sign(s, config["state_root"], bind, tokens[s["slug"]])
+                  for s in config["signs"]}
+    self.server = None
+
+  def start(self):
+    self.server = http.server.ThreadingHTTPServer((self.bind, self.control_port), ControlHandler)
+    self.server.fleet = self
+    self.control_port = self.server.server_address[1]
+    threading.Thread(target=self.server.serve_forever, daemon=True).start()
+    for sign in self.signs.values():
+      sign.start()
+
+  def stop(self):
+    for sign in self.signs.values():
+      sign.stop()
+    if self.server:
+      self.server.shutdown()
+      self.server.server_close()
+      self.server = None
+
+  def page(self, host):
+    e = html.escape
+    rows = []
+    for sign in self.signs.values():
+      link = "http://" + host + ":" + str(sign.port) + "/"
+      action = "stop" if sign.running else "start"
+      rows.append('<tr><td>' + e(sign.config["name"]) + '</td><td>'
+                  + ('<a href="' + e(link) + '">' + e(link) + '</a>' if sign.running else '')
+                  + '</td><td>' + ('running' if sign.running else 'stopped') + '</td><td>'
+                  '<form method="post" action="/signs/' + e(sign.slug) + '/' + action + '">'
+                  '<button>' + action.capitalize() + '</button></form></td></tr>')
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<meta http-equiv="refresh" content="2"><title>Simulated signs</title><style>'
+            + PAGE_CSS + '</style></head><body><p class="label">Simulated, from your 2015'
+            ' reference</p><h1>Simulated signs</h1><table><thead><tr><th>Sign</th><th>Page</th>'
+            '<th>State</th><th></th></tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+            '<p class="foot">PidgeIoT test harness. Not software from any maker.</p></body></html>')
+
+
+class ControlHandler(QuietHandler):
+  def _host(self):
+    return urllib.parse.urlsplit("http://" + self.headers.get("Host", "")).hostname or "127.0.0.1"
+
+  def do_GET(self):
+    fleet = self.server.fleet
+    if self.path == "/":
+      self.send(200, "text/html; charset=utf-8", fleet.page(self._host()).encode("utf-8"))
+    elif self.path == "/signs.json":
+      body = json.dumps([s.status() for s in fleet.signs.values()]).encode("utf-8")
+      self.send(200, "application/json", body)
+    else:
+      self.send_text(404, "not found")
+
+  def do_POST(self):
+    # A page on another origin must not stop a sign through the browser.
+    origin = self.headers.get("Origin")
+    if origin is not None and origin != "http://" + self.headers.get("Host", ""):
+      self.send_text(403, "cross-origin request refused")
+      return
+    parts = self.path.strip("/").split("/")
+    sign = self.server.fleet.signs.get(parts[1]) if len(parts) == 3 else None
+    if sign is None or parts[0] != "signs" or parts[2] not in ("stop", "start"):
+      self.send_text(404, "not found")
+      return
+    try:
+      if parts[2] == "stop":
+        sign.stop()
+      else:
+        sign.start()
+    except OSError as e:
+      self.send_text(409, "could not start " + sign.slug + ": " + str(e))
+      return
+    self.send(303, "text/plain; charset=utf-8", b"", (("Location", "/"),))
+
+
+def main(argv=None):
+  parser = argparse.ArgumentParser(
+    description="Simulated polling signs (" + LABEL + "). A PidgeIoT test harness.")
+  parser.add_argument("--config", required=True, help="fleet config JSON (see README.md)")
+  parser.add_argument("--bind", default=DEFAULT_BIND,
+                      help="address every port binds; the SOAP and control ports have no auth,"
+                      " so anything but loopback exposes them (default 127.0.0.1)")
+  args = parser.parse_args(argv)
+  try:
+    config = load_config(args.config)
+    tokens = {s["slug"]: load_token(s["poll"], os.environ) for s in config["signs"]}
+  except ConfigError as e:
+    print("ipd-sim: " + str(e), file=sys.stderr)
+    return 2
+  if args.bind not in ("127.0.0.1", "::1", "localhost"):
+    log("warning: binding " + args.bind + " exposes unauthenticated SOAP and control ports")
+  fleet = Fleet(config, args.bind, tokens)
+  try:
+    fleet.start()
+  except OSError as e:
+    print("ipd-sim: " + str(e), file=sys.stderr)
+    fleet.stop()
+    return 1
+  log("control page http://" + args.bind + ":" + str(fleet.control_port) + "/")
+  done = threading.Event()
+  signal.signal(signal.SIGTERM, lambda *_: done.set())
+  signal.signal(signal.SIGINT, lambda *_: done.set())
+  while not done.wait(1):
+    pass
+  fleet.stop()
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())

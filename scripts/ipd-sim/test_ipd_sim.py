@@ -7,6 +7,7 @@ Sockets open only on 127.0.0.1 with ports the kernel picks.
 """
 
 import base64
+import http.client
 import http.server
 import json
 import os
@@ -470,6 +471,128 @@ class ConfigTest(unittest.TestCase):
     for config in bad:
       with self.assertRaises(ipd_sim.ConfigError):
         ipd_sim.load_config(self.write(config))
+
+
+def wait_for(predicate, secs=5.0):
+  deadline = time.monotonic() + secs
+  while time.monotonic() < deadline:
+    if predicate():
+      return True
+    time.sleep(0.05)
+  return False
+
+
+class FleetTest(unittest.TestCase):
+  """Two signs on kernel-picked ports, polling a fake source, driven over HTTP."""
+
+  def setUp(self):
+    self._tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self._tmp.cleanup)
+    quiet = ipd_sim.log
+    ipd_sim.log = lambda text: None
+    self.addCleanup(setattr, ipd_sim, "log", quiet)
+    self.source = FakeSource()
+    self.addCleanup(self.source.close)
+    self.source.answers.append((200, b'{"rate": "<2.50>", "lot.status": "OPEN"}'))
+    signs = []
+    for slug in ("sign-a", "sign-b"):
+      poll = poll_section(self.source.port, every_secs=1)
+      signs.append({"slug": slug, "name": "Lot " + slug[-1].upper(), "port": 0, "height": 32,
+                    "width": 160, "data_items": ["rate", "lot.status"], "poll": poll})
+    config = {"signs": signs, "control_port": 0, "state_root": self._tmp.name}
+    self.fleet = ipd_sim.Fleet(config, ipd_sim.DEFAULT_BIND, {"sign-a": FAKE_TOKEN,
+                                                              "sign-b": FAKE_TOKEN})
+    self.fleet.start()
+    self.addCleanup(self.fleet.stop)
+    self.a = self.fleet.signs["sign-a"]
+
+  def request(self, port, method, path, body=None, headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+      conn.request(method, path, body=body, headers=headers or {})
+      response = conn.getresponse()
+      return response.status, response.read()
+    finally:
+      conn.close()
+
+  def soap(self, method, parts, soap_action=None):
+    headers = {"Content-Type": "text/xml; charset=utf-8",
+               "SOAPAction": soap_action or action(method)}
+    status, body = self.request(self.a.port, "POST", "/Soap1.wsdl", soap_request(method, parts),
+                                headers)
+    response = ET.fromstring(body).find("{http://schemas.xmlsoap.org/soap/envelope/}Body")[0]
+    return status, {p.tag: p.text for p in response}
+
+  def test_binds_loopback_only(self):
+    self.assertEqual(self.a.server.server_address[0], "127.0.0.1")
+    self.assertEqual(self.fleet.server.server_address[0], "127.0.0.1")
+
+  def test_page_shows_label_and_polled_values(self):
+    self.assertTrue(wait_for(lambda: any(i["value"] for i in self.a.status()["data_items"])))
+    status, body = self.request(self.a.port, "GET", "/")
+    page = body.decode("utf-8")
+    self.assertEqual(status, 200)
+    self.assertIn("Simulated, from your 2015 reference", page)
+    self.assertIn("Lot A", page)
+    self.assertIn("&lt;2.50&gt;", page)
+    self.assertNotIn("<2.50>", page)
+    self.assertNotIn(FAKE_TOKEN, page)
+    _, state = self.request(self.a.port, "GET", "/state.json")
+    self.assertEqual(json.loads(state)["label"], ipd_sim.LABEL)
+
+  def test_soap_actions(self):
+    status, parts = self.soap("AddUpdateLayout", [("layoutXml", "string", LAYOUT_XML)])
+    self.assertEqual((status, parts["Result"]), (200, "3054"))
+    _, parts = self.soap("AddUpdateMessage", [("messageXml", "string", MESSAGE_XML)])
+    self.assertGreater(int(parts["Result"]), 0)
+    values = '<DataItems><DataItem name="rate">7</DataItem></DataItems>'
+    _, parts = self.soap("UpdateDataItemValues", [("dataItemValuesXml", "string", values)])
+    self.assertEqual(parts["Result"], "1")
+    for command in (119, 106):
+      _, parts = self.soap("SendCommand", [("commandID", "int", command),
+                                           ("commandText", "string", "")])
+      self.assertEqual(parts["Result"], "1")
+    _, parts = self.soap("GetSignInfo", [])
+    self.assertEqual(parts["Result"], "1")
+    info = ET.fromstring(parts["signInfoXml"])
+    self.assertEqual((info.get("name"), info.findtext("location")), ("Lot A", ipd_sim.LABEL))
+
+  def test_soap_refusals_are_faults(self):
+    status, parts = self.soap("GetImages", [])
+    self.assertEqual(status, 500)
+    self.assertIn("not simulated", parts["faultstring"])
+    status, parts = self.soap("GetSignInfo", [], soap_action=action("SendCommand"))
+    self.assertEqual(status, 500)
+    status, _ = self.request(self.a.port, "POST", "/Soap1.wsdl", soap_request("GetSignInfo", []))
+    self.assertEqual(status, 500)
+
+  def test_stop_and_start_one_sign(self):
+    self.assertTrue(wait_for(lambda: any(i["value"] for i in self.a.status()["data_items"])))
+    self.soap("AddUpdateLayout", [("layoutXml", "string", LAYOUT_XML)])
+    self.soap("SendCommand", [("commandID", "int", 119), ("commandText", "string", "")])
+    port, control = self.a.port, self.fleet.control_port
+    status, _ = self.request(control, "POST", "/signs/sign-a/stop")
+    self.assertEqual(status, 303)
+    self.assertFalse(self.a.running)
+    self.assertTrue(self.fleet.signs["sign-b"].running)
+    with self.assertRaises(OSError):
+      self.request(port, "GET", "/")
+    status, body = self.request(control, "GET", "/")
+    self.assertIn(b"stopped", body)
+    status, _ = self.request(control, "POST", "/signs/sign-a/start")
+    self.assertEqual(status, 303)
+    snap = self.a.status()
+    self.assertEqual({i["name"]: i["value"] for i in snap["data_items"]},
+                     {"rate": "<2.50>", "lot.status": "OPEN"})
+    self.assertEqual([l["recID"] for l in snap["layouts"]], ["3054"])
+
+  def test_control_refuses_other_origins_and_unknown_signs(self):
+    status, _ = self.request(self.fleet.control_port, "POST", "/signs/sign-a/stop",
+                             headers={"Origin": "http://example.com"})
+    self.assertEqual(status, 403)
+    self.assertTrue(self.a.running)
+    status, _ = self.request(self.fleet.control_port, "POST", "/signs/nope/stop")
+    self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":
