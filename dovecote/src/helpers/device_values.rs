@@ -74,8 +74,8 @@ pub const CONNECTED_HEADER: &str = "X-Pigeon-Connected";
 /// The `CONNECTED_HEADER` value for an answered poll, if it is due one.
 ///
 /// Due only with the seen stamp, which the pigeon's object sets at most once a minute, so a sign
-/// costs at most one Postgres write a minute whatever its cadence; the statement itself moves the
-/// stamp at most every six hours. A pigeon whose other contact took that minute's seen stamp is
+/// costs at most one Postgres statement a minute whatever its cadence; the statement itself moves
+/// the stamp at most every six hours. A pigeon whose other contact took that minute's seen stamp is
 /// already stamping through its own billable reports, or is marked by a later poll.
 pub fn values_poll_connected(status: u16, seen: Option<&str>) -> Option<&str> {
   let seen = seen?;
@@ -87,14 +87,19 @@ pub fn values_poll_connected(status: u16, seen: Option<&str>) -> Option<&str> {
 /// the period, as one that reports is.
 ///
 /// Marks the answer rather than stamping from here: a route closure has no `wait_until`, and an
-/// awaited `UPDATE` would hold the sign's answer.
-pub fn bill_values_poll(response: &mut Response) {
-  let seen = crate::helpers::seen_of(response);
-  if let Some(value) = values_poll_connected(response.status_code(), seen.as_deref())
-    && let Err(e) = response.headers_mut().set(CONNECTED_HEADER, value)
-  {
+/// awaited `UPDATE` would hold the sign's answer. The mark goes on a copy of the headers because
+/// the object's answer arrives with immutable ones, which refuse a `set`.
+pub fn bill_values_poll(response: Response) -> Response {
+  let seen = crate::helpers::seen_of(&response);
+  let Some(value) = values_poll_connected(response.status_code(), seen.as_deref()) else {
+    return response;
+  };
+  let headers = response.headers().clone();
+  if let Err(e) = headers.set(CONNECTED_HEADER, value) {
     worker::console_error!("Failed to mark a values poll connected: {e}");
+    return response;
   }
+  response.with_headers(headers)
 }
 
 #[cfg(test)]

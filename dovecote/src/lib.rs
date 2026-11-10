@@ -1520,7 +1520,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
         return limited;
       }
 
-      let Ok(mut do_response) = proxy_to_pigeon_do(req, "", None, &obj_id, format.do_path()).await
+      let Ok(do_response) = proxy_to_pigeon_do(req, "", None, &obj_id, format.do_path()).await
       else {
         return Response::error("Internal Server Error", 500)
           .unwrap()
@@ -1529,8 +1529,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       if do_response.status_code() == 401 {
         auth_guard.note_failure(&ctx.env).await;
       }
-      bill_values_poll(&mut do_response);
-      do_response.with_cors(&cors)
+      bill_values_poll(do_response).with_cors(&cors)
     })
     .post_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {
       let cors = build_cors(&ctx.env, &req);
