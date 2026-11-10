@@ -17,16 +17,17 @@ use crate::helpers::rule_namespace::{
 };
 use crate::helpers::rule_store::ensure_rule_tables;
 use crate::helpers::{
-  DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DashboardAccess, DashboardOwner, DeviceAuthGuard,
-  EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse, OrgBillingState, PigeonAccess, Principal,
-  SEEN_HEADER, STRIPE_WEBHOOK_SECRET, StripeCheckoutSessionRow, StripeInvoiceFailureRow,
-  StripeWebhookEvent, TelemetryHistoryPage, TurnstileVerdict, WebhookAction, WebhookClaim,
-  accept_invite, allowed_alert_recipients, apply_subscription, attach_stripe_customer,
-  authenticate_browser, backfill_owner_email, build_invite_url, canonical_timezone,
-  change_member_role, check_device_cap, check_flock_alert_cap, check_ingest_fuse, check_org_cap,
-  check_pigeon_alert_cap, check_pigeon_authz, check_seat_cap, claim_webhook_event,
-  constant_time_eq, copy_name, count_billable_messages, create_checkout_session, create_customer,
-  create_dashboard, create_flock_alert, create_invite, create_organization, create_pigeon_alert,
+  DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DEVICE_VALUES_LIMITER, DashboardAccess,
+  DashboardOwner, DeviceAuthGuard, EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse,
+  OrgBillingState, PigeonAccess, Principal, SEEN_HEADER, STRIPE_WEBHOOK_SECRET,
+  StripeCheckoutSessionRow, StripeInvoiceFailureRow, StripeWebhookEvent, TelemetryHistoryPage,
+  TurnstileVerdict, WebhookAction, WebhookClaim, accept_invite, allowed_alert_recipients,
+  apply_subscription, attach_stripe_customer, authenticate_browser, backfill_owner_email,
+  bill_values_poll, build_invite_url, canonical_timezone, change_member_role, check_device_cap,
+  check_flock_alert_cap, check_ingest_fuse, check_org_cap, check_pigeon_alert_cap,
+  check_pigeon_authz, check_seat_cap, claim_webhook_event, constant_time_eq, copy_name,
+  count_billable_messages, create_checkout_session, create_customer, create_dashboard,
+  create_flock_alert, create_invite, create_organization, create_pigeon_alert,
   create_portal_session, create_user_flock, dashboard_access, delete_alert_definition,
   delete_dashboard, delete_dashboard_state, delete_flock_if_empty, delete_log_dictionary,
   delete_organization_if_empty, delete_pigeon_pg_db, device_surface_limit, ensure_billing_tables,
@@ -52,7 +53,7 @@ use crate::helpers::{
   stripe_configured, sync_customer_tax_identity, update_alert_definition, update_dashboard,
   update_organization, update_pigeon_pg_db, update_pigeon_suspension_pg_db, update_shadow_pg_db,
   update_subscription_tier, update_telemetry_endpoint_pg_db, upsert_acl_pg_db,
-  upsert_flock_firmware, verify_cf_access, verify_device_via_do, verify_turnstile,
+  upsert_flock_firmware, values_request, verify_cf_access, verify_device_via_do, verify_turnstile,
   verify_webhook_signature, webhook_action, write_business_details,
 };
 use crate::helpers::{FlockAccess, FlockAction, authorize_flock, check_rule_cap};
@@ -1471,6 +1472,43 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
       if do_response.status_code() == 401 {
         auth_guard.note_failure(&ctx.env).await;
       }
+      do_response.with_cors(&cors)
+    })
+    .get_async("/device/pigeons/:pigeon_id/values", |req, ctx| async move {
+      let cors = build_cors(&ctx.env, &req);
+
+      let auth_guard = DeviceAuthGuard::new(&ctx.env, &req);
+      if let Some(limited) = auth_guard.blocked_response(&cors) {
+        return limited;
+      }
+
+      get_pigeon_do!(ctx, pigeon_id, namespace, obj_id, &cors);
+
+      let Ok(url) = req.url() else {
+        return Response::error("Bad Request", 400).unwrap().with_cors(&cors);
+      };
+      let format = match values_request(&url, is_local_dev(&ctx.env)) {
+        Ok(format) => format,
+        Err(message) => return Response::error(message, 400).unwrap().with_cors(&cors),
+      };
+
+      // A sign polls on whatever cadence its web UI was given, and nothing else bounds it.
+      if let Some(limited) =
+        device_surface_limit(&ctx.env, &DEVICE_VALUES_LIMITER, &pigeon_id, &cors).await
+      {
+        return limited;
+      }
+
+      let Ok(do_response) = proxy_to_pigeon_do(req, "", None, &obj_id, format.do_path()).await
+      else {
+        return Response::error("Internal Server Error", 500)
+          .unwrap()
+          .with_cors(&cors);
+      };
+      if do_response.status_code() == 401 {
+        auth_guard.note_failure(&ctx.env).await;
+      }
+      bill_values_poll(&do_response);
       do_response.with_cors(&cors)
     })
     .post_async("/device/pigeons/:pigeon_id/shadow", |req, ctx| async move {

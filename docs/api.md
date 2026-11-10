@@ -118,6 +118,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET\|HEAD /.well-known/api-catalog`](#gethead-well-knownapi-catalog) | no auth required | RFC 9727 linkset for capability discovery |
 | [`GET /device/pigeons/:pigeon_id/shadow`](#get-devicepigeonspigeon_idshadow) | device token | Device reads the config it is meant to apply |
 | [`POST /device/pigeons/:pigeon_id/shadow`](#post-devicepigeonspigeon_idshadow) | device token | Device reports the config it has applied |
+| [`GET /device/pigeons/:pigeon_id/values`](#get-devicepigeonspigeon_idvalues) | device token | A sign polls its data items as flat JSON or `<DataItems>` XML |
 | [`POST /device/pigeons/:pigeon_id/telemetry`](#post-devicepigeonspigeon_idtelemetry) | device token | Device reports readings, flat or batched |
 | [`POST /device/pigeons/:pigeon_id/logs`](#post-devicepigeonspigeon_idlogs) | device token | Device uploads one binary log chunk |
 | [`GET /device/pigeons/:pigeon_id/firmware`](#get-devicepigeonspigeon_idfirmware) | device token | Device downloads its assigned image, Range-aware |
@@ -206,6 +207,12 @@ Object you send it to*: `verify_device_token` (`dovecote/src/objects/helpers.rs`
 token's signature against that specific pigeon's stored public key. The same bytes mean nothing
 against any other pigeon's DO.
 
+One route, [`GET /device/pigeons/:pigeon_id/values`](#get-devicepigeonspigeon_idvalues), also
+takes the token as the password of a Basic credential
+(`Authorization: Basic base64(<any user>:<token>)`), because a sign's web data source can carry a
+user and password where it may not be able to set a header. Every other device route takes Bearer
+only.
+
 **Refreshing a pigeon's token revokes the previous one.** `token/refresh` mints an entirely new
 keypair and overwrites `device_public_key`, so the old token's signature can never verify again
 — regardless of its own embedded `expires_at`. There's no separate revocation list; overwriting
@@ -284,13 +291,13 @@ There is no general-purpose rate limiting in `dovecote` today (beyond whatever C
 applies at the platform level). The routes that carry a real limiter carry it individually,
 through Cloudflare's rate-limiter binding: the two public unauthenticated forms (`POST /errors`,
 `POST /contact`, keyed per IP) and the device surfaces that are neither billed nor counted
-(shadow polls and FOTA chunk downloads, keyed per pigeon, plus a per-IP budget on requests that
-fail device authentication). Every one of them shares the same properties, and they are worth
-stating once rather than in each row: the counters are approximate and roughly per-colo, so a
-limit bounds runaway volume rather than gating precisely; over the limit answers `429` with
-`Retry-After` and **never** `401`, which the dashboard treats as a sign-out signal; and each
-check fails **open** on a binding fault, because a limiter outage taking a fleet offline would
-be worse than a window of unthrottled traffic. The limits that do exist are:
+(shadow polls, values polls and FOTA chunk downloads, keyed per pigeon, plus a per-IP budget on
+requests that fail device authentication). Every one of them shares the same properties, and
+they are worth stating once rather than in each row: the counters are approximate and roughly
+per-colo, so a limit bounds runaway volume rather than gating precisely; over the limit answers
+`429` with `Retry-After` and **never** `401`, which the dashboard treats as a sign-out signal;
+and each check fails **open** on a binding fault, because a limiter outage taking a fleet offline
+would be worse than a window of unthrottled traffic. The limits that do exist are:
 
 | Limit | Value | Where |
 |---|---|---|
@@ -333,6 +340,7 @@ be worse than a window of unthrottled traffic. The limits that do exist are:
 | `POST /contact` — minimum time on the form | 2s (`capsules::MIN_CONTACT_FILL_MS`) | `capsules::contact::validate`, `400` under the floor |
 | `POST /errors` — requests per IP | 20 / 60s (Cloudflare rate-limiter binding; counters are roughly per-colo) | `wrangler.toml` `[[ratelimits]]` + `lib.rs`, `429` over the limit — never `401` (the dashboard treats 401 as "session gone") |
 | `GET /device/pigeons/:id/shadow` — requests per pigeon | 120 / 60s | `wrangler.toml` `DEVICE_SHADOW_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice the 60/min a 1s `telemetry_interval` produces, which is the fastest poll cadence the platform can express |
+| `GET /device/pigeons/:id/values` — requests per pigeon | 4 / 60s | `wrangler.toml` `DEVICE_VALUES_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Twice what a sign polling every 30s sends; 60s is the recommended cadence |
 | `GET /device/pigeons/:id/firmware` — Range requests per pigeon | 400 / 10s (2400/min sustained) | `wrangler.toml` `DEVICE_FIRMWARE_LIMITER` + `helpers/device_limits.rs`, `429` over the limit. Set well above any real download rate on purpose: a device aborts the whole transfer on its first chunk error. The short window is load-bearing, not cosmetic — see the note below |
 | `/device/pigeons/:id/*` — **failed** device authentications per IP | 10 / 60s | `wrangler.toml` `DEVICE_AUTH_FAIL_LIMITER` + `helpers/device_limits.rs::DeviceAuthGuard`, `429` over the limit. Only `401`s are counted, so a healthy device never touches it; the CoAP terminator's own address is exempt (see below) |
 | `POST /errors` — bytes per raw body | 16 KiB (`capsules::MAX_ERROR_REPORT_BYTES`) | `lib.rs`, `413` over the cap |
@@ -1014,6 +1022,11 @@ fleet a little past its device count no longer bills device overage and message 
 single act of growth. The free tier has no billed extras at any device count, so its allowance
 — and the ingest fuse trained on it — is exactly the tier's own 300 K.
 
+A pigeon counts as connected in a period in which it sent a billable message. A shadow poll and a
+[values poll](#get-devicepigeonspigeon_idvalues) are neither a billable message nor connected
+activity, so a sign that only polls its values is never a connected device and is never refused by
+the ingest fuse; it still counts toward the free tier's provisioned-device cap.
+
 #### `POST /orgs/:org_id/billing/checkout`
 
 **Auth:** org: manage
@@ -1289,17 +1302,17 @@ keeps `endpoint` and `imei`, with `token` empty and `claim_key` null; the same h
 route that returns a stored pigeon.
 
 `last_seen_at` is the pigeon's last accepted device contact on any transport, as an RFC 3339 stamp:
-every device route that answers after a valid token (a shadow poll or report, telemetry, a log
-upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that parses, and a NIDD uplink
-from the claimed device. A request refused `401`, or one the pigeon's object fails with a `5xx`, is
-not contact; one refused `400`, `404`, `413` or `429` after a valid token is, and so is one the
-gateway fails after the object accepted it. A binary, oversized, over-rate or unparseable WebSocket
-frame closes the socket without a stamp. It is absent until the first contact, and written at most
-once a minute, so it can trail the device by up to 60 seconds. It is read from the pigeon's own
-Durable Object, so no query cache applies; the dashboard's connection badge is classified from it.
-Every route that returns a stored pigeon carries it. The badge and the `DeviceState` alert credit
-the stamp with that minute when they classify, so a short `telemetry_interval` does not read a
-device in steady contact as stale between two stamps.
+every device route that answers after a valid token (a shadow poll or report, a values poll,
+telemetry, a log upload, a firmware chunk, a WebSocket upgrade), every WebSocket frame that
+parses, and a NIDD uplink from the claimed device. A request refused `401`, or one the pigeon's
+object fails with a `5xx`, is not contact; one refused `400`, `404`, `413` or `429` after a valid
+token is, and so is one the gateway fails after the object accepted it. A binary, oversized,
+over-rate or unparseable WebSocket frame closes the socket without a stamp. It is absent until the
+first contact, and written at most once a minute, so it can trail the device by up to 60 seconds.
+It is read from the pigeon's own Durable Object, so no query cache applies; the dashboard's
+connection badge is classified from it. Every route that returns a stored pigeon carries it. The
+badge and the `DeviceState` alert credit the stamp with that minute when they classify, so a short
+`telemetry_interval` does not read a device in steady contact as stale between two stamps.
 
 `telemetry_interval_secs` is the `telemetry_interval` in the shadow's `current_config`, the
 cadence the device is running, carried beside `last_seen_at` so the flock list classifies it
@@ -3537,7 +3550,9 @@ A copy of this catalog (anchored at the frontend origin) is also served statical
 ## Device API
 
 Every route below is under `/device/pigeons/:pigeon_id/*` and authenticates via
-`Authorization: Bearer <device_token>` — see [Device authentication](#device-authentication-bearer-token). None of these accept or check a Kratos session.
+`Authorization: Bearer <device_token>` — see
+[Device authentication](#device-authentication-bearer-token). None of these accept or check a
+Kratos session; the values route also takes the token as a Basic password.
 Every request one of them accepts stamps the pigeon's `last_seen_at` (see
 [`GET /pigeons/:pigeon_id`](#get-pigeonspigeon_id)).
 
@@ -3581,6 +3596,93 @@ message allowance, the same as a telemetry report, and is refused with the same 
 free-tier allowance fuse (see the telemetry route below) once that allowance is spent. The
 check runs inside the Durable Object, after the bearer token is verified and before the report
 is stored, so a refused report is neither stored nor counted.
+
+### Device values
+
+#### `GET /device/pigeons/:pigeon_id/values`
+
+**Auth:** device token
+
+The token goes in `Authorization: Bearer <device_token>`, or, on this route only, as the password
+of `Authorization: Basic` under any user name.
+
+A sign's web data source: the pigeon's data items, read from the effective config its flock and
+its own layer already merge into `target_config` (see [Flock config](#flock-config)). Built for an
+LED sign that polls a web data source by itself, and any client that polls a URL can use it.
+
+- A top-level key that starts with `item.` is a data item, named by the rest of the key:
+  `item.lot.count` is served as `lot.count`. Every other key (`telemetry_interval`, `firmware`) is
+  not served. One key per item, so a pigeon overriding one item keeps the flock's others.
+- A string is served as is; a number or a boolean as its JSON text (`500` as `"500"`, `true` as
+  `"true"`). Keep money in a string: the number `2.50` is served as `2.5`. An object, an array and
+  the bare key `item.` are skipped.
+- Items come sorted by name. A sign shows a value only for a data item it already defines under
+  exactly that name, and ignores the rest.
+
+`?format=json` (the default) answers one flat JSON object; `?format=xml` answers the
+`<DataItems>` document such a sign reads. Any other `format` is `400`; every other query
+parameter is ignored, so a sign can append its own. Prefer XML for a sign whose JSON reader takes a
+dot in a key as a path step: an XML name is a plain string. With this effective config:
+
+```json
+{"item.lot.capacity":500,"item.lot.name":"Lot B <North>","item.lot.status":"FULL","item.notice":"Pay at kiosk & keep ticket","item.rate.hourly":"2.50","telemetry_interval":300}
+```
+
+`?format=json` answers:
+
+```json
+{"lot.capacity":"500","lot.name":"Lot B <North>","lot.status":"FULL","notice":"Pay at kiosk & keep ticket","rate.hourly":"2.50"}
+```
+
+and `?format=xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<DataItems>
+  <DataItem name="lot.capacity">500</DataItem>
+  <DataItem name="lot.name">Lot B &lt;North&gt;</DataItem>
+  <DataItem name="lot.status">FULL</DataItem>
+  <DataItem name="notice">Pay at kiosk &amp; keep ticket</DataItem>
+  <DataItem name="rate.hourly">2.50</DataItem>
+</DataItems>
+```
+
+XML escapes `&`, `<`, `>`, `"` and `'` and drops the control characters XML 1.0 forbids. No
+items answers `{}`, or a `<DataItems>` element with no children.
+
+Headers: `Content-Type: application/json; charset=utf-8` or `application/xml; charset=utf-8`,
+`Cache-Control: no-store`, and `X-Target-Version`, the `target_version` served, so a capture shows
+which version reached a sign.
+
+| Status | When |
+|---|---|
+| `200` | The data items, as above |
+| `400` | `format` other than `json` or `xml`; a malformed pigeon id; a plain `http://` URL (refused rather than serving a token sent in clear; local `wrangler dev` excepted) |
+| `401` | No credential, a malformed one, an expired token, another pigeon's token, a deleted pigeon |
+| `429` | Over 4 polls a minute for this pigeon, or this address over its failed-auth budget; carries `Retry-After` |
+| `500` | The pigeon's stored shadow could not be read |
+
+A poll is device contact: it stamps `last_seen_at`, and nothing else. It does not mark
+`target_version` as applied, since only the device can say it applied a value. It is neither a
+billable message nor connected activity, like a shadow poll (see
+[`GET /orgs/:org_id/billing`](#get-orgsorg_idbilling)), and the free-tier fuse does not apply to
+it.
+
+Set a sign to poll every 60 seconds, and give it its own `User-Agent` (see the troubleshooting
+note under [Device authentication](#device-authentication-bearer-token)). A sign that never
+reports back has no `telemetry_interval` the dashboard can calibrate against, so it reads Stale
+about 6 minutes after its last poll and Offline about 31 minutes after.
+
+```sh
+curl -s 'https://api.pidgeiot.com/device/pigeons/<pigeon_id>/values?format=xml' \
+  -H 'Authorization: Bearer <device_token>' -H 'User-Agent: my-sign/1.0'
+
+curl -s 'https://api.pidgeiot.com/device/pigeons/<pigeon_id>/values?format=xml' \
+  -u 'sign:<device_token>' -H 'User-Agent: my-sign/1.0'
+```
+
+Never put the token in the URL (`https://sign:<token>@...`): a URL ends up in logs and history,
+where a header does not.
 
 ### Device telemetry
 

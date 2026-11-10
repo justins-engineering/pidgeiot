@@ -21,6 +21,13 @@ pub const DEVICE_SHADOW_LIMITER: DeviceLimiter = DeviceLimiter {
   window_secs: 60,
 };
 
+/// Per-pigeon throttle on `GET /device/pigeons/:id/values`. Sizing lives beside the binding in
+/// `wrangler.toml`.
+pub const DEVICE_VALUES_LIMITER: DeviceLimiter = DeviceLimiter {
+  binding: "DEVICE_VALUES_LIMITER",
+  window_secs: 60,
+};
+
 /// Per-pigeon throttle on `GET /device/pigeons/:id/firmware`. On the
 /// short window rather than the long one, for a reason measured against
 /// the real binding rather than assumed -- see `wrangler.toml`.

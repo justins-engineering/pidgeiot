@@ -142,11 +142,14 @@ pub use coap_service::thingspace_callbacks_configured;
 mod device_limits;
 pub use device_limits::DEVICE_FIRMWARE_LIMITER;
 pub use device_limits::DEVICE_SHADOW_LIMITER;
+pub use device_limits::DEVICE_VALUES_LIMITER;
 pub use device_limits::DeviceAuthGuard;
 pub use device_limits::device_surface_limit;
 
 mod device_values;
 pub use device_values::ValuesFormat;
+pub use device_values::bill_values_poll;
+pub use device_values::values_request;
 
 mod environment;
 pub use environment::is_local_dev;

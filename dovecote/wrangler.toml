@@ -258,6 +258,20 @@ name = "DEVICE_SHADOW_LIMITER"
 namespace_id = "1007"
 simple = { limit = 120, period = 60 }
 
+# Per-pigeon throttle on a sign's values poll (GET /device/pigeons/:id/values),
+# a surface that is neither billed nor counted, like the shadow poll above.
+#
+# SIZING. A sign polls on whatever cadence someone typed into its web UI, and
+# the setup guide recommends 60s. 4/60s is twice what a 30s sign sends, so a
+# faster sign gets at most 4 answers a minute and keeps its last values
+# between them, while its cost to us stays bounded. A count this low binds.
+#
+# Same 429-never-401 and fail-open-on-fault behaviour as the shadow limiter.
+[[ratelimits]]
+name = "DEVICE_VALUES_LIMITER"
+namespace_id = "1019"
+simple = { limit = 4, period = 60 }
+
 # Per-pigeon throttle on FOTA chunk downloads (GET
 # /device/pigeons/:id/firmware). Every Range request costs a Durable
 # Object round trip to resolve the pigeon's assigned target plus an R2
@@ -514,6 +528,13 @@ name = "DEVICE_SHADOW_LIMITER"
 namespace_id = "1008"
 simple = { limit = 120, period = 60 }
 
+# Own namespace_id -- see the production DEVICE_VALUES_LIMITER block above
+# for the sizing.
+[[env.staging.ratelimits]]
+name = "DEVICE_VALUES_LIMITER"
+namespace_id = "1020"
+simple = { limit = 4, period = 60 }
+
 # Own namespace_id -- see the production DEVICE_FIRMWARE_LIMITER block
 # above for the sizing arithmetic.
 [[env.staging.ratelimits]]
@@ -653,6 +674,13 @@ simple = { limit = 5, period = 60 }
 name = "DEVICE_SHADOW_LIMITER"
 namespace_id = "1009"
 simple = { limit = 120, period = 60 }
+
+# Own namespace_id -- see the production DEVICE_VALUES_LIMITER block above
+# for the sizing.
+[[env.dev.ratelimits]]
+name = "DEVICE_VALUES_LIMITER"
+namespace_id = "1021"
+simple = { limit = 4, period = 60 }
 
 # Own namespace_id -- see the production DEVICE_FIRMWARE_LIMITER block
 # above for the sizing arithmetic.
