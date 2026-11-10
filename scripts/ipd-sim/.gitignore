@@ -1,0 +1,3 @@
+# A local fleet config and the signs' state never belong in the repo.
+signs.json
+ipd-sim-state/

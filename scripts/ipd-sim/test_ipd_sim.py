@@ -460,6 +460,11 @@ class ConfigTest(unittest.TestCase):
     self.assertEqual((sign["name"], sign["poll"]["every_secs"], sign["poll"]["format"]),
                      ("sign-a", 10, "json"))
 
+  def test_example_config_loads(self):
+    here = os.path.dirname(os.path.abspath(__file__))
+    config = ipd_sim.load_config(os.path.join(here, "signs.example.json"))
+    self.assertEqual([s["port"] for s in config["signs"]], [8901, 8902, 8903])
+
   def test_duplicates_and_bad_values_are_refused(self):
     bad = [
       {"signs": [self.sign("a", 8901), self.sign("a", 8902)]},
