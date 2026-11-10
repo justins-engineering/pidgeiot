@@ -22,7 +22,8 @@ All examples below use placeholder IDs and credentials — `<pigeon_id>`, `<floc
 Every route in this document, in the order it appears below. The **Auth** column uses the
 vocabulary defined in [Two audiences, two auth models](#two-audiences-two-auth-models): a
 dashboard route's marker names the role it needs on top of a valid session, and
-`device token` means a per-pigeon Ed25519 bearer token instead of a session.
+`device token` means a per-pigeon Ed25519 bearer token instead of a session. The
+[rule](#rules) routes are listed but not enabled on the hosted service yet.
 
 | Route | Auth | What it does |
 |---|---|---|
