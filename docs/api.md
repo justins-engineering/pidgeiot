@@ -2083,7 +2083,7 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps
     "pigeon_id": "59d0c929f912...",
     "key": "temp",
     "bucket_start": "2026-07-17T15:30:00Z",
-    "last_at": "2026-07-17T15:34:41Z",
+    "last_at": "2026-07-17T15:33:41Z",
     "min": 21.1,
     "max": 21.8,
     "mean": 21.5,
