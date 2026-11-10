@@ -365,6 +365,9 @@ queue = "pidgeiot-telemetry"
 # plain `wrangler deploy` registers the consumer. A lost apply leaves a sign on an old config, so
 # it retries more than the default three times, a minute apart so an outage of an object or its
 # storage does not spend every retry in seconds.
+#
+# Production's queue does not exist yet: the owner creates `pidgeiot-flock-config` before the first
+# production deploy that carries this block, which fails until it does.
 [[queues.producers]]
 queue = "pidgeiot-flock-config"
 binding = "FLOCK_CONFIG_QUEUE"
