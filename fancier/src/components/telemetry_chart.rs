@@ -508,6 +508,18 @@ fn touch_sample_time(
   sample_time_at(x, times, t_of)
 }
 
+/// The table view's rows: every time any series has a sample at, ascending,
+/// since series drawn from different pigeons or readings rarely share times.
+fn table_times(series: &[ChartSeries]) -> Vec<i64> {
+  let mut times: Vec<i64> = series
+    .iter()
+    .flat_map(|s| s.points.iter().map(|p| p.0))
+    .collect();
+  times.sort_unstable();
+  times.dedup();
+  times
+}
+
 /// The sample time nearest a plot-relative x, so a finger and a mouse read
 /// the same sample.
 fn sample_time_at(x: f64, times: &[i64], t_of: impl Fn(f64) -> i64) -> Option<i64> {
@@ -678,15 +690,15 @@ pub fn TelemetryChart(
               }
             }
             tbody {
-              for (t , _) in drawn[0].points.iter() {
+              for t in table_times(&drawn) {
                 tr {
-                  td { class: "font-mono text-xs", "{format_time(*t)}" }
+                  td { class: "font-mono text-xs", "{format_time(t)}" }
                   for s in drawn.iter() {
                     td { class: "font-mono text-xs",
                       {
                           s.points
                               .iter()
-                              .find(|p| p.0 == *t)
+                              .find(|p| p.0 == t)
                               .map(|p| format_value(p.1))
                               .unwrap_or_else(|| "--".to_string())
                       }
@@ -1045,7 +1057,7 @@ pub fn TelemetryChart(
 mod tests {
   use super::{
     ChartKind, ChartSeries, bucket_count, bucket_series, plot_t_of, plot_x_of, prepare,
-    step_geometry,
+    step_geometry, table_times,
   };
 
   fn series(key: &str, points: &[(i64, f64)]) -> ChartSeries {
@@ -1072,6 +1084,17 @@ mod tests {
         );
       }
     }
+  }
+
+  /// The table is the view that reaches every value without hovering, so a
+  /// second series that never shares the first one's times keeps its rows.
+  #[test]
+  fn the_table_has_a_row_for_every_series_time() {
+    let drawn = [
+      series("a", &[(10, 1.0), (250, 2.0)]),
+      series("b", &[(12, 3.0), (250, 4.0), (490, 5.0)]),
+    ];
+    assert_eq!(table_times(&drawn), [10, 12, 250, 490]);
   }
 
   #[test]
