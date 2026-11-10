@@ -703,6 +703,11 @@ CREATE TABLE IF NOT EXISTS rule_usage (
   mail_sent INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope, day)
 );
+-- The rule builder's versions (migrations/2026-11-07-rule-builder.sql).
+ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS builder_model JSONB;
+ALTER TABLE rule_versions DROP CONSTRAINT IF EXISTS rule_versions_origin_check;
+ALTER TABLE rule_versions ADD CONSTRAINT rule_versions_origin_check
+  CHECK (origin IN ('hand', 'assistant', 'assistant_edited', 'builder'));
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flocks_user_id ON flocks(user_id);

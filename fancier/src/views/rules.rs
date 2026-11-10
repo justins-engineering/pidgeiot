@@ -1,11 +1,14 @@
-//! A flock's rules: the list, and one rule's page with its editor, the assistant's place, the
-//! test and deploy panel, its versions, runs and values. Rule code is only ever text here: the
-//! dashboard's origin holds the session cookie, so nothing on these pages evaluates it.
+//! A flock's rules: the list, and one rule's page with its builder or code editor, the
+//! assistant's place, the test and deploy panel, its versions, runs and values. Rule code is only
+//! ever text here: the dashboard's origin holds the session cookie, so nothing on these pages
+//! evaluates it.
 
-use crate::components::{ConfirmModal, DangerAction, DangerZone};
+use crate::components::{ConfirmModal, DangerAction, DangerZone, RuleBuilder};
 use crate::helpers::can_manage_flock;
+use crate::helpers::rule_builder_form::{keys_from_history, starter_model};
 use crate::helpers::rule_dry_run_view::{
-  case_text, change_text, cpu_text, mail_text, mails_text, runs_text, seeded_text, window_text,
+  builder_case_text, builder_mail_counts, builder_mail_text, case_text, change_text, cpu_text,
+  mail_text, mails_text, runs_text, seeded_text, window_text,
 };
 use crate::helpers::rule_view::{
   Badge, bar_hours, deploy_outcome, failure_groups, hourly_bars, hours_ago, origin_label,
@@ -16,9 +19,10 @@ use crate::helpers::telemetry_export::display_utc;
 use crate::{LocalSession, Route, api};
 use capsules::{
   MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES, Rule, RuleCreateRequest,
-  RuleDeployRequest, RuleDetail, RuleDryMail, RuleDryRun, RuleOrigin, RuleReplayed, RuleRun,
-  RuleSourceRejection, RuleTestRequest, RuleUpdateRequest, RuleValue, RuleVersion,
-  RuleVersionCreateRequest, check_rule_source, normalize_rule_name,
+  RuleDeployRequest, RuleDetail, RuleDryMail, RuleDryRun, RuleModel, RuleOrigin, RuleReplayed,
+  RuleRun, RuleSourceRejection, RuleTestRequest, RuleUpdateRequest, RuleValue, RuleVersion,
+  RuleVersionCreateRequest, check_rule_source, compile_rule_model, normalize_rule_name,
+  rule_model_sentence, rule_model_test_cases, validate_rule_model,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -36,6 +40,18 @@ const STARTER_SOURCE: &str = include_str!("../../../dovecote/rules/starter.js");
 
 /// The upload button's file input, cleared after each pick so the same file can be picked again.
 const UPLOAD_ID: &str = "flock-rule-upload";
+
+/// How far back the builder's key pickers look for the keys the flock reports.
+const KEY_LOOKBACK_HOURS: i64 = 24;
+
+/// Which editor the rule page shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditorMode {
+  /// The builder's rows.
+  Build,
+  /// The code editor.
+  Code,
+}
 
 /// The badges of a rule, in one row that wraps.
 #[component]
@@ -413,9 +429,10 @@ fn case_badge(passed: bool) -> &'static str {
   }
 }
 
-/// A list of mails with their times, as the dry run would have sent them.
+/// A list of mails with their times, as the dry run would have sent them, in a builder rule's own
+/// words when `model` is its model.
 #[component]
-fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
+fn DryRunMails(title: String, mails: Vec<RuleDryMail>, model: Option<RuleModel>) -> Element {
   rsx! {
     div { class: "flex flex-col gap-1 min-w-0",
       h4 { class: "text-sm font-semibold", "{title}" }
@@ -425,7 +442,10 @@ fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
             span { class: "font-mono text-base-content/60 me-2 whitespace-nowrap",
               "{display_utc(mail.at)}"
             }
-            "{mail_text(&mail)}"
+            match model.as_ref() {
+                Some(m) => rsx! { "{builder_mail_text(m, &mail)}" },
+                None => rsx! { "{mail_text(&mail)}" },
+            }
           }
         }
       }
@@ -433,13 +453,25 @@ fn DryRunMails(title: String, mails: Vec<RuleDryMail>) -> Element {
   }
 }
 
-/// One version's replay: its mails and runs, with its errors grouped.
+/// One version's replay: its mails and runs, with its errors grouped, and per mail action of a
+/// builder rule how often it went out.
 #[component]
-fn DryRunVersion(title: String, replayed: RuleReplayed) -> Element {
+fn DryRunVersion(title: String, replayed: RuleReplayed, model: Option<RuleModel>) -> Element {
+  let per_action = model
+    .as_ref()
+    .map(|m| builder_mail_counts(m, &replayed))
+    .unwrap_or_default();
   rsx! {
     div { class: "flex flex-col gap-1 min-w-0",
       h4 { class: "text-sm font-semibold", "{title}" }
       p { class: "text-sm", "{mails_text(&replayed)}" }
+      if !per_action.is_empty() {
+        ul { class: "text-sm list-disc ps-5",
+          for line in per_action {
+            li { "{line}" }
+          }
+        }
+      }
       p { class: "text-sm text-base-content/70", "{runs_text(&replayed)}" }
       if let Some(at) = replayed.stopped_at {
         p { class: "text-sm",
@@ -468,8 +500,14 @@ fn DryRunVersion(title: String, replayed: RuleReplayed) -> Element {
 
 /// A dry run in the rule's words: the window, what each version would have mailed, the change
 /// between them, the synthetic cases and the CPU check, which warns but never blocks a deploy.
+/// `model` is a builder version's model, which names its mails by what they are for.
 #[component]
-fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDryRun) -> Element {
+fn DryRunResult(
+  version: i32,
+  tested_at: Option<OffsetDateTime>,
+  summary: RuleDryRun,
+  model: Option<RuleModel>,
+) -> Element {
   let (cpu, cpu_warns) = cpu_text(&summary.cpu);
   let deployed_version = summary.deployed.as_ref().map(|d| d.version);
   let seeded = summary
@@ -494,11 +532,13 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
         DryRunVersion {
           title: version_label(version),
           replayed: summary.candidate.clone(),
+          model: model.clone(),
         }
         if let Some(deployed) = summary.deployed.clone() {
           DryRunVersion {
             title: ["Live ", &version_label(deployed.version)].concat(),
             replayed: deployed,
+            model: None,
           }
         }
       }
@@ -506,15 +546,24 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
       div { class: "grid gap-4 md:grid-cols-2",
         if deployed_version.is_some() {
           if !summary.mails.new.is_empty() {
-            DryRunMails { title: "New mails", mails: summary.mails.new.clone() }
+            DryRunMails {
+              title: "New mails",
+              mails: summary.mails.new.clone(),
+              model: model.clone(),
+            }
           }
           if !summary.mails.gone.is_empty() {
-            DryRunMails { title: "Mails it no longer sends", mails: summary.mails.gone.clone() }
+            DryRunMails {
+              title: "Mails it no longer sends",
+              mails: summary.mails.gone.clone(),
+              model: None,
+            }
           }
         } else if !summary.candidate.mails.is_empty() {
           DryRunMails {
             title: "What it would have mailed",
             mails: summary.candidate.mails.clone(),
+            model: model.clone(),
           }
         }
       }
@@ -534,11 +583,19 @@ fn DryRunResult(version: i32, tested_at: Option<OffsetDateTime>, summary: RuleDr
       if !summary.cases.is_empty() {
         div { class: "flex flex-col gap-1",
           h4 { class: "text-sm font-semibold", "Test cases" }
+          if model.is_some() {
+            p { class: "text-xs text-base-content/60",
+              "Made from the rule's own conditions: one report just inside them, one just outside."
+            }
+          }
           ul { class: "text-sm flex flex-col gap-1",
             for case in summary.cases.iter() {
               li { class: "break-words",
                 span { class: case_badge(case.passed), "{case.name}" }
-                "{case_text(case)}"
+                match model.as_ref() {
+                    Some(m) => rsx! { "{builder_case_text(m, case)}" },
+                    None => rsx! { "{case_text(case)}" },
+                }
               }
             }
           }
@@ -579,6 +636,14 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
   // The editor's text, and the stored version it started from.
   let mut source = use_signal(String::new);
   let mut base = use_signal(|| None::<RuleVersion>);
+  // The builder's rows, which editor shows, and a counter that remounts the form on a load.
+  let mut model = use_signal(starter_model);
+  let mut mode = use_signal(|| EditorMode::Build);
+  let mut generation = use_signal(|| 0u32);
+  // The module Write code or Convert last wrote, so Write code replaces only code it wrote.
+  let mut compiled = use_signal(|| None::<String>);
+  let mut code_kept = use_signal(|| false);
+  let mut keys = use_signal(Vec::<String>::new);
   let mut save_note = use_signal(|| None::<Result<String, String>>);
   let mut busy = use_signal(|| false);
   // Test and deploy: the version they act on and the server's last answer.
@@ -616,11 +681,26 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
           if stored.test_summary.is_some() {
             tested.set(Some(stored.clone()));
           }
+          match stored.builder_model.clone() {
+            Some(m) => {
+              model.set(m);
+              mode.set(EditorMode::Build);
+            }
+            None => mode.set(EditorMode::Code),
+          }
+          generation += 1;
           base.set(Some(stored));
         }
         Err(err) => save_note.set(Some(Err(err))),
       },
       None => source.set(STARTER_SOURCE.to_string()),
+    }
+  });
+  use_resource(move || async move {
+    let until = OffsetDateTime::now_utc();
+    let since = until - time::Duration::hours(KEY_LOOKBACK_HOURS);
+    if let Some(history) = api::telemetry::get_flock_history(&flock_id, since, until).await {
+      keys.set(keys_from_history(&history.points));
     }
   });
   use_resource(move || async move {
@@ -659,6 +739,16 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
     .as_ref()
     .is_some_and(|b| b.source.as_deref() == Some(source().as_str()));
   let base_label = base.read().as_ref().map(|b| version_label(b.version));
+  let model_problem = validate_rule_model(&model()).err();
+  let model_unchanged = base
+    .read()
+    .as_ref()
+    .is_some_and(|b| b.builder_model.as_ref() == Some(&*model.read()));
+  // A code version the builder cannot open: what it builds replaces the code on save.
+  let base_is_code = base
+    .read()
+    .as_ref()
+    .is_some_and(|b| b.builder_model.is_none());
   let target_version = target();
 
   // Writes a mutation's rule back into the page.
@@ -668,15 +758,19 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
     }
   };
 
-  // Saves `text` as the next version and makes it the editor's base. A refused text goes into
-  // the editor, so the error sits under the code it names.
-  let save = move |text: String, origin: RuleOrigin, based_on: Option<i32>| async move {
+  // Saves `text`, or the builder's `built` model, as the next version and makes it the editor's
+  // base. A refused text goes into the editor, so the error sits under the code it names.
+  let save = move |text: String,
+                   origin: RuleOrigin,
+                   based_on: Option<i32>,
+                   built: Option<RuleModel>| async move {
     save_note.set(None);
     busy.set(true);
     let req = RuleVersionCreateRequest {
       source: text,
       origin,
       based_on,
+      builder_model: built,
     };
     let answer = api::rules::save_version(flock_id, rule_id, &req).await;
     busy.set(false);
@@ -695,10 +789,15 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         target.set(Some(saved.version));
         tested.set(None);
         source.set(saved.source.clone().unwrap_or_default());
+        if let Some(m) = saved.builder_model.clone() {
+          model.set(m);
+        }
         base.set(Some(saved));
       }
       Err(err) => {
-        source.set(req.source);
+        if req.builder_model.is_none() {
+          source.set(req.source);
+        }
         save_note.set(Some(Err(err)));
       }
     }
@@ -771,8 +870,144 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         }
       }
 
+      div {
+        role: "tablist",
+        "aria-label": "How to make this rule",
+        class: "tabs tabs-box tabs-sm w-fit -mb-4",
+        button {
+          role: "tab",
+          r#type: "button",
+          class: if mode() == EditorMode::Build { "tab tab-active" } else { "tab" },
+          "aria-selected": mode() == EditorMode::Build,
+          onclick: move |_| {
+              if mode() == EditorMode::Build {
+                  return;
+              }
+              if let Some(m) = base.read().as_ref().and_then(|b| b.builder_model.clone()) {
+                  model.set(m);
+              }
+              generation += 1;
+              mode.set(EditorMode::Build);
+          },
+          "Build it"
+        }
+        button {
+          role: "tab",
+          r#type: "button",
+          class: if mode() == EditorMode::Code { "tab tab-active" } else { "tab" },
+          "aria-selected": mode() == EditorMode::Code,
+          onclick: move |_| {
+              if mode() == EditorMode::Code {
+                  return;
+              }
+              let text = source.peek().clone();
+              let base_text = base
+                  .peek()
+                  .as_ref()
+                  .and_then(|b| b.builder_model.as_ref().and(b.source.clone()));
+              let builders = compiled.peek().as_deref() == Some(text.as_str())
+                  || base_text.as_deref() == Some(text.as_str())
+                  || (base.peek().is_none() && text == STARTER_SOURCE);
+              if validate_rule_model(&model.peek()).is_ok() {
+                  let next = compile_rule_model(&model.peek());
+                  code_kept.set(!builders && next != text);
+                  if builders {
+                      compiled.set(Some(next.clone()));
+                      source.set(next);
+                  }
+              }
+              mode.set(EditorMode::Code);
+          },
+          "Write code"
+        }
+      }
+
       div { class: "grid gap-8 lg:grid-cols-2",
-        section { id: "flock-rule-editor", class: "flex flex-col gap-3 min-w-0",
+        if mode() == EditorMode::Build {
+          section {
+            id: "flock-rule-builder",
+            class: "flex flex-col gap-3 min-w-0 lg:col-span-2",
+            div { class: "flex flex-wrap items-baseline justify-between gap-2",
+              h2 { class: "text-lg font-bold", "Rule" }
+              span { class: "text-xs text-base-content/60",
+                match (base_label.as_deref(), versions.is_empty()) {
+                    (Some(label), _) => rsx! { "Editing from {label}" },
+                    (None, true) => rsx! { "No version saved yet: this is an example to start from" },
+                    (None, false) => rsx! { "The saved rule could not be loaded" },
+                }
+              }
+            }
+            if base_is_code {
+              div { role: "alert", class: "alert alert-info alert-soft text-sm",
+                "This version is code, which the builder cannot open. A rule built here replaces "
+                "the code when you save it; to keep the code, use Write code."
+              }
+            }
+            div { class: "bg-base-100 border border-base-content/10 rounded-box p-4",
+              RuleBuilder {
+                model,
+                generation,
+                keys: keys(),
+                readonly: !manage,
+              }
+            }
+            div { class: "flex flex-col gap-1 bg-base-200/40 rounded-box p-3",
+              h3 { class: "text-sm font-semibold", "In words" }
+              p { id: "flock-rule-builder-words", class: "text-sm break-words",
+                "{rule_model_sentence(&model())}"
+              }
+            }
+            if let Some(problem) = model_problem {
+              p { class: "text-error text-sm", "{problem}" }
+            }
+            div { class: "flex flex-wrap items-center gap-2",
+              if manage {
+                button {
+                  class: "btn btn-primary btn-sm",
+                  disabled: busy() || model_problem.is_some() || model_unchanged,
+                  onclick: move |_| {
+                      let based_on = base.read().as_ref().map(|b| b.version);
+                      save(String::new(), RuleOrigin::Builder, based_on, Some(model()))
+                  },
+                  "Save as new version"
+                }
+                button {
+                  class: "btn btn-ghost btn-sm",
+                  disabled: model_problem.is_some(),
+                  onclick: move |_| {
+                      let next = compile_rule_model(&model.peek());
+                      compiled.set(Some(next.clone()));
+                      source.set(next);
+                      code_kept.set(false);
+                      mode.set(EditorMode::Code);
+                  },
+                  "Convert to code"
+                }
+              }
+            }
+            match save_note() {
+                Some(Ok(note)) => rsx! { p { class: "text-success text-sm", "{note}" } },
+                Some(Err(err)) => rsx! { p { class: "text-error text-sm break-words", "{err}" } },
+                None => rsx! {},
+            }
+            if model_problem.is_none() {
+              details { class: "text-xs",
+                summary { class: "cursor-pointer text-base-content/70", "Show as code" }
+                pre { class: "font-mono overflow-x-auto bg-base-200/50 rounded p-2 mt-1",
+                  "{compile_rule_model(&model())}"
+                }
+              }
+            }
+            p { class: "text-xs text-base-content/60",
+              "Saving keeps a new version and changes nothing that runs until you test and deploy "
+              "it. Converting to code is one way: a code version cannot be opened here again, "
+              "though older builder versions still can."
+            }
+          }
+        }
+        section {
+          id: "flock-rule-editor",
+          class: if mode() == EditorMode::Build { "hidden" } else { "flex flex-col gap-3 min-w-0" },
           div { class: "flex flex-wrap items-baseline justify-between gap-2",
             h2 { class: "text-lg font-bold", "Code" }
             span { class: "text-xs text-base-content/60",
@@ -781,6 +1016,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                   (None, true) => rsx! { "No version saved yet: this is an example to start from" },
                   (None, false) => rsx! { "The saved code could not be loaded" },
               }
+            }
+          }
+          if code_kept() && manage {
+            div { role: "status", class: "alert alert-info alert-soft text-sm",
+              "This code was kept, so the rows changed under Build it are not in it. To replace "
+              "it with them, use Convert to code there."
             }
           }
           textarea {
@@ -813,7 +1054,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                 onclick: move |_| {
                     let origin = save_origin(base.read().as_ref());
                     let based_on = base.read().as_ref().map(|b| b.version);
-                    save(source(), origin, based_on)
+                    save(source(), origin, based_on, None)
                 },
                 "Save as new version"
               }
@@ -847,7 +1088,7 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                           save_note.set(Some(Err(held.to_string())));
                           return;
                       }
-                      save(text, RuleOrigin::Hand, None).await
+                      save(text, RuleOrigin::Hand, None, None).await
                   },
                 }
               }
@@ -953,7 +1194,22 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                       action_note.set(None);
                       busy.set(true);
                       testing.set(true);
-                      let req = RuleTestRequest::default();
+                      // A builder version brings its own test cases, made from its conditions.
+                      let known = base
+                          .peek()
+                          .as_ref()
+                          .filter(|b| b.version == version)
+                          .map(|b| b.builder_model.clone());
+                      let built = match known {
+                          Some(m) => m,
+                          None => api::rules::version(flock_id, rule_id, version)
+                              .await
+                              .ok()
+                              .and_then(|v| v.builder_model),
+                      };
+                      let req = RuleTestRequest {
+                          cases: built.as_ref().map(rule_model_test_cases).unwrap_or_default(),
+                      };
                       let answer = api::rules::test(flock_id, rule_id, version, &req).await;
                       testing.set(false);
                       busy.set(false);
@@ -1011,7 +1267,12 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
         }
         if let Some(found) = tested() {
           if let Some(summary) = found.test_summary {
-            DryRunResult { version: found.version, tested_at: found.tested_at, summary }
+            DryRunResult {
+              version: found.version,
+              tested_at: found.tested_at,
+              summary,
+              model: found.builder_model.clone(),
+            }
           }
         }
       }
@@ -1118,6 +1379,14 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                                 class: "btn btn-ghost btn-xs",
                                 onclick: move |_| {
                                     source.set(text.clone());
+                                    match opened.builder_model.clone() {
+                                        Some(m) => {
+                                            model.set(m);
+                                            mode.set(EditorMode::Build);
+                                        }
+                                        None => mode.set(EditorMode::Code),
+                                    }
+                                    generation += 1;
                                     base.set(Some(opened.clone()));
                                 },
                                 "Edit"
@@ -1137,6 +1406,9 @@ pub fn RuleView(flock_id: Uuid, rule_id: Uuid) -> Element {
                           }
                       }
                     }
+                  }
+                  if let Some(m) = v.builder_model.as_ref() {
+                    p { class: "text-sm break-words", "{rule_model_sentence(m)}" }
                   }
                   pre { class: "text-xs font-mono overflow-x-auto max-h-96 bg-base-200/50 rounded p-2",
                     "{v.source.as_deref().unwrap_or_default()}"

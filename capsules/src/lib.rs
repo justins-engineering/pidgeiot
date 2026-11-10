@@ -67,11 +67,24 @@ pub use rules::{
 pub mod rule_api;
 pub use rule_api::{
   MAX_ENABLED_RULES_PER_FLOCK, MAX_RULE_NAME_BYTES, MAX_RULE_RUNS_PER_PAGE, MAX_RULE_SOURCE_BYTES,
-  MAX_RULE_VALUES_RETURNED, MAX_RULE_VERSIONS, RULE_HELPERS_IMPORT, Rule, RuleCreateRequest,
-  RuleDeployRequest, RuleDetail, RuleNameRejection, RuleOrigin, RuleRow, RuleRun, RuleRunRow,
-  RuleSourceRejection, RuleUpdateRequest, RuleValue, RuleValueRow, RuleVersion,
-  RuleVersionCreateRequest, RuleVersionRow, check_rule_source, first_refused_import,
-  normalize_rule_name,
+  MAX_RULE_VALUES_RETURNED, MAX_RULE_VERSIONS, PreparedRuleVersion, RULE_HELPERS_IMPORT, Rule,
+  RuleCreateRequest, RuleDeployRequest, RuleDetail, RuleNameRejection, RuleOrigin, RuleRow,
+  RuleRun, RuleRunRow, RuleSourceRejection, RuleUpdateRequest, RuleValue, RuleValueRow,
+  RuleVersion, RuleVersionCreateRequest, RuleVersionRejection, RuleVersionRow, check_rule_source,
+  first_refused_import, normalize_rule_name, prepare_rule_version,
+};
+
+// The rule builder's model: the rows a person fills in, their checks, their words, the test
+// cases made from them and the module that runs them, shared so the form and the route agree.
+pub mod rule_model;
+pub use rule_model::{
+  MAX_MODEL_ACTIONS, MAX_MODEL_BANDS, MAX_MODEL_CONDITIONS, MAX_MODEL_COUNT, MAX_MODEL_COUNTED,
+  MAX_MODEL_MAILS, MAX_MODEL_WINDOW_SECS, MAX_RULE_MODEL_BYTES, RULE_BUILDER_IMPORT,
+  RULE_MODEL_VERSION, RuleAction, RuleBand, RuleBranch, RuleCompareOp, RuleCondition,
+  RuleMailRepeat, RuleMatch, RuleModel, RuleModelError, RuleModelPlace, RuleModelProblem,
+  RuleOperand, RuleTrigger, action_words, compare_words, compile_rule_model, condition_words,
+  duration_words, mail_action_for_key, mail_alert_key, rule_model_sentence, rule_model_test_cases,
+  severity_words, validate_rule_model,
 };
 
 // A rule's dry run: the synthetic cases the test route takes and the result it records.

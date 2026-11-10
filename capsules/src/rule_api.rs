@@ -1,7 +1,10 @@
 //! The dashboard's rule routes: the bodies they accept, the models they answer with, and the
 //! checks fancier and dovecote both apply to a rule's name and source.
 
-use crate::RuleDryRun;
+use crate::{
+  RULE_BUILDER_IMPORT, RuleDryRun, RuleModel, RuleModelError, compile_rule_model,
+  validate_rule_model,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -40,6 +43,8 @@ pub enum RuleOrigin {
   Assistant,
   /// A person's edit of an assistant draft.
   AssistantEdited,
+  /// The rule builder, from a [`RuleModel`]; such a version carries its model.
+  Builder,
 }
 
 impl RuleOrigin {
@@ -49,6 +54,7 @@ impl RuleOrigin {
       RuleOrigin::Hand => "hand",
       RuleOrigin::Assistant => "assistant",
       RuleOrigin::AssistantEdited => "assistant_edited",
+      RuleOrigin::Builder => "builder",
     }
   }
 
@@ -57,6 +63,7 @@ impl RuleOrigin {
     match value {
       "assistant" => RuleOrigin::Assistant,
       "assistant_edited" => RuleOrigin::AssistantEdited,
+      "builder" => RuleOrigin::Builder,
       _ => RuleOrigin::Hand,
     }
   }
@@ -107,7 +114,7 @@ pub enum RuleSourceRejection {
   Empty,
   /// Over [`MAX_RULE_SOURCE_BYTES`].
   TooLarge,
-  /// A static import of anything but [`RULE_HELPERS_IMPORT`].
+  /// A static import of anything but [`RULE_HELPERS_IMPORT`] and [`RULE_BUILDER_IMPORT`].
   Import,
 }
 
@@ -117,13 +124,16 @@ impl RuleSourceRejection {
     match self {
       RuleSourceRejection::Empty => "Bad Request: 'source' cannot be empty",
       RuleSourceRejection::TooLarge => "Payload Too Large: a rule's source is at most 64 KiB",
-      RuleSourceRejection::Import => "Bad Request: a rule may import only ./pidgeiot.js",
+      RuleSourceRejection::Import => {
+        "Bad Request: a rule may import only ./pidgeiot.js and ./builder.js"
+      }
     }
   }
 }
 
 /// Checks a rule's source before it is stored: not blank, at most [`MAX_RULE_SOURCE_BYTES`], and
-/// no static import but [`RULE_HELPERS_IMPORT`] ([`first_refused_import`]).
+/// no static import but [`RULE_HELPERS_IMPORT`] and [`RULE_BUILDER_IMPORT`]
+/// ([`first_refused_import`]).
 pub fn check_rule_source(source: &str) -> Result<(), RuleSourceRejection> {
   if source.trim().is_empty() {
     return Err(RuleSourceRejection::Empty);
@@ -137,8 +147,9 @@ pub fn check_rule_source(source: &str) -> Result<(), RuleSourceRejection> {
   }
 }
 
-/// The first static import specifier in `source` other than [`RULE_HELPERS_IMPORT`]: a string
-/// literal following `from` or `import`, outside comments, strings and templates.
+/// The first static import specifier in `source` other than [`RULE_HELPERS_IMPORT`] and
+/// [`RULE_BUILDER_IMPORT`]: a string literal following `from` or `import`, outside comments,
+/// strings and templates.
 ///
 /// A screen, not a parser. It keeps a rule from naming the harness or a sibling module by
 /// accident; it reads no regular expression literal and leaves `import()` alone, because the
@@ -167,7 +178,7 @@ pub fn first_refused_import(source: &str) -> Option<&str> {
       let end = end.min(bytes.len());
       if b != b'`'
         && matches!(after, "from" | "import")
-        && &source[start..end] != RULE_HELPERS_IMPORT
+        && ![RULE_HELPERS_IMPORT, RULE_BUILDER_IMPORT].contains(&&source[start..end])
       {
         return Some(&source[start..end]);
       }
@@ -208,17 +219,112 @@ pub struct RuleUpdateRequest {
   pub enabled: Option<bool>,
 }
 
-/// Body of `POST /flocks/:flock_id/rules/:rule_id/versions`.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+/// Body of `POST /flocks/:flock_id/rules/:rule_id/versions`: a module, or a builder model whose
+/// module dovecote writes. [`prepare_rule_version`] checks it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct RuleVersionCreateRequest {
-  /// The module, at most [`MAX_RULE_SOURCE_BYTES`].
+  /// The module, at most [`MAX_RULE_SOURCE_BYTES`]; empty with a model.
+  #[serde(default)]
   pub source: String,
-  /// `Hand` or `AssistantEdited`; `Assistant` is the assistant's own and is refused here.
+  /// `Hand` or `AssistantEdited` with a source, `Hand` or `Builder` with a model; `Assistant` is
+  /// the assistant's own and is refused here.
   #[serde(default)]
   pub origin: RuleOrigin,
   /// The version this one was edited from, which must exist.
   #[serde(default)]
   pub based_on: Option<i32>,
+  /// The builder's model; the version stores it and its origin is `builder`.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub builder_model: Option<RuleModel>,
+}
+
+/// A version body ready to store: the module, who wrote it, and the model as JSON text when the
+/// builder did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedRuleVersion {
+  /// The module to store: the body's own, or the one compiled from its model.
+  pub source: String,
+  /// The origin to store.
+  pub origin: RuleOrigin,
+  /// The model serialized for `rule_versions.builder_model`; `None` for a code version.
+  pub builder_model: Option<String>,
+}
+
+/// Why a version body was refused.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleVersionRejection {
+  /// The source failed [`check_rule_source`].
+  Source(RuleSourceRejection),
+  /// The model failed [`validate_rule_model`].
+  Model(RuleModelError),
+  /// Both a source and a model.
+  Both,
+  /// An origin this route does not take with what was sent.
+  Origin,
+}
+
+impl RuleVersionRejection {
+  /// The route's status: 413 for a source over its cap, else 400.
+  pub fn status(&self) -> u16 {
+    match self {
+      RuleVersionRejection::Source(RuleSourceRejection::TooLarge) => 413,
+      _ => 400,
+    }
+  }
+
+  /// The route's error text.
+  pub fn message(&self) -> String {
+    match self {
+      RuleVersionRejection::Source(r) => r.message().to_string(),
+      RuleVersionRejection::Model(e) => {
+        let text = e.to_string();
+        let mut message = String::with_capacity(32 + text.len());
+        message.push_str("Bad Request: 'builder_model': ");
+        message.push_str(&text);
+        message
+      }
+      RuleVersionRejection::Both => {
+        "Bad Request: send 'source' or 'builder_model', not both".to_string()
+      }
+      RuleVersionRejection::Origin => {
+        "Bad Request: 'origin' is 'hand' or 'assistant_edited' with a source, 'builder' with a \
+         model"
+          .to_string()
+      }
+    }
+  }
+}
+
+/// Checks a version body and, for a model, writes its module with [`compile_rule_model`], so a
+/// builder version's source is never sent by a client.
+pub fn prepare_rule_version(
+  req: &RuleVersionCreateRequest,
+) -> Result<PreparedRuleVersion, RuleVersionRejection> {
+  let Some(model) = &req.builder_model else {
+    check_rule_source(&req.source).map_err(RuleVersionRejection::Source)?;
+    if matches!(req.origin, RuleOrigin::Assistant | RuleOrigin::Builder) {
+      return Err(RuleVersionRejection::Origin);
+    }
+    return Ok(PreparedRuleVersion {
+      source: req.source.clone(),
+      origin: req.origin,
+      builder_model: None,
+    });
+  };
+  if !req.source.is_empty() {
+    return Err(RuleVersionRejection::Both);
+  }
+  if !matches!(req.origin, RuleOrigin::Hand | RuleOrigin::Builder) {
+    return Err(RuleVersionRejection::Origin);
+  }
+  validate_rule_model(model).map_err(RuleVersionRejection::Model)?;
+  let source = compile_rule_model(model);
+  check_rule_source(&source).map_err(RuleVersionRejection::Source)?;
+  Ok(PreparedRuleVersion {
+    source,
+    origin: RuleOrigin::Builder,
+    builder_model: Some(serde_json::to_string(model).expect("a rule model always serializes")),
+  })
 }
 
 /// Body of `POST .../versions/:version/deploy`; may be omitted.
@@ -299,8 +405,8 @@ pub struct Rule {
   pub updated_at: OffsetDateTime,
 }
 
-/// DB model for one `rule_versions` row. `test_summary` is read as `::text`, and `source` only
-/// where a route returns it.
+/// DB model for one `rule_versions` row. `test_summary` and `builder_model` are read as
+/// `::text`, and `source` and `builder_model` only where a route returns them.
 #[derive(Deserialize, Debug, Clone)]
 pub struct RuleVersionRow {
   pub rule_id: Uuid,
@@ -318,6 +424,7 @@ pub struct RuleVersionRow {
   pub created_by: Uuid,
   pub created_at: OffsetDateTime,
   pub source: Option<String>,
+  pub builder_model: Option<String>,
 }
 
 impl From<RuleVersionRow> for RuleVersion {
@@ -343,12 +450,15 @@ impl From<RuleVersionRow> for RuleVersion {
       created_by: row.created_by,
       created_at: row.created_at,
       source: row.source,
+      builder_model: row
+        .builder_model
+        .and_then(|m| serde_json::from_str(&m).ok()),
     }
   }
 }
 
-/// One version of a rule. Lists leave out `source` and `test_summary`; the single read and the
-/// save carry them.
+/// One version of a rule. Lists leave out `source`, `test_summary` and `builder_model`; the single
+/// read, the save and the test carry them.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RuleVersion {
   pub rule_id: Uuid,
@@ -376,6 +486,10 @@ pub struct RuleVersion {
   pub created_at: OffsetDateTime,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub source: Option<String>,
+  /// The model a builder version was made from; `None` for code, and where lists leave it out.
+  /// A model a newer builder stored, which this build cannot read, also reads as `None`.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub builder_model: Option<RuleModel>,
 }
 
 /// `GET /flocks/:flock_id/rules/:rule_id`: the rule and its versions, newest first.
@@ -535,6 +649,7 @@ mod tests {
       "import * as p from './pidgeiot.js';",
       "import './pidgeiot.js';",
       "export { num } from \"./pidgeiot.js\";",
+      "import { run } from \"./builder.js\";",
     ] {
       assert_eq!(first_refused_import(ok), None, "{ok}");
       assert_eq!(check_rule_source(ok), Ok(()), "{ok}");
@@ -550,6 +665,7 @@ mod tests {
         "node:fs",
       ),
       ("import x from \"./pidgeiot.js?x\"", "./pidgeiot.js?x"),
+      ("import x from \"./builder.mjs\"", "./builder.mjs"),
     ] {
       assert_eq!(first_refused_import(bad), Some(spec), "{bad}");
       assert_eq!(
@@ -593,6 +709,7 @@ mod tests {
       RuleOrigin::Hand,
       RuleOrigin::Assistant,
       RuleOrigin::AssistantEdited,
+      RuleOrigin::Builder,
     ] {
       assert_eq!(RuleOrigin::from_stored(origin.as_str()), origin);
       let json = serde_json::to_string(&origin).expect("origin serializes");
@@ -629,6 +746,7 @@ mod tests {
       created_by: Uuid::nil(),
       created_at: now,
       source: None,
+      builder_model: None,
     };
     let tested = RuleVersion::from(row(Some("aa"), &summary));
     assert_eq!(tested.tested_contract, Some(1));
@@ -643,6 +761,120 @@ mod tests {
     let seeded_by_hand = RuleVersion::from(row(Some("aa"), "{\"cases\":[]}"));
     assert_eq!(seeded_by_hand.tested_contract, Some(1), "the record stands");
     assert_eq!(seeded_by_hand.test_summary, None);
+  }
+
+  fn model() -> RuleModel {
+    serde_json::from_str(
+      r#"{"v": 1, "when": {"telemetry": {"key": "temp_c"}},
+        "only_if": [{"is": "compare", "key": "temp_c", "op": "above", "to": {"number": 40}}],
+        "then": [{"do": "mail", "severity": "warning", "subject": "Hot"}]}"#,
+    )
+    .expect("a model")
+  }
+
+  #[test]
+  fn a_model_version_gets_its_module_written_and_its_origin_set() {
+    let req: RuleVersionCreateRequest = serde_json::from_value(serde_json::json!({
+      "builder_model": model(), "based_on": 2
+    }))
+    .expect("a body with only a model parses");
+    let prepared = prepare_rule_version(&req).expect("accepted");
+    assert_eq!(prepared.origin, RuleOrigin::Builder);
+    assert_eq!(prepared.source, compile_rule_model(&model()));
+    let stored: RuleModel =
+      serde_json::from_str(prepared.builder_model.as_deref().expect("kept")).expect("JSON");
+    assert_eq!(stored, model());
+
+    let both = RuleVersionCreateRequest {
+      source: "export default () => ({});".into(),
+      builder_model: Some(model()),
+      ..Default::default()
+    };
+    assert_eq!(prepare_rule_version(&both), Err(RuleVersionRejection::Both));
+    let edited = RuleVersionCreateRequest {
+      origin: RuleOrigin::AssistantEdited,
+      builder_model: Some(model()),
+      ..Default::default()
+    };
+    assert_eq!(
+      prepare_rule_version(&edited),
+      Err(RuleVersionRejection::Origin)
+    );
+    let mut bad = model();
+    bad.then.clear();
+    let refused = prepare_rule_version(&RuleVersionCreateRequest {
+      builder_model: Some(bad),
+      ..Default::default()
+    })
+    .expect_err("refused");
+    assert_eq!(refused.status(), 400);
+    assert_eq!(
+      refused.message(),
+      "Bad Request: 'builder_model': The rule: add at least one thing to do under Then or \
+       Otherwise"
+    );
+  }
+
+  #[test]
+  fn a_source_version_keeps_its_checks_and_cannot_claim_the_builder() {
+    let code = |origin| RuleVersionCreateRequest {
+      source: "export default () => ({});".into(),
+      origin,
+      ..Default::default()
+    };
+    let prepared = prepare_rule_version(&code(RuleOrigin::AssistantEdited)).expect("accepted");
+    assert_eq!(prepared.builder_model, None);
+    assert_eq!(prepared.origin, RuleOrigin::AssistantEdited);
+    for origin in [RuleOrigin::Builder, RuleOrigin::Assistant] {
+      assert_eq!(
+        prepare_rule_version(&code(origin)),
+        Err(RuleVersionRejection::Origin)
+      );
+    }
+    let empty = prepare_rule_version(&RuleVersionCreateRequest::default()).expect_err("refused");
+    assert_eq!(
+      empty,
+      RuleVersionRejection::Source(RuleSourceRejection::Empty)
+    );
+    let big = RuleVersionCreateRequest {
+      source: "x".repeat(MAX_RULE_SOURCE_BYTES + 1),
+      ..Default::default()
+    };
+    assert_eq!(
+      prepare_rule_version(&big).expect_err("refused").status(),
+      413
+    );
+  }
+
+  #[test]
+  fn a_stored_model_reads_back_and_one_it_cannot_read_reads_as_none() {
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let row = |model: Option<&str>| RuleVersionRow {
+      rule_id: Uuid::nil(),
+      version: 1,
+      sha256: "aa".into(),
+      contract: 1,
+      origin: "builder".into(),
+      based_on: None,
+      repair_depth: 0,
+      prompt: None,
+      tested_sha256: None,
+      tested_contract: None,
+      tested_at: None,
+      test_summary: None,
+      created_by: Uuid::nil(),
+      created_at: now,
+      source: None,
+      builder_model: model.map(str::to_string),
+    };
+    let json = serde_json::to_string(&model()).expect("serializes");
+    let read = RuleVersion::from(row(Some(&json)));
+    assert_eq!(read.origin, RuleOrigin::Builder);
+    assert_eq!(read.builder_model, Some(model()));
+    let newer = RuleVersion::from(row(Some("{\"v\": 2, \"when\": {\"schedule\": {}}}")));
+    assert_eq!(newer.builder_model, None);
+    let listed = serde_json::to_value(RuleVersion::from(row(None))).expect("serializes");
+    assert!(listed.get("builder_model").is_none());
   }
 
   #[test]

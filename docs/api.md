@@ -87,7 +87,7 @@ dashboard route's marker names the role it needs on top of a valid session, and
 | [`GET /flocks/:flock_id/rules/:rule_id`](#get-flocksflock_idrulesrule_id) | flock: view | Read one rule and its versions |
 | [`PUT /flocks/:flock_id/rules/:rule_id`](#put-flocksflock_idrulesrule_id) | flock: manage | Rename, re-address, enable or disable a rule |
 | [`DELETE /flocks/:flock_id/rules/:rule_id`](#delete-flocksflock_idrulesrule_id) | flock: manage | Delete a rule and everything it stored |
-| [`POST /flocks/:flock_id/rules/:rule_id/versions`](#post-flocksflock_idrulesrule_idversions) | flock: manage | Save a rule's next version of code |
+| [`POST /flocks/:flock_id/rules/:rule_id/versions`](#post-flocksflock_idrulesrule_idversions) | flock: manage | Save a rule's next version, code or a builder model |
 | [`GET /flocks/:flock_id/rules/:rule_id/versions/:version`](#get-flocksflock_idrulesrule_idversionsversion) | flock: view | Read one version with its source |
 | [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/test`](#post-flocksflock_idrulesrule_idversionsversiontest) | flock: manage | Dry-run a version over recent telemetry |
 | [`POST /flocks/:flock_id/rules/:rule_id/versions/:version/deploy`](#post-flocksflock_idrulesrule_idversionsversiondeploy) | flock: manage | Deploy a tested version and enable the rule |
@@ -2657,8 +2657,8 @@ curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules \
 **Auth:** flock: view
 
 `capsules::RuleDetail`: `{ rule, versions }`, the versions newest first and without their
-`source` or `test_summary`, which the single version read carries. `404` when the flock has no
-such rule.
+`source`, `builder_model` or `test_summary`, which the single version read carries. `404` when
+the flock has no such rule.
 
 ```sh
 curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
@@ -2705,10 +2705,35 @@ curl -s -X DELETE https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id> \
 **Auth:** flock: manage
 
 Saves the rule's next version. Body `capsules::RuleVersionCreateRequest`
-(`{ source, origin?, based_on? }`): `origin` is `"hand"` (the default) or `"assistant_edited"`
-for a person's edit of an assistant draft; `based_on` names the version it was edited from and
-must exist (`400` otherwise). Answers `201` with the `capsules::RuleVersion`, numbered one past
-the rule's newest, its `source` and `sha256` included. Saving neither tests nor deploys it.
+(`{ source?, origin?, based_on?, builder_model? }`), with a module or a model, never both (`400`).
+With `source`: `origin` is `"hand"` (the default) or `"assistant_edited"` for a person's edit of
+an assistant draft. With `builder_model`, a `capsules::RuleModel` from the rule page's builder,
+dovecote checks it (`validate_rule_model`; a refusal answers `400` naming the row, such as
+`'builder_model': Only if, row 2: enter a number`) and writes the version's source itself: three
+lines that import `run` from `./builder.js`, the one interpreter every builder rule shares, and
+hand it the model parsed from a JSON string. The version's `origin` is then `"builder"` (a body
+may say `"hand"` or `"builder"`, nothing else) and it keeps the model. `based_on` names the
+version it was edited from and must exist (`400` otherwise). Answers `201` with the
+`capsules::RuleVersion`, numbered one past the rule's newest, its `source`, `sha256` and, for a
+builder version, `builder_model` included. Saving neither tests nor deploys it.
+
+The model's shape: `{ v: 1, when: { telemetry: { key } }, match: "all" | "any", only_if: [...],
+then: [...], otherwise: [...] }`. An `only_if` row is tagged by `is`: `compare` (`key`, `op` one
+of `above`, `below`, `at_least`, `at_most`, `equals`, `not_equals`, `to` one of `{ number }`,
+`{ text }` or `{ key }`, `for_secs`), `between` (`key`, `low`, `high`, `for_secs`), `changed`
+(`key`), `changed_by` (`key`, `more_than`), `bit_set` (`key`, `bit` 0 to 30) or `counted` (`key`,
+`more_than` up to 31, `within_secs` 60 to 7 days). Rows are decided at each reading that carries
+the trigger key, against each key's latest value in the batch; a `counted` row still counts the
+reports of its key in batches without the trigger, one per distinct reading time (readings
+stamped the same second, as backdated readings clamped together are, count once). An action is tagged by `do`:
+`mail` (`severity`, `subject`, `body`, `repeat` `start_stop` or `once`), whose texts take
+`{pigeon}`, `{flock}` and `{<key>}`, or `set_value` (`key`, `value`, optional `bands` of
+`{ if, value }` checked in order), written only when it changes. Caps: 16 rows, 8 actions in each
+branch, 4 mails, 4 `counted` rows, 16 table rows, 16 KiB of JSON (`capsules::MAX_MODEL_*`). A
+mail sends under the alert key `then-<n>` or `else-<n>`, with `-<start>` added for a `once` mail,
+so each start mails once. A row's hold and count are stored under the row itself, so a deployed
+edit restarts the rows it changed and keeps the rest. A key named `__proto__` is refused. A version converted to code is a
+`"hand"` version and keeps no model.
 
 ```sh
 curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions \
@@ -2721,8 +2746,8 @@ curl -s -X POST https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versi
 
 **Auth:** flock: view
 
-One `capsules::RuleVersion` with its `source`, and its `test_summary` once a dry run has tested
-those bytes. `404` when the rule has no such version.
+One `capsules::RuleVersion` with its `source`, its `builder_model` when the builder made it, and
+its `test_summary` once a dry run has tested those bytes. `404` when the rule has no such version.
 
 ```sh
 curl -s https://api.pidgeiot.com/flocks/<flock_id>/rules/<rule_id>/versions/3 \
@@ -2740,6 +2765,10 @@ or two to five, each of at most eight batches from the abstract pigeons `"a"`, `
 each batch at most 64 readings `after_secs` 0 to 7 days from the case's start, with the mails it
 expects as `{ key, kind }`. A case that breaks those bounds answers `400` before anything runs,
 and a body over 1 MiB (`capsules::MAX_RULE_TEST_BODY_BYTES`) answers `413` before it is parsed.
+For a builder version the rule page sends the two cases `capsules::rule_model_test_cases` makes
+from its model, when every Only if row compares a key of its own with a number: one report just
+inside the conditions and one just outside, a second batch later by the longest wait, each
+expecting the mails the model's actions send.
 
 The dry run uploads a script of its own, under a new name, holding this version and the deployed
 version beside it, then replays, each from empty state: every case through this version, then the

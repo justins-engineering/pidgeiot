@@ -91,3 +91,6 @@ pub use confirm_modal::ConfirmModal;
 
 mod terms_gate;
 pub use terms_gate::{PurchaseTermsNotice, TermsGate, TermsNotice, blocks_dashboard};
+
+mod rule_builder;
+pub use rule_builder::RuleBuilder;

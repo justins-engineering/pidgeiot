@@ -110,11 +110,13 @@ pub const MAX_CASE_EVENTS: usize = 8;
 /// Furthest a case reading may sit from the case's start: the notify window.
 pub const MAX_CASE_OFFSET_SECS: i64 = NOTIFY_REPEAT_SECS;
 
-/// The harness modules every bundle carries beside its rules.
-const HARNESS: [(&str, &str); 3] = [
+/// The harness modules every bundle carries beside its rules, the builder's interpreter among
+/// them so a builder rule costs its three lines and no more.
+const HARNESS: [(&str, &str); 4] = [
   ("main.js", include_str!("../../rules/main.js")),
   ("prelude.js", include_str!("../../rules/prelude.js")),
   ("pidgeiot.js", include_str!("../../rules/pidgeiot.js")),
+  ("builder.js", include_str!("../../rules/builder.js")),
 ];
 
 fn is_pigeon_id(s: &str) -> bool {
@@ -3203,6 +3205,121 @@ mod tests {
     }
   }
 
+  /// The builder fixtures `rules/run-builder.mjs` runs, by file: each model's module and the
+  /// test cases made from the first, as the test route expands them.
+  fn builder_fixtures() -> Vec<(&'static str, capsules::RuleModel)> {
+    let model = |v: Value| serde_json::from_value::<capsules::RuleModel>(v).expect("a model");
+    vec![
+      (
+        "b-hot.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "temp_c"}},
+          "only_if": [{"is": "compare", "key": "temp_c", "op": "above", "to": {"number": 40},
+            "for_secs": 300}],
+          "then": [
+            {"do": "mail", "severity": "warning",
+              "subject": "Sign running hot: {pigeon} at {temp_c} C"},
+            {"do": "set_value", "key": "fan", "value": "on"}
+          ],
+          "otherwise": [{"do": "set_value", "key": "fan", "value": "auto"}]
+        })),
+      ),
+      (
+        "b-reboots.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "reset_cause"}},
+          "only_if": [{"is": "counted", "key": "reset_cause", "more_than": 3,
+            "within_secs": 86400}],
+          "then": [{"do": "mail", "severity": "critical", "subject": "Reboot loop on {pigeon}",
+            "body": "{pigeon} booted more than three times in a day."}]
+        })),
+      ),
+      (
+        "b-bands.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "lux"}},
+          "then": [{"do": "set_value", "key": "brightness", "value": "60", "bands": [
+            {"if": {"is": "compare", "key": "lux", "op": "below", "to": {"number": 50}},
+              "value": "30"},
+            {"if": {"is": "compare", "key": "lux", "op": "above", "to": {"number": 500}},
+              "value": "80"}
+          ]}]
+        })),
+      ),
+      (
+        "b-mixed.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "reset_cause"}},
+          "match": "any",
+          "only_if": [
+            {"is": "bit_set", "key": "reset_cause", "bit": 4},
+            {"is": "changed", "key": "layout"},
+            {"is": "changed_by", "key": "temp_c", "more_than": 5},
+            {"is": "compare", "key": "mode", "op": "not_equals", "to": {"text": "auto"}},
+            {"is": "compare", "key": "temp_in", "op": "above", "to": {"key": "temp_out"}}
+          ],
+          "then": [{"do": "mail", "severity": "warning", "subject": "Look at {pigeon}",
+            "body": "reset_cause {reset_cause}\nlayout {layout} {unknown}", "repeat": "once"}],
+          "otherwise": [{"do": "set_value", "key": "last_cause", "value": "{reset_cause}"}]
+        })),
+      ),
+      (
+        "b-counted.js",
+        model(json!({
+          "v": 1,
+          "when": {"telemetry": {"key": "temp_c"}},
+          "only_if": [{"is": "counted", "key": "reset_cause", "more_than": 2,
+            "within_secs": 86400}],
+          "then": [{"do": "mail", "severity": "warning", "subject": "Rebooting: {pigeon}"}]
+        })),
+      ),
+    ]
+  }
+
+  /// `BLESS_BUILDER_FIXTURES=1` rewrites the files instead of comparing them, after a deliberate
+  /// change to the compile or the case maker.
+  #[test]
+  fn the_builder_fixtures_are_what_dovecote_writes() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/");
+    let bless = std::env::var_os("BLESS_BUILDER_FIXTURES").is_some();
+    let fixtures = builder_fixtures();
+    for (file, model) in &fixtures {
+      assert_eq!(capsules::validate_rule_model(model), Ok(()), "{file}");
+      let source = capsules::compile_rule_model(model);
+      let path = [dir, file].concat();
+      if bless {
+        std::fs::write(&path, &source).expect("fixture written");
+      }
+      assert_eq!(
+        std::fs::read_to_string(&path).expect("fixture read"),
+        source,
+        "{file}"
+      );
+    }
+    let flock = RuleNamedRef {
+      id: "f1".into(),
+      name: "Bench signs".into(),
+    };
+    let cases: Vec<Value> = capsules::rule_model_test_cases(&fixtures[0].1)
+      .iter()
+      .map(|case| {
+        let events = expand_case(case, &flock, 1_793_380_000).expect("a valid case");
+        json!({ "name": case.name, "events": events, "expect": case.expect })
+      })
+      .collect();
+    assert_eq!(cases.len(), MIN_TEST_CASES);
+    let text = serde_json::to_string_pretty(&cases).expect("cases serialize") + "\n";
+    let path = [dir, "canned/builder-cases.json"].concat();
+    if bless {
+      std::fs::write(&path, &text).expect("cases written");
+    }
+    assert_eq!(std::fs::read_to_string(&path).expect("cases read"), text);
+  }
+
   #[test]
   fn the_bundle_holds_the_harness_and_each_rule() {
     let rules = [
@@ -3229,10 +3346,19 @@ mod tests {
     let b = format!("r-{RULE_B}.js");
     assert_eq!(
       names,
-      ["main.js", "prelude.js", "pidgeiot.js", "rules.js", &a, &b]
+      [
+        "main.js",
+        "prelude.js",
+        "pidgeiot.js",
+        "builder.js",
+        "rules.js",
+        &a,
+        &b
+      ]
     );
     assert_eq!(modules[0].1, include_str!("../../rules/main.js"));
-    assert_eq!(modules[3].1, manifest);
+    assert_eq!(modules[3].1, include_str!("../../rules/builder.js"));
+    assert_eq!(modules[4].1, manifest);
 
     // A dry run carries two versions of one rule under distinct keys.
     let test_key = format!("{RULE_A}-v4");

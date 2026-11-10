@@ -1,4 +1,4 @@
-// Runs run-fixtures.mjs and run-hostile.mjs against the harness under workerd, the runtime rules
+// Runs run-fixtures.mjs, run-builder.mjs and run-hostile.mjs against the harness under workerd, the runtime rules
 // run in, which refuses code Bun passes. `bun run-workerd.mjs`: each manifest is served locally
 // from a scratch copy under $TMPDIR, removed after; nothing is deployed. `--canned` runs
 // make-canned.mjs against the same copies instead, so canned/ holds workerd's answers.
@@ -88,6 +88,8 @@ async function ready(url, child) {
 const suites = [
   { name: "worked", runner: "run-fixtures.mjs",
     files: readdirSync(here).filter((f) => f.endsWith(".js")) },
+  { name: "builder", runner: "run-builder.mjs",
+    files: readdirSync(here).filter((f) => f.endsWith(".js")) },
   { name: "hostile", runner: "run-hostile.mjs", files: ["main.js", "prelude.js"],
     extra: "hostile", logged: ["rule egress refused " + FLOCK + " example.com 0",
       "rule socket refused " + FLOCK + " 8.8.8.8:53 0"] },
@@ -107,6 +109,8 @@ const root = mkdtempSync(join(tmpdir(), "rules-workerd-"));
 let failures = 0;
 try {
   for (const suite of suites) {
+    // Its answers need no canned copy: no Rust test reads them.
+    if (canned && suite.name === "builder") continue;
     const dir = join(root, suite.name);
     mkdirSync(dir);
     for (const f of suite.files) cpSync(join(here, f), join(dir, f));

@@ -97,6 +97,8 @@ pub mod rule_view;
 
 pub mod rule_dry_run_view;
 
+pub mod rule_builder_form;
+
 /// Whether the caller can manage a flock: its own personal flock, or an org flock where it is an
 /// owner or admin. dovecote makes the same check and has the last word.
 pub fn can_manage_flock(session: &crate::LocalSession, flock_id: uuid::Uuid) -> bool {

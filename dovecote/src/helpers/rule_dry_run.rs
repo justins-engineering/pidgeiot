@@ -1594,7 +1594,9 @@ mod tests {
     assert_eq!(first[0], "allowed");
     assert_eq!(
       first[1],
-      format!("upload Test main.js prelude.js pidgeiot.js rules.js r-{rule}-v3.js r-{rule}-v2.js")
+      format!(
+        "upload Test main.js prelude.js pidgeiot.js builder.js rules.js r-{rule}-v3.js r-{rule}-v2.js"
+      )
     );
     assert!(first[2].starts_with("dispatch \"replay\" 4194304 30000"));
     assert_eq!(
@@ -1610,7 +1612,9 @@ mod tests {
     assert_eq!(fake.calls[upload2 - 1], "allowed");
     assert_eq!(
       fake.calls[upload2],
-      format!("upload CpuCheck main.js prelude.js pidgeiot.js rules.js r-{sibling}.js r-{rule}.js")
+      format!(
+        "upload CpuCheck main.js prelude.js pidgeiot.js builder.js rules.js r-{sibling}.js r-{rule}.js"
+      )
     );
     let live: Vec<&Value> = fake.bodies.iter().filter(|b| b["mode"] == "live").collect();
     assert_eq!(live.len(), 2 * worked_events().len().min(CPU_CHECK_BATCHES));

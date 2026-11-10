@@ -276,7 +276,9 @@ function mails(runs, events) {
   ];
   for (const [name, common, state] of cases) {
     const live = await call({ mode: "live", wall_ms: 250, common,
-      rules: ["r6", "r7", "r10", "starter"].map((id) => ({ id, version: 1, state })) });
+      rules: ["r6", "r7", "r10", "starter", "b_hot", "b_reboots", "b_bands", "b_mixed",
+        "b_counted"]
+        .map((id) => ({ id, version: 1, state })) });
     check("every rule takes " + name,
       live.results.every((r) => r.status === "ok" && inCaps(outOf(r))));
   }
