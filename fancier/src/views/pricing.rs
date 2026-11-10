@@ -463,7 +463,7 @@ pub fn PricingPage() -> Element {
               }
             }
             p { class: "text-base-content/75 leading-relaxed",
-              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page. Custom dashboards aren't here yet, and you should hear that from us before you sign."
+              "10,000 devices, 300M pooled messages, $0.12 per device beyond. We'd rather scope a fleet this size with you than sell it from a page."
             }
           }
           div { class: "lg:ml-auto lg:text-right shrink-0",
@@ -577,7 +577,7 @@ pub fn PricingPage() -> Element {
           }
           Answer {
             question: "Will these prices hold?",
-            body: "They are deliberately introductory while custom dashboards are still missing. The Terms give you at least 30 days' notice before a change affects an existing paid subscription, and the change takes effect at your next renewal after that notice.",
+            body: "They are deliberately introductory. The Terms give you at least 30 days' notice before a change affects an existing paid subscription, and the change takes effect at your next renewal after that notice.",
           }
         }
       }

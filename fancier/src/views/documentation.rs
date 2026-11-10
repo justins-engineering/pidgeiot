@@ -138,6 +138,9 @@ pub fn DocumentationPage() -> Element {
                   li { "Its pigeons and their connection state." }
                   li { "Graphs across the flock's pigeons, and a CSV export of their history." }
                   li { "Alerts that apply to every pigeon in the flock." }
+                  li {
+                    "A config every pigeon in the flock inherits, where one pigeon can override any key."
+                  }
                 }
               }
             }
@@ -146,13 +149,13 @@ pub fn DocumentationPage() -> Element {
             }
           }
           div {
-            h3 { class: "text-xl font-bold mb-2", "Custom dashboards are not here yet" }
+            h3 { class: "text-xl font-bold mb-2", "Custom dashboards" }
             p { class: "text-base-content/70 leading-relaxed mb-4",
-              "There is no dashboard builder and no branded page to hand a customer. Your customer signs in to the same dashboard you use and sees the flocks and pigeons of their organization. What exists instead:"
+              "A custom dashboard is a page of widgets you arrange: graphs, latest values, a value against its range, a flock's status table, a config key, a flock's alerts, and notes. A personal dashboard is yours alone. An organization's is read by every member and edited by its owners and admins. There is no branded page to hand a customer: your customer signs in to the same dashboard you use and sees the flocks and pigeons of their organization. Besides dashboards:"
             }
             ul { class: "space-y-2 text-base-content/70 leading-relaxed list-disc ml-5",
               li {
-                "Graphs on every pigeon and flock page, saved to each person's own account, so two members of one organization keep their own."
+                "Graphs on every pigeon and flock page, saved to each person's own account, so two members of one organization keep their own. Any of them can be added to a dashboard."
               }
               li { "CSV export of telemetry history from every pigeon and flock page." }
               li {

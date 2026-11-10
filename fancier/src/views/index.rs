@@ -669,7 +669,7 @@ pub fn Index() -> Element {
                 MaturityBadge { maturity: Maturity::Planned }
               }
               p { class: "leading-relaxed text-base-content/80",
-                "Designed, not yet built: user-written logic running against incoming telemetry at the edge, on Cloudflare Workers for Platforms, the step from device management to a programmable platform."
+                "Designed, not yet available: user-written logic running against incoming telemetry at the edge, on Cloudflare Workers for Platforms, the step from device management to a programmable platform."
               }
             }
           }
