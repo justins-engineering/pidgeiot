@@ -2538,7 +2538,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           }
         }
 
-        let Ok(()) = crate::helpers::set_flock_org(&client, &flock_id, &payload.org_id).await
+        let Ok(Some(transferred)) =
+          crate::helpers::set_flock_org(&client, &flock_id, &payload.org_id).await
         else {
           return Response::error(
             "Internal Server Error: org access granted but flock not yet marked -- retry is safe",
@@ -2558,12 +2559,6 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
             console_error!("External DB Sync Error for org ACL {pid}: {e}");
           }
         }
-
-        let Ok(Some((transferred, _))) = get_flock_with_pigeons(&client, &flock_id).await else {
-          return Response::error("Internal Server Error", 500)
-            .unwrap()
-            .with_cors(&cors);
-        };
 
         Response::from_json(&transferred)?.with_cors(&cors)
       },

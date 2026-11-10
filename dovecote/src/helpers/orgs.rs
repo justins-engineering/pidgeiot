@@ -1024,21 +1024,24 @@ pub async fn get_flock_with_pigeons(
     })?;
 
   Ok(rows.into_iter().next().map(|row| {
-    let pigeon_ids: Vec<String> = row.get("pigeon_ids");
-    (
-      Flock {
-        id: row.get("id"),
-        user_id: row.get("user_id"),
-        org_id: row.get("org_id"),
-        name: row.get("name"),
-        service_plan: row.get("service_plan"),
-        pigeon_ids: pigeon_ids.clone(),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-      },
-      pigeon_ids,
-    )
+    let flock = flock_from_row(&row);
+    let pigeon_ids = flock.pigeon_ids.clone();
+    (flock, pigeon_ids)
   }))
+}
+
+/// A [`Flock`] from a row carrying the flock columns and a `pigeon_ids` array.
+fn flock_from_row(row: &Row) -> Flock {
+  Flock {
+    id: row.get("id"),
+    user_id: row.get("user_id"),
+    org_id: row.get("org_id"),
+    name: row.get("name"),
+    service_plan: row.get("service_plan"),
+    pigeon_ids: row.get("pigeon_ids"),
+    created_at: row.get("created_at"),
+    updated_at: row.get("updated_at"),
+  }
 }
 
 /// Marks a flock org-owned -- called by the transfer route AFTER every
@@ -1047,10 +1050,20 @@ pub async fn get_flock_with_pigeons(
 /// final step, so a failure part-way leaves the flock still personal with
 /// some harmlessly-early org ACL rows, and the transfer can simply be
 /// retried -- the DO grant is an idempotent upsert).
-pub async fn set_flock_org(client: &Client, flock_id: &Uuid, org_id: &Uuid) -> Result<()> {
-  client
-    .execute_typed(
-      "UPDATE flocks SET org_id = $2 WHERE id = $1;",
+///
+/// Returns the row as this write left it, `None` when no flock has the id. The route answers
+/// with it rather than re-reading: Hyperdrive would serve that read from the cache the route's
+/// own pre-write lookup seeded, still showing the flock personal.
+pub async fn set_flock_org(
+  client: &Client,
+  flock_id: &Uuid,
+  org_id: &Uuid,
+) -> Result<Option<Flock>> {
+  let rows = client
+    .query_typed(
+      "UPDATE flocks SET org_id = $2 WHERE id = $1
+       RETURNING id, user_id, org_id, name, service_plan, created_at, updated_at,
+         ARRAY(SELECT pigeons.id FROM pigeons WHERE pigeons.flock_id = flocks.id) AS pigeon_ids;",
       &[(flock_id, Type::UUID), (org_id, Type::UUID)],
     )
     .await
@@ -1058,7 +1071,7 @@ pub async fn set_flock_org(client: &Client, flock_id: &Uuid, org_id: &Uuid) -> R
       console_error!("Flock org transfer update error: {e}");
       Error::RustError("Internal Server Error".into())
     })?;
-  Ok(())
+  Ok(rows.first().map(flock_from_row))
 }
 
 #[cfg(test)]
@@ -1076,5 +1089,59 @@ mod tests {
   #[test]
   fn suffix_hint_returns_whole_string_when_shorter_than_n() {
     assert_eq!(suffix_hint("ab", 4), "...ab");
+  }
+}
+
+/// The flock writes against the dev Postgres, as [`super::rule_store`]'s `pg` tests run them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pg {
+  use super::*;
+  use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_transfer_answers_with_the_row_its_write_left() {
+    run(async {
+      let db = Scratch::new("flock_transfer").await;
+      let client = db.client().await;
+      let org: Uuid = client
+        .query_one(
+          "INSERT INTO organizations (name) VALUES ('o') RETURNING id",
+          &[],
+        )
+        .await
+        .expect("org inserted")
+        .get(0);
+      let flock = new_flock(&client, None).await;
+      new_pigeon(&client, flock, "p1").await;
+      let (before, _) = get_flock_with_pigeons(&client, &flock)
+        .await
+        .expect("read")
+        .expect("flock found");
+      assert_eq!(before.org_id, None);
+
+      let written = set_flock_org(&client, &flock, &org)
+        .await
+        .expect("write")
+        .expect("flock found");
+      assert_eq!(written.org_id, Some(org));
+      assert_eq!(written.pigeon_ids, ["p1"]);
+      assert!(
+        written.updated_at > before.updated_at,
+        "the trigger's stamp"
+      );
+      let (stored, _) = get_flock_with_pigeons(&client, &flock)
+        .await
+        .expect("read")
+        .expect("flock found");
+      assert_eq!(written, stored);
+
+      let unknown = set_flock_org(&client, &Uuid::nil(), &org)
+        .await
+        .expect("write");
+      assert!(unknown.is_none());
+      drop(client);
+      db.drop().await;
+    });
   }
 }
