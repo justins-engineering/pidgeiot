@@ -71,6 +71,8 @@ pulldown-cmark = { version = "0.13", default-features = false, features = [
 # Runs the error shim's own regex literal against the Rust matcher it has
 # to agree with; never reaches the wasm bundle.
 regex = "1"
+# Renders a component tree on the host; already in the lockfile through the server feature.
+dioxus-ssr = "0.7"
 
 [build-dependencies]
 dotenvy = "0.15"

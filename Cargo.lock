@@ -1580,6 +1580,7 @@ dependencies = [
  "dioxus",
  "dioxus-free-icons",
  "dioxus-i18n",
+ "dioxus-ssr",
  "dotenvy",
  "futures-util",
  "js-sys",

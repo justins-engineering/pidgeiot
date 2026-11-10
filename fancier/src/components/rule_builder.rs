@@ -688,95 +688,165 @@ pub fn RuleBuilder(
   let trigger = trigger_key(&current).to_string();
   let known = keys.iter().any(|k| *k == trigger) || keys.is_empty();
   rsx! {
-    div { key: "{generation}", class: "flex flex-col gap-4",
-      datalist { id: KEYS_LIST_ID,
-        for key in keys.iter() {
-          option { value: "{key}" }
-        }
-      }
-      div { class: "flex flex-col gap-2",
-        h3 { class: "font-semibold", "When" }
-        div { class: "flex flex-wrap items-center gap-2 rounded-box bg-base-200/40 p-2",
-          span { class: "text-sm", "a pigeon in this flock reports" }
-          KeyField {
-            value: trigger.clone(),
-            label: "Key that starts the rule",
-            readonly,
-            on_change: move |key: String| model.write().when = RuleTrigger::Telemetry { key },
+    // Dioxus compares keys only between siblings, so the form is a list of one to remount.
+    for g in [generation()] {
+      div { key: "{g}", class: "flex flex-col gap-4",
+        datalist { id: KEYS_LIST_ID,
+          for key in keys.iter() {
+            option { value: "{key}" }
           }
         }
-        if !known && !trigger.trim().is_empty() {
+        div { class: "flex flex-col gap-2",
+          h3 { class: "font-semibold", "When" }
+          div { class: "flex flex-wrap items-center gap-2 rounded-box bg-base-200/40 p-2",
+            span { class: "text-sm", "a pigeon in this flock reports" }
+            KeyField {
+              value: trigger.clone(),
+              label: "Key that starts the rule",
+              readonly,
+              on_change: move |key: String| model.write().when = RuleTrigger::Telemetry { key },
+            }
+          }
+          if !known && !trigger.trim().is_empty() {
+            p { class: "text-xs text-base-content/60",
+              "No pigeon in this flock has reported this key in the last day. The rule still "
+              "runs once one does."
+            }
+          }
           p { class: "text-xs text-base-content/60",
-            "No pigeon in this flock has reported this key in the last day. The rule still "
-            "runs once one does."
+            "The rule looks at each report that carries this key, the moment it arrives."
+          }
+        }
+        div { class: "flex flex-col gap-2",
+          div { class: "flex flex-wrap items-center gap-2",
+            h3 { class: "font-semibold", "Only if" }
+            select {
+              class: "select select-bordered select-sm w-auto",
+              "aria-label": "How the conditions combine",
+              disabled: readonly,
+              onchange: move |evt| {
+                  let any = evt.value() == "any";
+                  model.write().r#match = if any { RuleMatch::Any } else { RuleMatch::All };
+              },
+              option { value: "all", selected: current.r#match == RuleMatch::All,
+                "all of these are true"
+              }
+              option { value: "any", selected: current.r#match == RuleMatch::Any,
+                "any of these is true"
+              }
+            }
+          }
+          if current.only_if.is_empty() {
+            p { class: "text-sm text-base-content/60", "No conditions: every report acts." }
+          }
+          ul { class: "flex flex-col gap-2",
+            for (i , row) in current.only_if.iter().cloned().enumerate() {
+              ConditionRow { model, generation, index: i, row, readonly }
+            }
+          }
+          if !readonly && current.only_if.len() < MAX_MODEL_CONDITIONS {
+            button {
+              class: "btn btn-outline btn-xs self-start",
+              r#type: "button",
+              onclick: move |_| {
+                  let key = trigger_key(&model.peek()).to_string();
+                  model.write().only_if.push(new_condition(&key));
+              },
+              "Add a condition"
+            }
+          }
+        }
+        div { class: "flex flex-col gap-2",
+          h3 { class: "font-semibold", "Then" }
+          ActionList { model, generation, branch: RuleBranch::Then, readonly }
+        }
+        div { class: "flex flex-col gap-2",
+          if current.otherwise.is_empty() {
+            if !readonly {
+              button {
+                class: "btn btn-ghost btn-xs self-start",
+                r#type: "button",
+                onclick: move |_| model.write().otherwise.push(new_value()),
+                "Add otherwise: what to do while the conditions are not met"
+              }
+            }
+          } else {
+            h3 { class: "font-semibold", "Otherwise" }
+            ActionList { model, generation, branch: RuleBranch::Otherwise, readonly }
           }
         }
         p { class: "text-xs text-base-content/60",
-          "The rule looks at each report that carries this key, the moment it arrives."
+          "In a subject, message or value, {{pigeon}} and {{flock}} become their names, and a key "
+          "in braces, like {{temp_c}}, becomes its latest value."
         }
-      }
-      div { class: "flex flex-col gap-2",
-        div { class: "flex flex-wrap items-center gap-2",
-          h3 { class: "font-semibold", "Only if" }
-          select {
-            class: "select select-bordered select-sm w-auto",
-            "aria-label": "How the conditions combine",
-            disabled: readonly,
-            onchange: move |evt| {
-                let any = evt.value() == "any";
-                model.write().r#match = if any { RuleMatch::Any } else { RuleMatch::All };
-            },
-            option { value: "all", selected: current.r#match == RuleMatch::All,
-              "all of these are true"
-            }
-            option { value: "any", selected: current.r#match == RuleMatch::Any,
-              "any of these is true"
-            }
-          }
-        }
-        if current.only_if.is_empty() {
-          p { class: "text-sm text-base-content/60", "No conditions: every report acts." }
-        }
-        ul { class: "flex flex-col gap-2",
-          for (i , row) in current.only_if.iter().cloned().enumerate() {
-            ConditionRow { model, generation, index: i, row, readonly }
-          }
-        }
-        if !readonly && current.only_if.len() < MAX_MODEL_CONDITIONS {
-          button {
-            class: "btn btn-outline btn-xs self-start",
-            r#type: "button",
-            onclick: move |_| {
-                let key = trigger_key(&model.peek()).to_string();
-                model.write().only_if.push(new_condition(&key));
-            },
-            "Add a condition"
-          }
-        }
-      }
-      div { class: "flex flex-col gap-2",
-        h3 { class: "font-semibold", "Then" }
-        ActionList { model, generation, branch: RuleBranch::Then, readonly }
-      }
-      div { class: "flex flex-col gap-2",
-        if current.otherwise.is_empty() {
-          if !readonly {
-            button {
-              class: "btn btn-ghost btn-xs self-start",
-              r#type: "button",
-              onclick: move |_| model.write().otherwise.push(new_value()),
-              "Add otherwise: what to do while the conditions are not met"
-            }
-          }
-        } else {
-          h3 { class: "font-semibold", "Otherwise" }
-          ActionList { model, generation, branch: RuleBranch::Otherwise, readonly }
-        }
-      }
-      p { class: "text-xs text-base-content/60",
-        "In a subject, message or value, {{pigeon}} and {{flock}} become their names, and a key "
-        "in braces, like {{temp_c}}, becomes its latest value."
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::helpers::rule_builder_form::starter_model;
+  use capsules::{RuleCompareOp, RuleOperand};
+  use dioxus::dioxus_core::VirtualDom;
+  use std::cell::RefCell;
+
+  thread_local! {
+    static PAGE: RefCell<Option<(Signal<RuleModel>, Signal<u32>)>> = const { RefCell::new(None) };
+  }
+
+  /// The rule page's part: it mounts the form on the starter and owns the signals a load writes.
+  #[component]
+  fn Page() -> Element {
+    let model = use_signal(starter_model);
+    let generation = use_signal(|| 0u32);
+    use_hook(|| PAGE.with(|p| *p.borrow_mut() = Some((model, generation))));
+    rsx! {
+      RuleBuilder { model, generation, keys: Vec::new(), readonly: false }
+    }
+  }
+
+  /// The `value` of every input labelled `label` in the page as rendered now.
+  fn values_labelled(dom: &VirtualDom, label: &str) -> Vec<String> {
+    let html = dioxus_ssr::render(dom);
+    let value = regex::Regex::new(r#"value="([^"]*)""#).expect("value pattern");
+    let mut labelled = String::with_capacity(label.len() + 13);
+    labelled.push_str("aria-label=\"");
+    labelled.push_str(label);
+    labelled.push('"');
+    html
+      .split("<input")
+      .skip(1)
+      .filter_map(|rest| rest.split_once('>').map(|(tag, _)| tag))
+      .filter(|tag| tag.contains(&labelled))
+      .map(|tag| {
+        value
+          .captures(tag)
+          .map_or(String::new(), |c| c[1].to_string())
+      })
+      .collect()
+  }
+
+  #[test]
+  fn a_loaded_rule_without_a_hold_shows_an_empty_hold_field() {
+    let mut dom = VirtualDom::new(Page);
+    dom.rebuild_in_place();
+    assert_eq!(values_labelled(&dom, "Minutes it must last"), ["5"]);
+
+    let mut stored = starter_model();
+    stored.only_if = vec![RuleCondition::Compare {
+      key: "temp_c".to_string(),
+      op: RuleCompareOp::Above,
+      to: RuleOperand::Number(40.0),
+      for_secs: 0,
+    }];
+    dom.in_runtime(|| {
+      let (mut model, mut generation) = PAGE.with(|p| p.borrow().expect("page mounted"));
+      model.set(stored);
+      generation += 1;
+    });
+    dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+    assert_eq!(values_labelled(&dom, "Minutes it must last"), [""]);
   }
 }
