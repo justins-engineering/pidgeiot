@@ -3647,8 +3647,9 @@ and `?format=xml`:
 </DataItems>
 ```
 
-XML escapes `&`, `<`, `>`, `"` and `'` and drops the control characters XML 1.0 forbids. No
-items answers `{}`, or a `<DataItems>` element with no children.
+XML escapes `&`, `<`, `>`, `"` and `'`, writes tab, newline and carriage return as character
+references (`&#9;`, `&#10;`, `&#13;`) so a parser reads them back unchanged, and drops the control
+characters XML 1.0 forbids. No items answers `{}`, or a `<DataItems>` element with no children.
 
 Headers: `Content-Type: application/json; charset=utf-8` or `application/xml; charset=utf-8`,
 `Cache-Control: no-store`, and `X-Target-Version`, the `target_version` served, so a capture shows

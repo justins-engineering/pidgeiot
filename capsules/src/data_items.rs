@@ -65,6 +65,10 @@ pub fn data_items_json(items: &[(String, String)]) -> String {
 
 /// `items` as the `<DataItems>` document a sign's web data source reads, names and values
 /// escaped, and characters XML 1.0 forbids dropped.
+///
+/// Tab, newline and carriage return go out as character references: a parser turns a literal one
+/// in an attribute into a space and a literal carriage return in text into a newline, so a name
+/// holding one could never match the sign's data item.
 pub fn data_items_xml(items: &[(String, String)]) -> String {
   let mut out = String::with_capacity(xml_len(items));
   out.push_str(XML_DECLARATION);
@@ -97,9 +101,13 @@ fn xml_allowed(c: char) -> bool {
   !matches!(c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
 }
 
-/// The entity for a markup character, the same in text and in a quoted attribute.
+/// The reference that writes `c` so a parser reads it back as written, the same in text and in a
+/// quoted attribute.
 fn xml_entity(c: char) -> Option<&'static str> {
   match c {
+    '\t' => Some("&#9;"),
+    '\n' => Some("&#10;"),
+    '\r' => Some("&#13;"),
     '&' => Some("&amp;"),
     '<' => Some("&lt;"),
     '>' => Some("&gt;"),
@@ -213,12 +221,15 @@ mod tests {
   }
 
   #[test]
-  fn xml_drops_forbidden_characters_and_keeps_tab_newline_and_return() {
-    let xml = data_items_xml(&pairs(&[(
-      "n\u{1}m",
-      "a\u{0}b\tc\nd\re\u{1f}f\u{fffe}\u{ffff}",
-    )]));
-    assert!(xml.contains("<DataItem name=\"nm\">ab\tc\nd\ref</DataItem>"));
+  fn xml_drops_forbidden_characters() {
+    let xml = data_items_xml(&pairs(&[("n\u{1}m", "a\u{0}b\u{1f}c\u{fffe}\u{ffff}d")]));
+    assert!(xml.contains("<DataItem name=\"nm\">abcd</DataItem>"));
+  }
+
+  #[test]
+  fn xml_writes_tab_newline_and_return_as_references_in_names_and_values() {
+    let xml = data_items_xml(&pairs(&[("a\tb\nc\rd", "e\tf\r\ng")]));
+    assert!(xml.contains("<DataItem name=\"a&#9;b&#10;c&#13;d\">e&#9;f&#13;&#10;g</DataItem>"));
   }
 
   #[test]
@@ -229,7 +240,7 @@ mod tests {
 
   #[test]
   fn xml_is_sized_exactly_from_its_parts() {
-    let items = pairs(&[("a&b", "x<y é \u{1}"), ("plain", "text")]);
+    let items = pairs(&[("a&b\t", "x<y é \u{1}\r\n"), ("plain", "text")]);
     assert_eq!(xml_len(&items), data_items_xml(&items).len());
   }
 
