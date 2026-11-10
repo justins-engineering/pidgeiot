@@ -293,11 +293,12 @@ through Cloudflare's rate-limiter binding: the two public unauthenticated forms 
 `POST /contact`, keyed per IP) and the device surfaces that are neither billed nor counted
 (shadow polls and FOTA chunk downloads keyed per pigeon, values polls per pigeon and source
 address, plus a per-IP budget on requests that fail device authentication). Every one of them
-shares the same properties, and they are worth stating once rather than in each row: the counters are approximate and roughly
-per-colo, so a limit bounds runaway volume rather than gating precisely; over the limit answers
-`429` with `Retry-After` and **never** `401`, which the dashboard treats as a sign-out signal;
-and each check fails **open** on a binding fault, because a limiter outage taking a fleet offline
-would be worse than a window of unthrottled traffic. The limits that do exist are:
+shares the same properties, and they are worth stating once rather than in each row: the
+counters are approximate and roughly per-colo, so a limit bounds runaway volume rather than
+gating precisely; over the limit answers `429` with `Retry-After` and **never** `401`, which the
+dashboard treats as a sign-out signal; and each check fails **open** on a binding fault, because
+a limiter outage taking a fleet offline would be worse than a window of unthrottled traffic. The
+limits that do exist are:
 
 | Limit | Value | Where |
 |---|---|---|
@@ -3620,9 +3621,10 @@ LED sign that polls a web data source by itself, and any client that polls a URL
   exactly that name, and ignores the rest.
 
 `?format=json` (the default) answers one flat JSON object; `?format=xml` answers the
-`<DataItems>` document such a sign reads. Any other `format` is `400`; every other query
-parameter is ignored, so a sign can append its own. Prefer XML for a sign whose JSON reader takes a
-dot in a key as a path step: an XML name is a plain string. With this effective config:
+`<DataItems>` document such a sign reads. The value is lower case and the first `format` decides;
+any other value is `400`. Every other query parameter is ignored, so a sign can append its own.
+Prefer XML for a sign whose JSON reader takes a dot in a key as a path step: an XML name is a
+plain string. With this effective config:
 
 ```json
 {"item.lot.capacity":500,"item.lot.name":"Lot B <North>","item.lot.status":"FULL","item.notice":"Pay at kiosk & keep ticket","item.rate.hourly":"2.50","telemetry_interval":300}
@@ -3661,7 +3663,7 @@ which version reached a sign.
 | `400` | `format` other than `json` or `xml`; a malformed pigeon id; a plain `http://` URL (refused rather than serving a token sent in clear; local `wrangler dev` excepted) |
 | `401` | No credential, a malformed one, an expired token, another pigeon's token, a deleted pigeon |
 | `429` | Over 4 polls a minute for this pigeon from this address, or this address over its failed-auth budget; carries `Retry-After` |
-| `500` | The pigeon's stored shadow could not be read |
+| `500` | The pigeon's object could not be reached, or its stored key or shadow could not be read |
 
 A poll is device contact: it stamps `last_seen_at`, and nothing else. It does not mark
 `target_version` as applied, since only the device can say it applied a value. It is neither a
