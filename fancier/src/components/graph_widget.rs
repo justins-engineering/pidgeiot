@@ -303,7 +303,7 @@ pub(crate) fn series_from_history(
       let mut pts: Vec<(i64, f64)> = buckets
         .iter()
         .filter(|b| &b.key == k)
-        .filter_map(|b| b.mean.map(|v| (b.bucket_start.unix_timestamp(), v)))
+        .filter_map(|b| b.mean.map(|v| (b.plotted_at().unix_timestamp(), v)))
         .collect();
       pts.sort_by_key(|p| p.0);
       ChartSeries {
@@ -329,7 +329,7 @@ pub(crate) fn series_from_flock_history(
       by_pigeon
         .entry(b.pigeon_id.clone())
         .or_default()
-        .push((b.bucket_start.unix_timestamp(), v));
+        .push((b.plotted_at().unix_timestamp(), v));
     }
   }
   by_pigeon
@@ -1128,7 +1128,7 @@ fn AddGraphModal(
 mod tests {
   use super::{
     ChartKind, GraphDef, TimeRange, numeric_keys_from_history, numeric_keys_from_latest,
-    recommended_kind, thresholds_from_alerts,
+    recommended_kind, series_from_flock_history, series_from_history, thresholds_from_alerts,
   };
   use capsules::{
     AlertChannel, AlertCondition, AlertDefinition, AlertScope, AlertSeverity, AlertState,
@@ -1246,6 +1246,7 @@ mod tests {
       pigeon_id: "p1".to_string(),
       key: key.to_string(),
       bucket_start: OffsetDateTime::UNIX_EPOCH,
+      last_at: None,
       min: mean,
       max: mean,
       mean,
@@ -1325,6 +1326,27 @@ mod tests {
     assert_eq!(
       numeric_keys_from_history(&buckets),
       vec!["battery_mv", "gps_heading_deg"]
+    );
+  }
+
+  /// One reading at 00:24:58Z in a 4 min bucket that starts at 00:24:36Z, as the route sends it.
+  const ONE_READING_BUCKET: &str = r#"[{"pigeon_id":"p1","key":"battery_mv",
+    "bucket_start":"2026-11-10T00:24:36Z","last_at":"2026-11-10T00:24:58Z",
+    "min":3300.0,"max":3300.0,"mean":3300.0,"last":"3300","count":1}]"#;
+
+  #[test]
+  fn a_bucket_is_drawn_at_its_newest_reading_not_its_start() {
+    let buckets: Vec<TelemetryHistoryBucket> =
+      serde_json::from_str(ONE_READING_BUCKET).expect("bucket parses");
+    let reading = 1_794_270_298; // 2026-11-10T00:24:58Z
+    let keys = ["battery_mv".to_string()];
+    assert_eq!(
+      series_from_history(&keys, &buckets)[0].points,
+      [(reading, 3300.0)]
+    );
+    assert_eq!(
+      series_from_flock_history(&keys, &buckets, str::to_string)[0].points,
+      [(reading, 3300.0)]
     );
   }
 }

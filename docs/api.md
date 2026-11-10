@@ -2082,6 +2082,7 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps
     "pigeon_id": "59d0c929f912...",
     "key": "temp",
     "bucket_start": "2026-07-17T15:30:00Z",
+    "last_at": "2026-07-17T15:34:41Z",
     "min": 21.1,
     "max": 21.8,
     "mean": 21.5,
@@ -2094,9 +2095,12 @@ curl -s "https://api.pidgeiot.com/pigeons/<pigeon_id>/telemetry/history?keys=gps
 (`Vec<capsules::TelemetryHistoryBucket>`, ascending by `bucket_start`.) `min`/`max`/`mean` are
 `null` for a bucket whose values never parsed as numeric (e.g. a firmware version string) — `last`
 (the most recent raw value in the bucket) is always present, since a bucket always has at least
-one report backing it. `count` is how many reports landed in the bucket, not how many of those
-were numeric. There is no truncation here and no `X-Telemetry-Truncated` header: bucketing bounds
-the response by construction, so there's nothing to cut.
+one report backing it. `last_at` is when that newest reading was reported. `bucket_start` is
+the start of the bucket's slot on a grid laid from `since`, so it can be up to one bucket width
+before any reading in it; the dashboard draws each bucket at `last_at`. `count` is how many
+reports landed in the bucket, not how many of those were numeric. There is no truncation here and
+no `X-Telemetry-Truncated` header: bucketing bounds the response by construction, so there's
+nothing to cut.
 
 ##### Raw mode
 

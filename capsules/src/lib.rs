@@ -1397,13 +1397,26 @@ pub const TELEMETRY_HISTORY_BUCKET_TARGET: usize = 360;
 pub struct TelemetryHistoryBucket {
   pub pigeon_id: String,
   pub key: String,
+  /// Where the bucket's grid slot begins, which can be up to one bucket before any reading in it.
   #[serde(with = "time::serde::rfc3339")]
   pub bucket_start: OffsetDateTime,
+  /// When the bucket's newest reading was reported, the one `last` holds. `None` only from a
+  /// server that predates the field.
+  #[serde(default, with = "time::serde::rfc3339::option")]
+  pub last_at: Option<OffsetDateTime>,
   pub min: Option<f64>,
   pub max: Option<f64>,
   pub mean: Option<f64>,
   pub last: String,
   pub count: i64,
+}
+
+impl TelemetryHistoryBucket {
+  /// The time a chart draws this bucket at: its newest reading, so a lone reading lands on its
+  /// own time rather than on the slot's start.
+  pub fn plotted_at(&self) -> OffsetDateTime {
+    self.last_at.unwrap_or(self.bucket_start)
+  }
 }
 
 /// Bucket width (seconds) for a since/until range, aimed at

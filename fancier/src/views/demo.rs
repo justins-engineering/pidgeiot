@@ -149,7 +149,7 @@ fn series_for_key(key: &str, buckets: &[TelemetryHistoryBucket]) -> ChartSeries 
   let mut pts: Vec<(i64, f64)> = buckets
     .iter()
     .filter(|b| b.key == key)
-    .filter_map(|b| b.mean.map(|v| (b.bucket_start.unix_timestamp(), v)))
+    .filter_map(|b| b.mean.map(|v| (b.plotted_at().unix_timestamp(), v)))
     .collect();
   pts.sort_by_key(|p| p.0);
   ChartSeries {

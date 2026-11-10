@@ -280,6 +280,7 @@ fn rows_to_buckets(rows: &[Row]) -> Vec<TelemetryHistoryBucket> {
       pigeon_id: row.get("pigeon_id"),
       key: row.get("key"),
       bucket_start: row.get("bucket_start"),
+      last_at: Some(row.get("last_at")),
       min: row.get("min"),
       max: row.get("max"),
       mean: row.get("mean"),
@@ -305,7 +306,8 @@ fn rows_to_buckets(rows: &[Row]) -> Vec<TelemetryHistoryBucket> {
 /// `last` (the most recent raw value in the bucket) comes from
 /// `ARRAY_AGG(value ORDER BY reported_at DESC)`'s first element -- Postgres
 /// has no plain `LAST(...)` aggregate, and this is the standard idiom for
-/// "last by some order" in a `GROUP BY`.
+/// "last by some order" in a `GROUP BY`. `last_at` is that reading's time, which charts draw the
+/// bucket at: `bucket_start` is the grid slot, up to one bucket earlier.
 ///
 /// No `LIMIT` here, unlike the raw path: a bucketed response is already
 /// bounded by construction (at most `TELEMETRY_HISTORY_BUCKET_TARGET`
@@ -333,6 +335,7 @@ pub async fn query_telemetry_history_buckets_for_pigeon(
          MAX(value_num) AS max,
          AVG(value_num) AS mean,
          (ARRAY_AGG(value ORDER BY reported_at DESC))[1] AS last,
+         MAX(reported_at) AS last_at,
          COUNT(*) AS count
        FROM pigeon_telemetry_history
        WHERE pigeon_id = $3
@@ -488,6 +491,7 @@ pub async fn query_telemetry_history_buckets_for_flock(
          MAX(h.value_num) AS max,
          AVG(h.value_num) AS mean,
          (ARRAY_AGG(h.value ORDER BY h.reported_at DESC))[1] AS last,
+         MAX(h.reported_at) AS last_at,
          COUNT(*) AS count
        FROM pigeon_telemetry_history h
        JOIN pigeons p ON p.id = h.pigeon_id
@@ -610,5 +614,61 @@ pub async fn stamp_forwarded_report(env: &Env, pigeon_id: &str) {
     .await
   {
     console_error!("Forwarded last-seen stamp failed for '{pigeon_id}': {e}");
+  }
+}
+
+/// The bucketed reads against the dev Postgres, as [`super::rule_store`]'s `pg` tests run them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pg {
+  use super::*;
+  use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
+  use time::macros::datetime;
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_bucket_carries_the_time_of_its_newest_reading() {
+    run(async {
+      let db = Scratch::new("history_buckets").await;
+      let client = db.client().await;
+      let flock = new_flock(&client, None).await;
+      new_pigeon(&client, flock, "p1").await;
+      for (value, at) in [
+        ("3300", datetime!(2026-11-10 00:24:58 UTC)),
+        ("3400", datetime!(2026-11-10 00:26:10 UTC)),
+      ] {
+        client
+          .execute(
+            "INSERT INTO pigeon_telemetry_history (pigeon_id, key, value, value_num, reported_at)
+             VALUES ('p1', 'battery_mv', $1, $1::text::float8, $2)",
+            &[&value, &at],
+          )
+          .await
+          .expect("reading inserted");
+      }
+      // 24 h over 360 buckets is 4 min, so the grid from `since` starts a bucket at 00:24:36.
+      let since = Some(datetime!(2026-11-09 00:28:36 UTC));
+      let until = Some(datetime!(2026-11-10 00:28:36 UTC));
+
+      let access = PigeonAccess::from_demo_allowlist("p1");
+      let pigeon = query_telemetry_history_buckets_for_pigeon(&client, &access, None, since, until)
+        .await
+        .expect("pigeon buckets");
+      let flock_id = flock.to_string();
+      let access = FlockAccess::assert_checked(&flock_id, None);
+      let flock = query_telemetry_history_buckets_for_flock(&client, &access, None, since, until)
+        .await
+        .expect("flock buckets");
+
+      for buckets in [pigeon, flock] {
+        let [bucket] = buckets.as_slice() else {
+          panic!("both readings share one bucket");
+        };
+        assert_eq!(bucket.bucket_start, datetime!(2026-11-10 00:24:36 UTC));
+        assert_eq!(bucket.last_at, Some(datetime!(2026-11-10 00:26:10 UTC)));
+        assert_eq!(bucket.last, "3400");
+        assert_eq!(bucket.count, 2);
+      }
+      db.drop().await;
+    });
   }
 }
