@@ -59,7 +59,7 @@ The tests open sockets on `127.0.0.1` only, on ports the kernel picks.
    `~/.config/pidgeiot/ipd-sim/signs.json`. Put each pigeon's id in its URL and each token
    file's path in `token_file`. The state directory is created beside the config. Each sign polls
    `GET /device/pigeons/<id>/values?format=xml` every 60 seconds, the cadence the route's
-   per-pigeon limit of 4 a minute is sized around. Sign B sends its token as a Basic password
+   limit of 4 a minute per pigeon and address is sized around. Sign B sends its token as a Basic password
    under the user name `sign`; the other two send it as a Bearer token.
 5. Start the signs and open the control page:
 
@@ -77,8 +77,9 @@ The tests open sockets on `127.0.0.1` only, on ports the kernel picks.
 
 The example config asks for `<DataItems>` XML (`"params": "format=xml"` and `"format": "xml"`),
 the shape the manual names and the one to use for a sign: an XML name is a plain string, where
-the sign's JSON reader takes the dot in `lot.status` as a path step. List in `data_items`
-the names the sign defines; a served name it does not define is ignored, as on a real sign.
+the sign's JSON reader may take the dot in `lot.status` as a path step (a bench test). List in
+`data_items` the names the sign defines; a served name it does not define is ignored, as on a
+real sign.
 `docs/api.md` documents the route.
 
 ## Config
