@@ -59,8 +59,8 @@ The tests open sockets on `127.0.0.1` only, on ports the kernel picks.
    `~/.config/pidgeiot/ipd-sim/signs.json`. Put each pigeon's id in its URL and each token
    file's path in `token_file`. The state directory is created beside the config. Each sign polls
    `GET /device/pigeons/<id>/values?format=xml` every 60 seconds, the cadence the route's
-   limit of 4 a minute per pigeon and address is sized around. Sign B sends its token as a Basic password
-   under the user name `sign`; the other two send it as a Bearer token.
+   limit of 4 a minute per pigeon and address is sized around. Sign B sends its token as a Basic
+   password under the user name `sign`; the other two send it as a Bearer token.
 5. Start the signs and open the control page:
 
    ```sh
