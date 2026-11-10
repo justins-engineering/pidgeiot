@@ -11,12 +11,12 @@ use std::collections::HashMap;
 use unic_langid::langid;
 use uuid::Uuid;
 use views::{
-  AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DemoPage,
-  DocumentationPage, DpaPage, FeaturesPage, FlockRules, Flocks, GettingStartedPage, HowItWorksPage,
-  Index, InviteAccept, LoginFlow, OpenSourcePage, OrgView, Orgs, PageNotFound, PigeonView, Pigeons,
-  PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow, RuleView, SelfHostingPage, ServerError,
-  SessionInfo, SettingsFlow, StoriesIndex, StoryPage, SubprocessorsPage, TermsPage, Unauthorized,
-  UseCasesPage, VerificationFlow, Wrapper,
+  AboutUs, ApiReferencePage, Architecture, ComparePage, ContactPage, Dashboard, DashboardList,
+  DashboardView, DemoPage, DocumentationPage, DpaPage, FeaturesPage, FlockRules, Flocks,
+  GettingStartedPage, HowItWorksPage, Index, InviteAccept, LoginFlow, OpenSourcePage, OrgView,
+  Orgs, PageNotFound, PigeonView, Pigeons, PricingPage, PrivacyPage, RecoveryFlow, RegisterFlow,
+  RuleView, SelfHostingPage, ServerError, SessionInfo, SettingsFlow, StoriesIndex, StoryPage,
+  SubprocessorsPage, TermsPage, Unauthorized, UseCasesPage, VerificationFlow, Wrapper,
 };
 
 pub mod api;
@@ -71,6 +71,10 @@ enum Route {
   #[layout(AuthGuard)]
     #[route("/dashboard")]
     Dashboard {},
+    #[route("/dashboards")]
+    DashboardList {},
+    #[route("/dashboards/:dashboard_id")]
+    DashboardView { dashboard_id: Uuid },
     #[route("/flocks")]
     Flocks {},
     #[route("/flocks/:flock_id/pigeons")]

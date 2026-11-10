@@ -26,7 +26,8 @@ OPTIONS = {"delete_envs": ["staging"], "mode": "fixture", "orphan_stripe": False
 
 def empty_inventory(env="staging", **overrides):
   inv = {"env": env, "flocks": [], "pigeons": [], "acl": [], "acl_others": [], "orgs": [],
-         "alerts": [], "alert_recipients": [], "dashboard_state": [], "invites": [],
+         "alerts": [], "alert_recipients": [], "dashboard_state": [], "dashboards": [],
+         "invites": [],
          "consent": [], "errors": 0, "contact": 0, "usage": 0, "member_refs": [],
          "owner_email": 0, "org_identity": 0}
   inv.update(overrides)
@@ -37,7 +38,7 @@ def one_of_every_kind():
   """An inventory that makes the planner emit every step kind it knows."""
   return empty_inventory(
     flocks=[["f1", "Flock", "", "1"]], pigeons=[["p1", "f1"]], alerts=[["a1", "Alert"]],
-    errors=1, dashboard_state=[["graphs.v1.f1"]],
+    errors=1, dashboard_state=[["graphs.v1.f1"]], dashboards=[["d1", "Depot"]],
     orgs=[org_row("o1"), org_row("o2", role="member", members=3)],
     invites=[["i1", "o1", "x@y", "f"]])
 
@@ -236,6 +237,10 @@ class Planner(unittest.TestCase):
                      [("errors", ""), ("dashboard-state", "graphs.v1.pigeon.p1"),
                       ("dashboard-state", "graphs.v1.f")])
 
+  def test_each_personal_dashboard_is_deleted_through_its_route(self):
+    inv = empty_inventory(dashboards=[["d1", "Depot"], ["d2", "Yard"]])
+    self.assertEqual(self.kinds(self.plan(inv)), [("dashboard", "d1"), ("dashboard", "d2")])
+
   def test_a_grant_on_someone_elses_pigeon_is_a_note_never_a_delete(self):
     plan = self.plan(empty_inventory(acl=[["p9", "owner", "f"]]))
     self.assertEqual(plan["steps"], [])
@@ -268,6 +273,10 @@ class Sweep(unittest.TestCase):
     self.assertIn(f"purpose <> '{purge.TERMS_PURPOSE}'", sql)
     self.assertNotIn("marketing_emails", sql)
 
+  def test_an_org_dashboard_outlives_its_maker_but_not_the_reference(self):
+    self.assertTrue(self.labels("fixture")["dashboards.created_by"].startswith("UPDATE"))
+    self.assertIn("created_by", " ".join(purge.VERIFY_QUERIES))
+
   def test_correspondence_is_detached_rather_than_deleted(self):
     self.assertTrue(self.labels("fixture")["contact_submissions"].startswith("UPDATE"))
 
@@ -286,10 +295,10 @@ class Sweep(unittest.TestCase):
     verified = " ".join(purge.VERIFY_QUERIES.values())
     for table in ("consent_events", "contact_submissions", "billing_usage_periods",
                   "billing_meter_reports", "organization_members", "organization_invites",
-                  "pigeon_acl", "error_events", "dashboard_state"):
+                  "pigeon_acl", "error_events", "dashboard_state", "dashboards"):
       self.assertIn(table, swept, table)
     for table in ("flocks", "pigeon_acl", "alert_definitions", "organization_members",
-                  "organization_invites", "consent_events", "dashboard_state",
+                  "organization_invites", "consent_events", "dashboard_state", "dashboards",
                   "error_events", "contact_submissions", "billing_usage_periods"):
       self.assertIn(table, verified, table)
     rules_swept = " ".join(sql for _label, sql in purge.sweep_sql("fixture", rules=True))
@@ -333,7 +342,8 @@ class Paths(unittest.TestCase):
     plan = purge.plan_identity({"id": "i1", "email": "f@jes.contact"},
                                {"staging": one_of_every_kind()}, OPTIONS)
     self.assertEqual({s["kind"] for s in plan["steps"]},
-                     {"pigeon", "flock", "alert", "errors", "dashboard-state", "invite",
+                     {"pigeon", "flock", "alert", "errors", "dashboard-state", "dashboard",
+                      "invite",
                       "org-delete", "org-leave"})
     for step in plan["steps"]:
       self.assertTrue(purge.step_path(step).startswith("/"), step)
@@ -372,7 +382,7 @@ class GoneChecks(unittest.TestCase):
 
   def test_each_check_covers_a_kind_the_planner_can_emit(self):
     for kind in purge.GONE_CHECKS:
-      self.assertIn(kind, {"flock", "alert", "dashboard-state", "invite", "org-delete",
+      self.assertIn(kind, {"flock", "alert", "dashboard-state", "dashboard", "invite", "org-delete",
                            "errors", "org-leave"})
 
 

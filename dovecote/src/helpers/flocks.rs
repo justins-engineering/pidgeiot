@@ -1,10 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use capsules::Flock;
+use capsules::{
+  Flock, FlockShadowVersions, MAX_FLOCK_SHADOW_ROWS, MAX_WIDGET_KEYS, PigeonShadowSummary,
+};
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use worker::{Error, Result, console_error};
 
+use crate::helpers::firmware::FlockAccess;
 use crate::helpers::missing_schema_objects;
 
 /// Set once this isolate has found `flocks.owner_email`.
@@ -282,4 +285,98 @@ pub async fn backfill_owner_email(client: &Client, user_id_str: &str, email: &st
     .map_err(|e| Error::RustError(format!("Failed to backfill owner_email: {e}")))?;
 
   Ok(())
+}
+
+/// The `keys` query of `GET /flocks/:flock_id/shadow/versions`: comma-separated top-level config
+/// keys, at most [`MAX_WIDGET_KEYS`] of 1 to 128 bytes each. Absent or empty asks for versions
+/// only. `None` refuses the request.
+pub fn shadow_key_list(raw: Option<&str>) -> Option<Vec<String>> {
+  let Some(raw) = raw.filter(|r| !r.is_empty()) else {
+    return Some(Vec::new());
+  };
+  let keys: Vec<String> = raw.split(',').map(str::to_string).collect();
+  let valid = keys.len() <= MAX_WIDGET_KEYS
+    && keys
+      .iter()
+      .all(|k| !k.is_empty() && k.len() <= capsules::MAX_TELEMETRY_KEY_BYTES);
+  valid.then_some(keys)
+}
+
+/// The shadow versions of every pigeon in a flock, plus the named top-level config keys, from
+/// the Postgres mirror. Cacheable on purpose: a "behind" column a minute stale is fine, and the
+/// mirror can be older than that anyway since its sync is best-effort.
+///
+/// Names its columns: `pigeons` also holds the connector, which carries live credentials.
+pub async fn flock_shadow_versions(
+  client: &Client,
+  access: &FlockAccess,
+  keys: &[String],
+) -> Result<FlockShadowVersions> {
+  let flock_uuid = Uuid::parse_str(access.flock_id()).map_err(|e| {
+    console_error!("Invalid flock_id format: {e}");
+    Error::RustError("Bad Request: Invalid flock_id".into())
+  })?;
+  let limit = MAX_FLOCK_SHADOW_ROWS + 1;
+  let rows = client
+    .query_typed(
+      "SELECT p.id AS pigeon_id,
+         COALESCE(s.target_version, 0) AS target_version,
+         COALESCE(s.current_version, 0) AS current_version,
+         s.updated_at AS updated_at,
+         COALESCE((SELECT jsonb_object_agg(k, s.target_config->k) FROM unnest($2::text[]) k
+                   WHERE s.target_config ? k), '{}'::jsonb)::text AS target,
+         COALESCE((SELECT jsonb_object_agg(k, s.current_config->k) FROM unnest($2::text[]) k
+                   WHERE s.current_config ? k), '{}'::jsonb)::text AS current
+       FROM pigeons p LEFT JOIN pigeon_shadow s ON s.id = p.id
+       WHERE p.flock_id = $1
+       ORDER BY p.id
+       LIMIT $3;",
+      &[
+        (&flock_uuid, Type::UUID),
+        (&keys, Type::TEXT_ARRAY),
+        (&limit, Type::INT8),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Flock shadow versions error: {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+
+  let truncated = rows.len() as i64 > MAX_FLOCK_SHADOW_ROWS;
+  let pigeons = rows
+    .iter()
+    .take(MAX_FLOCK_SHADOW_ROWS as usize)
+    .map(|row| {
+      let target: String = row.get("target");
+      let current: String = row.get("current");
+      PigeonShadowSummary {
+        pigeon_id: row.get("pigeon_id"),
+        target_version: row.get("target_version"),
+        current_version: row.get("current_version"),
+        updated_at: row.get("updated_at"),
+        target: serde_json::from_str(&target).unwrap_or_default(),
+        current: serde_json::from_str(&current).unwrap_or_default(),
+      }
+    })
+    .collect();
+  Ok(FlockShadowVersions { pigeons, truncated })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn shadow_keys_are_a_short_comma_list() {
+    assert_eq!(shadow_key_list(None), Some(vec![]));
+    assert_eq!(shadow_key_list(Some("")), Some(vec![]));
+    assert_eq!(
+      shadow_key_list(Some("layout,brightness")),
+      Some(vec!["layout".to_string(), "brightness".to_string()])
+    );
+    assert_eq!(shadow_key_list(Some("a,,b")), None);
+    assert_eq!(shadow_key_list(Some("a,b,c,d,e,f,g,h,i")), None);
+    assert_eq!(shadow_key_list(Some(&"k".repeat(129))), None);
+  }
 }

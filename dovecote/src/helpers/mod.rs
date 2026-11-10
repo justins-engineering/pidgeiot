@@ -93,8 +93,10 @@ mod flocks;
 pub use flocks::backfill_owner_email;
 pub use flocks::create_user_flock;
 pub use flocks::delete_flock_if_empty;
+pub use flocks::flock_shadow_versions;
 pub use flocks::get_user_flocks;
 pub use flocks::pigeon_move_shares_owner;
+pub use flocks::shadow_key_list;
 
 mod pigeons;
 pub use pigeons::PIGEON_CREATED_AT_HEADER;
@@ -104,6 +106,7 @@ pub use pigeons::check_pigeon_authz;
 pub use pigeons::connector_without_secrets;
 pub use pigeons::delete_log_dictionary;
 pub use pigeons::delete_pigeon_pg_db;
+pub use pigeons::fan_out_to_pigeons;
 pub use pigeons::grant_org_acl_via_do;
 pub use pigeons::insert_pigeon_pg_db;
 pub use pigeons::nidd_uplink_via_do;
@@ -216,6 +219,19 @@ mod dashboard_state;
 pub use dashboard_state::delete_dashboard_state;
 pub use dashboard_state::load_dashboard_state;
 pub use dashboard_state::store_dashboard_state;
+
+mod dashboards;
+pub use dashboards::DashboardAccess;
+pub use dashboards::DashboardOwner;
+pub use dashboards::copy_name;
+pub use dashboards::create_dashboard;
+pub use dashboards::dashboard_access;
+pub use dashboards::delete_dashboard;
+pub use dashboards::list_dashboards;
+pub use dashboards::load_dashboard;
+pub use dashboards::resolve_dashboard_access;
+pub use dashboards::stored_layout;
+pub use dashboards::update_dashboard;
 
 mod orgs;
 pub use orgs::FlockAction;

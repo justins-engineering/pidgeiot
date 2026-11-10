@@ -8,6 +8,7 @@
 // instead (see `SeriesOutcome`).
 use crate::LocalSession;
 use crate::api::{alerts, telemetry};
+use crate::components::AddToDashboard;
 use crate::components::telemetry_chart::format_duration;
 use crate::components::telemetry_export::TelemetryExport;
 use crate::components::{ChartKind, ChartReference, ChartSeries, TelemetryChart};
@@ -132,10 +133,10 @@ fn recommended_kind(interval_secs: Option<i64>) -> Option<(ChartKind, String)> {
 /// worse than leaving them off.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThresholdAlert {
-  key: String,
-  value: f64,
-  label: String,
-  firing: bool,
+  pub(crate) key: String,
+  pub(crate) value: f64,
+  pub(crate) label: String,
+  pub(crate) firing: bool,
 }
 
 fn comparator_symbol(comparator: Comparator) -> &'static str {
@@ -152,7 +153,7 @@ fn comparator_symbol(comparator: Comparator) -> &'static str {
 /// chart can draw. An alert with no state row has simply never fired (see
 /// `api::alerts::state_pigeon`), so a missing row reads as not firing
 /// rather than as unknown.
-fn thresholds_from_alerts(
+pub(crate) fn thresholds_from_alerts(
   definitions: &[capsules::AlertDefinition],
   states: &[capsules::AlertState],
 ) -> Vec<ThresholdAlert> {
@@ -256,7 +257,9 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
     GraphScope::Flock(flock_id) => {
       match telemetry::get_flock_history_buckets(flock_id, since, until).await {
         Some(buckets) if !buckets.is_empty() => SeriesOutcome::Live {
-          series: series_from_flock_history(&def.keys, &buckets),
+          series: series_from_flock_history(&def.keys, &buckets, |pid| {
+            pid.chars().take(8).collect::<String>() + "…"
+          }),
         },
         Some(_) => SeriesOutcome::Empty,
         None => {
@@ -290,7 +293,10 @@ async fn fetch_series(source: &GraphScope, def: &GraphDef) -> SeriesOutcome {
 /// ignored — filtering by key alone is enough. A bucket with no numeric
 /// samples (`mean: None`) contributes no point, same as a non-numeric
 /// reading.
-fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> Vec<ChartSeries> {
+pub(crate) fn series_from_history(
+  keys: &[String],
+  buckets: &[TelemetryHistoryBucket],
+) -> Vec<ChartSeries> {
   keys
     .iter()
     .map(|k| {
@@ -308,9 +314,11 @@ fn series_from_history(keys: &[String], buckets: &[TelemetryHistoryBucket]) -> V
     .collect()
 }
 
-fn series_from_flock_history(
+/// One series per pigeon for the first of `keys`, each named by `label` from its pigeon id.
+pub(crate) fn series_from_flock_history(
   keys: &[String],
   buckets: &[TelemetryHistoryBucket],
+  label: impl Fn(&str) -> String,
 ) -> Vec<ChartSeries> {
   let Some(key) = keys.first() else {
     return Vec::new();
@@ -329,7 +337,7 @@ fn series_from_flock_history(
     .map(|(pid, mut pts)| {
       pts.sort_by_key(|p| p.0);
       ChartSeries {
-        key: pid.chars().take(8).collect::<String>() + "…",
+        key: label(&pid),
         points: pts,
       }
     })
@@ -889,6 +897,7 @@ fn GraphCard(
               option { value: "{r.label()}", selected: r == def.range, "{r.label()}" }
             }
           }
+          AddToDashboard { def: def.clone(), source: source.clone() }
           button {
             class: "btn btn-ghost btn-sm",
             r#type: "button",

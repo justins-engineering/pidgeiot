@@ -31,6 +31,9 @@ argv. Recovery links reach the remote shell in a file it writes itself, so
 no token lands in either machine's argv. No connection string, cookie or
 token is printed or logged.
 
+Every table it reads must exist: apply infra/migrations/2026-11-07-dashboards.sql
+to a database before the first run against it.
+
 Docs: docs/infra/account-deletion.md is the procedure this implements and
 the DPA's Annex II G.3 refers to.
 """
@@ -400,6 +403,9 @@ INVENTORY_QUERIES = {
   "alerts": "SELECT id::text, name FROM alert_definitions WHERE user_id = :'id'::uuid ORDER BY id",
   "dashboard_state": "SELECT scope_key FROM dashboard_state WHERE user_id = :'id'::uuid"
                      " ORDER BY scope_key",
+  # Personal dashboards only: an organization's goes with the org, and the
+  # sweep detaches this identity from the ones it made.
+  "dashboards": "SELECT id::text, name FROM dashboards WHERE user_id = :'id'::uuid ORDER BY id",
   "invites": "SELECT id::text, org_id::text, lower(email),"
              " accepted_at IS NOT NULL OR expires_at <= now()"
              " FROM organization_invites"
@@ -468,6 +474,8 @@ VERIFY_QUERIES = {
   "consent_events.identity_id": "SELECT count(*) FROM consent_events"
                                 " WHERE identity_id = :'id'::uuid",
   "dashboard_state.user_id": "SELECT count(*) FROM dashboard_state WHERE user_id = :'id'::uuid",
+  "dashboards.user_id": "SELECT count(*) FROM dashboards WHERE user_id = :'id'::uuid",
+  "dashboards.created_by": "SELECT count(*) FROM dashboards WHERE created_by = :'id'::uuid",
   "error_events.user_id": "SELECT count(*) FROM error_events WHERE user_id = :'id'::uuid",
   "contact_submissions.user_id": "SELECT count(*) FROM contact_submissions"
                                  " WHERE user_id = :'id'::uuid",
@@ -597,6 +605,8 @@ def plan_identity(identity, inventories, options):
       steps.append({"env": env, "kind": "errors", "target": ""})
     for (scope_key,) in inv["dashboard_state"]:
       steps.append({"env": env, "kind": "dashboard-state", "target": scope_key})
+    for dashboard_id, _name in inv["dashboards"]:
+      steps.append({"env": env, "kind": "dashboard", "target": dashboard_id})
     org_steps, org_holds, org_notes, gone = plan_orgs(env, inv, options, identity["id"],
                                                       org_flocks)
     steps.extend(org_steps)
@@ -678,6 +688,10 @@ def sweep_sql(mode, rules=False):
     ("pigeon_acl", "DELETE FROM pigeon_acl WHERE entity_id = :'id'::uuid"),
     ("error_events", "DELETE FROM error_events WHERE user_id = :'id'::uuid"),
     ("dashboard_state", "DELETE FROM dashboard_state WHERE user_id = :'id'::uuid"),
+    ("dashboards", "DELETE FROM dashboards WHERE user_id = :'id'::uuid"),
+    # An organization's dashboard outlives its maker; only the reference goes.
+    ("dashboards.created_by", "UPDATE dashboards SET created_by = NULL"
+                              " WHERE created_by = :'id'::uuid"),
     ("flocks.owner_email", "UPDATE flocks SET owner_email = NULL"
                            " WHERE lower(owner_email) = :'email'"),
   ] + ([
@@ -712,6 +726,8 @@ def step_path(step):
     return "/errors"
   if kind == "dashboard-state":
     return "/dashboard-state/" + urllib.parse.quote(target, safe="")
+  if kind == "dashboard":
+    return "/dashboards/" + urllib.parse.quote(target, safe="")
   if kind == "invite":
     org_id, _, invite_id = target.partition("/")
     return f"/orgs/{urllib.parse.quote(org_id, safe='')}/invites/" \
@@ -749,6 +765,7 @@ GONE_CHECKS = {
   "alert": "SELECT count(*) FROM alert_definitions WHERE id = :'t'::uuid",
   "dashboard-state": "SELECT count(*) FROM dashboard_state"
                      " WHERE user_id = :'id'::uuid AND scope_key = :'t'",
+  "dashboard": "SELECT count(*) FROM dashboards WHERE id = :'t'::uuid",
   "invite": "SELECT count(*) FROM organization_invites WHERE id = :'t'::uuid",
   "org-delete": "SELECT count(*) FROM organizations WHERE id = :'t'::uuid",
   "errors": "SELECT count(*) FROM error_events WHERE user_id = :'id'::uuid",
@@ -928,6 +945,7 @@ def orphan_report(databases, known_ids):
     ("flocks", "user_id"), ("pigeon_acl", "entity_id"), ("alert_definitions", "user_id"),
     ("organization_members", "user_id"), ("organization_invites", "created_by"),
     ("consent_events", "identity_id"), ("dashboard_state", "user_id"),
+    ("dashboards", "user_id"), ("dashboards", "created_by"),
     ("error_events", "user_id"), ("contact_submissions", "user_id"),
   ]
   found = []

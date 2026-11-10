@@ -139,6 +139,17 @@ pub use dashboard_state::{
   MAX_DASHBOARD_STATE_KEY_BYTES, MAX_DASHBOARD_STATE_KEYS, valid_scope_key,
 };
 
+pub mod dashboards;
+pub use dashboards::{
+  DASHBOARD_LAYOUT_VERSION, Dashboard, DashboardCreateRequest, DashboardLayout, DashboardRejection,
+  DashboardRow, DashboardSummary, DashboardUpdateRequest, FlockShadowVersions,
+  MAX_DASHBOARD_LAYOUT_BYTES, MAX_DASHBOARD_NAME_CHARS, MAX_DASHBOARD_WIDGETS,
+  MAX_DASHBOARDS_PER_OWNER, MAX_FLOCK_SHADOW_ROWS, MAX_TELEMETRY_BATCH_PIGEONS, MAX_WIDGET_KEYS,
+  MAX_WIDGET_TEXT_CHARS, PigeonLatestTelemetry, PigeonShadowSummary, PigeonTelemetryBatchRequest,
+  Widget, WidgetBody, WidgetChart, WidgetRange, WidgetScope, WidgetSize, normalize_dashboard_name,
+  validate_layout,
+};
+
 /// The date the published privacy notice last changed, ISO 8601 so it sorts.
 ///
 /// It feeds the notice's own "Last updated" line and every marketing consent

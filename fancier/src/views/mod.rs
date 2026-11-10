@@ -10,6 +10,9 @@ pub use contact::ContactPage;
 mod dashboard;
 pub use dashboard::Dashboard;
 
+mod dashboards;
+pub use dashboards::{DashboardList, DashboardView};
+
 mod architecture;
 pub use architecture::Architecture;
 
