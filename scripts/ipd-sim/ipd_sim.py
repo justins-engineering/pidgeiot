@@ -3,9 +3,12 @@
 not any maker's software.
 
 Every page and every answer says "simulated, from your 2015 reference". A simulated sign does
-what the published documents say a sign does, and no more. This module reads a web data
-source body the way the October 2025 LED manual's chapter 13 describes: flat or nested JSON in
-dot notation, or <DataItems> XML.
+what the published documents say a sign does, and no more:
+
+- reads a web data source body the way the October 2025 LED manual's chapter 13 describes: flat
+  or nested JSON in dot notation, or <DataItems> XML;
+- reads and writes SOAP 1.1 under the names of the 2007 WSDL and the 2013 .NET client
+  (rpc/encoded, SOAPAction http://tempuri.org/action/SignSvr.<name>).
 
   python3 -m unittest discover -s scripts/ipd-sim
 
@@ -14,6 +17,7 @@ Standard library only.
 
 import json
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 
 LABEL = "simulated, from your 2015 reference"
 
@@ -86,3 +90,71 @@ def parse_payload(body, fmt):
   except ValueError as e:
     raise PayloadError("not JSON: " + str(e)) from None
   return flatten_json(value)
+
+
+# The 2007 WSDL in the public Quick Start zip binds every operation rpc/encoded, body namespace
+# http://tempuri.org/message/, SOAPAction http://tempuri.org/action/SignSvr.<name>; the 2013
+# .NET client uses the same action names.
+SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
+SOAP_ENCODING = "http://schemas.xmlsoap.org/soap/encoding/"
+MESSAGE_NS = "http://tempuri.org/message/"
+ACTION_PREFIX = "http://tempuri.org/action/SignSvr."
+
+
+class SoapError(ValueError):
+  """A request that is not a SOAP 1.1 call this sign can read."""
+
+
+def local_name(tag):
+  """An element tag without its {namespace}."""
+  return tag.rsplit("}", 1)[-1]
+
+
+def parse_soap(body, soap_action):
+  """(method, {part name: text}) from an rpc-style SOAP 1.1 request.
+
+  SOAP 1.1 over HTTP requires the SOAPAction header, and the method it names must be the one the
+  body calls.
+  """
+  if soap_action is None:
+    raise SoapError("SOAPAction header missing")
+  action = soap_action.strip().strip('"')
+  if not action.startswith(ACTION_PREFIX):
+    raise SoapError("SOAPAction is not " + ACTION_PREFIX + "<method>")
+  method = action[len(ACTION_PREFIX):]
+  try:
+    root = ET.fromstring(body)
+  except ET.ParseError as e:
+    raise SoapError("not XML: " + str(e)) from None
+  if root.tag != "{" + SOAP_ENV + "}Envelope":
+    raise SoapError("not a SOAP 1.1 envelope")
+  soap_body = root.find("{" + SOAP_ENV + "}Body")
+  if soap_body is None or len(soap_body) == 0:
+    raise SoapError("SOAP body is empty")
+  call = soap_body[0]
+  if local_name(call.tag) != method:
+    raise SoapError("SOAPAction names " + method + " but the body calls " + local_name(call.tag))
+  return method, {local_name(part.tag): part.text or "" for part in call}
+
+
+def _envelope(inner):
+  return ('<?xml version="1.0" encoding="UTF-8"?>'
+          '<SOAP-ENV:Envelope xmlns:SOAP-ENV="' + SOAP_ENV + '"'
+          ' xmlns:xsd="http://www.w3.org/2001/XMLSchema"'
+          ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+          ' SOAP-ENV:encodingStyle="' + SOAP_ENCODING + '">'
+          '<SOAP-ENV:Body>' + inner + '</SOAP-ENV:Body></SOAP-ENV:Envelope>').encode("utf-8")
+
+
+def soap_response(method, parts):
+  """An rpc/encoded <method>Response carrying (name, xsd type, value) parts in WSDL order."""
+  inner = "".join('<' + name + ' xsi:type="xsd:' + xsd + '">' + escape(str(value)) + '</' + name
+                  + '>' for name, xsd, value in parts)
+  return _envelope('<m:' + method + 'Response xmlns:m="' + MESSAGE_NS + '">' + inner + '</m:'
+                   + method + 'Response>')
+
+
+def soap_fault(code, text):
+  """A SOAP 1.1 fault; code is "Client" or "Server"."""
+  return _envelope('<SOAP-ENV:Fault><faultcode>SOAP-ENV:' + code + '</faultcode><faultstring>'
+                   + escape(text) + '</faultstring></SOAP-ENV:Fault>')
