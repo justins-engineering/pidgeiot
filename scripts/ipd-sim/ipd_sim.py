@@ -325,8 +325,9 @@ class SignState:
   def add_update_layout(self, xml_text):
     """AddUpdateLayout: the new or updated recID, 0 when the sign could not do it.
 
-    A layout whose recID the sign holds replaces it; one without a recID is added with a new one.
-    Zones take the layout's targetID as their parentID (manual 21.5).
+    A layout whose recID the sign holds replaces it, keeping its targetID when the update omits
+    one; one without a recID is added with a new one. Zones take the layout's targetID as their
+    parentID (manual 21.5).
     """
     try:
       layout = ET.fromstring(xml_text)
@@ -341,7 +342,9 @@ class SignState:
         rec_id = self._next_rec_id()
         layout.set("recID", str(rec_id))
       layout.set("parentID", layout.get("parentID", "0"))
-      if not int_attr(layout, "targetID"):
+      if not int_attr(layout, "targetID") and old and int_attr(old[0], "targetID"):
+        layout.set("targetID", old[0].get("targetID"))
+      elif not int_attr(layout, "targetID"):
         targets = [int_attr(e, "targetID") for e in self.layouts.findall("Layout")]
         layout.set("targetID", str(max([FIRST_TARGET_ID] + targets) + 1))
       next_id = max([self._next_rec_id(), rec_id + 1]

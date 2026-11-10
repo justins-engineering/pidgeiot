@@ -257,6 +257,14 @@ class LayoutMessageStateTest(StateCase):
     state.add_update_layout(LAYOUT_XML.replace('name="NewLayout2"', 'name="Changed"'))
     self.assertEqual([l["name"] for l in state.snapshot()["layouts"]], ["Changed"])
 
+  def test_update_without_target_id_keeps_the_held_one(self):
+    state = self.state()
+    state.add_update_layout(LAYOUT_XML)
+    state.add_update_layout('<Layout recID="3054" name="Changed"><Zone name="z"/></Layout>')
+    layout = state.layouts.find("Layout")
+    self.assertEqual(layout.get("targetID"), "508")
+    self.assertEqual(layout.find("Zone").get("parentID"), "508")
+
   def test_layout_without_ids_gets_new_ones(self):
     state = self.state()
     rec_id = state.add_update_layout(
