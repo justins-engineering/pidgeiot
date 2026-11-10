@@ -4,6 +4,9 @@ use crate::components::{
   DangerZone, FirmwareModal, GraphDef, JsonViewer, LogViewer, PigeonAlerts, PigeonGraphs,
   TelemetryEndpointModal, TelemetryStatTiles, TrackWidget,
 };
+use crate::helpers::config_layers::{
+  self, DEVICE_DEFAULT_CONFIG_MAX, MAX_CONFIG_UPLOAD_BYTES, parse_config_upload,
+};
 use crate::helpers::connection_state::{self, ConnectionState};
 use crate::helpers::device_credentials;
 use crate::helpers::firmware_repush;
@@ -12,9 +15,9 @@ use crate::helpers::move_flock;
 use crate::models::AlertVariant;
 use crate::{Route, api};
 use capsules::{
-  Connector, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN, NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon,
-  PigeonAcl, PigeonDetail, PigeonShadow, PigeonShadowUpdateRequest, PigeonUpdateRequest,
-  TelemetryEndpoint, TelemetryLatest,
+  Connector, KeySource, MQTT_TLS_PORT, MQTT_TOPIC_TELEMETRY, NIDD_APN,
+  NIDD_MAX_TARGET_CONFIG_BYTES, Pigeon, PigeonAcl, PigeonDetail, PigeonShadowUpdateRequest,
+  PigeonShadowView, PigeonUpdateRequest, TelemetryEndpoint, TelemetryLatest,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
@@ -227,7 +230,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                   ShadowInfo {
                     pigeon_id: pigeon_id.clone(),
                     shadow: pd.shadow.clone(),
-                    on_repushed: move |new_shadow: PigeonShadow| {
+                    on_saved: move |new_shadow: PigeonShadowView| {
                         if let Some(detail) = pigeon_detail.write().as_mut() {
                             detail.shadow = new_shadow;
                         }
@@ -274,7 +277,7 @@ pub fn PigeonView(flock_id: Uuid, pigeon_id: String) -> Element {
                     pigeon_board: pd.pigeon.board.clone(),
                     shadow: pd.shadow.clone(),
                     on_close: move |_| show_firmware_modal.set(false),
-                    on_assigned: move |new_shadow: PigeonShadow| {
+                    on_assigned: move |new_shadow: PigeonShadowView| {
                         if let Some(detail) = pigeon_detail.write().as_mut() {
                             detail.shadow = new_shadow;
                         }
@@ -1213,8 +1216,10 @@ fn TelemetryEndpointInfo(
   }
 }
 
-/// The shadow pair, plus the two ways to move `target_config`: edit it, or
-/// re-push the firmware target already in it.
+/// The shadow pair, plus the ways to move `target_config`: edit this pigeon's
+/// own layer, hand one of its keys back to the flock, or re-push the
+/// firmware target already in it. When the pigeon has a flock layer, or
+/// removes a key, every key is listed with where its value comes from.
 ///
 /// Re-push exists because a device bounds its FOTA retries on the shadow's
 /// `target_version`, and that version only advances when `target_config`
@@ -1224,11 +1229,28 @@ fn TelemetryEndpointInfo(
 #[component]
 fn ShadowInfo(
   pigeon_id: String,
-  shadow: PigeonShadow,
-  on_repushed: EventHandler<PigeonShadow>,
+  shadow: PigeonShadowView,
+  on_saved: EventHandler<PigeonShadowView>,
 ) -> Element {
   let can_repush = firmware_repush::has_firmware_target(&shadow.target_config);
-  let base_target_config = shadow.target_config.clone();
+  let effective = shadow.target_config.clone();
+  let pigeon_layer = shadow.pigeon_config.clone();
+  let rows: Vec<(config_layers::LayerRow, &'static str)> =
+    config_layers::layer_rows(&shadow.pigeon_config, &shadow.flock_config)
+      .into_iter()
+      .map(|row| {
+        let badge = match row.source {
+          KeySource::Flock | KeySource::Removed => "badge-ghost",
+          KeySource::Pigeon => "badge-outline",
+          KeySource::Override => "badge-outline badge-warning",
+        };
+        (row, badge)
+      })
+      .collect();
+  let hand_back_pigeon_id = pigeon_id.clone();
+  let show_layers = config_layers::has_layers(&shadow.pigeon_config, &shadow.flock_config);
+  let mut handing_back: Signal<Option<String>> = use_signal(|| None);
+  let mut hand_back_error: Signal<Option<String>> = use_signal(|| None);
   let mut is_repushing = use_signal(|| false);
   let mut repush_error: Signal<Option<String>> = use_signal(|| None);
   let mut repushed_version: Signal<Option<i32>> = use_signal(|| None);
@@ -1245,12 +1267,13 @@ fn ShadowInfo(
                 disabled: is_repushing(),
                 onclick: move |_| {
                     let pigeon_id = pigeon_id.clone();
-                    let base_target_config = base_target_config.clone();
+                    let effective = effective.clone();
+                    let pigeon_layer = pigeon_layer.clone();
                     async move {
                         is_repushing.set(true);
                         repush_error.set(None);
                         repushed_version.set(None);
-                        match firmware_repush::repush_target_config(&base_target_config) {
+                        match firmware_repush::repush_pigeon_layer(&effective, &pigeon_layer) {
                             Ok(target_config) => {
                                 let req = PigeonShadowUpdateRequest {
                                     target_config,
@@ -1258,7 +1281,7 @@ fn ShadowInfo(
                                 match api::pigeons::update_shadow(&pigeon_id, &req).await {
                                     Ok(new_shadow) => {
                                         repushed_version.set(Some(new_shadow.target_version));
-                                        on_repushed.call(new_shadow);
+                                        on_saved.call(new_shadow);
                                     }
                                     Err(message) => repush_error.set(Some(message)),
                                 }
@@ -1306,6 +1329,83 @@ fn ShadowInfo(
         JsonViewer {
           json: shadow.current_config.clone(),
           title: "Current Config [Version: {shadow.current_version}]",
+        }
+      }
+      if let Some(reason) = shadow.flock_apply_error.clone() {
+        div { role: "alert", class: "alert alert-soft alert-warning",
+          span {
+            "This pigeon did not take its flock's newest config: {reason}. It keeps the config it had."
+          }
+        }
+      }
+      if show_layers {
+        div { class: "overflow-x-auto",
+          table { class: "table table-sm",
+            thead {
+              tr {
+                th { "Key" }
+                th { "Value" }
+                th { "Comes from" }
+                th {}
+              }
+            }
+            tbody {
+              for (row, badge) in rows {
+                tr { key: "{row.key}",
+                  td { class: "font-mono", "{row.key}" }
+                  td {
+                    class: "font-mono break-all",
+                    class: if row.source == KeySource::Removed { "line-through text-base-content/50" },
+                    "{row.value}"
+                  }
+                  td {
+                    span { class: "badge badge-sm whitespace-nowrap {badge}",
+                      "{config_layers::source_label(row.source)}"
+                    }
+                  }
+                  td { class: "text-right",
+                    if matches!(row.source, KeySource::Override | KeySource::Removed) {
+                      button {
+                        class: "btn btn-ghost btn-xs",
+                        disabled: handing_back().is_some(),
+                        onclick: {
+                            let key = row.key.clone();
+                            let pigeon_id = hand_back_pigeon_id.clone();
+                            let pigeon_layer = shadow.pigeon_config.clone();
+                            move |_| {
+                                let key = key.clone();
+                                let pigeon_id = pigeon_id.clone();
+                                let pigeon_layer = pigeon_layer.clone();
+                                async move {
+                                    handing_back.set(Some(key.clone()));
+                                    hand_back_error.set(None);
+                                    match config_layers::without_key(&pigeon_layer, &key) {
+                                        Ok(target_config) => {
+                                            let req = PigeonShadowUpdateRequest {
+                                                target_config,
+                                            };
+                                            match api::pigeons::update_shadow(&pigeon_id, &req).await {
+                                                Ok(new_shadow) => on_saved.call(new_shadow),
+                                                Err(message) => hand_back_error.set(Some(message)),
+                                            }
+                                        }
+                                        Err(err) => hand_back_error.set(Some(err)),
+                                    }
+                                    handing_back.set(None);
+                                }
+                            }
+                        },
+                        "Use the flock's value"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if let Some(error) = hand_back_error() {
+            p { class: "text-error text-xs", "{error}" }
+          }
         }
       }
     }
@@ -1468,109 +1568,11 @@ fn AclInfo(acl: PigeonAcl) -> Element {
   }
 }
 
-/// Client-side-only sanity cap on an uploaded `target_config` JSON file --
-/// dovecote's `PUT /pigeons/:id/shadow` enforces no size limit of its own on
-/// an IP pigeon's `target_config` (a NIDD pigeon's is held to
-/// `NIDD_MAX_TARGET_CONFIG_BYTES`), so this exists purely to give a friendly
-/// error instead of stuffing something absurd into the textarea below.
-const MAX_SHADOW_UPLOAD_BYTES: u64 = 64 * 1024;
-
-/// Parses an uploaded `target_config` JSON file's text and, on success,
-/// returns it pretty-printed for the editor textarea below to preview, so
-/// the user can eyeball or tweak what the file contained. Only a JSON
-/// *object* is accepted -- arrays and
-/// bare scalars would round-trip through `serde_json::Value` fine, but
-/// `PigeonShadowUpdateRequest::target_config` is conceptually a config
-/// object (see the live textarea's own default of `"{}"`), and silently
-/// accepting e.g. `[1,2,3]` here would just surface as a confusing 400 from
-/// dovecote later instead of an immediate, specific error now. Pure and
-/// synchronous (no `web_sys`) so it's unit-testable without a wasm target.
-fn parse_shadow_upload(text: &str) -> Result<String, String> {
-  match serde_json::from_str::<serde_json::Value>(text) {
-    Ok(value @ serde_json::Value::Object(_)) => {
-      serde_json::to_string_pretty(&value).map_err(|err| format!("Invalid JSON: {err}"))
-    }
-    Ok(_) => Err(
-      "The file must contain a JSON object (e.g. {\"key\": \"value\"}), not an array or a bare value."
-        .to_string(),
-    ),
-    Err(err) => Err(format!("Invalid JSON: {err}")),
-  }
-}
-
-/// The size dovecote holds a NIDD pigeon's `target_config` to: its compact
-/// serialization, whatever whitespace the editor holds. `None` while the
-/// editor's text is not valid JSON.
-fn compact_config_bytes(raw: &str) -> Option<usize> {
-  let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
-  serde_json::to_string(&value)
-    .ok()
-    .map(|compact| compact.len())
-}
-
-#[cfg(test)]
-mod shadow_upload_tests {
-  use super::{compact_config_bytes, parse_shadow_upload};
-
-  #[test]
-  fn the_byte_count_is_compact_utf8_whatever_the_editor_holds() {
-    assert_eq!(
-      compact_config_bytes("{\n  \"log\": 3,\n  \"on\": true\n}"),
-      Some(19)
-    );
-    assert_eq!(compact_config_bytes("{\"s\":\"é\"}"), Some(10));
-    assert_eq!(compact_config_bytes("{not json"), None);
-  }
-
-  #[test]
-  fn accepts_a_json_object_and_pretty_prints_it() {
-    // serde_json's `Value::Object` is a `BTreeMap` in this workspace (no
-    // `preserve_order` feature), so output keys are always alphabetized
-    // regardless of the source file's key order.
-    let result = parse_shadow_upload(r#"{"telemetry_interval":60,"logging":"info"}"#);
-    assert_eq!(
-      result,
-      Ok("{\n  \"logging\": \"info\",\n  \"telemetry_interval\": 60\n}".to_string())
-    );
-  }
-
-  #[test]
-  fn accepts_an_empty_object() {
-    assert_eq!(parse_shadow_upload("{}"), Ok("{}".to_string()));
-  }
-
-  #[test]
-  fn rejects_a_json_array() {
-    let result = parse_shadow_upload("[1,2,3]");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must contain a JSON object"));
-  }
-
-  #[test]
-  fn rejects_a_bare_scalar() {
-    let result = parse_shadow_upload("42");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must contain a JSON object"));
-  }
-
-  #[test]
-  fn rejects_a_bare_string() {
-    let result = parse_shadow_upload("\"hello\"");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("must contain a JSON object"));
-  }
-
-  #[test]
-  fn rejects_malformed_json() {
-    let result = parse_shadow_upload("{not valid json");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().starts_with("Invalid JSON:"));
-  }
-}
-
-/// Edits the shadow's `target_config`, typed or loaded from a file. For a
-/// NIDD pigeon it counts the bytes against the one downlink frame the
-/// whole config has to fit; the server's 413 stays the authority.
+/// Edits this pigeon's own config layer, typed or loaded from a file, never
+/// the merged `target_config`: saving that back would copy every flock key
+/// into the pigeon's layer and pin it there. For a NIDD pigeon it counts the
+/// bytes against the one downlink frame the whole config has to fit; the
+/// server's 413 stays the authority.
 #[component]
 pub fn EditShadowModal(
   pigeon_id: String,
@@ -1578,9 +1580,22 @@ pub fn EditShadowModal(
 ) -> Element {
   let mut json_input = use_signal(|| {
     if let Some(detail) = pigeon_detail.read().as_ref() {
-      detail.shadow.target_config.to_pretty()
+      detail.shadow.pigeon_config.to_pretty()
     } else {
       "{}".to_string()
+    }
+  });
+  // The dialog stays mounted, so a layer changed elsewhere on the page (a key handed back to the
+  // flock, a re-push) must reach the editor, or saving it would put the old layer back.
+  let stored_layer = use_memo(move || {
+    pigeon_detail
+      .read()
+      .as_ref()
+      .map(|detail| detail.shadow.pigeon_config.clone())
+  });
+  use_effect(move || {
+    if let Some(layer) = stored_layer() {
+      json_input.set(layer.to_pretty());
     }
   });
 
@@ -1594,10 +1609,23 @@ pub fn EditShadowModal(
     .read()
     .as_ref()
     .is_some_and(|detail| matches!(detail.pigeon.connector, Connector::Nidd(_)));
-  let config_bytes = nidd
-    .then(|| compact_config_bytes(&json_input.read()))
-    .flatten();
+  // What the device would be sent: the editor's layer merged with the flock's, which is what
+  // both the NIDD frame and the device's own compiled cap are held to.
+  let flock_config = pigeon_detail
+    .read()
+    .as_ref()
+    .map(|detail| detail.shadow.flock_config.clone());
+  let effective = flock_config
+    .as_ref()
+    .and_then(|flock| config_layers::preview(flock, &json_input.read()).ok());
+  let inherits = flock_config
+    .as_ref()
+    .is_some_and(|flock| flock.to_string() != "{}");
+  let effective_bytes = effective.as_ref().map(String::len);
+  let config_bytes = nidd.then_some(effective_bytes).flatten();
   let oversize = config_bytes.is_some_and(|bytes| bytes > NIDD_MAX_TARGET_CONFIG_BYTES);
+  let over_default =
+    !nidd && effective_bytes.is_some_and(|bytes| bytes > DEVICE_DEFAULT_CONFIG_MAX);
 
   rsx! {
     dialog { class: "modal", id: "edit_shadow_modal",
@@ -1668,14 +1696,14 @@ pub fn EditShadowModal(
                         let Some(file) = evt.files().into_iter().next() else {
                             return;
                         };
-                        if file.size() > MAX_SHADOW_UPLOAD_BYTES {
+                        if file.size() > MAX_CONFIG_UPLOAD_BYTES {
                             file_error
                                 .set(
                                     Some(
                                         format!(
                                             "File is {} KB, which is over the {} KB limit.",
                                             file.size() / 1024,
-                                            MAX_SHADOW_UPLOAD_BYTES / 1024,
+                                            MAX_CONFIG_UPLOAD_BYTES / 1024,
                                         ),
                                     ),
                                 );
@@ -1688,7 +1716,7 @@ pub fn EditShadowModal(
                                 return;
                             }
                         };
-                        match parse_shadow_upload(&text) {
+                        match parse_config_upload(&text) {
                             Ok(pretty) => {
                                 json_input.set(pretty);
                                 error_msg.set(None);
@@ -1713,7 +1741,10 @@ pub fn EditShadowModal(
             }
             div { class: "w-full",
               label { class: "fieldset-legend text-xs font-semibold mb-1 text-base-content/80",
-                "Target Configuration Script"
+                "This pigeon's own config"
+              }
+              p { class: "text-xs text-base-content/60 mb-2",
+                "Keys left out come from this pigeon's flock. Set a key to null to remove the flock's value for this pigeon."
               }
 
               textarea {
@@ -1739,6 +1770,14 @@ pub fn EditShadowModal(
                 },
               }
 
+              if inherits {
+                if let Some(merged) = effective.as_ref() {
+                  p { class: "text-xs text-base-content/60 mt-2", "Sent to the device, with the flock's keys:" }
+                  pre { class: "text-xs font-mono bg-base-200 rounded p-2 whitespace-pre-wrap break-all",
+                    "{merged}"
+                  }
+                }
+              }
               if let Some(bytes) = config_bytes {
                 p {
                   class: "text-xs mt-1",
@@ -1747,6 +1786,11 @@ pub fn EditShadowModal(
                   if oversize {
                     ". One NIDD downlink frame carries the whole config, so trim it to save."
                   }
+                }
+              }
+              if over_default {
+                p { class: "text-xs mt-1 text-base-content/70",
+                  "{effective_bytes.unwrap_or_default()} bytes. A device built with the default {DEVICE_DEFAULT_CONFIG_MAX}-byte config cap refuses a config this size."
                 }
               }
               // Not a daisyUI .label: it is white-space: nowrap, so the sentence

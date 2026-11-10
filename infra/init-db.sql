@@ -489,6 +489,12 @@ ALTER TABLE flocks ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations
 -- degrades on with "no recipient, log and skip".
 ALTER TABLE flocks ADD COLUMN IF NOT EXISTS owner_email TEXT;
 
+-- Flock-level config (infra/migrations/2026-11-06-flock-config.sql): the layer every member
+-- inherits, its version, and which version each member's mirror says it took.
+ALTER TABLE flocks ADD COLUMN IF NOT EXISTS target_config JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE flocks ADD COLUMN IF NOT EXISTS config_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pigeon_shadow ADD COLUMN IF NOT EXISTS flock_version INTEGER NOT NULL DEFAULT 0;
+
 -- Consent history, marketing and Terms assent alike. The Kratos identity
 -- trait is the current state of a marketing choice and the person owns it;
 -- these rows are the evidence, written only by dovecote and never updated.

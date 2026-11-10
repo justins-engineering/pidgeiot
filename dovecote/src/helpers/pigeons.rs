@@ -10,6 +10,7 @@ use tokio_postgres::{Client, types::Type};
 use worker::{Env, Headers, Request, RequestInit, Response, console_error};
 
 use crate::helpers::ensure_pigeons_telemetry_endpoint_column;
+use crate::helpers::flock_config::FlockLayer;
 use crate::helpers::missing_schema_objects;
 use crate::helpers::rule_store::delete_pigeon_rule_rows;
 
@@ -476,8 +477,17 @@ fn mirrored_connector(connector: &Connector) -> String {
 /// delete route's cleanup is best-effort, so for one the transaction first deletes whatever an
 /// earlier pigeon left under the id; the cascades take its shadow, ACL, history and alerts. That
 /// is safe because the DO has just created this pigeon, so no live one holds the id.
-pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> worker::Result<()> {
+///
+/// Answers the flock's layer, read by the shadow insert itself: the pigeon row's foreign key
+/// holds a key-share lock on the flock until the commit, so a flock write either committed
+/// before that read or lists this pigeon among its members.
+pub async fn insert_pigeon_pg_db(
+  mut client: Client,
+  pcr: &PigeonDetail,
+) -> worker::Result<Option<FlockLayer>> {
   ensure_pigeons_board_column(&client).await?;
+  crate::helpers::flock_config::ensure_flock_config_columns(&client).await?;
+  crate::helpers::ensure_flock_firmware_table(&client).await?;
 
   // Outside the transaction: a failure here must not abort the mirror insert.
   if matches!(pcr.pigeon.connector, Connector::Nidd(_)) {
@@ -553,36 +563,45 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
-  tx.execute_typed(
-    "INSERT INTO pigeon_shadow (id, target_version, current_version, target_config, current_config, updated_at)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
-     ON CONFLICT (id) DO UPDATE SET
-       target_version = EXCLUDED.target_version,
-       current_version = EXCLUDED.current_version,
-       target_config = EXCLUDED.target_config,
-       current_config = EXCLUDED.current_config,
-       updated_at = EXCLUDED.updated_at;",
-    &[
-      (&pigeon.id, Type::TEXT),
-      (&shadow.target_version, Type::INT4),
-      (&shadow.current_version, Type::INT4),
-      (&shadow.target_config.to_string(), Type::TEXT),
-      (&shadow.current_config.to_string(), Type::TEXT),
-      (&shadow.updated_at, Type::INT8),
-    ],
-  )
-  .await
-  .map_err(|e| {
-    console_error!("Postgres pigeon_shadow sync error: {e}");
-    worker::Error::RustError("Internal Server Error".into())
-  })?;
+  let rows = tx
+    .query_typed(
+      "INSERT INTO pigeon_shadow (id, target_version, current_version, target_config, current_config, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+       ON CONFLICT (id) DO UPDATE SET
+         target_version = EXCLUDED.target_version,
+         current_version = EXCLUDED.current_version,
+         target_config = EXCLUDED.target_config,
+         current_config = EXCLUDED.current_config,
+         updated_at = EXCLUDED.updated_at
+       RETURNING
+         (SELECT target_config::text FROM flocks WHERE id = $7) AS flock_config,
+         (SELECT config_version FROM flocks WHERE id = $7) AS config_version,
+         (SELECT ff.board FROM flocks f JOIN flock_firmware ff ON ff.flock_id = f.id
+          WHERE f.id = $7 AND ff.sha256 = f.target_config #>> '{firmware,sha256}')
+           AS firmware_board;",
+      &[
+        (&pigeon.id, Type::TEXT),
+        (&shadow.target_version, Type::INT4),
+        (&shadow.current_version, Type::INT4),
+        (&shadow.target_config.to_string(), Type::TEXT),
+        (&shadow.current_config.to_string(), Type::TEXT),
+        (&shadow.updated_at, Type::INT8),
+        (&pigeon.flock_id, Type::UUID),
+      ],
+    )
+    .await
+    .map_err(|e| {
+      console_error!("Postgres pigeon_shadow sync error: {e}");
+      worker::Error::RustError("Internal Server Error".into())
+    })?;
+  let flock_layer = rows.first().and_then(FlockLayer::from_row);
 
   tx.commit().await.map_err(|e| {
     console_error!("Postgres commit error: {e}");
     worker::Error::RustError("Internal Server Error".into())
   })?;
 
-  Ok(())
+  Ok(flock_layer)
 }
 
 /// Mirrors a pigeon's row into Postgres. `connector` is taken separately
@@ -592,11 +611,11 @@ pub async fn insert_pigeon_pg_db(mut client: Client, pcr: &PigeonDetail) -> work
 /// instead of blanking the mirror's copy of a live device's PSK. A Nidd
 /// connector is mirrored without its secrets (`mirrored_connector`).
 pub async fn update_pigeon_pg_db(
-  client: Client,
+  client: &Client,
   pigeon: &Pigeon,
   connector: Option<&Connector>,
 ) -> worker::Result<()> {
-  ensure_pigeons_board_column(&client).await?;
+  ensure_pigeons_board_column(client).await?;
 
   let connector_json = connector.map(mirrored_connector);
 

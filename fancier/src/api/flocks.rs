@@ -1,6 +1,8 @@
-use crate::api::orgs::error_text;
+use crate::api::orgs::{error_text, parse, to_body};
 use crate::api::{fetch_json, fetch_json_any_status};
-use capsules::{Flock, FlockCreateRequest, FlockUpdateRequest};
+use capsules::{
+  Flock, FlockConfig, FlockConfigUpdateRequest, FlockCreateRequest, FlockUpdateRequest,
+};
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -68,4 +70,47 @@ pub async fn delete(flock_id: Uuid) -> Result<(), String> {
   flock_list.remove(&flock_id);
   flock_list.write();
   Ok(())
+}
+
+fn config_path(flock_id: Uuid) -> String {
+  let mut path = String::with_capacity(80);
+  path.push_str("/flocks/");
+  path.push_str(&flock_id.to_string());
+  path.push_str("/config");
+  path
+}
+
+/// The flock's config layer with its member counts. `Err` carries the server's message.
+pub async fn get_config(flock_id: Uuid) -> Result<FlockConfig, String> {
+  let Some(response) = fetch_json_any_status("GET", &config_path(flock_id), None).await else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  parse::<FlockConfig>(response)
+    .await
+    .ok_or_else(|| "Failed to parse response".to_string())
+}
+
+/// Replaces the flock's config layer and sends it to every member. The answer is the only read
+/// guaranteed to reflect the write, so the caller builds its state from it. `Err` carries the
+/// server's message, which names a refusal.
+pub async fn put_config(
+  flock_id: Uuid,
+  body: &FlockConfigUpdateRequest,
+) -> Result<FlockConfig, String> {
+  let Some(body) = to_body(body) else {
+    return Err("Failed to encode request".to_string());
+  };
+  let Some(response) = fetch_json_any_status("PUT", &config_path(flock_id), Some(&body)).await
+  else {
+    return Err("Network error".to_string());
+  };
+  if !response.ok() {
+    return Err(error_text(&response).await);
+  }
+  parse::<FlockConfig>(response)
+    .await
+    .ok_or_else(|| "Failed to parse response".to_string())
 }
