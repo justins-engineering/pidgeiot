@@ -1,8 +1,9 @@
 # Simulated polling signs
 
 A PidgeIoT test harness: our own stand-in for a sign that polls a web data source, and not
-any maker's software. Every page and every SOAP answer it
-gives says "simulated, from your 2015 reference". It exists so the fleet demo can run before
+any maker's software. Every page it serves says "simulated,
+from your 2015 reference", and so does its `GetSignInfo` answer. The other SOAP answers carry
+only what the WSDL defines. It exists so the fleet demo can run before
 the loaned sample arrives.
 
 One process plays N signs. Each sign has its own state directory and its own port. Each one:

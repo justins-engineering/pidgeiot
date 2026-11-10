@@ -2,8 +2,8 @@
 """Simulated polling signs: our own stand-in for a sign that polls a web data source,
 not any maker's software.
 
-Every page and every answer says "simulated, from your 2015 reference". A simulated sign does
-what the published documents say a sign does, and no more:
+Every page and the GetSignInfo answer say "simulated, from your 2015 reference". A simulated
+sign does what the published documents say a sign does, and no more:
 
 - polls one web data source the way the October 2025 LED manual's chapter 13 describes (a GET
   at a set cadence, custom headers, Bearer or Basic auth) and applies flat or nested JSON in dot
