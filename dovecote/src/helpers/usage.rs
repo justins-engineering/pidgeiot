@@ -2010,7 +2010,7 @@ mod tests {
 /// The connected stamp against the dev Postgres, as [`super::rule_store`]'s `pg` tests run them.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pg {
-  use super::{record_billable_messages, record_connected_activity};
+  use super::{load_billable_orgs, record_billable_messages, record_connected_activity};
   use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
   use time::OffsetDateTime;
   use tokio_postgres::Client;
@@ -2135,6 +2135,73 @@ mod pg {
         usage_rows(&client).await > 0,
         "the billable path does count"
       );
+      drop(client);
+      db.drop().await;
+    });
+  }
+
+  /// The meter's and the overview's connected counts for `org`.
+  async fn connected_counts(client: &Client, org: Uuid) -> (i64, i64) {
+    let meter = load_billable_orgs(client)
+      .await
+      .expect("billable orgs")
+      .into_iter()
+      .find(|o| o.id == org)
+      .expect("the subscribed org is billable")
+      .connected_device_count;
+    let overview = crate::helpers::load_org_billing_overview(client, &org)
+      .await
+      .expect("overview")
+      .expect("the org exists")
+      .connected_device_count;
+    (meter, overview)
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_sign_polling_across_a_period_start_is_counted_once_by_every_reader() {
+    run(async {
+      let db = Scratch::new("connected_readers").await;
+      let client = db.client().await;
+      let org: Uuid = client
+        .query_one(
+          "INSERT INTO organizations (name, plan, subscription_status, stripe_customer_id,
+             current_period_start, current_period_end)
+           VALUES ('o', 'builder', 'active', 'cus_review', now() - interval '30 seconds',
+             now() + interval '30 days') RETURNING id",
+          &[],
+        )
+        .await
+        .expect("org inserted")
+        .get(0);
+      let flock = new_flock(&client, Some(org)).await;
+      new_pigeon(&client, flock, "sign").await;
+      // Its last poll of the previous period, a second before this one began.
+      set_activity(&client, "sign", "now() - interval '31 seconds'").await;
+      assert_eq!(
+        connected_counts(&client, org).await,
+        (0, 0),
+        "last period's stamp"
+      );
+
+      assert!(
+        record_connected_activity(&client, "sign")
+          .await
+          .expect("first poll")
+      );
+      let first = activity(&client, "sign").await;
+      assert!(
+        !record_connected_activity(&client, "sign")
+          .await
+          .expect("second poll")
+      );
+      assert_eq!(
+        activity(&client, "sign").await,
+        first,
+        "one row write for two polls"
+      );
+      assert_eq!(connected_counts(&client, org).await, (1, 1), "this period");
+      assert_eq!(usage_rows(&client).await, 0, "a poll counts no message");
       drop(client);
       db.drop().await;
     });
