@@ -5,8 +5,9 @@ not any maker's software.
 Every page and every answer says "simulated, from your 2015 reference". A simulated sign does
 what the published documents say a sign does, and no more:
 
-- reads a web data source body the way the October 2025 LED manual's chapter 13 describes: flat
-  or nested JSON in dot notation, or <DataItems> XML;
+- polls one web data source the way the October 2025 LED manual's chapter 13 describes (a GET
+  at a set cadence, custom headers, Bearer or Basic auth) and applies flat or nested JSON in dot
+  notation, or <DataItems> XML, keeping its last values when the source fails;
 - reads and writes SOAP 1.1 under the names of the 2007 WSDL and the 2013 .NET client
   (rpc/encoded, SOAPAction http://tempuri.org/action/SignSvr.<name>);
 - keeps a sign's layouts, messages and data items as XML files in the manual's chapter 21
@@ -17,10 +18,14 @@ what the published documents say a sign does, and no more:
 Standard library only.
 """
 
+import base64
+import http.client
 import json
 import os
+import ssl
 import threading
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -429,3 +434,173 @@ def sign_info_xml(name, height, width, mac, ip, now):
   })
   ET.SubElement(info, "location").text = LABEL
   return ET.tostring(info, encoding="unicode")
+
+
+MAX_BODY_BYTES = 1 << 20
+FORMATS = ("json", "xml")
+AUTHS = ("bearer", "basic", "none")
+CREDENTIAL_KEYS = ("token", "password", "secret")
+# The manual's NWS example sets this by hand (13.3); "" sends none, as libcurl does by default.
+DEFAULT_USER_AGENT = "sign-sim/1.0"
+
+
+class ConfigError(ValueError):
+  """A configuration the simulator will not start with. Never carries a credential."""
+
+
+def load_token(poll, environ):
+  """The data source credential, from the environment variable or 0600 file the config names."""
+  if poll["auth"] == "none":
+    return None
+  env, path = poll.get("token_env"), poll.get("token_file")
+  if bool(env) == bool(path):
+    raise ConfigError("name exactly one of token_env and token_file")
+  if env:
+    token = environ.get(env, "")
+    if not token:
+      raise ConfigError("environment variable " + env + " is unset or empty")
+  else:
+    try:
+      mode = os.stat(path).st_mode
+    except OSError as e:
+      raise ConfigError("token file " + path + ": " + str(e.strerror)) from None
+    if mode & 0o077:
+      raise ConfigError("token file " + path + " must be mode 0600")
+    with open(path, encoding="utf-8") as f:
+      token = f.read()
+  token = token.strip()
+  if not token or "\n" in token or "\r" in token:
+    raise ConfigError("token is empty or spans lines")
+  return token
+
+
+def poll_request(poll, token):
+  """(split URL, request target, headers) for one data source GET.
+
+  "params" is the manual's "Additional parameter(s)", appended to the URI as a query string.
+  """
+  url = urllib.parse.urlsplit(poll["url"])
+  target = (url.path or "/") + ("?" + url.query if url.query else "")
+  params = poll.get("params", "").lstrip("?&")
+  if params:
+    target += ("&" if "?" in target else "?") + params
+  headers = {"Accept": "*/*"}
+  if poll["user_agent"]:
+    headers["User-Agent"] = poll["user_agent"]
+  headers.update(poll.get("headers", {}))
+  if poll["auth"] == "bearer":
+    headers["Authorization"] = "Bearer " + token
+  elif poll["auth"] == "basic":
+    pair = (poll.get("username", "") + ":" + token).encode("utf-8")
+    headers["Authorization"] = "Basic " + base64.b64encode(pair).decode("ascii")
+  return url, target, headers
+
+
+def http_get(poll, token, timeout):
+  """(status, body) of one GET. Redirects are not followed, as curl does not by default."""
+  url, target, headers = poll_request(poll, token)
+  if url.scheme == "https":
+    conn = http.client.HTTPSConnection(url.hostname, url.port, timeout=timeout,
+                                       context=ssl.create_default_context())
+  else:
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
+  try:
+    conn.request("GET", target, headers=headers)
+    response = conn.getresponse()
+    return response.status, response.read(MAX_BODY_BYTES + 1)
+  finally:
+    conn.close()
+
+
+def poll_once(poll, token, state, clock=time.time):
+  """One data source request, recorded as the sign's last poll.
+
+  Values change only on a 2xx body that parses. Anything else (unreachable, a non-2xx, a body
+  that does not parse) leaves every data item at its last value.
+  """
+  status = {"at": clock(), "ok": False}
+  try:
+    code, body = http_get(poll, token, timeout=min(poll["every_secs"], 10))
+  except (OSError, http.client.HTTPException) as e:
+    status["error"] = ("unreachable: " + (str(e) or type(e).__name__))[:200]
+  else:
+    status["http"] = code
+    if not 200 <= code < 300:
+      status["error"] = "HTTP " + str(code)
+    elif len(body) > MAX_BODY_BYTES:
+      status["error"] = "body over " + str(MAX_BODY_BYTES) + " bytes"
+    else:
+      try:
+        pairs = parse_payload(body, poll["format"])
+      except PayloadError as e:
+        status["error"] = str(e)[:200]
+      else:
+        updated, ignored = state.apply_values(pairs, status["at"])
+        status.update(ok=True, updated=updated, ignored=ignored[:20], ignored_count=len(ignored))
+  state.record_poll(status)
+  return status
+
+
+def _require(ok, text):
+  if not ok:
+    raise ConfigError(text)
+
+
+def check_poll(poll, where):
+  """Fill a poll section's defaults and refuse what the simulator cannot run."""
+  _require(isinstance(poll, dict), where + ": poll must be an object")
+  for key in CREDENTIAL_KEYS:
+    _require(key not in poll, where + ": a credential never goes in the config; name token_env"
+             " or token_file")
+  url = urllib.parse.urlsplit(str(poll.get("url", "")))
+  _require(url.scheme in ("http", "https") and url.hostname, where + ": url must be http(s)")
+  poll.setdefault("format", "json")
+  poll.setdefault("every_secs", 10)
+  poll.setdefault("user_agent", DEFAULT_USER_AGENT)
+  poll.setdefault("auth", "bearer")
+  poll.setdefault("headers", {})
+  _require(poll["format"] in FORMATS, where + ": format must be json or xml")
+  _require(poll["auth"] in AUTHS, where + ": auth must be bearer, basic or none")
+  _require(isinstance(poll["every_secs"], (int, float)) and poll["every_secs"] >= 1,
+           where + ": every_secs must be at least 1")
+  _require(isinstance(poll["user_agent"], str), where + ": user_agent must be text")
+  _require(isinstance(poll["headers"], dict)
+           and all(isinstance(v, str) for v in poll["headers"].values()),
+           where + ": headers must map names to text")
+  _require(all(k.lower() != "authorization" for k in poll["headers"]),
+           where + ": Authorization comes from auth and the token, never from headers")
+
+
+def load_config(path):
+  """The fleet config, with defaults filled. It names credentials; it never holds one."""
+  try:
+    with open(path, encoding="utf-8") as f:
+      config = json.load(f)
+  except (OSError, ValueError) as e:
+    raise ConfigError("config " + path + ": " + str(e)) from None
+  _require(isinstance(config, dict) and isinstance(config.get("signs"), list)
+           and config["signs"], "config needs a non-empty signs list")
+  root = os.path.dirname(os.path.abspath(path))
+  config["state_root"] = os.path.join(root, config.get("state_root", "ipd-sim-state"))
+  config.setdefault("control_port", 8900)
+  slugs, ports = set(), set()
+  for sign in config["signs"]:
+    _require(isinstance(sign, dict), "each sign must be an object")
+    slug = str(sign.get("slug", ""))
+    where = "sign " + (slug or "?")
+    _require(slug and all(c.isascii() and (c.isalnum() or c == "-") for c in slug),
+             where + ": slug must be letters, digits and hyphens")
+    _require(slug not in slugs, where + ": slug is used twice")
+    slugs.add(slug)
+    sign.setdefault("name", slug)
+    sign.setdefault("height", 32)
+    sign.setdefault("width", 160)
+    sign.setdefault("data_items", [])
+    _require(isinstance(sign.get("port"), int) and 0 <= sign["port"] < 65536,
+             where + ": port must be 0 to 65535")
+    _require(sign["port"] == 0 or sign["port"] not in ports, where + ": port is used twice")
+    ports.add(sign["port"])
+    _require(all(isinstance(n, str) and n for n in sign["data_items"]),
+             where + ": data_items must be names")
+    check_poll(sign.get("poll"), where)
+  return config

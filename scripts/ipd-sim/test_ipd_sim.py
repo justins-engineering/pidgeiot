@@ -6,8 +6,12 @@
 Sockets open only on 127.0.0.1 with ports the kernel picks.
 """
 
+import base64
+import http.server
+import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
@@ -210,7 +214,8 @@ class DataItemStateTest(StateCase):
     self.assertEqual(values, {"rate": "2.50", "lot.status": "", "closure": ""})
 
   def test_update_data_item_values_counts_items_updated(self):
-    xml = '<DataItems><DataItem name="rate">4</DataItem><DataItem name="no">5</DataItem></DataItems>'
+    xml = ('<DataItems><DataItem name="rate">4</DataItem><DataItem name="no">5</DataItem>'
+           '</DataItems>')
     self.assertEqual(self.state().update_data_item_values(xml, 1.0), 1)
     self.assertEqual(self.state().update_data_item_values("<DataRecs/>", 1.0), 0)
 
@@ -288,6 +293,183 @@ class LayoutMessageStateTest(StateCase):
     self.assertEqual(info.get("currentTime"), "6:05PM")
     self.assertEqual(info.findtext("location"), ipd_sim.LABEL)
     self.assertEqual((info.get("height"), info.get("width")), ("32", "160"))
+
+
+FAKE_TOKEN = "fake-test-token"
+
+
+class FakeSource:
+  """A data source on 127.0.0.1 that answers queued (status, body) pairs and keeps headers."""
+
+  def __init__(self):
+    source = self
+    self.answers = []
+    self.requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+      def do_GET(self):
+        source.requests.append((self.path, dict(self.headers)))
+        status, body = source.answers.pop(0) if source.answers else (404, b"")
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+      def log_message(self, *args):
+        pass
+
+    self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    self.port = self.server.server_address[1]
+    self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+    self.thread.start()
+
+  def close(self):
+    self.server.shutdown()
+    self.server.server_close()
+
+
+def poll_section(port, **overrides):
+  poll = {"url": "http://127.0.0.1:" + str(port) + "/device/pigeons/p1/values",
+          "token_env": "IPD_SIM_TEST_TOKEN"}
+  poll.update(overrides)
+  ipd_sim.check_poll(poll, "test")
+  return poll
+
+
+class PollTest(StateCase):
+  def setUp(self):
+    super().setUp()
+    self.source = FakeSource()
+    self.addCleanup(self.source.close)
+
+  def test_values_arrive_with_bearer_and_user_agent(self):
+    self.source.answers.append((200, b'{"rate": "2.50", "unknown": 1}'))
+    state = self.state()
+    status = ipd_sim.poll_once(poll_section(self.source.port), FAKE_TOKEN, state)
+    self.assertTrue(status["ok"])
+    self.assertEqual((status["updated"], status["ignored"]), (1, ["unknown"]))
+    path, headers = self.source.requests[0]
+    self.assertEqual(path, "/device/pigeons/p1/values")
+    self.assertEqual(headers["Authorization"], "Bearer " + FAKE_TOKEN)
+    self.assertEqual(headers["User-Agent"], "sign-sim/1.0")
+    self.assertEqual(state.snapshot()["data_items"][0]["value"], "2.50")
+
+  def test_last_values_survive_every_kind_of_failure(self):
+    state = self.state()
+    poll = poll_section(self.source.port)
+    self.source.answers.append((200, b'{"rate": "2.50", "lot.status": "OPEN"}'))
+    first = ipd_sim.poll_once(poll, FAKE_TOKEN, state, clock=lambda: 100.0)
+    self.source.answers += [(500, b"oops"), (401, b""), (200, b"<html>"), (200, b"[1,")]
+    for _ in range(4):
+      status = ipd_sim.poll_once(poll, FAKE_TOKEN, state, clock=lambda: 200.0)
+      self.assertFalse(status["ok"])
+    self.source.close()
+    status = ipd_sim.poll_once(poll, FAKE_TOKEN, state, clock=lambda: 300.0)
+    self.assertTrue(status["error"].startswith("unreachable"))
+    snap = self.state().snapshot()
+    self.assertEqual({i["name"]: (i["value"], i["changed_at"]) for i in snap["data_items"]},
+                     {"rate": ("2.50", 100.0), "lot.status": ("OPEN", 100.0)})
+    self.assertEqual(snap["last_ok_at"], first["at"])
+    self.assertEqual(snap["last_poll"]["at"], 300.0)
+
+  def test_xml_source(self):
+    self.source.answers.append((200, b'<DataItems><DataItem name="rate">9</DataItem></DataItems>'))
+    state = self.state()
+    ipd_sim.poll_once(poll_section(self.source.port, format="xml"), FAKE_TOKEN, state)
+    self.assertEqual(state.snapshot()["data_items"][0]["value"], "9")
+
+  def test_basic_auth_params_and_no_user_agent(self):
+    self.source.answers.append((200, b"{}"))
+    poll = poll_section(self.source.port, auth="basic", username="sign", user_agent="",
+                        params="?id=123", headers={"X-Site": "lot-a"})
+    ipd_sim.poll_once(poll, FAKE_TOKEN, self.state())
+    path, headers = self.source.requests[0]
+    self.assertEqual(path, "/device/pigeons/p1/values?id=123")
+    self.assertEqual(headers["Authorization"],
+                     "Basic " + base64.b64encode(b"sign:" + FAKE_TOKEN.encode()).decode())
+    self.assertNotIn("User-Agent", headers)
+    self.assertEqual(headers["X-Site"], "lot-a")
+
+  def test_token_never_reaches_the_state_files(self):
+    self.source.answers.append((401, b"Bearer " + FAKE_TOKEN.encode()))
+    ipd_sim.poll_once(poll_section(self.source.port), FAKE_TOKEN, self.state())
+    for name in os.listdir(self.dir):
+      with open(os.path.join(self.dir, name), encoding="utf-8") as f:
+        self.assertNotIn(FAKE_TOKEN, f.read())
+
+
+class TokenTest(unittest.TestCase):
+  def setUp(self):
+    self._tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self._tmp.cleanup)
+
+  def token_file(self, mode):
+    path = os.path.join(self._tmp.name, "token")
+    with open(path, "w", encoding="utf-8") as f:
+      f.write(FAKE_TOKEN + "\n")
+    os.chmod(path, mode)
+    return path
+
+  def test_environment_variable(self):
+    poll = poll_section(1)
+    self.assertEqual(ipd_sim.load_token(poll, {"IPD_SIM_TEST_TOKEN": FAKE_TOKEN}), FAKE_TOKEN)
+    with self.assertRaises(ipd_sim.ConfigError):
+      ipd_sim.load_token(poll, {})
+
+  def test_file_must_be_0600(self):
+    poll = poll_section(1, token_env=None, token_file=self.token_file(0o600))
+    self.assertEqual(ipd_sim.load_token(poll, {}), FAKE_TOKEN)
+    poll["token_file"] = self.token_file(0o644)
+    with self.assertRaises(ipd_sim.ConfigError) as caught:
+      ipd_sim.load_token(poll, {})
+    self.assertNotIn(FAKE_TOKEN, str(caught.exception))
+
+  def test_exactly_one_source(self):
+    poll = poll_section(1, token_file=self.token_file(0o600))
+    with self.assertRaises(ipd_sim.ConfigError):
+      ipd_sim.load_token(poll, {"IPD_SIM_TEST_TOKEN": FAKE_TOKEN})
+    self.assertIsNone(ipd_sim.load_token(poll_section(1, auth="none"), {}))
+
+  def test_credential_in_config_is_refused(self):
+    for key in ("token", "password"):
+      with self.assertRaises(ipd_sim.ConfigError):
+        poll_section(1, **{key: FAKE_TOKEN})
+    with self.assertRaises(ipd_sim.ConfigError):
+      poll_section(1, headers={"authorization": "Bearer x"})
+
+
+class ConfigTest(unittest.TestCase):
+  def write(self, config):
+    tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(tmp.cleanup)
+    path = os.path.join(tmp.name, "signs.json")
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump(config, f)
+    return path
+
+  def sign(self, slug, port):
+    return {"slug": slug, "port": port, "poll": {"url": "http://127.0.0.1:8787/x",
+                                                 "token_env": "T"}}
+
+  def test_defaults_fill_and_state_root_is_beside_the_config(self):
+    path = self.write({"signs": [self.sign("sign-a", 8901)]})
+    config = ipd_sim.load_config(path)
+    sign = config["signs"][0]
+    self.assertEqual(config["state_root"], os.path.join(os.path.dirname(path), "ipd-sim-state"))
+    self.assertEqual((sign["name"], sign["poll"]["every_secs"], sign["poll"]["format"]),
+                     ("sign-a", 10, "json"))
+
+  def test_duplicates_and_bad_values_are_refused(self):
+    bad = [
+      {"signs": [self.sign("a", 8901), self.sign("a", 8902)]},
+      {"signs": [self.sign("a", 8901), self.sign("b", 8901)]},
+      {"signs": [self.sign("a/b", 8901)]},
+      {"signs": []},
+      {"signs": [dict(self.sign("a", 8901), poll={"url": "ftp://x/", "token_env": "T"})]},
+    ]
+    for config in bad:
+      with self.assertRaises(ipd_sim.ConfigError):
+        ipd_sim.load_config(self.write(config))
 
 
 if __name__ == "__main__":
