@@ -130,6 +130,11 @@ pub use flock_config::{
   parse_layer, validate_flock_layer,
 };
 
+// Data items: what a sign polling `GET /device/pigeons/:pigeon_id/values` is served from its
+// effective config. Shared so a dashboard preview can show exactly what the sign is sent.
+pub mod data_items;
+pub use data_items::{DATA_ITEM_PREFIX, data_items, data_items_json, data_items_xml};
+
 // Opaque per-account dashboard preferences, keyed by scope. Shared so the
 // dashboard and the route storing its documents agree on what a key and a
 // document may be.
