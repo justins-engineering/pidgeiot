@@ -4,10 +4,10 @@
 //! change kind or load.
 
 use crate::helpers::rule_builder_form::{
-  BAND_KINDS, CONDITION_KINDS, SEVERITIES, band_op, band_op_value, condition_key, condition_kind,
-  new_condition, new_mail, new_value, number_text, operand_from, operand_is_key, operand_text,
-  parse_count, parse_number, secs_from, secs_text, set_condition_key, severity_of, severity_value,
-  trigger_key, with_kind,
+  BAND_KINDS, CONDITION_KINDS, ConditionFocus, SEVERITIES, band_op, band_op_value, condition_key,
+  condition_kind, focus_after_remove, focus_for, new_condition, new_mail, new_value, number_text,
+  operand_from, operand_is_key, operand_text, parse_count, parse_number, secs_from, secs_text,
+  set_condition_key, severity_of, severity_value, trigger_key, with_kind,
 };
 use capsules::{
   MAX_MODEL_ACTIONS, MAX_MODEL_BANDS, MAX_MODEL_CONDITIONS, MAX_MODEL_COUNT, RuleAction, RuleBand,
@@ -104,8 +104,14 @@ fn KeyField(
   }
 }
 
+/// A row's remove button; `focus` takes keyboard focus when it mounts.
 #[component]
-fn RemoveButton(label: String, disabled: bool, onclick: EventHandler<()>) -> Element {
+fn RemoveButton(
+  label: String,
+  disabled: bool,
+  #[props(default)] focus: bool,
+  onclick: EventHandler<()>,
+) -> Element {
   rsx! {
     button {
       class: "btn btn-ghost btn-xs btn-square ms-auto",
@@ -113,6 +119,11 @@ fn RemoveButton(label: String, disabled: bool, onclick: EventHandler<()>) -> Ele
       "aria-label": "{label}",
       title: "{label}",
       disabled,
+      onmounted: move |e| async move {
+          if focus {
+              let _ = e.set_focus(true).await;
+          }
+      },
       onclick: move |_| onclick.call(()),
       Icon { width: 14, height: 14, icon: LdX }
     }
@@ -151,17 +162,21 @@ fn OperandField(to: RuleOperand, readonly: bool, on_change: EventHandler<RuleOpe
   }
 }
 
-/// One Only if row: a key, what to check, and the check's own fields.
+/// One Only if row: a key, what to check, and the check's own fields. `focus` puts keyboard
+/// focus on its remove button when it mounts.
 #[component]
 fn ConditionRow(
   model: Signal<RuleModel>,
   generation: Signal<u32>,
+  pending_focus: Signal<Option<(u32, ConditionFocus)>>,
   index: usize,
   row: RuleCondition,
+  focus: bool,
   readonly: bool,
 ) -> Element {
   let mut model = model;
   let mut generation = generation;
+  let mut pending_focus = pending_focus;
   let kind = condition_kind(&row);
   let mut edit = move |change: &dyn Fn(&mut RuleCondition)| {
     if let Some(c) = model.write().only_if.get_mut(index) {
@@ -315,13 +330,17 @@ fn ConditionRow(
         RemoveButton {
           label: "Remove this condition",
           disabled: false,
+          focus,
           onclick: move |_| {
               let mut m = model.write();
               if index < m.only_if.len() {
                   m.only_if.remove(index);
               }
+              let rows_after = m.only_if.len();
               drop(m);
               generation += 1;
+              // The remount drops focus to the page, so name what takes it.
+              pending_focus.set(Some((*generation.peek(), focus_after_remove(rows_after, index))));
           },
         }
       }
@@ -684,12 +703,16 @@ pub fn RuleBuilder(
   readonly: bool,
 ) -> Element {
   let mut model = model;
+  let pending_focus = use_signal(|| None);
   let current = model.read().clone();
   let trigger = trigger_key(&current).to_string();
   let known = keys.iter().any(|k| *k == trigger) || keys.is_empty();
+  let mounted = generation();
+  let focus = focus_for(*pending_focus.peek(), mounted);
+  let focus_add = focus == Some(ConditionFocus::AddButton);
   rsx! {
     // Dioxus compares keys only between siblings, so the form is a list of one to remount.
-    for g in [generation()] {
+    for g in [mounted] {
       div { key: "{g}", class: "flex flex-col gap-4",
         datalist { id: KEYS_LIST_ID,
           for key in keys.iter() {
@@ -741,13 +764,26 @@ pub fn RuleBuilder(
           }
           ul { class: "flex flex-col gap-2",
             for (i , row) in current.only_if.iter().cloned().enumerate() {
-              ConditionRow { model, generation, index: i, row, readonly }
+              ConditionRow {
+                model,
+                generation,
+                pending_focus,
+                index: i,
+                row,
+                focus: focus == Some(ConditionFocus::Row(i)),
+                readonly,
+              }
             }
           }
           if !readonly && current.only_if.len() < MAX_MODEL_CONDITIONS {
             button {
               class: "btn btn-outline btn-xs self-start",
               r#type: "button",
+              onmounted: move |e| async move {
+                  if focus_add {
+                      let _ = e.set_focus(true).await;
+                  }
+              },
               onclick: move |_| {
                   let key = trigger_key(&model.peek()).to_string();
                   model.write().only_if.push(new_condition(&key));

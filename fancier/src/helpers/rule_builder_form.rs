@@ -308,6 +308,34 @@ pub fn band_op_value(op: RuleCompareOp) -> &'static str {
   op_value(op)
 }
 
+/// The Only if control that takes focus once the form remounts after a condition is removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionFocus {
+  /// The "Remove this condition" button of the row at this index.
+  Row(usize),
+  /// "Add a condition".
+  AddButton,
+}
+
+/// Where focus goes when the row at `removed` has gone and `rows_after` remain: the row now in
+/// its place, else the one before it, else the button that adds a row.
+pub fn focus_after_remove(rows_after: usize, removed: usize) -> ConditionFocus {
+  if rows_after == 0 {
+    ConditionFocus::AddButton
+  } else {
+    ConditionFocus::Row(removed.min(rows_after - 1))
+  }
+}
+
+/// The focus a form mounted at `generation` takes. A remove tags its target with the generation
+/// it remounts to, so a later remount, such as a stored version loading, takes none.
+pub fn focus_for(
+  pending: Option<(u32, ConditionFocus)>,
+  generation: u32,
+) -> Option<ConditionFocus> {
+  pending.and_then(|(g, focus)| (g == generation).then_some(focus))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -400,6 +428,28 @@ mod tests {
       point("temp_c", Some(2.0)),
     ]);
     assert_eq!(keys, ["layout", "temp_c"]);
+  }
+
+  #[test]
+  fn focus_after_a_remove_stays_in_the_only_if_group() {
+    // Three rows, the middle one removed: the row that moved up into its place.
+    assert_eq!(focus_after_remove(2, 1), ConditionFocus::Row(1));
+    // The first of two removed: the one left, now first.
+    assert_eq!(focus_after_remove(1, 0), ConditionFocus::Row(0));
+    // The last of three removed: the row before it.
+    assert_eq!(focus_after_remove(2, 2), ConditionFocus::Row(1));
+    // The only row removed: the button that adds one.
+    assert_eq!(focus_after_remove(0, 0), ConditionFocus::AddButton);
+  }
+
+  #[test]
+  fn pending_focus_applies_only_to_the_remount_it_was_set_for() {
+    let pending = Some((4, ConditionFocus::Row(0)));
+    assert_eq!(focus_for(pending, 4), Some(ConditionFocus::Row(0)));
+    // A later remount, such as a stored version loading, takes no focus.
+    assert_eq!(focus_for(pending, 5), None);
+    // First load: nothing pending.
+    assert_eq!(focus_for(None, 0), None);
   }
 
   #[test]
