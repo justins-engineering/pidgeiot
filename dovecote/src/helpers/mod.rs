@@ -145,6 +145,9 @@ pub use device_limits::DEVICE_SHADOW_LIMITER;
 pub use device_limits::DeviceAuthGuard;
 pub use device_limits::device_surface_limit;
 
+mod device_values;
+pub use device_values::ValuesFormat;
+
 mod environment;
 pub use environment::is_local_dev;
 pub use environment::root_url;

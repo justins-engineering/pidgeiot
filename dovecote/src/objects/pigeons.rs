@@ -1,3 +1,4 @@
+use crate::helpers::ValuesFormat;
 use crate::helpers::flock_config::{
   ApplyDecision, ApplyInput, FlockApplyAnswer, FlockConfigApply, FlockMoveAnswer, decide_apply,
   is_field_pigeon,
@@ -296,6 +297,8 @@ fn is_device_contact_path(path: &str) -> bool {
     path,
     "/pigeon/device/shadow"
       | "/pigeon/device/shadow/report"
+      | "/pigeon/device/values"
+      | "/pigeon/device/values/xml"
       | "/pigeon/device/ws"
       | "/pigeon/device/firmware/target"
       | "/pigeon/device/telemetry"
@@ -580,6 +583,8 @@ impl DurableObject for Pigeons {
       "/pigeon/shadow/get" => get_shadow(self, req).await,
       "/pigeon/device/shadow" => get_shadow_device(self, req).await,
       "/pigeon/device/shadow/report" => report_shadow_device(self, req).await,
+      "/pigeon/device/values" => get_values_device(self, req, ValuesFormat::Json),
+      "/pigeon/device/values/xml" => get_values_device(self, req, ValuesFormat::Xml),
       "/pigeon/device/ws" => accept_websocket_device(self, req).await,
       "/pigeon/device/firmware/target" => get_firmware_target_device(self, req).await,
       "/pigeon/device/telemetry" => report_telemetry_device(self, req).await,
@@ -1854,6 +1859,61 @@ async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> 
       Response::error("Internal Server Error", 500)
     }
   }
+}
+
+#[derive(serde::Deserialize)]
+struct ValuesRow {
+  target_version: i32,
+  target_config: String,
+}
+
+/// A sign's poll for its data items: the effective config's `item.` keys as flat JSON or as
+/// `<DataItems>` XML (`capsules::data_items`). Takes the token as a Basic password too, and
+/// records no delivery: only a device's own report-back can say it applied a value, and a sign
+/// silently drops a value for a name it does not define.
+fn get_values_device(pigeons: &Pigeons, req: Request, format: ValuesFormat) -> Result<Response> {
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, true));
+
+  let row = match pigeons.sql.exec(
+    "SELECT target_version, target_config FROM pigeon_shadow LIMIT 1;",
+    None,
+  ) {
+    Ok(cursor) => match one_row::<ValuesRow>(&cursor) {
+      Ok(row) => row,
+      Err(e) => {
+        console_error!("Values shadow deserialization error: {e}");
+        return Response::error("Internal Server Error", 500);
+      }
+    },
+    Err(e) => {
+      console_error!("Values shadow READ error: {e}");
+      return Response::error("Internal Server Error", 500);
+    }
+  };
+  let Some(config) = parse_layer(&row.target_config) else {
+    console_error!("Values shadow target_config is not a JSON object");
+    return Response::error("Internal Server Error", 500);
+  };
+
+  let items = capsules::data_items(&config);
+  let (body, content_type) = match format {
+    ValuesFormat::Json => (
+      capsules::data_items_json(&items),
+      "application/json; charset=utf-8",
+    ),
+    ValuesFormat::Xml => (
+      capsules::data_items_xml(&items),
+      "application/xml; charset=utf-8",
+    ),
+  };
+  // Each answer belongs to one sign and one token, so nothing between may keep a copy.
+  Ok(
+    ResponseBuilder::new()
+      .with_header("Content-Type", content_type)?
+      .with_header("Cache-Control", "no-store")?
+      .with_header("X-Target-Version", &row.target_version.to_string())?
+      .fixed(body.into_bytes()),
+  )
 }
 
 /// Whether this pigeon's account is a free-tier one that has spent its
@@ -4352,6 +4412,8 @@ mod tests {
       assert!(!counts_as_contact(status), "{status}");
     }
     assert!(is_device_contact_path("/pigeon/device/shadow"));
+    assert!(is_device_contact_path("/pigeon/device/values"));
+    assert!(is_device_contact_path("/pigeon/device/values/xml"));
     assert!(is_device_contact_path("/pigeon/device/telemetry/verify"));
     for path in [
       "/pigeon/get",
