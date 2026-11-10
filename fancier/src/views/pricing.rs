@@ -508,7 +508,7 @@ pub fn PricingPage() -> Element {
           label: "Never billed",
           value: "Idle devices",
           note: "",
-          body: "A device counts toward billing in a month it sends at least one billable message. The 400 units sitting in a warehouse are free.",
+          body: "A device counts toward billing in a month it sends at least one billable message or polls its values route. The 400 units sitting in a warehouse are free.",
         }
         NeverCard {
           label: "No limit",
