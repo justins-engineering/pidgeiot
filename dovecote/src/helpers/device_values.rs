@@ -1,5 +1,5 @@
 //! Gateway helpers for `GET /device/pigeons/:pigeon_id/values`, a sign's poll for its data items:
-//! reading the poll, keying its limiter, and the billing seam its answer passes through.
+//! reading the poll, keying its limiter, and marking its answer for the connected stamp.
 
 use worker::{Response, Url};
 
@@ -67,15 +67,35 @@ pub fn values_limit_key(pigeon_id: &str, address: Option<&str>) -> String {
   key
 }
 
-/// The one place a values poll would count toward billing, and today it counts for nothing: a
-/// poll is neither a billable message nor connected activity, as a shadow poll is not.
+/// Internal response header marking a values poll that is due a connected stamp, valued as the
+/// `SEEN_HEADER` it rode in on. `main` strips it and makes the stamp after the response.
+pub const CONNECTED_HEADER: &str = "X-Pigeon-Connected";
+
+/// The `CONNECTED_HEADER` value for an answered poll, if it is due one.
 ///
-/// Counting polls as connected activity marks this answer rather than stamping from here: a route
-/// closure has no `wait_until`, and an awaited `UPDATE` would hold the sign's answer. The mark is
-/// an internal header set only when the answer carries the seen header (at most once a minute),
-/// which `main` strips and turns into the `last_billable_activity` stamp in `ctx.wait_until`, as
-/// it does the seen header.
-pub fn bill_values_poll(_response: &mut Response) {}
+/// Due only with the seen stamp, which the pigeon's object sets at most once a minute, so a sign
+/// costs at most one Postgres write a minute whatever its cadence; the statement itself moves the
+/// stamp at most every six hours. A pigeon whose other contact took that minute's seen stamp is
+/// already stamping through its own billable reports, or is marked by a later poll.
+pub fn values_poll_connected(status: u16, seen: Option<&str>) -> Option<&str> {
+  let seen = seen?;
+  ((200..300).contains(&status) && crate::helpers::parse_seen_header(seen).is_some())
+    .then_some(seen)
+}
+
+/// Bills a values poll: never a billable message, but a sign that polls is a connected device for
+/// the period, as one that reports is.
+///
+/// Marks the answer rather than stamping from here: a route closure has no `wait_until`, and an
+/// awaited `UPDATE` would hold the sign's answer.
+pub fn bill_values_poll(response: &mut Response) {
+  let seen = crate::helpers::seen_of(response);
+  if let Some(value) = values_poll_connected(response.status_code(), seen.as_deref())
+    && let Err(e) = response.headers_mut().set(CONNECTED_HEADER, value)
+  {
+    worker::console_error!("Failed to mark a values poll connected: {e}");
+  }
+}
 
 #[cfg(test)]
 mod tests {
@@ -159,6 +179,38 @@ mod tests {
   #[test]
   fn with_no_address_the_limit_key_is_the_pigeon() {
     assert_eq!(values_limit_key("abc", None), "abc");
+  }
+
+  const SEEN: &str = "1760000000 abc";
+
+  #[test]
+  fn an_answered_poll_carrying_a_seen_stamp_marks_the_sign_connected() {
+    assert_eq!(values_poll_connected(200, Some(SEEN)), Some(SEEN));
+  }
+
+  #[test]
+  fn a_poll_without_a_seen_stamp_waits_for_the_next_minute() {
+    assert_eq!(values_poll_connected(200, None), None);
+  }
+
+  #[test]
+  fn a_refused_or_failed_poll_marks_nothing() {
+    for status in [400, 401, 429, 500, 503] {
+      assert_eq!(values_poll_connected(status, Some(SEEN)), None, "{status}");
+    }
+  }
+
+  #[test]
+  fn a_malformed_seen_stamp_marks_nothing() {
+    for seen in ["", "abc", "0 abc", "1760000000 a b"] {
+      assert_eq!(values_poll_connected(200, Some(seen)), None, "{seen:?}");
+    }
+  }
+
+  #[test]
+  fn the_connected_mark_is_neither_a_seen_stamp_nor_a_message_count() {
+    assert_ne!(CONNECTED_HEADER, crate::helpers::SEEN_HEADER);
+    assert_ne!(CONNECTED_HEADER, crate::helpers::nidd::HEADER_BILLED);
   }
 
   #[test]

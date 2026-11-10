@@ -293,6 +293,84 @@ struct BillableMessageTally {
   comp_plan: Option<String>,
 }
 
+/// The `target` and `stamped` CTEs that open both `RECORD_BILLABLE_SQL` and
+/// `RECORD_CONNECTED_SQL`: one copy of the rule that marks a pigeon connected for its account's
+/// current period. A macro because `concat!` takes only literals, so both statements stay
+/// compile-time strings. `$1` is the pigeon id.
+///
+/// The stamp moves at most every six hours, or sooner when it predates the current period, so a
+/// pigeon active anywhere in a period is stamped inside it. The period is the org's Stripe period
+/// while a live subscription covers now and the calendar month otherwise, the same anchoring as
+/// the tally and as `load_billable_orgs`.
+macro_rules! stamp_rule_sql {
+  () => {
+    "WITH target AS (
+       SELECT
+         CASE WHEN f.org_id IS NULL THEN 'user' ELSE 'org' END AS owner_kind,
+         COALESCE(f.org_id, f.user_id) AS owner_id,
+         (o.id IS NOT NULL
+           AND o.subscription_status IN ('trialing', 'active', 'past_due')
+           AND o.current_period_start IS NOT NULL
+           AND o.current_period_end IS NOT NULL
+           AND now() >= o.current_period_start
+           AND now() < o.current_period_end) AS use_org_period,
+         o.current_period_start AS org_period_start,
+         o.current_period_end AS org_period_end,
+         o.plan AS org_plan,
+         o.subscription_status AS org_status,
+         o.comp_plan AS comp_plan
+       FROM pigeons p
+       JOIN flocks f ON f.id = p.flock_id
+       LEFT JOIN organizations o ON o.id = f.org_id
+       WHERE p.id = $1
+     ),
+     stamped AS (
+       UPDATE pigeons p
+       SET last_billable_activity = now()
+       FROM target t
+       WHERE p.id = $1
+         AND (p.last_billable_activity IS NULL
+           OR p.last_billable_activity < now() - interval '6 hours'
+           OR p.last_billable_activity < CASE WHEN t.use_org_period
+                                              THEN t.org_period_start
+                                              ELSE date_trunc('month', now()) END)
+       RETURNING p.id
+     )"
+  };
+}
+
+/// Counts `$2` billable messages for pigeon `$1` and stamps it connected; see
+/// `record_billable_messages`.
+const RECORD_BILLABLE_SQL: &str = concat!(
+  stamp_rule_sql!(),
+  ",
+     upserted AS (
+       INSERT INTO billing_usage_periods
+         (owner_kind, owner_id, period_start, period_end, billable_messages)
+       SELECT
+         owner_kind,
+         owner_id,
+         CASE WHEN use_org_period THEN org_period_start
+              ELSE date_trunc('month', now()) END,
+         CASE WHEN use_org_period THEN org_period_end
+              ELSE date_trunc('month', now()) + interval '1 month' END,
+         $2
+       FROM target
+       ON CONFLICT (owner_kind, owner_id, period_start) DO UPDATE
+         SET billable_messages = billing_usage_periods.billable_messages + $2,
+             period_end = EXCLUDED.period_end,
+             updated_at = now()
+       RETURNING owner_kind, owner_id, period_start, billable_messages
+     )
+     SELECT u.owner_kind, u.owner_id, u.period_start, u.billable_messages,
+            t.org_plan, t.org_status, t.comp_plan
+     FROM upserted u CROSS JOIN target t;"
+);
+
+/// Stamps pigeon `$1` connected and nothing else, answering how many rows it stamped (0 or 1);
+/// see `record_connected_activity`.
+const RECORD_CONNECTED_SQL: &str = concat!(stamp_rule_sql!(), " SELECT COUNT(*) FROM stamped;");
+
 /// Counts `count` billable device messages against the owning account's
 /// current billing period, creating the period row on first use.
 /// Resolution and upsert are one statement so the queue consumer pays a
@@ -313,7 +391,7 @@ struct BillableMessageTally {
 /// best-effort by design), so there is no account to bill -- an undercount
 /// in the customer's favour, not an error.
 ///
-/// The same statement stamps `pigeons.last_billable_activity`, which is
+/// The same statement stamps `pigeons.last_billable_activity` (`stamp_rule_sql`), which is
 /// what makes device-overage billing connected-only (see
 /// `report_device_overage`). It rides here rather than in its own query
 /// because this is the one place every billable surface already converges
@@ -329,58 +407,7 @@ async fn record_billable_messages(
 ) -> Result<Option<BillableMessageTally>> {
   let rows = client
     .query_typed(
-      "WITH target AS (
-         SELECT
-           CASE WHEN f.org_id IS NULL THEN 'user' ELSE 'org' END AS owner_kind,
-           COALESCE(f.org_id, f.user_id) AS owner_id,
-           (o.id IS NOT NULL
-             AND o.subscription_status IN ('trialing', 'active', 'past_due')
-             AND o.current_period_start IS NOT NULL
-             AND o.current_period_end IS NOT NULL
-             AND now() >= o.current_period_start
-             AND now() < o.current_period_end) AS use_org_period,
-           o.current_period_start AS org_period_start,
-           o.current_period_end AS org_period_end,
-           o.plan AS org_plan,
-           o.subscription_status AS org_status,
-           o.comp_plan AS comp_plan
-         FROM pigeons p
-         JOIN flocks f ON f.id = p.flock_id
-         LEFT JOIN organizations o ON o.id = f.org_id
-         WHERE p.id = $1
-       ),
-       stamped AS (
-         UPDATE pigeons p
-         SET last_billable_activity = now()
-         FROM target t
-         WHERE p.id = $1
-           AND (p.last_billable_activity IS NULL
-             OR p.last_billable_activity < now() - interval '6 hours'
-             OR p.last_billable_activity < CASE WHEN t.use_org_period
-                                                THEN t.org_period_start
-                                                ELSE date_trunc('month', now()) END)
-       ),
-       upserted AS (
-         INSERT INTO billing_usage_periods
-           (owner_kind, owner_id, period_start, period_end, billable_messages)
-         SELECT
-           owner_kind,
-           owner_id,
-           CASE WHEN use_org_period THEN org_period_start
-                ELSE date_trunc('month', now()) END,
-           CASE WHEN use_org_period THEN org_period_end
-                ELSE date_trunc('month', now()) + interval '1 month' END,
-           $2
-         FROM target
-         ON CONFLICT (owner_kind, owner_id, period_start) DO UPDATE
-           SET billable_messages = billing_usage_periods.billable_messages + $2,
-               period_end = EXCLUDED.period_end,
-               updated_at = now()
-         RETURNING owner_kind, owner_id, period_start, billable_messages
-       )
-       SELECT u.owner_kind, u.owner_id, u.period_start, u.billable_messages,
-              t.org_plan, t.org_status, t.comp_plan
-       FROM upserted u CROSS JOIN target t;",
+      RECORD_BILLABLE_SQL,
       &[(&pigeon_id, Type::TEXT), (&count, Type::INT8)],
     )
     .await
@@ -398,6 +425,34 @@ async fn record_billable_messages(
     org_status: row.get("org_status"),
     comp_plan: row.get("comp_plan"),
   }))
+}
+
+/// Stamps pigeon `pigeon_id` connected for its account's current period by the billable rule
+/// (`stamp_rule_sql`) and counts no message. `false` when the stamp was not due or the pigeon has
+/// no Postgres mirror row.
+async fn record_connected_activity(client: &Client, pigeon_id: &str) -> Result<bool> {
+  let rows = client
+    .query_typed(RECORD_CONNECTED_SQL, &[(&pigeon_id, Type::TEXT)])
+    .await
+    .map_err(|e| {
+      console_error!("Connected stamp error for '{pigeon_id}': {e}");
+      Error::RustError("Internal Server Error".into())
+    })?;
+  Ok(rows.first().is_some_and(|row| row.get::<_, i64>(0) > 0))
+}
+
+/// Marks a device that polls without reporting, a sign on its values route, as connected for the
+/// period, so it bills as a device without spending messages. Best-effort like the tally: a
+/// failure logs and undercounts in the customer's favour.
+pub async fn stamp_connected_activity(env: &Env, pigeon_id: &str) {
+  let client = match get_db_client(env).await {
+    Ok(client) => client,
+    Err(e) => {
+      console_error!("Connected stamp skipped for '{pigeon_id}': {e}");
+      return;
+    }
+  };
+  let _ = record_connected_activity(&client, pigeon_id).await;
 }
 
 /// Counts `count` billable device messages and, for free-tier accounts,
@@ -788,7 +843,7 @@ fn apply_cap(
 /// unlimited devices, which is more than the granted tier promises.
 ///
 /// Counts provisioned rows, deliberately unlike `report_device_overage`,
-/// which counts only devices that reported in the period. The two answer
+/// which counts only devices connected in the period. The two answer
 /// different questions and the difference is not drift: the free tier's
 /// cap is on how many pigeons may exist (each one occupies a Durable
 /// Object whether or not it ever powers on), while the meter charges only
@@ -1221,13 +1276,13 @@ async fn claim_reporter_run(client: &Client) -> Result<bool> {
 ///
 /// The connected-device count comes from here rather than from the meter
 /// that reports it, because both meters need it: a pigeon is connected for
-/// a period when it sent at least one billable message during it, which is
-/// the promise the pricing page makes and the definition it publishes.
-/// `last_billable_activity` is NULL for a device that has never reported,
+/// a period when it sent at least one billable message or polled its values
+/// route during it, the definition the pricing page publishes.
+/// `last_billable_activity` is NULL for a device that has done neither,
 /// and NULL fails both comparisons, so provisioned-and-idle stock costs
 /// nothing and adds nothing. The period bounds are the same ones the stamp
 /// writer anchors on -- the WHERE clause below selects on the identical
-/// live-subscription condition as `record_billable_message`'s
+/// live-subscription condition as `stamp_rule_sql`'s
 /// `use_org_period` -- so a device active anywhere in the period is
 /// stamped inside it, not merely within six hours of it.
 async fn load_billable_orgs(client: &Client) -> Result<Vec<BillableOrg>> {
@@ -1500,10 +1555,17 @@ async fn post_unposted_reports(
 #[cfg(test)]
 mod tests {
   use super::{
-    EntitlementCap, ORG_CAP_REFUSAL, PlanSource, apply_cap, cap_refusal, effective_plan, org_cap,
-    period_message_allowance, served_plan,
+    EntitlementCap, ORG_CAP_REFUSAL, PlanSource, RECORD_BILLABLE_SQL, RECORD_CONNECTED_SQL,
+    apply_cap, cap_refusal, effective_plan, org_cap, period_message_allowance, served_plan,
   };
   use capsules::BillingPlan;
+
+  #[test]
+  fn the_poll_and_the_billable_statement_open_with_one_stamp_rule() {
+    assert!(RECORD_BILLABLE_SQL.starts_with(stamp_rule_sql!()));
+    assert!(RECORD_CONNECTED_SQL.starts_with(stamp_rule_sql!()));
+    assert!(!RECORD_CONNECTED_SQL.contains("billing_usage_periods"));
+  }
 
   fn refusal(cap: EntitlementCap) -> Option<String> {
     match cap {
@@ -1942,5 +2004,139 @@ mod tests {
       effective_plan(Some("not-a-plan"), Some("active"), None),
       BillingPlan::Perch
     );
+  }
+}
+
+/// The connected stamp against the dev Postgres, as [`super::rule_store`]'s `pg` tests run them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pg {
+  use super::{record_billable_messages, record_connected_activity};
+  use crate::helpers::rule_store::pg::{Scratch, new_flock, new_pigeon, run};
+  use time::OffsetDateTime;
+  use tokio_postgres::Client;
+  use uuid::Uuid;
+
+  /// An org whose live subscription period started `started` ago (a Postgres interval).
+  async fn org_with_period(client: &Client, started: &str) -> Uuid {
+    let mut sql = String::with_capacity(256);
+    sql.push_str(
+      "INSERT INTO organizations
+         (name, plan, subscription_status, current_period_start, current_period_end)
+       VALUES ('o', 'builder', 'active', now() - interval '",
+    );
+    sql.push_str(started);
+    sql.push_str("', now() + interval '20 days') RETURNING id");
+    client
+      .query_one(&sql, &[])
+      .await
+      .expect("org inserted")
+      .get(0)
+  }
+
+  async fn set_activity(client: &Client, pigeon: &str, at: &str) {
+    let mut sql = String::with_capacity(64 + at.len());
+    sql.push_str("UPDATE pigeons SET last_billable_activity = ");
+    sql.push_str(at);
+    sql.push_str(" WHERE id = $1");
+    client
+      .execute(&sql, &[&pigeon])
+      .await
+      .expect("activity set");
+  }
+
+  async fn activity(client: &Client, pigeon: &str) -> Option<OffsetDateTime> {
+    client
+      .query_one(
+        "SELECT last_billable_activity FROM pigeons WHERE id = $1",
+        &[&pigeon],
+      )
+      .await
+      .expect("pigeon read")
+      .get(0)
+  }
+
+  async fn usage_rows(client: &Client) -> i64 {
+    client
+      .query_one("SELECT COUNT(*) FROM billing_usage_periods", &[])
+      .await
+      .expect("usage read")
+      .get(0)
+  }
+
+  fn id(case: &str, path: &str) -> String {
+    let mut id = String::with_capacity(case.len() + path.len());
+    id.push_str(case);
+    id.push_str(path);
+    id
+  }
+
+  #[test]
+  #[ignore = "needs DOVECOTE_TEST_PG: the dev docker Postgres"]
+  fn a_poll_stamps_connected_by_the_billable_rule_and_counts_no_message() {
+    run(async {
+      let db = Scratch::new("connected_stamp").await;
+      let client = db.client().await;
+      // A period that began a minute ago puts its boundary inside the six hours.
+      let fresh = new_flock(&client, Some(org_with_period(&client, "1 minute").await)).await;
+      let settled = new_flock(&client, Some(org_with_period(&client, "10 days").await)).await;
+      let personal = new_flock(&client, None).await;
+      let cases = [
+        ("never", fresh, "NULL", true),
+        ("beforeperiod", fresh, "now() - interval '2 minutes'", true),
+        ("inperiod", fresh, "now() - interval '30 seconds'", false),
+        ("sevenhours", settled, "now() - interval '7 hours'", true),
+        ("fivehours", settled, "now() - interval '5 hours'", false),
+        (
+          "lastmonth",
+          personal,
+          "date_trunc('month', now()) - interval '1 minute'",
+          true,
+        ),
+        (
+          "thismonth",
+          personal,
+          "GREATEST(date_trunc('month', now()), now() - interval '1 minute')",
+          false,
+        ),
+      ];
+      for (case, flock, at, _) in cases {
+        for path in ["poll", "bill"] {
+          let pigeon = id(case, path);
+          new_pigeon(&client, flock, &pigeon).await;
+          set_activity(&client, &pigeon, at).await;
+        }
+      }
+
+      for (case, _, _, due) in cases {
+        let pigeon = id(case, "poll");
+        let before = activity(&client, &pigeon).await;
+        let stamped = record_connected_activity(&client, &pigeon)
+          .await
+          .expect("connected stamp");
+        assert_eq!(stamped, due, "{case}");
+        assert_eq!(activity(&client, &pigeon).await != before, due, "{case}");
+      }
+      assert_eq!(usage_rows(&client).await, 0, "a poll counts no message");
+      assert!(
+        !record_connected_activity(&client, "nomirror")
+          .await
+          .expect("an unmirrored pigeon is no error")
+      );
+
+      for (case, _, _, due) in cases {
+        let pigeon = id(case, "bill");
+        let before = activity(&client, &pigeon).await;
+        record_billable_messages(&client, &pigeon, 1)
+          .await
+          .expect("billable tally");
+        assert_eq!(activity(&client, &pigeon).await != before, due, "{case}");
+      }
+      assert!(
+        usage_rows(&client).await > 0,
+        "the billable path does count"
+      );
+      drop(client);
+      db.drop().await;
+    });
   }
 }

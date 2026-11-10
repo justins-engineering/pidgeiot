@@ -290,7 +290,7 @@ models above; dev and production don't set these vars, so it's a no-op there.
 There is no general-purpose rate limiting in `dovecote` today (beyond whatever Cloudflare
 applies at the platform level). The routes that carry a real limiter carry it individually,
 through Cloudflare's rate-limiter binding: the two public unauthenticated forms (`POST /errors`,
-`POST /contact`, keyed per IP) and the device surfaces that are neither billed nor counted
+`POST /contact`, keyed per IP) and the device surfaces that spend no billable message
 (shadow polls and FOTA chunk downloads keyed per pigeon, values polls per pigeon and source
 address, plus a per-IP budget on requests that fail device authentication). Every one of them
 shares the same properties, and they are worth stating once rather than in each row: the
@@ -1023,10 +1023,11 @@ fleet a little past its device count no longer bills device overage and message 
 single act of growth. The free tier has no billed extras at any device count, so its allowance
 — and the ingest fuse trained on it — is exactly the tier's own 300 K.
 
-A pigeon counts as connected in a period in which it sent a billable message. A shadow poll and a
-[values poll](#get-devicepigeonspigeon_idvalues) are neither a billable message nor connected
-activity, so a sign that only polls its values is never a connected device and is never refused by
-the ingest fuse; it still counts toward the free tier's provisioned-device cap.
+A pigeon counts as connected in a period in which it sent a billable message or polled its
+[values route](#get-devicepigeonspigeon_idvalues). A values poll is not a billable message, so a
+sign that only polls is billed as a device and spends none of the message allowance, and the
+ingest fuse never refuses it. A shadow poll is neither a billable message nor connected activity.
+Every pigeon, connected or not, counts toward the free tier's provisioned-device cap.
 
 #### `POST /orgs/:org_id/billing/checkout`
 
@@ -3665,11 +3666,12 @@ which version reached a sign.
 | `429` | Over 4 polls a minute for this pigeon from this address, or this address over its failed-auth budget; carries `Retry-After` |
 | `500` | The pigeon's object could not be reached, or its stored key or shadow could not be read |
 
-A poll is device contact: it stamps `last_seen_at`, and nothing else. It does not mark
-`target_version` as applied, since only the device can say it applied a value. It is neither a
-billable message nor connected activity, like a shadow poll (see
-[`GET /orgs/:org_id/billing`](#get-orgsorg_idbilling)), and the free-tier fuse does not apply to
-it.
+A poll is device contact: it stamps `last_seen_at`. It does not mark `target_version` as applied,
+since only the device can say it applied a value. It is not a billable message, but it makes the
+pigeon a connected device for the billing period (see
+[`GET /orgs/:org_id/billing`](#get-orgsorg_idbilling)), stamped after the answer by the same
+six-hour and period-start rule as a billable message. The free-tier fuse does not apply to it: the
+fuse pauses ingest and a poll only reads, so a paused account's signs keep their values.
 
 Set a sign to poll every 60 seconds, and give it its own `User-Agent` (see the troubleshooting
 note under [Device authentication](#device-authentication-bearer-token)). A sign that never

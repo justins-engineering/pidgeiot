@@ -17,6 +17,10 @@ use crate::helpers::rule_namespace::{
 };
 use crate::helpers::rule_store::ensure_rule_tables;
 use crate::helpers::{
+  CONNECTED_HEADER, FlockAccess, FlockAction, authorize_flock, check_rule_cap,
+  stamp_connected_activity,
+};
+use crate::helpers::{
   DEVICE_FIRMWARE_LIMITER, DEVICE_SHADOW_LIMITER, DEVICE_VALUES_LIMITER, DashboardAccess,
   DashboardOwner, DeviceAuthGuard, EntitlementCap, INGEST_PAUSED_MESSAGE, IngestFuse,
   OrgBillingState, PigeonAccess, Principal, SEEN_HEADER, STRIPE_WEBHOOK_SECRET,
@@ -56,7 +60,6 @@ use crate::helpers::{
   upsert_flock_firmware, values_limit_key, values_request, verify_cf_access, verify_device_via_do,
   verify_turnstile, verify_webhook_signature, webhook_action, write_business_details,
 };
-use crate::helpers::{FlockAccess, FlockAction, authorize_flock, check_rule_cap};
 use crate::queue::TelemetryMessage;
 use capsules::consent::{ConsentSource, TermsAssentStatus};
 use capsules::{
@@ -1342,6 +1345,23 @@ fn stamp_seen_after_response(ctx: &Context, env: Env, response: &mut Response) {
   };
   let pigeon_id = pigeon_id.to_string();
   ctx.wait_until(async move { stamp_last_seen(&env, &pigeon_id, at).await });
+}
+
+/// Turns a values poll's `CONNECTED_HEADER` into its connected stamp after the response, and
+/// strips the header so it never reaches the sign. The stamp takes Postgres's own `now()`, as the
+/// billable tally's does, so the time the header carries is not used.
+fn stamp_connected_after_response(ctx: &Context, env: Env, response: &mut Response) {
+  let Ok(Some(value)) = response.headers().get(CONNECTED_HEADER) else {
+    return;
+  };
+  if let Err(e) = response.headers_mut().delete(CONNECTED_HEADER) {
+    console_error!("Failed to strip the connected stamp header: {e}");
+  }
+  let Some((pigeon_id, _)) = parse_seen_header(&value) else {
+    return;
+  };
+  let pigeon_id = pigeon_id.to_string();
+  ctx.wait_until(async move { stamp_connected_activity(&env, &pigeon_id).await });
 }
 
 /// Turns the callback route's `HEADER_BILLED` into its tally after the response, and strips the
@@ -7853,6 +7873,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
   match router.await {
     Ok(mut response) => {
       bill_after_response(&ctx, stamp_env.clone(), &mut response);
+      stamp_connected_after_response(&ctx, stamp_env.clone(), &mut response);
       stamp_seen_after_response(&ctx, stamp_env, &mut response);
       Ok(response)
     }

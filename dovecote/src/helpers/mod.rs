@@ -86,6 +86,7 @@ pub use usage::count_billable_messages;
 pub use usage::ensure_billing_usage_tables;
 pub use usage::raise_message_allowance_floor;
 pub use usage::report_billing_meters;
+pub use usage::stamp_connected_activity;
 
 pub mod flock_config;
 
@@ -147,6 +148,7 @@ pub use device_limits::DeviceAuthGuard;
 pub use device_limits::device_surface_limit;
 
 mod device_values;
+pub use device_values::CONNECTED_HEADER;
 pub use device_values::ValuesFormat;
 pub use device_values::bill_values_poll;
 pub use device_values::values_limit_key;

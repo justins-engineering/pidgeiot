@@ -67,12 +67,12 @@ CREATE TABLE IF NOT EXISTS pigeons (
   -- accepted.
   board TEXT,
   -- Last time this pigeon sent a billable message (telemetry, shadow
-  -- report-back or log upload, on any transport). NULL until it first
-  -- reports, which is exactly what makes a provisioned-but-idle device
-  -- free: the extra-devices meter counts only pigeons whose stamp falls
-  -- inside the billing period. Written by record_billable_message
-  -- (dovecote's helpers/usage.rs), which refreshes it at most every six
-  -- hours rather than once per message. Deliberately NOT the DO-owned
+  -- report-back or log upload, on any transport) or polled its values
+  -- route. NULL until it first does, which is exactly what makes a
+  -- provisioned-but-idle device free: the extra-devices meter counts only
+  -- pigeons whose stamp falls inside the billing period. Written by
+  -- stamp_rule_sql (dovecote's helpers/usage.rs), which refreshes it at
+  -- most every six hours rather than once per message. Deliberately NOT the DO-owned
   -- updated_at, which also bumps on dashboard writes.
   last_billable_activity TIMESTAMPTZ,
   -- Operator's hold on alert evaluation: while set, every alert definition
