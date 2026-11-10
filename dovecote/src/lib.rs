@@ -2538,8 +2538,7 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           }
         }
 
-        let Ok(Some(transferred)) =
-          crate::helpers::set_flock_org(&client, &flock_id, &payload.org_id).await
+        let Ok(marked) = crate::helpers::set_flock_org(&client, &flock_id, &payload.org_id).await
         else {
           return Response::error(
             "Internal Server Error: org access granted but flock not yet marked -- retry is safe",
@@ -2547,6 +2546,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> worker::Result<Response> 
           )
           .unwrap()
           .with_cors(&cors);
+        };
+        // Deleted since the ownership check; a retry would only answer 403.
+        let Some(transferred) = marked else {
+          return Response::error("Not Found: the flock no longer exists", 404)
+            .unwrap()
+            .with_cors(&cors);
         };
 
         // Best-effort PG mirror of the new org ACL rows.

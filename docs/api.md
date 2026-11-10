@@ -473,7 +473,8 @@ authorization write and is *not* best-effort: any per-pigeon failure aborts the 
 `500` before the flock is marked org-owned. The DO grant is an idempotent upsert, so retrying
 a failed transfer is safe. Only after every DO write lands does `flocks.org_id` flip; the
 Postgres `pigeon_acl` mirror is then synced best-effort per the usual convention. Returns the
-updated `capsules::Flock` (now carrying `org_id`).
+updated `capsules::Flock` (now carrying `org_id`), or `404` when the flock was deleted while
+the transfer ran.
 
 Note the flock's pre-existing per-user ACL rows are untouched — the transferring owner keeps
 any direct pigeon access they already had. Org-granted access, by contrast, lives and dies
