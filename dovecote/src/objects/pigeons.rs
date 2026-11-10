@@ -15,7 +15,7 @@ use crate::objects::ws::{
   MAX_WS_FRAME_BYTES, WS_CLOSE_INGEST_PAUSED, WS_CLOSE_PIGEON_DELETED, WS_CLOSE_TOKEN_REVOKED,
   WS_DEVICE_TAG, WsInboundFrame, WsOutboundFrame, check_rate_limit,
 };
-use crate::objects::{mint_device_credential, mint_device_psk, verify_device_token};
+use crate::objects::{device_token, mint_device_credential, mint_device_psk, verify_device_token};
 use crate::queue::TelemetryMessage;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use capsules::{
@@ -1775,9 +1775,14 @@ struct DevicePublicKeyRow {
 /// Device auth for the `/pigeon/device/*` routes. No `X-User-Id`/ACL — a
 /// device has no Kratos user identity. Verifies the bearer token against
 /// this pigeon's own stored `device_public_key`, which only this DO holds.
+///
+/// `allow_basic` also takes the token as a Basic password (see `device_token`). Only the values
+/// route passes `true`: a sign's web data source can carry a user and password where it may not
+/// be able to set a header.
 fn is_authorized_device(
   pigeons: &Pigeons,
   req: &Request,
+  allow_basic: bool,
 ) -> std::result::Result<(), Result<Response>> {
   let Ok(Some(auth_header)) = req.headers().get("Authorization") else {
     return Err(Response::error(
@@ -1786,8 +1791,13 @@ fn is_authorized_device(
     ));
   };
 
-  let Some(token) = auth_header.strip_prefix("Bearer ") else {
-    return Err(Response::error("Unauthorized: Missing Bearer token", 401));
+  let Some(token) = device_token(&auth_header, allow_basic) else {
+    let message = if allow_basic {
+      "Unauthorized: Missing Bearer token or Basic password"
+    } else {
+      "Unauthorized: Missing Bearer token"
+    };
+    return Err(Response::error(message, 401));
   };
 
   let public_key = match pigeons
@@ -1816,7 +1826,7 @@ fn is_authorized_device(
     }
   };
 
-  if !verify_device_token(token, &public_key) {
+  if !verify_device_token(&token, &public_key) {
     return Err(Response::error("Unauthorized: Invalid token", 401));
   }
 
@@ -1826,7 +1836,7 @@ fn is_authorized_device(
 /// Device-facing shadow read. Unlike `get_shadow`, this is not gated by
 /// `is_authorized`/`X-User-Id` — see `is_authorized_device`.
 async fn get_shadow_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   match pigeons.sql.exec(
     "SELECT target_version, current_version, target_config, current_config, updated_at FROM pigeon_shadow LIMIT 1;",
@@ -1876,7 +1886,7 @@ async fn device_ingest_paused(pigeons: &Pigeons) -> bool {
 /// `current_version`) — never re-derived from `target_version` here, since
 /// the device may still be catching up to a newer target.
 async fn report_shadow_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   if device_ingest_paused(pigeons).await {
     return Response::error(crate::helpers::INGEST_PAUSED_MESSAGE, 429);
@@ -1966,7 +1976,7 @@ fn read_shadow_view(pigeons: &Pigeons) -> Result<PigeonShadowView> {
 /// `broadcast_shadow_update`: a failed read or send is logged, never fails
 /// the upgrade.
 async fn accept_websocket_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   // Refusing the upgrade is what actually makes the fuse hold on this
   // transport. The per-frame check in `websocket_message` only closes a
@@ -2453,7 +2463,7 @@ fn read_firmware_target(
 /// — the firmware bytes themselves never pass through this DO (SQLite is
 /// no place for MB-sized blobs). 404 when no firmware is assigned.
 async fn get_firmware_target_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   match read_firmware_target(&pigeons.sql) {
     Ok(Some(target)) => Response::from_json(&target),
@@ -2626,7 +2636,7 @@ fn migrate_legacy_telemetry(sql: &SqlStorage) {
 /// directly -- same fallback as `handle_ws_telemetry` -- so the HTTP route
 /// doesn't silently skip history the queue would have recorded.
 async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   let body = match req.json::<capsules::TelemetryReportBody>().await {
     Ok(data) => data,
@@ -2674,7 +2684,7 @@ async fn report_telemetry_device(pigeons: &Pigeons, mut req: Request) -> Result<
 /// the queue itself has no authentication of its own. No response body;
 /// the caller only inspects the status code.
 async fn verify_telemetry_device(pigeons: &Pigeons, req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
   Response::ok("")
 }
 
@@ -2907,7 +2917,7 @@ const MAX_STORED_LOG_CHUNKS: i64 = 200;
 /// text rather than a BLOB column since it's handed back to the dashboard
 /// as base64 anyway.
 async fn report_logs_device(pigeons: &Pigeons, mut req: Request) -> Result<Response> {
-  unwrap_or_return_response!(is_authorized_device(pigeons, &req));
+  unwrap_or_return_response!(is_authorized_device(pigeons, &req, false));
 
   if device_ingest_paused(pigeons).await {
     return Response::error(crate::helpers::INGEST_PAUSED_MESSAGE, 429);

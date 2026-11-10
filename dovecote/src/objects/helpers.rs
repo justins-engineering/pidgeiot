@@ -68,6 +68,24 @@ pub fn mint_device_psk() -> worker::Result<String> {
   Ok(hex)
 }
 
+/// The device token an `Authorization` header carries: `Bearer <token>`, or, only where
+/// `allow_basic`, `Basic <base64 of user:token>`. The user name is ignored because the path already
+/// names the pigeon, and the password is everything after the first colon, which a base64url token
+/// never contains. `None` for any other form; whether the token is good is
+/// [`verify_device_token`]'s question.
+pub fn device_token(header: &str, allow_basic: bool) -> Option<String> {
+  if let Some(token) = header.strip_prefix("Bearer ") {
+    return Some(token.to_string());
+  }
+  if !allow_basic {
+    return None;
+  }
+  let encoded = header.strip_prefix("Basic ")?;
+  let decoded = String::from_utf8(STANDARD.decode(encoded).ok()?).ok()?;
+  let (_, password) = decoded.split_once(':')?;
+  (!password.is_empty()).then(|| password.to_string())
+}
+
 /// Verifies a compact binary bearer token against a pigeon's stored public
 /// key (base64, produced by `mint_device_credential`). Checks the
 /// signature and the token's own embedded expiry; callers do not need to
@@ -109,4 +127,82 @@ pub fn verify_device_token(token: &str, public_key_b64: &str) -> bool {
   let signature = Signature::from_bytes(&signature_arr);
 
   verifying_key.verify(payload, &signature).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn basic(pair: &str) -> String {
+    let encoded = STANDARD.encode(pair);
+    let mut header = String::with_capacity(6 + encoded.len());
+    header.push_str("Basic ");
+    header.push_str(&encoded);
+    header
+  }
+
+  #[test]
+  fn bearer_is_read_whether_or_not_basic_is_allowed() {
+    assert_eq!(
+      device_token("Bearer abc-_1", false).as_deref(),
+      Some("abc-_1")
+    );
+    assert_eq!(
+      device_token("Bearer abc-_1", true).as_deref(),
+      Some("abc-_1")
+    );
+  }
+
+  #[test]
+  fn bearer_without_its_space_is_refused() {
+    assert_eq!(device_token("Bearer", true), None);
+    assert_eq!(device_token("Bearerabc", true), None);
+    assert_eq!(device_token("bearer abc", true), None);
+  }
+
+  #[test]
+  fn basic_is_refused_where_it_is_not_allowed() {
+    assert_eq!(device_token(&basic("sign:abc"), false), None);
+  }
+
+  #[test]
+  fn basic_takes_the_password_under_any_user_name() {
+    assert_eq!(
+      device_token(&basic("sign:abc-_1"), true).as_deref(),
+      Some("abc-_1")
+    );
+    assert_eq!(
+      device_token(&basic("anyone else:abc"), true).as_deref(),
+      Some("abc")
+    );
+    assert_eq!(device_token(&basic(":abc"), true).as_deref(), Some("abc"));
+  }
+
+  #[test]
+  fn basic_splits_at_the_first_colon() {
+    assert_eq!(
+      device_token(&basic("sign:a:b"), true).as_deref(),
+      Some("a:b")
+    );
+  }
+
+  #[test]
+  fn malformed_basic_is_refused() {
+    assert_eq!(device_token("Basic not base64!", true), None);
+    assert_eq!(device_token(&basic("no colon here"), true), None);
+    assert_eq!(device_token(&basic("sign:"), true), None);
+    assert_eq!(device_token("Basic ", true), None);
+    let mut not_utf8 = String::from("Basic ");
+    not_utf8.push_str(&STANDARD.encode([b's', b':', 0xff, 0xfe]));
+    assert_eq!(device_token(&not_utf8, true), None);
+  }
+
+  #[test]
+  fn a_minted_token_verifies_when_sent_as_a_basic_password() {
+    let (public_key, token, _) = mint_device_credential().expect("minted a credential");
+    let mut pair = String::from("sign:");
+    pair.push_str(&token);
+    let read = device_token(&basic(&pair), true).expect("read the Basic password");
+    assert!(verify_device_token(&read, &public_key));
+  }
 }
