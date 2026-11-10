@@ -6,6 +6,9 @@
 Sockets open only on 127.0.0.1 with ports the kernel picks.
 """
 
+import os
+import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
@@ -154,6 +157,137 @@ class SoapTest(unittest.TestCase):
     fault = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Body")[0]
     self.assertEqual(fault.findtext("faultcode"), "SOAP-ENV:Client")
     self.assertEqual(fault.findtext("faultstring"), "not simulated: <GetImages>")
+
+
+MESSAGE_XML = ('<Message targetid="17" order="3" priority="3" timeout="15" scroll="0"'
+               ' align="center" entry="2" exit="3" enabled="1"><Segments><Segment color="#FFFF00"'
+               ' font="9B,Impact"><Text>9 HIGH FONT BOLD</Text></Segment></Segments></Message>')
+
+
+class StateCase(unittest.TestCase):
+  def setUp(self):
+    self._tmp = tempfile.TemporaryDirectory()
+    self.dir = os.path.join(self._tmp.name, "sign-a")
+
+  def tearDown(self):
+    self._tmp.cleanup()
+
+  def state(self, names=("rate", "lot.status")):
+    return ipd_sim.SignState(self.dir, names)
+
+
+class DataItemStateTest(StateCase):
+  def test_values_persist_across_a_restart(self):
+    self.state().apply_values([("rate", "2.50"), ("lot.status", "OPEN")], 100.0)
+    again = self.state()
+    values = {i["name"]: (i["value"], i["changed_at"]) for i in again.snapshot()["data_items"]}
+    self.assertEqual(values, {"rate": ("2.50", 100.0), "lot.status": ("OPEN", 100.0)})
+
+  def test_file_is_chapter_21_shape(self):
+    self.state().apply_values([("rate", "2.50")], 100.0)
+    root = ET.parse(os.path.join(self.dir, "dataitems.xml")).getroot()
+    self.assertEqual(root.tag, "DataItems")
+    item = root.find("DataItem[@name='rate']")
+    self.assertEqual(item.findtext("Data"), "2.50")
+    self.assertEqual([c.tag for c in item], ["Data", "InitValue", "Format", "Threshold"])
+
+  def test_changed_at_moves_only_when_the_value_changes(self):
+    state = self.state()
+    state.apply_values([("rate", "2.50")], 100.0)
+    state.apply_values([("rate", "2.50")], 200.0)
+    self.assertEqual(state.changed_at["rate"], 100.0)
+    state.apply_values([("rate", "3.00")], 300.0)
+    self.assertEqual(state.changed_at["rate"], 300.0)
+
+  def test_undefined_names_are_ignored(self):
+    updated, ignored = self.state().apply_values([("rate", "1"), ("Rate", "2"), ("x", "3")], 1.0)
+    self.assertEqual((updated, ignored), (1, ["Rate", "x"]))
+
+  def test_seeding_keeps_existing_values(self):
+    self.state().apply_values([("rate", "2.50")], 100.0)
+    again = self.state(("rate", "closure"))
+    values = {i["name"]: i["value"] for i in again.snapshot()["data_items"]}
+    self.assertEqual(values, {"rate": "2.50", "lot.status": "", "closure": ""})
+
+  def test_update_data_item_values_counts_items_updated(self):
+    xml = '<DataItems><DataItem name="rate">4</DataItem><DataItem name="no">5</DataItem></DataItems>'
+    self.assertEqual(self.state().update_data_item_values(xml, 1.0), 1)
+    self.assertEqual(self.state().update_data_item_values("<DataRecs/>", 1.0), 0)
+
+
+class LayoutMessageStateTest(StateCase):
+  def test_layout_without_persist_is_lost_on_restart(self):
+    state = self.state()
+    self.assertEqual(state.add_update_layout(LAYOUT_XML), 3054)
+    self.assertTrue(state.snapshot()["unsaved"])
+    self.assertEqual(self.state().snapshot()["layouts"], [])
+
+  def test_persist_all_keeps_layout_and_message_across_restart(self):
+    state = self.state()
+    state.add_update_layout(LAYOUT_XML)
+    message_id = state.add_update_message(MESSAGE_XML)
+    self.assertEqual(state.send_command(ipd_sim.PERSIST_ALL), 1)
+    self.assertFalse(state.snapshot()["unsaved"])
+    again = self.state().snapshot()
+    self.assertEqual(again["layouts"], [{"recID": "3054", "targetID": "508", "name": "NewLayout2",
+                                         "zones": 1}])
+    self.assertEqual(again["messages"], [{"id": str(message_id), "targetid": "17", "order": "3",
+                                          "text": "9 HIGH FONT BOLD"}])
+    root = ET.parse(os.path.join(self.dir, "layouts.xml")).getroot()
+    self.assertEqual(root.find("Layout/Zone").get("parentID"), "508")
+
+  def test_reload_all_discards_unpersisted_edits(self):
+    state = self.state()
+    state.add_update_layout(LAYOUT_XML)
+    state.send_command(ipd_sim.PERSIST_ALL)
+    state.add_update_layout(LAYOUT_XML.replace('name="NewLayout2"', 'name="Changed"'))
+    self.assertEqual(state.snapshot()["layouts"][0]["name"], "Changed")
+    self.assertEqual(state.send_command(ipd_sim.RELOAD_ALL), 1)
+    self.assertEqual(state.snapshot()["layouts"][0]["name"], "NewLayout2")
+
+  def test_same_rec_id_updates_in_place(self):
+    state = self.state()
+    state.add_update_layout(LAYOUT_XML)
+    state.add_update_layout(LAYOUT_XML.replace('name="NewLayout2"', 'name="Changed"'))
+    self.assertEqual([l["name"] for l in state.snapshot()["layouts"]], ["Changed"])
+
+  def test_layout_without_ids_gets_new_ones(self):
+    state = self.state()
+    rec_id = state.add_update_layout(
+      '<Layout name="L" order="1" duration="10"><Zone name="z1"/><Zone name="z2"/></Layout>')
+    self.assertGreater(rec_id, ipd_sim.FIRST_REC_ID)
+    layout = state.layouts.find("Layout")
+    zone_ids = [z.get("recID") for z in layout.findall("Zone")]
+    self.assertEqual(len(set(zone_ids + [str(rec_id)])), 3)
+    self.assertEqual(layout.get("targetID"), str(ipd_sim.FIRST_TARGET_ID + 1))
+    self.assertEqual({z.get("parentID") for z in layout.findall("Zone")}, {layout.get("targetID")})
+
+  def test_unreadable_layout_returns_zero(self):
+    state = self.state()
+    self.assertEqual(state.add_update_layout("<Layout"), 0)
+    self.assertEqual(state.add_update_layout('<Zone name="z"/>'), 0)
+    self.assertEqual(state.add_update_layout('<Layout order="1"/>'), 0)
+
+  def test_message_is_unique_by_target_and_order(self):
+    state = self.state()
+    first = state.add_update_message(MESSAGE_XML)
+    second = state.add_update_message(MESSAGE_XML.replace('priority="3"', 'priority="1"'))
+    other = state.add_update_message(MESSAGE_XML.replace('order="3"', 'order="4"'))
+    self.assertEqual(first, second)
+    self.assertNotEqual(first, other)
+    self.assertEqual(len(state.snapshot()["messages"]), 2)
+    self.assertEqual(state.add_update_message('<Message order="3"/>'), 0)
+
+  def test_other_commands_are_not_carried(self):
+    self.assertEqual(self.state().send_command(100), 0)
+
+  def test_sign_info_names_the_simulation(self):
+    info = ET.fromstring(ipd_sim.sign_info_xml("Lot A", 32, 160, "02aabbccddee", "127.0.0.1",
+                                               time.mktime((2026, 11, 10, 18, 5, 0, 0, 0, -1))))
+    self.assertEqual(info.get("currentDate"), "2026-11-10")
+    self.assertEqual(info.get("currentTime"), "6:05PM")
+    self.assertEqual(info.findtext("location"), ipd_sim.LABEL)
+    self.assertEqual((info.get("height"), info.get("width")), ("32", "160"))
 
 
 if __name__ == "__main__":
