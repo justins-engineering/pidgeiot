@@ -1,4 +1,5 @@
-//! The request side of `GET /device/pigeons/:pigeon_id/values`, a sign's poll for its data items.
+//! Gateway helpers for `GET /device/pigeons/:pigeon_id/values`, a sign's poll for its data items:
+//! reading the poll, keying its limiter, and the billing seam its answer passes through.
 
 use worker::{Response, Url};
 
@@ -67,10 +68,14 @@ pub fn values_limit_key(pigeon_id: &str, address: Option<&str>) -> String {
 }
 
 /// The one place a values poll would count toward billing, and today it counts for nothing: a
-/// poll is neither a billable message nor connected activity, as a shadow poll is not. Counting
-/// polls as connected activity means stamping `last_billable_activity` here for an answer that
-/// carries the seen header, which the pigeon object sets at most once a minute.
-pub fn bill_values_poll(_response: &Response) {}
+/// poll is neither a billable message nor connected activity, as a shadow poll is not.
+///
+/// Counting polls as connected activity marks this answer rather than stamping from here: a route
+/// closure has no `wait_until`, and an awaited `UPDATE` would hold the sign's answer. The mark is
+/// an internal header set only when the answer carries the seen header (at most once a minute),
+/// which `main` strips and turns into the `last_billable_activity` stamp in `ctx.wait_until`, as
+/// it does the seen header.
+pub fn bill_values_poll(_response: &mut Response) {}
 
 #[cfg(test)]
 mod tests {
