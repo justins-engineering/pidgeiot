@@ -1437,6 +1437,19 @@ mod telemetry_bucket_width_tests {
   use super::*;
   use time::macros::datetime;
 
+  /// A dashboard deployed ahead of its server must still parse every bucket, or each live graph
+  /// falls back to the preview.
+  #[test]
+  fn a_bucket_without_last_at_parses_and_plots_at_its_start() {
+    let bucket: TelemetryHistoryBucket = serde_json::from_str(
+      r#"{"pigeon_id":"p","key":"temp","bucket_start":"2026-07-17T15:30:00Z",
+          "min":1.0,"max":2.0,"mean":1.5,"last":"2","count":2}"#,
+    )
+    .expect("a bucket without last_at");
+    assert_eq!(bucket.last_at, None);
+    assert_eq!(bucket.plotted_at(), datetime!(2026-07-17 15:30:00 UTC));
+  }
+
   #[test]
   fn one_day_divides_evenly() {
     let since = datetime!(2026-08-17 00:00:00 UTC);
