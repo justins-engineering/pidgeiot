@@ -2626,6 +2626,9 @@ definition cascade-delete via the table's own foreign key.
 
 ### Rules
 
+**Rules are not enabled on the hosted service yet.** Until they are, every route in this section
+refuses every caller.
+
 A rule is one JavaScript module, written by a flock's managers, that the platform runs over each
 telemetry batch of each pigeon in the flock. It returns alert decisions, derived values and a
 patch to its own stored state; it has no network, no bindings and no secrets. The module contract
