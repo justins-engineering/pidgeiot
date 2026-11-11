@@ -64,7 +64,7 @@
       "status": "verified",
       "last_verified": "2026-08-23",
       "source": "https://thingsboard.io/pricing/",
-      "note": "Free software, and its dashboard widget library is far larger than ours. Everything below this line is yours: upgrades, backups, TLS renewal, and the pager."
+      "note": "Free software, and its dashboards do far more than ours. Everything below this line is yours: upgrades, backups, TLS renewal, and the pager."
     },
     {
       "id": "thingsboard-pe",
