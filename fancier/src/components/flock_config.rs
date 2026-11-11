@@ -125,7 +125,7 @@ pub fn FlockConfigCard(flock_id: Uuid, can_manage: bool) -> Element {
             }
             p { class: "text-sm text-base-content/70 md:px-4",
               if let Some(queued) = current.queued {
-                "Sent to {queued} pigeon(s). Each takes it within seconds."
+                "Sent to {queued} pigeon(s). Each takes it the next time it checks in."
               } else {
                 "{current.members_on_version} of {current.members} pigeon(s) on version {current.config_version}."
               }
