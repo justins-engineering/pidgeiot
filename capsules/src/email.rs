@@ -497,17 +497,26 @@ fn observation_text(
     (
       AlertCondition::DeviceState { .. } | AlertCondition::MissingReport { .. },
       Some(AlertObservation::Silence { last_seen }),
-    ) => match last_seen {
-      None => "never reported".to_string(),
-      Some(seen) => {
-        let age = humanize_secs((at - *seen).whole_seconds().max(0));
-        if fired {
-          format!("silent for {age}, last report {}", clock.seconds(*seen))
-        } else {
-          format!("reporting again, last report {}", clock.seconds(*seen))
+    ) => {
+      // DeviceState judges any contact, a poll included, so a device that only polls has no
+      // report to name; MissingReport judges reports alone.
+      let (never, again, last) = if matches!(condition, AlertCondition::DeviceState { .. }) {
+        ("never in contact", "in contact again", "last contact")
+      } else {
+        ("never reported", "reporting again", "last report")
+      };
+      match last_seen {
+        None => never.to_string(),
+        Some(seen) => {
+          let age = humanize_secs((at - *seen).whole_seconds().max(0));
+          if fired {
+            format!("silent for {age}, {last} {}", clock.seconds(*seen))
+          } else {
+            format!("{again}, {last} {}", clock.seconds(*seen))
+          }
         }
       }
-    },
+    }
     _ => "not captured".to_string(),
   }
 }
@@ -1411,10 +1420,10 @@ mod tests {
     let text = format_alert_email(&alert(&offline, true, Some(&silence)), Clock::utc()).text;
     assert!(text.contains("Condition: device offline for at least 10 minutes"));
     assert!(text.contains(
-      "Observed: silent for 24 minutes 7 seconds, last report 26 Aug 2026, 13:41:02 UTC"
+      "Observed: silent for 24 minutes 7 seconds, last contact 26 Aug 2026, 13:41:02 UTC"
     ));
     let text = format_alert_email(&alert(&offline, false, Some(&silence)), Clock::utc()).text;
-    assert!(text.contains("Observed: reporting again, last report 26 Aug 2026, 13:41:02 UTC"));
+    assert!(text.contains("Observed: in contact again, last contact 26 Aug 2026, 13:41:02 UTC"));
 
     let missing = definition(
       "Heartbeat",
@@ -1427,6 +1436,12 @@ mod tests {
     let text = format_alert_email(&alert(&missing, true, Some(&never)), Clock::utc()).text;
     assert!(text.contains("Condition: no report for 15 minutes"));
     assert!(text.contains("Observed: never reported"));
+    let text = format_alert_email(&alert(&missing, true, Some(&silence)), Clock::utc()).text;
+    assert!(text.contains(
+      "Observed: silent for 24 minutes 7 seconds, last report 26 Aug 2026, 13:41:02 UTC"
+    ));
+    let text = format_alert_email(&alert(&missing, false, Some(&silence)), Clock::utc()).text;
+    assert!(text.contains("Observed: reporting again, last report 26 Aug 2026, 13:41:02 UTC"));
 
     let high = definition(
       "High temperature",
@@ -1823,7 +1838,7 @@ mod tests {
   }
 
   #[test]
-  fn a_silence_observation_reports_its_last_report_locally() {
+  fn a_silence_observation_stamps_its_last_contact_locally() {
     let zone = Eastern;
     let offline = definition(
       "Gone quiet",
@@ -1840,8 +1855,8 @@ mod tests {
     assert!(
       message
         .text
-        .contains("last report 26 Aug 2026, 09:41:02 EDT (13:41:02 UTC)"),
-      "the last report must be stamped like every other time"
+        .contains("last contact 26 Aug 2026, 09:41:02 EDT (13:41:02 UTC)"),
+      "the last contact must be stamped like every other time"
     );
   }
 
