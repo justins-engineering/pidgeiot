@@ -381,10 +381,10 @@ queue = "pidgeiot-telemetry"
 # its own, made with `wrangler queues create <name>` before the first deploy that binds it, and a
 # plain `wrangler deploy` registers the consumer. A lost apply leaves a sign on an old config, so
 # it retries more than the default three times, a minute apart so an outage of an object or its
-# storage does not spend every retry in seconds.
-#
-# Production's queue does not exist yet: the owner creates `pidgeiot-flock-config` before the first
-# production deploy that carries this block, which fails until it does.
+# storage does not spend every retry in seconds. A small flock never fills a batch, so the
+# consumer waits at most a second for one rather than the default five: that wait sits between
+# every Save and a sign's next poll serving the change, and flock writes are too rare for the
+# extra consumer runs to cost anything.
 [[queues.producers]]
 queue = "pidgeiot-flock-config"
 binding = "FLOCK_CONFIG_QUEUE"
@@ -393,6 +393,7 @@ binding = "FLOCK_CONFIG_QUEUE"
 queue = "pidgeiot-flock-config"
 max_retries = 10
 retry_delay = 60
+max_batch_timeout = 1
 
 [[migrations]]
 tag = "v1"
@@ -594,6 +595,7 @@ binding = "FLOCK_CONFIG_QUEUE"
 queue = "pidgeiot-flock-config-staging"
 max_retries = 10
 retry_delay = 60
+max_batch_timeout = 1
 
 # Same sweep as prod/staging. `wrangler dev` doesn't fire this on a real
 # timer, but it can be exercised on demand via
@@ -700,7 +702,7 @@ namespace_id = "1015"
 simple = { limit = 10, period = 60 }
 
 # Dev flock-config fan-out -- see the production block above. `wrangler dev` runs it locally, so
-# no queue has to exist; the one-second batch window only makes a local write land quickly.
+# no queue has to exist.
 [[env.dev.queues.producers]]
 queue = "pidgeiot-flock-config-dev"
 binding = "FLOCK_CONFIG_QUEUE"
