@@ -1,7 +1,7 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-dovecote-MIT) — 140 package(s)
-- [Unicode License v3 (Unicode-3.0)](#license-dovecote-Unicode-3.0) — 20 package(s)
+- [MIT License (MIT)](#license-dovecote-MIT) — 138 package(s)
+- [Unicode License v3 (Unicode-3.0)](#license-dovecote-Unicode-3.0) — 21 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-dovecote-Apache-2.0) — 5 package(s)
 - [BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)](#license-dovecote-BSD-3-Clause) — 5 package(s)
 - [zlib License (Zlib)](#license-dovecote-Zlib) — 4 package(s)
@@ -469,7 +469,7 @@ You should also get your employer (if you work as a programmer) or school, if an
 
 ````
 
-**Used by:** [ory-kratos-client-wasm 0.2.5](https://github.com/justins-engineering/kratos-client-rust)
+**Used by:** [ory-kratos-client-wasm 0.3.0](https://github.com/justins-engineering/kratos-client-rust)
 
 
 ````text
@@ -549,7 +549,7 @@ limitations under the License.
 
 ````
 
-**Used by:** [ryu 1.0.23](https://github.com/dtolnay/ryu), [worker-macros 0.8.7](https://github.com/cloudflare/workers-rs/tree/main/worker-macros), [worker-sys 0.8.7](https://github.com/cloudflare/workers-rs/tree/main/worker-sys), [worker 0.8.7](https://github.com/cloudflare/workers-rs)
+**Used by:** [ryu 1.0.23](https://github.com/dtolnay/ryu), [worker-macros 0.9.0](https://github.com/cloudflare/workers-rs/tree/main/worker-macros), [worker-sys 0.9.0](https://github.com/cloudflare/workers-rs/tree/main/worker-sys), [worker 0.9.0](https://github.com/cloudflare/workers-rs)
 
 
 </details>
@@ -853,7 +853,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [wasm-bindgen-futures 0.4.79](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
+**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [wasm-bindgen-futures 0.4.80](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
 
 
 ````text
@@ -918,7 +918,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [log 0.4.34](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
+**Used by:** [log 0.4.35](https://github.com/rust-lang/log), [num-traits 0.2.19](https://github.com/rust-num/num-traits), [regex-automata 0.4.18](https://github.com/rust-lang/regex), [regex-syntax 0.8.11](https://github.com/rust-lang/regex), [regex 1.13.1](https://github.com/rust-lang/regex)
 
 
 ````text
@@ -951,7 +951,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.29.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.29.2](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -1069,7 +1069,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [heck 0.5.0](https://github.com/withoutboats/heck), [unicode-bidi 0.3.18](https://github.com/servo/unicode-bidi), [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization), [unicode-properties 0.1.4](https://github.com/unicode-rs/unicode-properties), [unicode-xid 0.2.6](https://github.com/unicode-rs/unicode-xid)
+**Used by:** [heck 0.5.0](https://github.com/withoutboats/heck), [unicode-bidi 0.3.18](https://github.com/servo/unicode-bidi), [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization), [unicode-properties 0.1.5](https://github.com/unicode-rs/unicode-properties), [unicode-xid 0.2.6](https://github.com/unicode-rs/unicode-xid)
 
 
 ````text
@@ -1509,7 +1509,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.5](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -1895,7 +1895,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [const-oid 0.10.2](https://github.com/RustCrypto/formats)
+**Used by:** [const-oid 0.10.3](https://github.com/RustCrypto/formats)
 
 
 ````text
@@ -2075,7 +2075,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [ctutils 0.4.6](https://github.com/RustCrypto/utils)
+**Used by:** [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 
 
 ````text
@@ -2210,39 +2210,6 @@ DEALINGS IN THE SOFTWARE.
 
 
 ````text
-Copyright 2023 The Fuchsia Authors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
-````
-
-**Used by:** [zerocopy-derive 0.8.63](https://github.com/google/zerocopy), [zerocopy 0.8.63](https://github.com/google/zerocopy)
-
-
-````text
 Copyright Mozilla Foundation
 
 Permission is hereby granted, free of charge, to any
@@ -2271,7 +2238,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+**Used by:** [utf8_iter 1.1.0](https://github.com/hsivonen/utf8_iter), [utf_types 1.0.0](https://github.com/hsivonen/utf_types)
 
 
 ````text
@@ -2466,7 +2433,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.18](https://github.com/dtolnay/itoa), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.154](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.9](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.7.0](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
+**Used by:** [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [itoa 1.0.19](https://github.com/dtolnay/itoa), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.154](https://github.com/serde-rs/json), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.10](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.7.1](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
 
 
 ````text
@@ -2778,6 +2745,52 @@ authorization of the copyright holder.
 ````
 
 **Used by:** [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
+
+
+````text
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+````
+
+**Used by:** [unicode-properties 0.1.5](https://github.com/unicode-rs/unicode-properties)
 
 
 ````text

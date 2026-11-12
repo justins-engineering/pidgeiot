@@ -1,6 +1,6 @@
 Jump to a license:
 
-- [MIT License (MIT)](#license-fancier-MIT) — 220 package(s)
+- [MIT License (MIT)](#license-fancier-MIT) — 223 package(s)
 - [Unicode License v3 (Unicode-3.0)](#license-fancier-Unicode-3.0) — 19 package(s)
 - [Apache License 2.0 (Apache-2.0)](#license-fancier-Apache-2.0) — 8 package(s)
 - [zlib License (Zlib)](#license-fancier-Zlib) — 5 package(s)
@@ -377,7 +377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
-**Used by:** [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+**Used by:** [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 
 
 </details>
@@ -748,7 +748,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [longest-increasing-subsequence 0.1.0](https://github.com/fitzgen/longest-increasing-subsequence), [wasm-bindgen-futures 0.4.79](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
+**Used by:** [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if), [js-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys), [longest-increasing-subsequence 0.1.0](https://github.com/fitzgen/longest-increasing-subsequence), [wasm-bindgen-futures 0.4.80](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures), [wasm-bindgen-macro-support 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support), [wasm-bindgen-macro 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro), [wasm-bindgen-shared 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared), [wasm-bindgen 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen), [web-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
 
 
 ````text
@@ -775,7 +775,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [mime 0.3.17](https://github.com/hyperium/mime)
+**Used by:** [mime 0.3.18](https://github.com/hyperium/mime)
 
 
 ````text
@@ -840,7 +840,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [uuid 1.29.0](https://github.com/uuid-rs/uuid)
+**Used by:** [uuid 1.29.2](https://github.com/uuid-rs/uuid)
 
 
 ````text
@@ -1384,6 +1384,38 @@ DEALINGS IN THE SOFTWARE.
 
 
 ````text
+Copyright (c) 2017-2020 Dirkjan Ochtman
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+**Used by:** [askama_escape 0.13.0](https://github.com/askama-rs/askama)
+
+
+````text
 Copyright (c) 2017-2025 Alissa Rao <aura@aura.moe>
 
 Permission is hereby granted, free of charge, to any
@@ -1541,7 +1573,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
+**Used by:** [smallvec 1.16.5](https://github.com/servo/rust-smallvec)
 
 
 ````text
@@ -2122,7 +2154,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+**Used by:** [charset 0.1.5](https://github.com/hsivonen/charset), [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs), [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op), [utf8_iter 1.1.0](https://github.com/hsivonen/utf8_iter), [utf_types 1.0.0](https://github.com/hsivonen/utf_types)
 
 
 ````text
@@ -2431,7 +2463,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [async-stream-impl 0.3.6](https://github.com/tokio-rs/async-stream), [async-stream 0.3.6](https://github.com/tokio-rs/async-stream), [const-serialize-macro 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize-macro 0.8.0-alpha.3](https://github.com/dioxuslabs/dioxus), [const-serialize 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize 0.8.0-alpha.0](https://github.com/dioxuslabs/dioxus), [content_disposition 0.4.0](https://github.com/y0zong/content-disposition), [dioxus-asset-resolver 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-cli-config 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macros 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-document 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-free-icons 0.10.0](https://github.com/dioxus-community/dioxus-free-icons), [dioxus-fullstack-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-history 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-hooks 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html-internal-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-interpreter-js 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-logger 0.7.10](https://github.com/dioxuslabs/dioxus), [dioxus-router-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-router 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-rsx 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-signals 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-web 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus 0.7.10](https://github.com/DioxusLabs/dioxus/), [fluent-langneg 0.13.1](https://github.com/projectfluent/fluent-langneg-rs), [generational-box 0.7.10](https://github.com/DioxusLabs/dioxus/), [gloo-net 0.6.0](https://github.com/rustwasm/gloo), [gloo-timers 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/timers), [gloo-utils 0.2.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [intl_pluralrules 7.0.2](https://github.com/zbraniecki/pluralrules), [lazy-js-bundle 0.7.10](https://github.com/DioxusLabs/dioxus/), [manganis-core 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-core), [manganis-macro 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-macro), [manganis 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis), [sledgehammer_bindgen 0.6.0](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_bindgen_macro 0.6.5](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_utils 0.3.1](https://github.com/demonthos/sledgehammer_utils/), [subsecond-types 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [subsecond 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [type-map 0.5.1](https://github.com/kardeiz/type-map), [warnings-macro 0.2.0](https://github.com/dioxuslabs/warnings), [warnings 0.2.1](https://github.com/dioxuslabs/warnings)
+**Used by:** [async-stream-impl 0.3.6](https://github.com/tokio-rs/async-stream), [async-stream 0.3.6](https://github.com/tokio-rs/async-stream), [const-serialize-macro 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize-macro 0.8.0-alpha.3](https://github.com/dioxuslabs/dioxus), [const-serialize 0.7.2](https://github.com/dioxuslabs/dioxus), [const-serialize 0.8.0-alpha.0](https://github.com/dioxuslabs/dioxus), [content_disposition 0.4.0](https://github.com/y0zong/content-disposition), [dioxus-asset-resolver 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-cli-config 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-config-macros 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools-types 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-devtools 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-document 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-free-icons 0.10.0](https://github.com/dioxus-community/dioxus-free-icons), [dioxus-fullstack-core 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-fullstack 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-history 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-hooks 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html-internal-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-html 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-interpreter-js 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-logger 0.7.10](https://github.com/dioxuslabs/dioxus), [dioxus-router-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-router 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-rsx 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-signals 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-ssr 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores-macro 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-stores 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus-web 0.7.10](https://github.com/DioxusLabs/dioxus/), [dioxus 0.7.10](https://github.com/DioxusLabs/dioxus/), [fluent-langneg 0.13.1](https://github.com/projectfluent/fluent-langneg-rs), [generational-box 0.7.10](https://github.com/DioxusLabs/dioxus/), [gloo-net 0.6.0](https://github.com/rustwasm/gloo), [gloo-timers 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/timers), [gloo-utils 0.2.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [gloo-utils 0.3.0](https://github.com/rustwasm/gloo/tree/master/crates/utils), [intl_pluralrules 7.0.2](https://github.com/zbraniecki/pluralrules), [lazy-js-bundle 0.7.10](https://github.com/DioxusLabs/dioxus/), [manganis-core 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-core), [manganis-macro 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis-macro), [manganis 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/manganis/manganis), [sledgehammer_bindgen 0.6.0](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_bindgen_macro 0.6.5](https://github.com/demonthos/sledgehammer_bindgen/), [sledgehammer_utils 0.3.1](https://github.com/demonthos/sledgehammer_utils/), [subsecond-types 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [subsecond 0.7.10](https://github.com/DioxusLabs/dioxus/tree/main/packages/subsecond), [type-map 0.5.1](https://github.com/kardeiz/type-map), [warnings-macro 0.2.0](https://github.com/dioxuslabs/warnings), [warnings 0.2.1](https://github.com/dioxuslabs/warnings)
 
 
 ````text
@@ -2599,7 +2631,7 @@ DEALINGS IN THE SOFTWARE.
 
 ````
 
-**Used by:** [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [inventory 0.3.25](https://github.com/dtolnay/inventory), [itoa 1.0.18](https://github.com/dtolnay/itoa), [lazy_static 1.5.1](https://github.com/rust-lang-nursery/lazy-static.rs), [macro-string 0.1.4](https://github.com/dtolnay/macro-string), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [send_wrapper 0.6.0](https://github.com/thk1/send_wrapper), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.154](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.9](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.21](https://github.com/dtolnay/thiserror), [unic-langid-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid 0.9.6](https://github.com/zbraniecki/unic-locale), [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.4.2](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
+**Used by:** [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [inventory 0.3.25](https://github.com/dtolnay/inventory), [itoa 1.0.19](https://github.com/dtolnay/itoa), [lazy_static 1.5.1](https://github.com/rust-lang-nursery/lazy-static.rs), [macro-string 0.1.4](https://github.com/dtolnay/macro-string), [once_cell 1.21.4](https://github.com/matklad/once_cell), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [send_wrapper 0.6.0](https://github.com/thk1/send_wrapper), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.154](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.10](https://github.com/dtolnay/syn), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.21](https://github.com/dtolnay/thiserror), [unic-langid-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros-impl 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid-macros 0.9.6](https://github.com/zbraniecki/unic-locale), [unic-langid 0.9.6](https://github.com/zbraniecki/unic-locale), [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident), [wasm-streams 0.4.2](https://github.com/MattiasBuelens/wasm-streams/), [zmij 1.0.23](https://github.com/dtolnay/zmij)
 
 
 ````text
@@ -2652,7 +2684,7 @@ THE SOFTWARE.
 
 ````
 
-**Used by:** [pulldown-cmark-escape 0.11.0](https://github.com/raphlinus/pulldown-cmark), [pulldown-cmark 0.13.5](https://github.com/raphlinus/pulldown-cmark)
+**Used by:** [pulldown-cmark-escape 0.11.0](https://github.com/raphlinus/pulldown-cmark), [pulldown-cmark 0.13.6](https://github.com/raphlinus/pulldown-cmark)
 
 
 ````text
