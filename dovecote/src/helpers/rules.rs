@@ -3671,29 +3671,66 @@ mod tests {
     );
   }
 
-  /// Each table of a wrangler config as its header and its single-line `key = value` pairs.
+  /// Each table of a wrangler config as its header and its `key = value` pairs. A value a
+  /// formatter wrapped over several lines is joined back into its one-line form.
   /// Enough TOML for the checks below, which fail closed on any form it does not read.
-  fn toml_tables(config: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
-    let mut tables = vec![("", Vec::new())];
+  fn toml_tables(config: &str) -> Vec<(&str, Vec<(&str, String)>)> {
+    let mut tables: Vec<(&str, Vec<(&str, String)>)> = vec![("", Vec::new())];
+    let mut open = 0;
     for line in config.lines().map(str::trim) {
-      if line.starts_with('[') {
+      if open > 0 {
+        if line.is_empty() || line.starts_with('#') {
+          continue;
+        }
+        let value = &mut tables.last_mut().unwrap().1.last_mut().unwrap().1;
+        if line.starts_with(']') {
+          if value.ends_with(',') {
+            value.pop();
+          }
+        } else if !value.ends_with('[') {
+          value.push(' ');
+        }
+        value.push_str(line);
+        open += toml_depth(line);
+      } else if line.starts_with('[') {
         tables.push((line, Vec::new()));
       } else if let Some((key, value)) = line.split_once('=') {
         if !line.starts_with('#') {
+          let value = value.trim();
+          open = toml_depth(value);
           tables
             .last_mut()
             .unwrap()
             .1
-            .push((key.trim(), value.trim()));
+            .push((key.trim(), value.to_string()));
         }
       }
     }
     tables
   }
 
+  /// The brackets and braces `text` opens less those it closes, outside strings and comments.
+  fn toml_depth(text: &str) -> i32 {
+    let mut depth = 0;
+    let mut quoted = false;
+    for c in text.chars() {
+      match c {
+        '"' => quoted = !quoted,
+        '#' if !quoted => break,
+        '[' | '{' if !quoted => depth += 1,
+        ']' | '}' if !quoted => depth -= 1,
+        _ => {}
+      }
+    }
+    depth
+  }
+
   /// The value of `key` in one table, raw (quotes kept).
-  fn toml_value<'a>(table: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
-    table.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+  fn toml_value<'a>(table: &'a [(&str, String)], key: &str) -> Option<&'a str> {
+    table
+      .iter()
+      .find(|(k, _)| *k == key)
+      .map(|(_, v)| v.as_str())
   }
 
   // A namespace binding without `outbound` gives rules the open internet, and production has no
@@ -3703,7 +3740,8 @@ mod tests {
   fn rules_binding_always_carries_the_outbound_worker() {
     let config = include_str!("../../wrangler.toml");
     let outbound = include_str!("../../rules-outbound/wrangler.toml");
-    let outbound_name = toml_value(&toml_tables(outbound)[0].1, "name").unwrap();
+    let outbound_tables = toml_tables(outbound);
+    let outbound_name = toml_value(&outbound_tables[0].1, "name").unwrap();
     let tables = toml_tables(config);
     for line in config
       .lines()
