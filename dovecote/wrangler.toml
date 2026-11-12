@@ -1,5 +1,5 @@
 name = "dovecote"
-compatibility_date = "2026-10-26"
+compatibility_date = "2026-11-12"
 send_metrics = false
 main = "build/worker/shim.mjs"
 
@@ -501,7 +501,9 @@ name = "EMAIL"
 [[env.staging.dispatch_namespaces]]
 binding = "RULES"
 namespace = "dovecote-rules-staging"
-outbound = { service = "dovecote-rules-outbound-staging", parameters = ["flock_id"] }
+outbound = { service = "dovecote-rules-outbound-staging", parameters = [
+  "flock_id",
+] }
 
 [env.staging.durable_objects]
 bindings = [
